@@ -46,7 +46,15 @@ class Position:
     min_price: float = 0.0   # For SHORT trailing
     order_id: str = ""
     sl_order_id: str = ""
-    partial_exit_done: bool = False
+    partial_exit_done: bool = False  # Legacy — kept for compatibility
+    # 50/30/20 Partial exit tracking
+    quality_grade: str = "B"         # A+, A, B, C — affects trail aggressiveness
+    t1_qty: int = 0                  # Qty to exit at T1 (50%)
+    t2_qty: int = 0                  # Qty to exit at T2 (30%)
+    runner_qty: int = 0              # Runner qty (20%) with tight trailing
+    t1_done: bool = False
+    t2_done: bool = False
+    size_multiplier: float = 1.0     # From HighAccuracyFilter
 
     def __post_init__(self):
         if not self.entry_time:
@@ -299,98 +307,203 @@ class RiskManager:
 
     def update_trailing_stop(self, position: Position, current_price: float) -> Dict:
         """
-        Update trailing stop for an open position.
-        Trailing activates after 1x ATR profit, then trails at 0.5x ATR.
+        Update trailing stop with 50/30/20 partial exit strategy.
+
+        Exit sequence:
+          T1 hit → exit 50% (t1_qty), move SL to entry (breakeven)
+          T2 hit → exit 30% (t2_qty), activate tight runner trail
+          Runner → 20% rides with grade-adaptive trailing stop
+          T2 full → exit remaining if T2 not done (grade C: exit all)
+
+        Trail aggressiveness by grade:
+          A+ / A: trail at 0.5x ATR (let winner run)
+          B:      trail at 0.8x ATR
+          C:      trail at 1.0x ATR (tighter — lower conviction)
 
         Returns:
-            {"action": "HOLD"/"EXIT"/"UPDATE_SL", "new_sl": float, "reason": str}
+            {action, new_sl, reason, exit_qty}
         """
+        from config import ATR_TRAIL_MULTIPLIER
         position.current_price = current_price
         atr = position.atr
+
+        # Grade-adaptive trail distance
+        grade_trail = {
+            "A+": ATR_TRAIL_MULTIPLIER * 0.6,   # Tightest — best setups deserve room
+            "A":  ATR_TRAIL_MULTIPLIER * 0.8,
+            "B":  ATR_TRAIL_MULTIPLIER,
+            "C":  ATR_TRAIL_MULTIPLIER * 1.3,   # Widest — low conviction, protect early
+        }
+        trail_dist = grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER) * atr
 
         if position.direction == "LONG":
             position.max_price = max(position.max_price, current_price)
             profit = current_price - position.entry_price
 
-            # Check original SL breach
-            if current_price <= position.stop_loss:
-                return {"action": "EXIT", "new_sl": position.stop_loss,
-                        "reason": f"SL hit at ₹{current_price:.2f}"}
+            # Hard SL check (original or trailing)
+            active_sl = position.trailing_stop if position.trailing_active else position.stop_loss
+            if current_price <= active_sl:
+                remaining = position.quantity  # Exit whatever's left
+                return {
+                    "action": "EXIT", "new_sl": active_sl, "exit_qty": remaining,
+                    "reason": f"{'Trailing' if position.trailing_active else 'Original'} SL hit ₹{current_price:.2f}"
+                }
 
-            # Activate trailing after 1x ATR profit
-            if not position.trailing_active and profit >= atr:
+            # ── T1: 50% exit at Target 1 ──────────────────────
+            if not position.t1_done and current_price >= position.target_1:
+                position.t1_done = True
+                position.partial_exit_done = True
+                # Move SL to breakeven after T1
+                if position.direction == "LONG":
+                    position.stop_loss = max(position.stop_loss, position.entry_price)
+                return {
+                    "action": "PARTIAL_EXIT_T1",
+                    "new_sl": position.entry_price,
+                    "exit_qty": position.t1_qty,
+                    "reason": f"T1 hit ₹{position.target_1:.2f} — exit {position.t1_qty} qty (50%), SL→breakeven"
+                }
+
+            # ── T2: 30% exit at Target 2 ──────────────────────
+            if position.t1_done and not position.t2_done and current_price >= position.target_2:
+                position.t2_done = True
+                # Grade C: exit all at T2 (no runner)
+                if position.quality_grade == "C" or position.runner_qty == 0:
+                    return {
+                        "action": "EXIT", "new_sl": current_price,
+                        "exit_qty": position.t2_qty + position.runner_qty,
+                        "reason": f"T2 hit ₹{position.target_2:.2f} — exit all remaining"
+                    }
+                # Grade A+/A/B: activate runner trailing
                 position.trailing_active = True
-                position.trailing_stop = current_price - 0.5 * atr
+                position.trailing_stop   = current_price - trail_dist
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"Trailing stop ACTIVATED at ₹{position.trailing_stop:.2f}"
+                    f"T2 hit — runner trail activated ₹{position.trailing_stop:.2f}"
                 )
+                return {
+                    "action": "PARTIAL_EXIT_T2",
+                    "new_sl": position.trailing_stop,
+                    "exit_qty": position.t2_qty,
+                    "reason": f"T2 hit ₹{position.target_2:.2f} — exit {position.t2_qty} qty (30%), runner active"
+                }
 
-            if position.trailing_active:
-                # Trail at 0.5x ATR below highest price
-                new_trail = position.max_price - 0.5 * atr
+            # ── Runner trailing stop (post-T2) ────────────────
+            if position.trailing_active and position.t2_done:
+                new_trail = position.max_price - trail_dist
                 if new_trail > position.trailing_stop:
-                    old_trail = position.trailing_stop
                     position.trailing_stop = new_trail
-                    logger.debug(
-                        f"{position.symbol}: Trail SL updated "
-                        f"₹{old_trail:.2f} → ₹{new_trail:.2f}"
-                    )
-                    return {"action": "UPDATE_SL", "new_sl": new_trail,
-                            "reason": f"Trail updated, max={position.max_price:.2f}"}
-
+                    return {
+                        "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
+                        "reason": f"Runner trail ₹{new_trail:.2f} (grade {position.quality_grade})"
+                    }
                 if current_price <= position.trailing_stop:
-                    return {"action": "EXIT", "new_sl": position.trailing_stop,
-                            "reason": f"Trailing SL hit at ₹{current_price:.2f}"}
+                    return {
+                        "action": "EXIT", "new_sl": position.trailing_stop,
+                        "exit_qty": position.runner_qty,
+                        "reason": f"Runner trail hit ₹{current_price:.2f} — grade {position.quality_grade}"
+                    }
 
-            # Check target hits
-            if current_price >= position.target_2:
-                return {"action": "EXIT", "new_sl": current_price,
-                        "reason": f"Target 2 hit: ₹{position.target_2:.2f}"}
-
-            if current_price >= position.target_1 and not position.partial_exit_done:
-                return {"action": "PARTIAL_EXIT", "new_sl": position.entry_price,
-                        "reason": f"Target 1 hit: ₹{position.target_1:.2f} — partial exit, move SL to entry"}
+            # ── Pre-T1: activate trailing if 1x ATR in profit ─
+            if not position.t1_done and not position.trailing_active and profit >= atr:
+                position.trailing_active = True
+                position.trailing_stop   = current_price - trail_dist
+                logger.info(
+                    f"[{format_ist_timestamp()}] {position.symbol}: "
+                    f"Early trail activated at ₹{position.trailing_stop:.2f}"
+                )
 
         else:  # SHORT
             position.min_price = min(position.min_price, current_price)
             profit = position.entry_price - current_price
 
-            if current_price >= position.stop_loss:
-                return {"action": "EXIT", "new_sl": position.stop_loss,
-                        "reason": f"SL hit at ₹{current_price:.2f}"}
+            active_sl = position.trailing_stop if position.trailing_active else position.stop_loss
+            if current_price >= active_sl:
+                return {
+                    "action": "EXIT", "new_sl": active_sl, "exit_qty": position.quantity,
+                    "reason": f"Short {'trailing' if position.trailing_active else 'original'} SL hit ₹{current_price:.2f}"
+                }
 
-            if not position.trailing_active and profit >= atr:
+            # T1: 50%
+            if not position.t1_done and current_price <= position.target_1:
+                position.t1_done = True
+                position.partial_exit_done = True
+                position.stop_loss = min(position.stop_loss, position.entry_price)
+                return {
+                    "action": "PARTIAL_EXIT_T1",
+                    "new_sl": position.entry_price,
+                    "exit_qty": position.t1_qty,
+                    "reason": f"Short T1 hit ₹{position.target_1:.2f} — 50% exit, SL→breakeven"
+                }
+
+            # T2: 30%
+            if position.t1_done and not position.t2_done and current_price <= position.target_2:
+                position.t2_done = True
+                if position.quality_grade == "C" or position.runner_qty == 0:
+                    return {
+                        "action": "EXIT", "new_sl": current_price,
+                        "exit_qty": position.t2_qty + position.runner_qty,
+                        "reason": f"Short T2 hit ₹{position.target_2:.2f} — full exit (grade C)"
+                    }
                 position.trailing_active = True
-                position.trailing_stop = current_price + 0.5 * atr
+                position.trailing_stop   = current_price + trail_dist
+                return {
+                    "action": "PARTIAL_EXIT_T2",
+                    "new_sl": position.trailing_stop,
+                    "exit_qty": position.t2_qty,
+                    "reason": f"Short T2 hit ₹{position.target_2:.2f} — 30% exit, runner active"
+                }
 
-            if position.trailing_active:
-                new_trail = position.min_price + 0.5 * atr
+            # Runner
+            if position.trailing_active and position.t2_done:
+                new_trail = position.min_price + trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
-                    return {"action": "UPDATE_SL", "new_sl": new_trail,
-                            "reason": f"Short trail updated"}
-
+                    return {
+                        "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
+                        "reason": f"Short runner trail ₹{new_trail:.2f}"
+                    }
                 if current_price >= position.trailing_stop:
-                    return {"action": "EXIT", "new_sl": position.trailing_stop,
-                            "reason": f"Short trailing SL hit"}
+                    return {
+                        "action": "EXIT", "new_sl": position.trailing_stop,
+                        "exit_qty": position.runner_qty,
+                        "reason": f"Short runner trail hit ₹{current_price:.2f}"
+                    }
 
-            if current_price <= position.target_2:
-                return {"action": "EXIT", "new_sl": current_price,
-                        "reason": f"Short Target 2 hit: ₹{position.target_2:.2f}"}
+            if not position.t1_done and not position.trailing_active and profit >= atr:
+                position.trailing_active = True
+                position.trailing_stop   = current_price + trail_dist
 
-            if current_price <= position.target_1 and not position.partial_exit_done:
-                return {"action": "PARTIAL_EXIT", "new_sl": position.entry_price,
-                        "reason": f"Short Target 1 hit: ₹{position.target_1:.2f}"}
-
-        return {"action": "HOLD", "new_sl": position.active_sl, "reason": "Hold"}
+        return {"action": "HOLD", "new_sl": position.active_sl, "exit_qty": 0, "reason": "Hold"}
 
     # --------------------------------------------------------
     # POSITION TRACKING
     # --------------------------------------------------------
 
+    def setup_partial_exits(self, position: Position) -> Position:
+        """
+        Calculate 50/30/20 partial exit quantities.
+        18yr rule: Take half off at T1 to guarantee profit, let runner work.
+        A+ grade: runner stays alive longer with tighter trail.
+        """
+        from config import PARTIAL_EXIT_T1_PCT, PARTIAL_EXIT_T2_PCT, RUNNER_PCT
+        qty = position.quantity
+        t1_qty = max(1, round(qty * PARTIAL_EXIT_T1_PCT / 100))
+        t2_qty = max(1, round(qty * PARTIAL_EXIT_T2_PCT / 100))
+        runner_qty = max(0, qty - t1_qty - t2_qty)
+        position.t1_qty     = t1_qty
+        position.t2_qty     = t2_qty
+        position.runner_qty = runner_qty
+        logger.info(
+            f"[{format_ist_timestamp()}] {position.symbol} partial exits: "
+            f"T1={t1_qty}qty({PARTIAL_EXIT_T1_PCT:.0f}%) "
+            f"T2={t2_qty}qty({PARTIAL_EXIT_T2_PCT:.0f}%) "
+            f"Runner={runner_qty}qty | Grade={position.quality_grade}"
+        )
+        return position
+
     def add_position(self, position: Position):
         """Register a new open position."""
+        position = self.setup_partial_exits(position)
         self.state.positions[position.symbol] = position
         logger.info(
             f"[{format_ist_timestamp()}] Position opened: "

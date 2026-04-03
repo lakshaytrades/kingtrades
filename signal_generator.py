@@ -30,6 +30,7 @@ from utils import (
 )
 from pattern_recognition import PatternRecognizer, IndicatorSet
 from data_fetch_groww import GrowwDataFetcher
+from high_accuracy_filter import HighAccuracyFilter, FilterResult
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -56,18 +57,25 @@ class TradeSignal:
     signal_time: str = ""
     rationale: str = ""
     is_high_confidence: bool = False  # Score >= 80
+    quality_grade: str = "B"          # A+, A, B, C from HighAccuracyFilter
+    size_multiplier: float = 1.0      # From HighAccuracyFilter (0.5–1.5x)
 
     def __post_init__(self):
         if not self.signal_time:
             self.signal_time = format_ist_timestamp()
         self.is_high_confidence = self.signal_score >= 80
 
+    @property
+    def grade_emoji(self) -> str:
+        return {"A+": "💎", "A": "⭐", "B": "✅", "C": "⚠️"}.get(self.quality_grade, "📊")
+
     def summary(self) -> str:
         rr = f"{self.risk_reward:.1f}:1"
         direction_emoji = "🟢" if self.direction == "LONG" else "🔴"
-        conf = "⭐⭐⭐" if self.signal_score >= 80 else "⭐⭐" if self.signal_score >= 65 else "⭐"
         return (
-            f"{direction_emoji} {self.direction} {self.symbol} | Score: {self.signal_score:.0f}/100 {conf}\n"
+            f"{direction_emoji} {self.direction} {self.symbol} | "
+            f"Grade: {self.grade_emoji}{self.quality_grade} | "
+            f"Score: {self.signal_score:.0f}/100 | Size: {self.size_multiplier:.1f}x\n"
             f"Entry: ₹{self.entry_price:.2f} | SL: ₹{self.stop_loss:.2f} | "
             f"T1: ₹{self.target_1:.2f} | T2: ₹{self.target_2:.2f} | R:R {rr}\n"
             f"Patterns: {', '.join(self.patterns[:3])}\n"
@@ -95,6 +103,22 @@ class SignalGenerator:
         self.high_conf_score = high_confidence_score
         self._nifty_open: Optional[float] = None
         self._nifty_current: Optional[float] = None
+        self.ha_filter = HighAccuracyFilter()
+        self._learner = None          # Set by main.py: generator.set_learner(learner)
+        self._orb_direction: str = "" # Set by main.py after ORB is established
+        self._nifty_change_pct: float = 0.0
+
+    def set_learner(self, learner) -> None:
+        """Inject self-learning engine for adaptive pattern weights."""
+        self._learner = learner
+
+    def set_orb_direction(self, direction: str) -> None:
+        """Set opening range breakout direction ('UP'/'DOWN'/'') at 9:30 AM IST."""
+        self._orb_direction = direction
+
+    def update_nifty_change(self, nifty_change_pct: float) -> None:
+        """Update Nifty % change vs previous close (called each scan cycle)."""
+        self._nifty_change_pct = nifty_change_pct
 
     # --------------------------------------------------------
     # MAIN SIGNAL GENERATION
@@ -166,17 +190,55 @@ class SignalGenerator:
                 logger.debug(f"{symbol}: score {ai_score:.1f} below threshold {self.min_score}")
                 return None
 
-            # 7. Build signal
+            # 7. High-accuracy filter — 5-gate confluence check
+            pattern_objs   = analysis_5m.get("patterns", [])
+            pattern_names  = [p.name for p in pattern_objs if hasattr(p, "name")]
+            pattern_scores = [getattr(p, "confidence", 70.0) for p in pattern_objs]
+
+            ltp_now   = float(df_5m.iloc[-1]["close"])
+            above_vwap = ltp_now >= ind.vwap if ind.vwap and ind.vwap > 0 else True
+
+            stock_quote      = self.fetcher.get_quote(symbol) or {}
+            stock_change_pct = stock_quote.get("change_pct", 0.0)
+
+            filter_result = self.ha_filter.evaluate(
+                signal_score     = ai_score,
+                direction        = "BUY" if direction == "LONG" else "SELL",
+                regime           = alignment.get("regime", "UNKNOWN"),
+                mtf_alignment    = alignment,
+                volume_ratio     = ind.volume_ratio,
+                pattern_names    = pattern_names,
+                pattern_scores   = pattern_scores,
+                df_5m            = df_5m,
+                rsi              = ind.rsi,
+                above_vwap       = above_vwap,
+                nifty_change_pct = self._nifty_change_pct,
+                stock_change_pct = stock_change_pct,
+                news_clear       = news_clear,
+                orb_direction    = self._orb_direction,
+                learner          = self._learner,
+            )
+
+            if not filter_result.passed:
+                logger.debug(
+                    f"[{format_ist_timestamp()}] {symbol}: FILTERED — {filter_result.rejection_reason}"
+                )
+                return None
+
+            # 8. Build signal using filter's final score and size
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,
                 df_5m=df_5m,
                 ind=ind,
-                ai_score=ai_score,
-                patterns=analysis_5m.get("patterns", []),
+                ai_score=filter_result.final_score,
+                patterns=pattern_objs,
                 alignment=alignment,
                 rs=rs,
                 news_clear=news_clear,
+                quality_grade=filter_result.quality_grade,
+                size_multiplier=filter_result.size_multiplier,
+                filter_bonuses=filter_result.bonuses,
             )
 
             logger.info(
@@ -205,13 +267,20 @@ class SignalGenerator:
             except Exception as e:
                 logger.error(f"Scan error {symbol}: {e}")
 
-        # Sort by score descending, high confidence first
-        signals.sort(key=lambda s: (s.is_high_confidence, s.signal_score), reverse=True)
+        # Sort: grade first (A+ > A > B > C), then score
+        grade_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
+        signals.sort(
+            key=lambda s: (grade_rank.get(s.quality_grade, 0), s.signal_score),
+            reverse=True
+        )
 
         if signals:
+            filter_stats = self.ha_filter.get_stats()
             logger.info(
                 f"[{format_ist_timestamp()}] Scan complete: {len(signals)} signals "
-                f"from {len(symbols)} symbols"
+                f"from {len(symbols)} symbols | "
+                f"Filter: {filter_stats['passed']} passed / {filter_stats['rejected']} rejected "
+                f"({filter_stats['pass_rate']:.0f}% pass rate)"
             )
         return signals[:max_signals]
 
@@ -400,37 +469,44 @@ class SignalGenerator:
         alignment: Dict,
         rs: float,
         news_clear: bool,
+        quality_grade: str = "B",
+        size_multiplier: float = 1.0,
+        filter_bonuses: Optional[List[str]] = None,
     ) -> TradeSignal:
         """Build complete TradeSignal with entry, SL, TP levels."""
+        from config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
         curr = df_5m.iloc[-1]
         ltp = float(curr["close"])
         atr = max(ind.atr, ltp * 0.003)  # Minimum 0.3% ATR
 
         if direction == "LONG":
-            entry = round_to_tick_size(ltp)
-            stop_loss = round_to_tick_size(entry - 1.5 * atr)
+            entry     = round_to_tick_size(ltp)
+            stop_loss = round_to_tick_size(entry - ATR_SL_MULTIPLIER * atr)
             target_1  = round_to_tick_size(entry + 2.0 * (entry - stop_loss))
-            target_2  = round_to_tick_size(entry + 3.0 * (entry - stop_loss))
+            target_2  = round_to_tick_size(entry + ATR_TP_MULTIPLIER * (entry - stop_loss))
         else:  # SHORT
-            entry = round_to_tick_size(ltp)
-            stop_loss = round_to_tick_size(entry + 1.5 * atr)
+            entry     = round_to_tick_size(ltp)
+            stop_loss = round_to_tick_size(entry + ATR_SL_MULTIPLIER * atr)
             target_1  = round_to_tick_size(entry - 2.0 * (stop_loss - entry))
-            target_2  = round_to_tick_size(entry - 3.0 * (stop_loss - entry))
+            target_2  = round_to_tick_size(entry - ATR_TP_MULTIPLIER * (stop_loss - entry))
 
         sl_distance = abs(entry - stop_loss)
         risk_reward = abs(target_1 - entry) / sl_distance if sl_distance > 0 else 2.0
 
         # Rationale text
-        mtf_str = f"5m:{alignment['5m']} / 15m:{alignment['15m']} / 1h:{alignment['1h']}"
-        pattern_names = [p.name for p in patterns if p.direction == direction][:3]
+        mtf_str      = f"5m:{alignment.get('5m','?')} / 15m:{alignment.get('15m','?')} / 1h:{alignment.get('1h','?')}"
+        pattern_names = [p.name for p in patterns if hasattr(p, "name") and
+                         getattr(p, "direction", direction) == direction][:3]
+        bonus_str    = " | " + ", ".join((filter_bonuses or [])[:4]) if filter_bonuses else ""
 
         rationale = (
-            f"MTF: {mtf_str} | "
+            f"Grade {quality_grade} | MTF: {mtf_str} | "
             f"RS vs Nifty: {rs:+.1f}% | "
             f"Volume: {ind.volume_ratio:.1f}x | "
             f"RSI: {ind.rsi:.0f} | "
             f"MACD: {'▲' if ind.macd_hist > 0 else '▼'} | "
             f"Supertrend: {'▲' if ind.supertrend_dir == 1 else '▼'}"
+            f"{bonus_str}"
         )
 
         return TradeSignal(
@@ -450,4 +526,6 @@ class SignalGenerator:
             relative_strength=rs,
             signal_time=format_ist_timestamp(),
             rationale=rationale,
+            quality_grade=quality_grade,
+            size_multiplier=size_multiplier,
         )

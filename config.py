@@ -97,9 +97,13 @@ MACD_SIGNAL: int = 9
 
 # ATR Settings (for SL/TP)
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.5   # SL = entry ± 1.5x ATR
-ATR_TP_MULTIPLIER: float = 3.0   # TP = entry ± 3.0x ATR (2:1 R:R)
-ATR_TRAIL_MULTIPLIER: float = 1.0 # Trail stop activates at 1x ATR profit
+ATR_SL_MULTIPLIER: float = 1.4   # Tighter SL for higher accuracy (was 1.5)
+ATR_TP_MULTIPLIER: float = 2.8   # T1 = 2:1 R:R, T2 = 4:1 R:R
+ATR_TRAIL_MULTIPLIER: float = 0.8 # Trail activates earlier — protect profits faster
+# Partial exit strategy (higher accuracy = take profits)
+PARTIAL_EXIT_T1_PCT: float = 50.0   # Exit 50% at T1 (was 40%)
+PARTIAL_EXIT_T2_PCT: float = 30.0   # Exit 30% at T2
+RUNNER_PCT: float = 20.0            # 20% runner with trailing stop
 
 # EMA Settings
 EMA_FAST: int = 9
@@ -108,7 +112,8 @@ EMA_SLOW: int = 50
 EMA_TREND: int = 200
 
 # Volume Settings
-VOLUME_SURGE_MULTIPLIER: float = 2.0  # Volume must be 2x SMA
+VOLUME_SURGE_MULTIPLIER: float = 1.8  # Entry gate: 1.8x (filter uses this)
+VOLUME_HIGH_CONVICTION: float = 2.5  # 2.5x = high conviction → full size bonus
 VOLUME_SMA_PERIOD: int = 20
 
 # Bollinger Bands
@@ -128,9 +133,18 @@ PRIMARY_TIMEFRAME: str = "5m"
 CONFIRMATION_TIMEFRAME: str = "15m"
 TREND_TIMEFRAME: str = "1h"
 
-# Signal confidence thresholds
-MIN_SIGNAL_SCORE: float = 65.0   # Minimum score (0-100) to take trade
-HIGH_CONFIDENCE_SCORE: float = 80.0
+# ── HIGH-ACCURACY MODE (targets 70-80% win rate) ───────────
+# Raised from 65 → 72. Fewer trades, higher quality.
+# 18yr rule: "It's not the number of trades, it's the quality."
+MIN_SIGNAL_SCORE: float = 72.0          # Hard minimum — no trade below this
+HIGH_CONFIDENCE_SCORE: float = 82.0     # Full size above this
+PREMIUM_SCORE: float = 90.0             # 1.2x size — A+ grade setups only
+MIN_VOLUME_RATIO: float = 1.8           # Min volume surge for entry (was 1.5)
+REQUIRE_MTF_ALIGNMENT: bool = True      # Always require ≥2 TF alignment
+REQUIRE_POWER_HOUR: bool = True         # Only trade during power windows
+HEIKIN_ASHI_CONFIRM: bool = True        # Require HA confirmation
+MAX_TRADES_PER_DAY: int = 6             # Quality > quantity. Max 6 per day.
+MAX_TRADES_PER_STOCK: int = 2           # Max 2 trades per stock per day
 
 # ============================================================
 # CIRCUIT BREAKERS
