@@ -1,565 +1,469 @@
 # DEPLOY.md — NSE Momentum Groww AI Bot
-## Full Production Deployment Guide
+## Local PC Deployment Guide (No VPS Required)
 
-> ⚠️ **REAL MONEY BOT** — Follow every step carefully. One mistake can cause losses.
-> Start with minimum capital (₹5,000–₹10,000) and verify everything works before scaling.
-
----
-
-## OVERVIEW
-
-The bot runs on a **UK VPS (Ubuntu)** in UTC timezone.  
-All trading logic uses **IST (Asia/Kolkata = UTC+5:30)**.  
-The bot auto-starts at 8:45 AM IST, trades 9:15 AM–3:20 PM IST, shuts down at 3:30 PM IST.
+> ⚠️ **REAL MONEY BOT** — Follow every step. Start with ₹5,000–₹10,000 only.
+> **Your PC must be ON and running during market hours (9:15 AM – 3:30 PM IST).**
 
 ---
 
-## PHASE 1 — SERVER SETUP
+## WHAT YOU NEED
 
-### 1.1 Recommended VPS Specs
-- **Provider**: DigitalOcean, Vultr, Hetzner, or Linode (UK/EU region for low latency to IST)
-- **OS**: Ubuntu 22.04 LTS
-- **RAM**: 2 GB minimum (4 GB recommended)
-- **CPU**: 2 vCPU
-- **Disk**: 40 GB SSD
-- **Cost**: ~$12–$20/month
+| Requirement | Details |
+|-------------|---------|
+| Computer | Windows 10/11 or Ubuntu Linux |
+| RAM | 4 GB minimum (8 GB recommended) |
+| Internet | Stable broadband (not mobile hotspot) |
+| Python | 3.11 (free to install) |
+| Groww Account | With API access enabled |
+| Telegram | For trade alerts on your phone |
+| PC ON time | 8:45 AM – 3:45 PM IST every trading day |
 
-### 1.2 Initial Server Hardening
-```bash
-# Connect to your VPS
-ssh root@YOUR_VPS_IP
+---
 
-# Create a non-root user
-adduser tradebot
-usermod -aG sudo tradebot
+## STEP 1 — INSTALL PYTHON 3.11
 
-# Switch to tradebot user
-su - tradebot
+### Windows:
+1. Go to: https://www.python.org/downloads/release/python-3118/
+2. Click **"Windows installer (64-bit)"** and download
+3. Run the installer
+4. **IMPORTANT**: Check the box **"Add Python to PATH"** before clicking Install
+5. Click **"Install Now"**
 
-# Update packages
-sudo apt update && sudo apt upgrade -y
-
-# Install essential tools
-sudo apt install -y git wget curl unzip htop screen tmux ufw fail2ban
-
-# Basic firewall (only allow SSH)
-sudo ufw allow OpenSSH
-sudo ufw enable
+Verify install — open **Command Prompt** (press `Win + R`, type `cmd`, press Enter):
 ```
+python --version
+```
+Should show: `Python 3.11.x`
 
-### 1.3 Install Python 3.11
+### Ubuntu/Linux:
 ```bash
-sudo apt install -y software-properties-common
-sudo add-apt-repository ppa:deadsnakes/ppa -y
 sudo apt update
 sudo apt install -y python3.11 python3.11-venv python3.11-dev python3-pip
-
-# Verify
 python3.11 --version
-# Should show: Python 3.11.x
-```
-
-### 1.4 Install Chrome + ChromeDriver (for Groww TOTP auto-login)
-```bash
-# Install Chrome
-wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
-sudo apt install -y ./google-chrome-stable_current_amd64.deb
-google-chrome --version
-
-# Install ChromeDriver (webdriver-manager handles this automatically at runtime)
-# But install dependencies:
-sudo apt install -y chromium-chromedriver xvfb
 ```
 
 ---
 
-## PHASE 2 — BOT INSTALLATION
+## STEP 2 — INSTALL GOOGLE CHROME
 
-### 2.1 Clone the Repository
+The bot uses Chrome to automatically log into Groww every morning.
+
+### Windows:
+- Download from: https://www.google.com/chrome/
+- Install normally (most people already have Chrome)
+
+### Ubuntu:
 ```bash
-cd /home/tradebot
+wget https://dl.google.com/linux/direct/google-chrome-stable_current_amd64.deb
+sudo apt install -y ./google-chrome-stable_current_amd64.deb
+```
+
+---
+
+## STEP 3 — DOWNLOAD THE BOT
+
+### Windows:
+1. Install Git: https://git-scm.com/download/win (click "64-bit Git for Windows")
+2. Open **Git Bash** (right-click on Desktop → "Git Bash Here")
+3. Run:
+```bash
+cd C:/Users/YourName        # Change to your home folder
 git clone https://github.com/lakshaytrades/kingtrades.git
 cd kingtrades
 git checkout claude/nse-momentum-groww-bot-v8Rma
 ```
 
-### 2.2 Create Python Virtual Environment
+### Ubuntu:
 ```bash
-python3.11 -m venv venv
-source venv/bin/activate
-
-# Install dependencies
-pip install --upgrade pip
-pip install -r requirements.txt
-
-# Verify critical packages
-python -c "import growwapi; print('growwapi OK')"
-python -c "import pandas_ta; print('pandas_ta OK')"
-python -c "import anthropic; print('anthropic OK')"
-python -c "from zoneinfo import ZoneInfo; print('zoneinfo OK')"
-```
-
-### 2.3 Create Environment File
-```bash
-cp .env.example .env
-nano .env
-```
-
-Fill in ALL values:
-```env
-# ── Groww API (CRITICAL) ────────────────────────────────────
-GROWW_AUTH_TOKEN=your_groww_auth_token_here
-GROWW_CLIENT_ID=your_groww_client_id_here
-GROWW_CLIENT_SECRET=your_groww_client_secret_here
-GROWW_EMAIL=your_groww_registered_email@gmail.com
-GROWW_PASSWORD=your_groww_account_password
-GROWW_TOTP_SECRET=your_32_char_totp_secret_key
-
-# ── Telegram Bot ────────────────────────────────────────────
-TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrSTUvwxYZ
-TELEGRAM_CHAT_ID=123456789
-
-# ── Claude AI (optional but recommended) ────────────────────
-ANTHROPIC_API_KEY=sk-ant-api03-...
-
-# ── News API (optional) ─────────────────────────────────────
-NEWS_API_KEY=your_newsapi_key
-ALPHA_VANTAGE_KEY=your_alphavantage_key
-
-# ── Trading Config ──────────────────────────────────────────
-LIVE_TRADING_ENABLED=False          # START WITH FALSE!
-MAX_DAILY_CAPITAL=10000             # Start small: ₹10,000
-MAX_RISK_PER_TRADE_PCT=0.5
-DAILY_LOSS_LIMIT_PCT=2.0
-
-# ── Logging ─────────────────────────────────────────────────
-LOG_LEVEL=INFO
-LOG_DIR=logs
-TIMEZONE=Asia/Kolkata
-```
-
-```bash
-# Protect the .env file
-chmod 600 .env
+sudo apt install -y git
+cd ~
+git clone https://github.com/lakshaytrades/kingtrades.git
+cd kingtrades
+git checkout claude/nse-momentum-groww-bot-v8Rma
 ```
 
 ---
 
-## PHASE 3 — GROWW API SETUP
+## STEP 4 — SET UP PYTHON ENVIRONMENT
 
-### 3.1 Get Groww API Token
-1. Log into Groww web: https://groww.in
-2. Go to: Profile → Settings → API Access
-3. Generate API key / auth token
-4. Copy the token → paste into `GROWW_AUTH_TOKEN` in `.env`
-5. Note: Token expires daily — TOTP auto-refresh handles this
-
-### 3.2 Get Groww TOTP Secret
-This is the most important step for automated daily login:
-
-**Method A (via Groww 2FA setup):**
-1. Go to Groww → Profile → Security → Two-Factor Authentication
-2. Click "Set up authenticator app"
-3. Groww shows a QR code
-4. Instead of scanning the QR, click "Can't scan? Enter manually"
-5. Groww shows a 32-character secret key
-6. Copy this → paste into `GROWW_TOTP_SECRET` in `.env`
-
-**Verify TOTP works:**
+### Windows (in Git Bash or Command Prompt inside the `kingtrades` folder):
 ```bash
+python -m venv venv
+venv\Scripts\activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+### Ubuntu:
+```bash
+python3.11 -m venv venv
 source venv/bin/activate
+pip install --upgrade pip
+pip install -r requirements.txt
+```
+
+Installation takes 5–10 minutes. Wait for it to complete.
+
+Verify:
+```bash
+python -c "import growwapi; print('growwapi OK')"
+python -c "import pandas_ta; print('pandas_ta OK')"
+```
+
+---
+
+## STEP 5 — CREATE YOUR .env FILE (CREDENTIALS)
+
+Copy the example file:
+```bash
+# Windows:
+copy .env.example .env
+
+# Ubuntu:
+cp .env.example .env
+```
+
+Now open `.env` in Notepad (Windows) or nano (Ubuntu):
+```bash
+# Windows:
+notepad .env
+
+# Ubuntu:
+nano .env
+```
+
+Fill in every value — see each section below:
+
+```env
+# ── Groww Credentials ───────────────────────────────────────
+GROWW_EMAIL=yourname@gmail.com
+GROWW_PASSWORD=your_groww_password_here
+GROWW_TOTP_SECRET=ABCD1234EFGH5678IJKL9012MNOP3456
+GROWW_AUTH_TOKEN=your_groww_api_token_here
+GROWW_CLIENT_ID=
+GROWW_CLIENT_SECRET=
+
+# ── Telegram ─────────────────────────────────────────────────
+TELEGRAM_BOT_TOKEN=1234567890:ABCdefGHIjklMNOpqrs
+TELEGRAM_CHAT_ID=987654321
+
+# ── Claude AI (optional — for morning market thesis) ─────────
+ANTHROPIC_API_KEY=sk-ant-api03-...
+
+# ── Optional APIs ────────────────────────────────────────────
+NEWS_API_KEY=
+ALPHA_VANTAGE_KEY=
+
+# ── Trading Settings ─────────────────────────────────────────
+LIVE_TRADING_ENABLED=False          # ← KEEP FALSE UNTIL STEP 11
+MAX_DAILY_CAPITAL=10000             # ₹10,000 to start
+MAX_RISK_PER_TRADE_PCT=0.5
+DAILY_LOSS_LIMIT_PCT=2.0
+
+# ── System ───────────────────────────────────────────────────
+TIMEZONE=Asia/Kolkata
+LOG_LEVEL=INFO
+LOG_DIR=logs
+```
+
+Save and close.
+
+---
+
+## STEP 6 — GET YOUR GROWW TOTP SECRET
+
+This is the most important step. It lets the bot log into Groww automatically every morning.
+
+**Step 6a — Enable TOTP on Groww:**
+1. Open Groww app on your phone
+2. Go to: **Profile → Settings → Security → Two-Factor Authentication**
+3. Tap **"Set up authenticator app"**
+4. Groww shows a QR code
+
+**Step 6b — Get the secret key (NOT the QR code):**
+1. Below the QR code, tap **"Can't scan? Enter code manually"**
+2. Groww shows a 32-character code like: `JBSWY3DPEHPK3PXP...`
+3. Copy this code
+4. Paste it as `GROWW_TOTP_SECRET=` in your `.env` file
+
+**Step 6c — Verify it works:**
+```bash
+# Activate venv first (Windows):
+venv\Scripts\activate
+
+# Run this:
 python -c "
 import pyotp, os
 from dotenv import load_dotenv
 load_dotenv()
 secret = os.getenv('GROWW_TOTP_SECRET')
 totp = pyotp.TOTP(secret)
-print('Current TOTP:', totp.now())
-print('Valid for:', totp.interval, 'seconds')
+print('TOTP code:', totp.now())
 "
 ```
-The 6-digit code should match your authenticator app.
-
-### 3.3 Test Groww Connection
-```bash
-source venv/bin/activate
-python -c "
-from growwapi import GrowwAPI
-import os
-from dotenv import load_dotenv
-load_dotenv()
-api = GrowwAPI(os.getenv('GROWW_AUTH_TOKEN'))
-balance = api.get_funds()
-print('Balance:', balance)
-"
-```
+Compare the 6-digit output with your Google Authenticator / Groww app.  
+If they match — TOTP is set up correctly.
 
 ---
 
-## PHASE 4 — TELEGRAM SETUP
+## STEP 7 — GET YOUR GROWW API TOKEN
 
-### 4.1 Create Telegram Bot
-1. Open Telegram → search `@BotFather`
-2. Send: `/newbot`
-3. Choose name: `KingTradesBot` (or any name)
-4. Choose username: `kingtrades_bot` (must end in `bot`)
-5. BotFather gives you a token like: `1234567890:ABCdef...`
-6. Copy → paste into `TELEGRAM_BOT_TOKEN`
+1. Log into Groww: https://groww.in (on your browser)
+2. Go to: **Profile → Settings → API Access**
+3. Click **"Generate API Key"** or **"Create Token"**
+4. Copy the token
+5. Paste as `GROWW_AUTH_TOKEN=` in `.env`
 
-### 4.2 Get Your Chat ID
+> Note: This token expires daily. The bot auto-refreshes it via TOTP login at 8:45 AM IST.
+
+---
+
+## STEP 8 — SET UP TELEGRAM BOT
+
+### Create the bot:
+1. Open Telegram on your phone
+2. Search: `@BotFather`
+3. Send: `/newbot`
+4. Name it: `KingTrades Alert Bot`
+5. Username: `kingtrades_youname_bot` (must end in `bot`)
+6. BotFather sends you a token like: `1234567890:ABCdef...`
+7. Copy this → paste as `TELEGRAM_BOT_TOKEN=` in `.env`
+
+### Get your Chat ID:
+1. Send any message to your new bot (just type "hi" and send)
+2. Open this URL in your browser (replace TOKEN with your token):
+   ```
+   https://api.telegram.org/botYOUR_TOKEN_HERE/getUpdates
+   ```
+3. Look for `"chat":{"id":123456789}` in the response
+4. Copy that number → paste as `TELEGRAM_CHAT_ID=` in `.env`
+
+### Test Telegram:
 ```bash
-source venv/bin/activate
 python -c "
 import requests, os
 from dotenv import load_dotenv
 load_dotenv()
 token = os.getenv('TELEGRAM_BOT_TOKEN')
-# First, send any message to your bot in Telegram
-url = f'https://api.telegram.org/bot{token}/getUpdates'
-r = requests.get(url).json()
-print(r)
-# Look for: result[0]['message']['chat']['id']
+chat_id = os.getenv('TELEGRAM_CHAT_ID')
+url = f'https://api.telegram.org/bot{token}/sendMessage'
+r = requests.post(url, json={'chat_id': chat_id, 'text': 'KingTrades bot is connected!'})
+print('Telegram test:', r.status_code)
 "
 ```
-Copy the chat ID → paste into `TELEGRAM_CHAT_ID`
-
-### 4.3 Test Telegram
-```bash
-source venv/bin/activate
-python -c "
-from alerts_telegram import TelegramAlerter
-import asyncio
-async def test():
-    alerter = TelegramAlerter()
-    await alerter.send_message('🤖 KingTrades bot connection test — OK!')
-asyncio.run(test())
-"
-```
-You should receive the message on Telegram.
+You should receive a message on Telegram.
 
 ---
 
-## PHASE 5 — DRY RUN TESTING
+## STEP 9 — TEST EVERYTHING (DRY RUN)
 
-### 5.1 Validate Configuration
 ```bash
+# Windows — activate venv:
+venv\Scripts\activate
+
+# Ubuntu:
 source venv/bin/activate
-python config.py
-# Should show: ✅ Configuration valid
-# Should show: 🔒 DISABLED (safe mode)
-```
 
-### 5.2 Test Individual Modules
-```bash
-# Test IST timezone
-python utils.py
-
-# Test data fetching
-python -c "
-from data_fetch_groww import GrowwDataFetcher
-import os
-from dotenv import load_dotenv
-load_dotenv()
-f = GrowwDataFetcher(os.getenv('GROWW_AUTH_TOKEN'))
-df = f.get_ohlcv('RELIANCE', '5m', days=1)
-print(df.tail(3))
-"
-
-# Test signal generation (paper mode)
-python -c "
-from signal_generator import SignalGenerator
-from data_fetch_groww import GrowwDataFetcher
-import os
-from dotenv import load_dotenv
-load_dotenv()
-fetcher = GrowwDataFetcher(os.getenv('GROWW_AUTH_TOKEN'))
-gen = SignalGenerator(fetcher)
-sig = gen.generate_signal('RELIANCE')
-if sig: print(sig.summary())
-else: print('No signal (normal — filter working)')
-"
-```
-
-### 5.3 Run Full Paper Trading Test (1 week minimum)
-```bash
-# Make sure LIVE_TRADING_ENABLED=False in .env
-source venv/bin/activate
+# Run the bot in paper mode (LIVE_TRADING_ENABLED=False):
 python main.py
 ```
 
-Watch the logs:
+You will see output like:
+```
+[IST 2026-04-03 08:45:00] KingTrades Bot starting...
+[IST 2026-04-03 08:45:02] TOTP login successful
+[IST 2026-04-03 09:00:00] Overnight analysis: BULLISH bias (+35)
+[IST 2026-04-03 09:15:00] Market OPEN — scanning watchlist...
+[IST 2026-04-03 09:17:45] SIGNAL: LONG RELIANCE | Grade A | Score 84
+[IST 2026-04-03 09:17:45] PAPER TRADE: BUY 12 x RELIANCE @ ₹2847.50 (live disabled)
+```
+
+### Paper Trade for 5 Days — Check These:
+- [ ] Bot starts on its own, logs in via TOTP
+- [ ] Signals only appear during 9:15–10:30 AM and 2:00–3:00 PM
+- [ ] No signals during 11:00 AM–1:00 PM (midday chop blocked)
+- [ ] All positions "closed" before 3:20 PM
+- [ ] Bot stops at 3:30 PM
+- [ ] You receive alerts on Telegram for every signal
+- [ ] Logs in `logs/` folder show IST timestamps (not UTC)
+- [ ] EOD report arrives on Telegram by 3:45 PM
+
+---
+
+## STEP 10 — AUTO-START ON WINDOWS (So it starts with your PC)
+
+Create a batch file so the bot starts automatically when you turn on your PC.
+
+**Create `start_bot.bat`** in the `kingtrades` folder:
+```bat
+@echo off
+cd C:\Users\YourName\kingtrades
+call venv\Scripts\activate
+python main.py
+pause
+```
+Replace `YourName` with your actual Windows username.
+
+**To auto-start with Windows:**
+1. Press `Win + R` → type `shell:startup` → press Enter
+2. A folder opens (Startup folder)
+3. Copy your `start_bot.bat` into this folder
+4. Now it will run every time Windows starts
+
+**Recommended instead (manual start each morning):**
+- Just double-click `start_bot.bat` at 8:45 AM each trading day
+- The window must stay open during market hours
+- Do NOT close the Command Prompt window while the bot is running
+
+---
+
+## STEP 11 — GO LIVE (REAL MONEY)
+
+**Only do this after 5 days of successful paper trading.**
+
+### Checklist before going live:
+- [ ] Paper trade win rate ≥ 55%
+- [ ] No crashes in 5 days
+- [ ] Telegram alerts working
+- [ ] You understand each alert message
+- [ ] You have tested `/kill` command on Telegram
+- [ ] Starting capital ready: ₹10,000 minimum, ₹25,000 recommended
+
+### Enable live trading:
+1. Open `.env` in Notepad
+2. Change: `LIVE_TRADING_ENABLED=False` → `LIVE_TRADING_ENABLED=True`
+3. Save the file
+
+### First live day protocol:
+1. Start bot at 8:45 AM: double-click `start_bot.bat`
+2. Watch it run for the first 30 minutes
+3. Keep Groww app open on your phone
+4. After each trade alert, verify the order appeared in Groww
+5. If anything looks wrong, send `/kill` on Telegram immediately
+
+---
+
+## STEP 12 — DAILY ROUTINE
+
+| Time (IST) | What happens |
+|------------|-------------|
+| 8:30 AM | Start your PC, open the bot window |
+| 8:45 AM | Bot auto-logs into Groww via TOTP |
+| 9:00 AM | Morning market brief sent to Telegram |
+| 9:15 AM | Market opens, bot starts scanning |
+| 9:15–10:30 AM | Best trading window — most signals here |
+| 11:00–1:00 PM | Bot pauses (midday chop filter active) |
+| 2:00–3:00 PM | Second trading window |
+| 3:20 PM | Bot starts closing all positions |
+| 3:30 PM | Bot stops, market closes |
+| 3:45 PM | EOD report sent to Telegram |
+| 4:00 PM | Self-learning runs in background |
+| You can close PC after 4:00 PM |
+
+---
+
+## STEP 13 — TELEGRAM COMMANDS
+
+Send these to your Telegram bot anytime during market hours:
+
+| Command | What it does |
+|---------|-------------|
+| `/kill` | **EMERGENCY** — closes all positions and stops the bot |
+| `/status` | Shows current P&L, open positions, bot state |
+| `/pause` | Pauses new trades (keeps existing positions open) |
+| `/resume` | Resumes after pause |
+| `/watchlist` | Shows stocks the bot is watching today |
+| `/report` | Forces an immediate P&L report |
+
+---
+
+## TROUBLESHOOTING
+
+### "Python not found" (Windows)
+- Uninstall Python and reinstall, checking "Add to PATH"
+- Or use: `py -3.11 main.py` instead of `python main.py`
+
+### "No module named growwapi"
+```bash
+venv\Scripts\activate    # Windows
+pip install growwapi
+```
+
+### Bot starts but TOTP login fails
+- Check `GROWW_TOTP_SECRET` in `.env` — must be exact 32-char key from Groww
+- Verify: `python -c "import pyotp; from dotenv import load_dotenv; load_dotenv(); import os; print(pyotp.TOTP(os.getenv('GROWW_TOTP_SECRET')).now())"`
+- Compare output with your phone's authenticator app
+
+### No signals being generated
+This is **normal behavior**. The bot only trades when 5 gates pass simultaneously.
+On some days, 0 trades is correct. Check: `logs/trading_YYYY-MM-DD.log`
+Look for lines saying `FILTERED —` to see what's being rejected.
+
+### Bot stops working mid-day
+- Check the command prompt window — look for error messages
+- Common cause: internet disconnected
+- Restart: close window, double-click `start_bot.bat` again
+
+### Trades happening at wrong times
+```bash
+python -c "from utils import get_current_ist_time; print(get_current_ist_time())"
+```
+Must show IST time. If showing UTC, check `TIMEZONE=Asia/Kolkata` in `.env`
+
+### "Insufficient balance" error
+- Check Groww account balance
+- Check `MAX_DAILY_CAPITAL` in `.env` — set it to ≤ your available balance
+
+---
+
+## CAPITAL SCALING PLAN
+
+Start small. Scale only after consistent profits.
+
+| Period | Capital | Condition to scale |
+|--------|---------|-------------------|
+| Week 1–2 | ₹10,000 | Verify bot works, alerts arrive |
+| Week 3–4 | ₹25,000 | Win rate ≥ 55%, no crashes |
+| Month 2 | ₹50,000 | Monthly return ≥ 3% net |
+| Month 3+ | ₹1,00,000 | Monthly return ≥ 5%, Sharpe > 1.5 |
+
+**Never risk more than 2% of total capital in a day (bot enforces this).**
+
+---
+
+## IMPORTANT NOTES FOR LOCAL PC
+
+1. **PC must be ON** during market hours. If it sleeps/hibernates, the bot stops.
+   - Windows: Control Panel → Power Options → set "Never" for sleep during trading hours
+
+2. **Stable internet required.** Use wired ethernet if possible. If internet drops during a trade, the bot will try to reconnect but you should check manually.
+
+3. **Don't run heavy programs** during market hours (games, video editing) — bot needs RAM and CPU.
+
+4. **Never close the terminal/Command Prompt window** while the bot is running.
+
+5. **Daily backups**: The bot stores all data in `data/` and `logs/` folders. Keep these safe.
+
+---
+
+## LOG FILES TO MONITOR
+
+```
+kingtrades/
+├── logs/
+│   ├── trading_2026-04-03.log     ← Today's full log
+│   └── performance/               ← Daily/weekly performance reports
+├── data/
+│   ├── trade_journal.db           ← Every trade ever made (SQLite)
+│   └── candle_store.db            ← Historical price data (grows daily)
+└── logs/adaptive_config.json      ← Self-learning parameters
+```
+
+To watch the log in real time (Windows Git Bash):
 ```bash
 tail -f logs/trading_$(date +%Y-%m-%d).log
 ```
 
-Expected output:
-```
-[IST 2026-04-03 08:45:00] Starting KingTrades Bot
-[IST 2026-04-03 08:45:01] TOTP login successful
-[IST 2026-04-03 09:00:00] Overnight analysis complete | Bias: BULLISH (+35)
-[IST 2026-04-03 09:15:00] Market OPEN — scanning watchlist
-[IST 2026-04-03 09:17:23] SIGNAL: LONG RELIANCE | Grade A | Score 84
-[IST 2026-04-03 09:17:23] PAPER TRADE (live disabled): BUY RELIANCE x12 @ ₹2847.50
-```
-
-### 5.4 Paper Trade Checklist
-Run paper trading for **5 trading days minimum** and verify:
-- [ ] Bot starts at 8:45 AM IST
-- [ ] TOTP login succeeds
-- [ ] Market open detected at exactly 9:15 AM IST
-- [ ] Signals generated only during POWER HOURS
-- [ ] No signals during 11:00 AM–1:00 PM (midday chop)
-- [ ] All positions auto-closed by 3:20 PM IST
-- [ ] Bot shuts down at 3:30 PM IST
-- [ ] Telegram alerts arriving
-- [ ] Logs showing IST timestamps (not UTC)
-- [ ] Daily P&L report sent to Telegram by 3:45 PM IST
-
 ---
 
-## PHASE 6 — GO LIVE CHECKLIST
-
-**Only proceed if ALL paper trade checks pass.**
-
-### 6.1 Pre-Live Checklist
-- [ ] Paper traded for minimum 5 days
-- [ ] Win rate in paper trading: ≥ 55%
-- [ ] No crashes or errors in logs
-- [ ] Telegram alerts working perfectly
-- [ ] Daily loss limit circuit breaker tested
-- [ ] Emergency `/kill` command tested
-- [ ] Starting capital ready: recommend ₹10,000–₹25,000 initially
-
-### 6.2 Enable Live Trading
-```bash
-nano .env
-# Change: LIVE_TRADING_ENABLED=True
-# Set capital: MAX_DAILY_CAPITAL=10000
-```
-
-### 6.3 First Live Day Protocol
-1. Start bot at 9:00 AM IST: `python main.py`
-2. Watch the first 30 minutes manually
-3. Check each trade alert on Telegram
-4. Keep Groww app open on your phone to monitor positions
-5. Be ready to `/kill` if anything looks wrong
-6. After first day, review P&L in EOD report
-
----
-
-## PHASE 7 — PRODUCTION SYSTEMD SERVICE
-
-Run the bot as a persistent system service that auto-restarts on crashes.
-
-### 7.1 Create Systemd Service
-```bash
-sudo nano /etc/systemd/system/kingtrades.service
-```
-
-Paste:
-```ini
-[Unit]
-Description=KingTrades NSE Momentum Bot
-After=network.target
-StartLimitIntervalSec=0
-
-[Service]
-Type=simple
-Restart=always
-RestartSec=30
-User=tradebot
-WorkingDirectory=/home/tradebot/kingtrades
-Environment=PATH=/home/tradebot/kingtrades/venv/bin:/usr/bin:/bin
-ExecStart=/home/tradebot/kingtrades/venv/bin/python main.py
-StandardOutput=journal
-StandardError=journal
-SyslogIdentifier=kingtrades
-
-# Resource limits
-MemoryMax=1G
-CPUQuota=80%
-
-[Install]
-WantedBy=multi-user.target
-```
-
-```bash
-# Enable and start
-sudo systemctl daemon-reload
-sudo systemctl enable kingtrades
-sudo systemctl start kingtrades
-
-# Check status
-sudo systemctl status kingtrades
-
-# View logs
-sudo journalctl -u kingtrades -f
-```
-
-### 7.2 Auto-Restart Policy
-The service auto-restarts after crashes (`Restart=always`).  
-The bot handles its own scheduling, so systemd just keeps it alive.
-
----
-
-## PHASE 8 — MONITORING & MAINTENANCE
-
-### 8.1 Daily Monitoring Checklist
-Every trading day:
-- [ ] Receive morning brief on Telegram by 8:30 AM IST
-- [ ] Watch bot start confirmation at 9:15 AM IST
-- [ ] Check at least 2–3 trade alerts during the day
-- [ ] Receive EOD P&L report by 3:45 PM IST
-- [ ] Review `logs/trading_YYYY-MM-DD.log` for any errors
-
-### 8.2 Key Log Files
-```
-logs/
-├── trading_YYYY-MM-DD.log      # Daily trading log (all IST timestamps)
-├── trades/                     # Individual trade records
-├── performance/                # Daily/weekly performance stats
-data/
-├── candle_store.db             # Growing historical data (gets smarter daily)
-├── trade_journal.db            # SEBI-compliant trade records
-├── economic_calendar.db        # Event impact learning
-logs/adaptive_config.json       # Self-learning parameters (updated nightly)
-trainer_results/                # Backtest results from weekly trainer
-```
-
-### 8.3 Weekly Review
-Every Sunday evening, the continuous learner auto-runs a strategy review.
-Check `trainer_results/` for the latest optimization report.
-
-Manual review command:
-```bash
-source venv/bin/activate
-python trainer.py --report
-```
-
-### 8.4 Update Bot Code
-```bash
-cd /home/tradebot/kingtrades
-git pull origin claude/nse-momentum-groww-bot-v8Rma
-pip install -r requirements.txt  # If dependencies changed
-sudo systemctl restart kingtrades
-```
-
-### 8.5 Telegram Commands (during trading hours)
-| Command | Action |
-|---------|--------|
-| `/kill` | Emergency stop — close ALL positions immediately |
-| `/status` | Current P&L, open positions, bot state |
-| `/pause` | Pause new entries (holds existing positions) |
-| `/resume` | Resume after pause |
-| `/watchlist` | Show current trading watchlist |
-| `/report` | Force EOD report now |
-
----
-
-## PHASE 9 — TROUBLESHOOTING
-
-### Bot won't start
-```bash
-sudo journalctl -u kingtrades -n 50
-# Check for Python errors, missing .env values, import errors
-```
-
-### TOTP login failing
-```bash
-python -c "import pyotp, os; from dotenv import load_dotenv; load_dotenv(); print(pyotp.TOTP(os.getenv('GROWW_TOTP_SECRET')).now())"
-# If error: check GROWW_TOTP_SECRET in .env
-# Compare output with your authenticator app
-```
-
-### No signals being generated
-This is NORMAL. The bot is designed to take only high-quality trades.
-On some days, 0 trades is the correct answer.
-Check: `grep "FILTERED" logs/trading_$(date +%Y-%m-%d).log | tail -20`
-
-### Trades not executing (paper mode)
-```bash
-grep "LIVE_TRADING" logs/trading_$(date +%Y-%m-%d).log
-# If showing DISABLED — set LIVE_TRADING_ENABLED=True in .env when ready
-```
-
-### Wrong time / trades at wrong hours
-```bash
-python -c "from utils import get_current_ist_time; print(get_current_ist_time())"
-# Must show IST time (UTC+5:30), not server UTC time
-```
-
-### Memory growing over time
-```bash
-ps aux | grep python
-# If RAM > 1 GB, restart: sudo systemctl restart kingtrades
-# The candle store DB grows over time — this is expected (historical data)
-```
-
-### Groww API token expired
-The TOTP auto-login refreshes this at 8:45 AM IST daily.
-If it fails mid-day:
-```bash
-# Manually refresh via Telegram:
-/kill  # Stop trading safely
-# Then restart:
-sudo systemctl restart kingtrades
-```
-
----
-
-## PHASE 10 — SCALING UP
-
-After 2–4 weeks of successful live trading with minimum capital:
-
-### 10.1 Increase Capital Gradually
-```
-Week 1–2: ₹10,000 (verify everything works)
-Week 3–4: ₹25,000 (if win rate ≥ 55%)
-Month 2:  ₹50,000 (if Sharpe > 1.5 and drawdown < 5%)
-Month 3+: ₹1,00,000 (if monthly return ≥ 5% net)
-```
-
-### 10.2 Performance Benchmarks Before Scaling
-- Win rate: ≥ 55% (target 65–75%)
-- Sharpe ratio: ≥ 1.5
-- Max drawdown: < 8%
-- Monthly return: ≥ 5% net (after brokerage + taxes)
-- Consecutive loss streaks: ≤ 3 before circuit breaker triggers
-
-### 10.3 Configuration Scaling
-```env
-MAX_DAILY_CAPITAL=100000     # ₹1 lakh
-MAX_RISK_PER_TRADE_PCT=0.5   # Keep at 0.5% — don't increase risk
-MAX_POSITIONS=8              # Increase position slots
-```
-
----
-
-## SECURITY REMINDERS
-
-- **NEVER** share your `.env` file or TOTP secret with anyone
-- **NEVER** commit `.env` to git (`.gitignore` already excludes it)
-- The bot stores auth tokens in memory only — never on disk
-- Use a dedicated Groww account for bot trading if possible
-- Enable 2FA on your VPS SSH access
-- Rotate Groww API credentials every 90 days
-
----
-
-## EXPECTED PERFORMANCE TARGETS
-
-| Metric | Minimum | Target |
-|--------|---------|--------|
-| Win Rate | 55% | 65–75% |
-| Monthly Return | 3% net | 5–8% net |
-| Sharpe Ratio | 1.0 | ≥ 1.5 |
-| Max Drawdown | < 10% | < 6% |
-| Trades/Day | 1–3 | 2–4 |
-| Avg Hold Time | 30–90 min | 45–75 min |
-
-*Targets based on 18+ years NSE intraday experience and backtests.  
-Past performance does not guarantee future results.*
-
----
-
-*Last updated: 2026-04-03 | KingTrades NSE Momentum Bot*
+*KingTrades NSE Momentum Bot | Local PC Deployment | Updated 2026-04-03*
