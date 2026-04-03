@@ -64,6 +64,10 @@ class TradingBot:
         self.news_filter = None
         self.watchlist_mgr = None
         self.dashboard = None
+        self.mtf_analyzer = None
+        self.journal = None
+        self.learner = None
+        self._last_trade_date = ""
 
     # --------------------------------------------------------
     # STARTUP
@@ -148,9 +152,33 @@ class TradingBot:
             chat_id=config.TELEGRAM_CHAT_ID,
         )
 
-        # Initialize dashboard
+        # Initialize trade journal (SQLite)
+        from trade_journal import get_journal
+        self.journal = get_journal()
+        logger.info(f"[{format_ist_timestamp()}] Trade journal ready")
+
+        # Initialize self-learning engine
+        from self_learning import get_learner
+        self.learner = get_learner()
+        adaptive_cfg = self.learner.config
+        logger.info(
+            f"[{format_ist_timestamp()}] Self-learning loaded "
+            f"(v{adaptive_cfg.version}, min_score={adaptive_cfg.min_signal_score:.0f}, "
+            f"WR history={adaptive_cfg.overall_win_rate:.1f}%)"
+        )
+
+        # Apply adaptive thresholds to signal generator
+        if self.signal_gen and hasattr(self.signal_gen, 'min_signal_score'):
+            self.signal_gen.min_signal_score = adaptive_cfg.min_signal_score
+
+        # Initialize MTF analyzer
+        from multi_timeframe import MultiTimeframeAnalyzer
+        self.mtf_analyzer = MultiTimeframeAnalyzer()
+        logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
+
+        # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
-        self.dashboard = PerformanceDashboard()
+        self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
 
         # Start Telegram command listener (background thread)
         self._start_telegram_listener()
@@ -308,7 +336,9 @@ class TradingBot:
                 return
 
             # 4. Scan watchlist
-            watchlist = self.watchlist_mgr.get_watchlist()
+            watchlist = self.watchlist_mgr.get_watchlist(
+                data_fetcher=self.fetcher, learner=self.learner
+            )
             max_new = config.MAX_POSITIONS - len(self.risk_manager.state.positions)
             if max_new <= 0:
                 logger.debug(f"[{format_ist_timestamp()}] Max positions reached — no new entries")
@@ -333,7 +363,8 @@ class TradingBot:
 
             # Print dashboard periodically
             if get_current_ist_time().minute % 15 == 0:
-                self.dashboard.print_dashboard(self.risk_manager)
+                self.dashboard.print_live_dashboard(self.risk_manager)
+                self.dashboard.print_positions(self.risk_manager)
 
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Trading cycle error: {e}")
@@ -406,19 +437,31 @@ class TradingBot:
         if not self.eod_done:
             self._do_eod_squareoff()
 
-        # Send EOD report
-        self.alerter.send_eod_report(self.risk_manager)
-        report_text = self.dashboard.format_eod_report(self.risk_manager)
-        logger.info(f"\n{report_text}")
+        # Run self-learning cycle (adapts parameters for tomorrow)
+        if self.learner:
+            try:
+                logger.info(f"[{format_ist_timestamp()}] Running self-learning cycle...")
+                self.learner.run_learning_cycle(lookback_days=20)
+                logger.info(f"[{format_ist_timestamp()}] {self.learner.get_learning_summary()}")
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] Self-learning error: {e}")
 
-        # Generate equity curve
-        chart_path = self.dashboard.generate_equity_chart()
-        if chart_path:
-            logger.info(f"[{format_ist_timestamp()}] Equity curve: {chart_path}")
+        # EOD performance report (sends to Telegram with chart)
+        if self.dashboard:
+            try:
+                report = self.dashboard.generate_eod_report(
+                    capital=config.MAX_DAILY_CAPITAL,
+                    learner=self.learner
+                )
+                self.dashboard.print_pattern_table()
+                logger.info(f"[{format_ist_timestamp()}] EOD: P&L={report.get('net_pnl',0):+.0f} "
+                            f"WR={report.get('win_rate',0):.1f}%")
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
 
         self.market_open_today = False
         self.eod_done = True
-        logger.info(f"[{format_ist_timestamp()}] Bot shutting down for the day.")
+        logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
         self.running = False
 
     # --------------------------------------------------------
