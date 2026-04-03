@@ -467,3 +467,41 @@ tail -f logs/trading_$(date +%Y-%m-%d).log
 ---
 
 *KingTrades NSE Momentum Bot | Local PC Deployment | Updated 2026-04-03*
+
+---
+
+## FULLY AUTOMATIC SETUP (Recommended)
+
+After completing Steps 1–8 (credentials), run this **once**:
+
+```bash
+# Windows (Git Bash or Command Prompt):
+venv\Scripts\activate
+python setup_autostart.py
+
+# Ubuntu/Linux:
+source venv/bin/activate
+python setup_autostart.py
+```
+
+This single command:
+- Verifies all credentials are in place
+- Creates a Windows Task Scheduler task (or Linux systemd service)
+- Configures the bot to start silently at PC boot
+- Sets up automatic restart if the bot crashes
+
+After this, **you never need to manually start the bot again**.
+Turn on your PC → bot starts automatically → trades automatically → shuts down at 3:30 PM IST.
+
+### Other setup_autostart.py commands:
+```bash
+python setup_autostart.py status    # Check if auto-start is configured
+python setup_autostart.py test      # Run bot once to verify everything works
+python setup_autostart.py remove    # Remove auto-start (if you want to stop)
+```
+
+### watchdog.py commands:
+```bash
+python watchdog.py --status         # Show bot current state
+python watchdog.py --once           # Run bot once without restart loop
+```
