@@ -68,3 +68,16 @@ cryptography>=41.0.0
 # ---- Database (trade journal) ----
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
+
+# ---- AI Brain (Claude API — for market intelligence & learning) ----
+anthropic>=0.40.0             # Claude API — set ANTHROPIC_API_KEY in .env
+
+# ---- Global Market Data (overnight analysis) ----
+yfinance>=0.2.40              # Free global market data: US, Asian markets, VIX, FX, commodities
+
+# ---- Additional Data ----
+pandas-datareader>=0.10.0     # Economic data (FRED, World Bank)
+ta>=0.11.0                    # Alternative TA library (fallback for pandas-ta)
+
+# ---- Smart Scheduling (continuous learner) ----
+APScheduler>=3.10.0           # Advanced scheduler for nightly tasks

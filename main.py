@@ -1,21 +1,29 @@
 """
 main.py — NSE Momentum Groww AI Bot
-Central Orchestrator with IST Market Hours + Auto-Shutdown
+Central Orchestrator with IST Market Hours + Auto-Shutdown + AI Learning
 
 ⚠️ WARNING: THIS BOT PLACES REAL ORDERS WITH REAL MONEY ON GROWW.
 ⚠️ Server runs in UK (UTC) — ALL market logic uses IST (Asia/Kolkata).
 ⚠️ Start with LIVE_TRADING_ENABLED=False until confident in the setup.
 ⚠️ Monitor manually for at least 2 weeks before increasing capital.
 
-Startup sequence:
-  1. Load config + validate credentials
-  2. TOTP login to Groww at 8:45 AM IST (auto-scheduled)
-  3. Initialize all modules
-  4. Start Telegram command listener
-  5. Wait for market open (9:15 AM IST)
-  6. Initialize day: balance, Nifty open, watchlist
-  7. Main loop: scan → signal → risk check → execute → manage
-  8. EOD: square-off all → send report → shutdown at 3:30 PM IST
+Full lifecycle:
+  [24/7 Background]   continuous_learner.py — downloads data, learns, adapts
+  [08:00 AM IST]      Overnight analysis (global markets, Gift Nifty, VIX)
+  [08:30 AM IST]      Morning brief → Telegram
+  [08:45 AM IST]      TOTP login to Groww → token refresh
+  [09:00 AM IST]      Pre-market watchlist scan + AI stock assessment
+  [09:15 AM IST]      Market open → trading begins
+  [09:15–10:00 IST]   OPENING DRIVE — most aggressive momentum window
+  [10:00–11:00 IST]   Morning session — normal trading
+  [11:00–13:00 IST]   MIDDAY CHOP — 70% reduced size / skip
+  [13:30–15:00 IST]   Afternoon trend — institutional activity
+  [15:15 AM IST]      Square-off warning sent
+  [15:20 AM IST]      Force close all positions
+  [15:30 AM IST]      EOD shutdown
+  [16:00 PM IST]      Self-learning cycle
+  [16:30 PM IST]      AI trade review → lessons extracted
+  [17:00 PM IST]      Incremental trainer run
 """
 
 import asyncio
@@ -67,7 +75,13 @@ class TradingBot:
         self.mtf_analyzer = None
         self.journal = None
         self.learner = None
+        self.ai_brain = None
+        self.overnight = None
+        self.calendar = None
+        self.data_store = None
+        self.cont_learner = None
         self._last_trade_date = ""
+        self._overnight_run_today = False
 
     # --------------------------------------------------------
     # STARTUP
@@ -152,6 +166,42 @@ class TradingBot:
             chat_id=config.TELEGRAM_CHAT_ID,
         )
 
+        # Initialize AI Brain (Claude-powered market intelligence)
+        try:
+            from ai_brain import get_ai_brain
+            self.ai_brain = get_ai_brain()
+            logger.info(f"[{format_ist_timestamp()}] AI Brain initialized "
+                        f"({'Claude API connected' if self.ai_brain._enabled else 'rule-based mode'})")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] AI Brain failed: {e}")
+
+        # Initialize market data store
+        try:
+            from market_data_store import get_data_store
+            self.data_store = get_data_store()
+            logger.info(f"[{format_ist_timestamp()}] {self.data_store.get_store_summary()}")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Data store failed: {e}")
+
+        # Initialize overnight analyzer
+        try:
+            from overnight_analyzer import get_overnight_analyzer
+            self.overnight = get_overnight_analyzer()
+            logger.info(f"[{format_ist_timestamp()}] Overnight analyzer ready")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Overnight analyzer failed: {e}")
+
+        # Initialize economic calendar
+        try:
+            from economic_calendar import get_calendar
+            self.calendar = get_calendar()
+            events = self.calendar.get_today_events()
+            if events:
+                logger.info(f"[{format_ist_timestamp()}] Today's events: "
+                            + ", ".join(e['event'] for e in events))
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Calendar failed: {e}")
+
         # Initialize trade journal (SQLite)
         from trade_journal import get_journal
         self.journal = get_journal()
@@ -183,6 +233,15 @@ class TradingBot:
         # Start Telegram command listener (background thread)
         self._start_telegram_listener()
 
+        # Start continuous learner in background (24/7 learning)
+        try:
+            from continuous_learner import ContinuousLearner
+            self.cont_learner = ContinuousLearner()
+            self.cont_learner.start(blocking=False)
+            logger.info(f"[{format_ist_timestamp()}] Continuous learner started (background)")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Continuous learner failed: {e}")
+
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
         return True
 
@@ -210,11 +269,29 @@ class TradingBot:
         # Initialize risk manager for the day
         self.risk_manager.initialize_day(available, nifty_open)
 
-        # Build watchlist
-        watchlist = self.watchlist_mgr.get_watchlist()
+        # Build watchlist (sector filter from overnight analysis)
+        watchlist = self.watchlist_mgr.get_watchlist(
+            data_fetcher=self.fetcher, learner=self.learner
+        )
+        if self.overnight:
+            avoid_sectors = self.overnight.get_sectors_to_avoid()
+            if avoid_sectors:
+                watchlist = [
+                    s for s in watchlist
+                    if self.watchlist_mgr.get_sector_for_symbol(s) not in avoid_sectors
+                ]
 
-        # Send morning brief
-        self.alerter.send_morning_brief(watchlist, available, nifty_open)
+        # Morning brief (AI thesis + global cues + events)
+        try:
+            self.alerter.send_morning_brief(watchlist, available, nifty_open)
+            if self.overnight:
+                brief = self.overnight.format_morning_brief()
+                if self.calendar:
+                    brief += "\n" + self.calendar.format_upcoming_events()
+                import asyncio
+                asyncio.run(self.alerter.send_text(brief))
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Morning brief failed: {e}")
 
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
@@ -249,10 +326,24 @@ class TradingBot:
                         self._token_refreshed_today = False
                         self._last_trade_date = now_ist.strftime("%Y-%m-%d")
 
-                # Pre-market: build watchlist
+                # Overnight analysis at 8:00 AM IST (before market)
+                if (now_ist.hour == 8 and now_ist.minute < 5
+                        and not self._overnight_run_today):
+                    self._run_overnight_analysis()
+
+                # Pre-market: build watchlist + holiday check
                 if is_pre_market_ist() and not self._day_initialized:
+                    # Check if today is a holiday
+                    if self.calendar and self.calendar.is_holiday_today():
+                        events = self.calendar.get_today_events()
+                        holiday = next((e["event"] for e in events if e["impact"] == "HOLIDAY"), "Holiday")
+                        logger.info(f"[{format_ist_timestamp()}] NSE Holiday today: {holiday}. Bot idle.")
+                        time.sleep(3600)
+                        continue
                     logger.info(f"[{format_ist_timestamp()}] Pre-market: preparing watchlist...")
-                    self.watchlist_mgr.get_watchlist()
+                    self.watchlist_mgr.get_watchlist(
+                        data_fetcher=self.fetcher, learner=self.learner
+                    )
 
                 # Market is open
                 if is_market_open_ist():
@@ -314,11 +405,12 @@ class TradingBot:
         One full scan cycle:
         1. Update all open positions (trailing stops, SL hits)
         2. Check Nifty circuit breaker
-        3. Scan watchlist for new signals
-        4. Execute valid signals
+        3. Calendar & VIX blackout check
+        4. Scan watchlist for new signals
+        5. Execute valid signals
         """
         try:
-            # 1. Update open positions
+            # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
             # 2. Check Nifty circuit
@@ -326,7 +418,23 @@ class TradingBot:
             if nifty_q:
                 self.risk_manager.check_nifty_circuit(nifty_q.get("ltp", 0))
 
-            # 3. Check if we can take new trades
+            # 3. Economic calendar blackout check
+            if self.calendar:
+                blackout, reason = self.calendar.is_blackout_now()
+                if blackout:
+                    logger.info(f"[{format_ist_timestamp()}] Blackout: {reason}")
+                    return
+
+            # 3b. F&O expiry warning
+            if self.calendar and self.calendar.is_fno_expiry_today():
+                logger.debug(f"[{format_ist_timestamp()}] F&O expiry day — extra caution")
+
+            # 3c. Apply overnight VIX size multiplier
+            overnight_mult = 1.0
+            if self.overnight:
+                overnight_mult = self.overnight.get_size_multiplier()
+
+            # 4. Check if we can take new trades
             if self.risk_manager.state.circuit_breaker_active:
                 logger.debug(f"[{format_ist_timestamp()}] Circuit breaker — skipping new signals")
                 return
@@ -463,6 +571,41 @@ class TradingBot:
         self.eod_done = True
         logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
         self.running = False
+
+    # --------------------------------------------------------
+    # OVERNIGHT / PRE-MARKET INTELLIGENCE
+    # --------------------------------------------------------
+
+    def _run_overnight_analysis(self):
+        """Run global market analysis at 8:00 AM IST. Sets day's trading bias."""
+        logger.info(f"[{format_ist_timestamp()}] Running overnight intelligence...")
+        try:
+            if self.overnight:
+                result = self.overnight.run(ai_brain=self.ai_brain)
+                bias   = result.get("day_bias", "NEUTRAL")
+                score  = result.get("bias_score", 0)
+                risks  = result.get("key_risks", [])
+
+                # Log VIX warning
+                vix = result.get("vix", {}).get("vix", 15)
+                if vix > 20:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] HIGH VIX={vix:.1f} today — "
+                        "using 50% position sizes"
+                    )
+
+                logger.info(
+                    f"[{format_ist_timestamp()}] Day bias: {bias} "
+                    f"(score={score:+d}, VIX={vix:.1f})"
+                )
+                if risks:
+                    for r in risks:
+                        logger.warning(f"[{format_ist_timestamp()}] Risk: {r}")
+
+            self._overnight_run_today = True
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Overnight analysis failed: {e}")
+            self._overnight_run_today = True  # Don't retry
 
     # --------------------------------------------------------
     # TOKEN REFRESH
