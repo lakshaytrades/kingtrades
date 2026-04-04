@@ -7,14 +7,15 @@
 growwapi>=1.0.0
 
 # ---- Data & Analysis ----
-pandas>=2.0.0
-numpy>=1.24.0
+pandas>=2.2.0
+numpy>=1.26.0
 pandas-ta>=0.3.14b         # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
-scipy>=1.10.0
+scipy>=1.14.0
+numba>=0.60.0
 
 # ---- Visualization ----
-matplotlib>=3.7.0
-mplfinance>=0.12.9         # Candlestick charts
+matplotlib>=3.9.0
+mplfinance>=0.12.10         # Candlestick charts
 Pillow>=10.0.0
 
 # ---- Telegram Notifications ----
@@ -22,12 +23,12 @@ python-telegram-bot>=20.0
 
 # ---- TOTP / Authentication ----
 pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login
-requests>=2.31.0
+requests>=2.32.0
 selenium>=4.15.0           # Groww web login automation (TOTP)
 webdriver-manager>=4.0.0  # Auto ChromeDriver management
 
 # ---- Timezone Handling (IST for UK server) ----
-pytz>=2023.3               # Timezone conversions
+pytz>=2024.1               # Timezone conversions
 # zoneinfo is built-in for Python 3.9+; backports below for older:
 # backports.zoneinfo>=0.2.1
 
