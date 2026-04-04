@@ -8,13 +8,13 @@ growwapi>=1.0.0
 
 # ---- Data & Analysis ----
 pandas>=2.0.0
-numpy>=1.24.0
+numpy>=1.26.0
 pandas-ta>=0.3.14b         # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
 scipy>=1.10.0
 
 # ---- Visualization ----
-matplotlib>=3.7.0
-mplfinance>=0.12.9         # Candlestick charts
+matplotlib
+mplfinance>=0.12.10b0         # Candlestick charts
 Pillow>=10.0.0
 
 # ---- Telegram Notifications ----
