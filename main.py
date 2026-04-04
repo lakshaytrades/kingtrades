@@ -146,10 +146,7 @@ class TradingBot:
         # Initialize watchlist manager
 from watchlist_manager import WatchlistManager   # make sure the import is correct
 
-self.watchlist_mgr = WatchlistManager(
-    name="nse_momentum_watchlist",
-    symbols=config.WATCHLIST_SYMBOLS   # or a hardcoded list like ["RELIANCE", "TCS", "HDFCBANK", ...]
-)
+self.watchlist_mgr = WatchlistManager()
 
         # Initialize signal generator
         from signal_generator import SignalGenerator
