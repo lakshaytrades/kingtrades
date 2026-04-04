@@ -70,16 +70,13 @@ SECTOR_MAP = {
     "INFRA":     ["LT","ADANIPORTS","HAL","BEL","BHEL","IRFC"],
 }
 
-
 class WatchlistManager:
-    """Dynamic watchlist engine — finds best momentum stocks each morning."""
-
-    def __init__(self):
-        self._watchlist:       List[str] = []
-        self._scored_stocks:   List[Dict] = []
-        self._sector_leaders:  Dict[str, List[str]] = {}
-        self._last_scan_time:  Optional[float] = None
-        self._scan_ttl:        int = 1800  # Rescan every 30 min
+    def __init__(self, name: str = "momentum_watchlist", symbols: list = None):
+        self.name = name
+        self.symbols = symbols or []          # default to empty list
+        self.last_updated = None
+        # Add any other initialization logic you need here
+        print(f"✅ WatchlistManager initialized: {self.name} with {len(self.symbols)} symbols")
 
     # -------------------------------------------------------
     # MAIN WATCHLIST GETTER
