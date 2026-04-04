@@ -508,16 +508,29 @@ class TradingBot:
                             ltp, pos.quantity, pnl, action["reason"]
                         )
 
-                elif action["action"] == "PARTIAL_EXIT":
-                    # Exit 50% of position at T1, trail SL to entry
-                    half_qty = max(1, pos.quantity // 2)
-                    self.executor.place_exit_order(
-                        pos.symbol, half_qty, pos.direction,
+                elif action["action"] in ("PARTIAL_EXIT_T1", "PARTIAL_EXIT_T2"):
+                    exit_qty = action.get("exit_qty", max(1, pos.quantity // 2))
+                    result = self.executor.place_exit_order(
+                        pos.symbol, exit_qty, pos.direction,
                         reason=action["reason"]
                     )
-                    pos.partial_exit_done = True
-                    pos.stop_loss = pos.entry_price  # Move SL to breakeven
-                    self.executor.modify_stop_loss(pos.symbol, pos.entry_price)
+                    if result.success:
+                        # Update local position quantity
+                        pos.quantity = max(0, pos.quantity - exit_qty)
+                        self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
+                        pnl_partial = (ltp - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * exit_qty
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {action['action']}: "
+                            f"{pos.symbol} {exit_qty}qty @ ₹{ltp:.2f} | "
+                            f"Partial P&L: ₹{pnl_partial:.0f}"
+                        )
+                        try:
+                            self.alerter.send_exit_alert(
+                                pos.symbol, pos.direction, pos.entry_price,
+                                ltp, exit_qty, pnl_partial, action["reason"]
+                            )
+                        except Exception:
+                            pass
 
                 elif action["action"] == "UPDATE_SL":
                     self.executor.modify_stop_loss(pos.symbol, action["new_sl"])

@@ -143,7 +143,7 @@ class GrowwExecutor:
         available = balance.get("available", 0)
         self.risk_manager.update_balance(available)
 
-        # Recalculate quantity with live balance
+        # Recalculate quantity with live balance, apply filter size multiplier
         sizing = self.risk_manager.calculate_position_size(
             symbol=signal.symbol,
             entry_price=signal.entry_price,
@@ -152,6 +152,14 @@ class GrowwExecutor:
         quantity = sizing.get("quantity", 0)
         if quantity <= 0:
             return OrderResult(False, message="Position size = 0 — insufficient capital")
+        # Apply grade-based size multiplier from HighAccuracyFilter
+        size_mult = getattr(signal, "size_multiplier", 1.0)
+        if size_mult != 1.0:
+            quantity = max(1, int(quantity * size_mult))
+            logger.info(
+                f"[{format_ist_timestamp()}] Size adjusted by {size_mult:.1f}x "
+                f"(Grade {getattr(signal, 'quality_grade', 'B')}) → {quantity} qty"
+            )
 
         entry_price = round_to_tick_size(signal.entry_price)
         transaction_type = "BUY" if signal.direction == "LONG" else "SELL"
@@ -386,6 +394,8 @@ class GrowwExecutor:
             target_2=signal.target_2,
             atr=signal.atr,
             order_id=order_id,
+            quality_grade=getattr(signal, "quality_grade", "B"),
+            size_multiplier=getattr(signal, "size_multiplier", 1.0),
         )
 
     def _log_to_db(

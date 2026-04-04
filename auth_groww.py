@@ -74,117 +74,135 @@ class GrowwAuthManager:
             return 0
         return 30 - (int(time.time()) % 30)
 
-    @retry_with_backoff(max_retries=3, delays=[2, 5, 10])
+    @retry_with_backoff(max_retries=2, delays=[3, 8])
     def login_and_get_token(self) -> Optional[str]:
         """
-        Perform full Groww login using email + password + TOTP.
-        Returns fresh auth token or None if login fails.
-
-        This uses the Groww API login endpoint with TOTP.
+        Headless TOTP login for Groww — works on Render/VPS (no browser needed).
+        Tries multiple API endpoint patterns. Falls back to static token.
         """
         if not all([self.email, self.password, self.totp_secret]):
-            logger.warning(
-                f"[{format_ist_timestamp()}] Cannot auto-login: missing credentials. "
-                "Using existing token from .env"
+            logger.info(
+                f"[{format_ist_timestamp()}] TOTP login skipped — "
+                "GROWW_EMAIL / GROWW_PASSWORD / GROWW_TOTP_SECRET not all set. "
+                "Using GROWW_AUTH_TOKEN from environment."
             )
-            return self._token
+            return self._token or None
 
-        logger.info(f"[{format_ist_timestamp()}] Starting Groww auto-login...")
-
-        # Wait for a fresh TOTP code (avoid using one about to expire)
+        # Wait for a stable TOTP window (avoid codes about to expire)
         remaining = self.get_totp_time_remaining()
         if remaining < 5:
-            logger.info(f"[{format_ist_timestamp()}] Waiting {remaining}s for fresh TOTP code...")
-            time.sleep(remaining + 1)
+            wait = remaining + 1
+            logger.info(f"[{format_ist_timestamp()}] Waiting {wait}s for fresh TOTP code...")
+            time.sleep(wait)
 
         totp_code = self.generate_totp_code()
         if not totp_code:
+            logger.warning(f"[{format_ist_timestamp()}] Could not generate TOTP code")
             return self._token
 
-        # Step 1: Login with email + password
-        login_url = "https://api.groww.in/v1/login"
-        login_payload = {
-            "email": self.email,
-            "password": self.password,
+        headers = {
+            "Content-Type": "application/json",
+            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+            "Accept": "application/json",
+            "Origin": "https://groww.in",
+            "Referer": "https://groww.in/",
         }
 
+        # --- ATTEMPT 1: Standard Groww API v1 login ---
         try:
-            login_resp = requests.post(
-                login_url,
-                json=login_payload,
-                headers={"Content-Type": "application/json"},
-                timeout=15
+            logger.info(f"[{format_ist_timestamp()}] TOTP login attempt 1/2...")
+            session = requests.Session()
+
+            # Step 1: Password login
+            login_resp = session.post(
+                "https://api.groww.in/v1/user/login",
+                json={"email": self.email, "password": self.password},
+                headers=headers, timeout=20
             )
+            logger.debug(f"Login response: {login_resp.status_code}")
 
-            if login_resp.status_code != 200:
-                logger.error(
-                    f"[{format_ist_timestamp()}] Groww login failed: "
-                    f"HTTP {login_resp.status_code}"
-                )
-                return self._token
-
-            login_data = login_resp.json()
-
-            # Step 2: Submit TOTP for 2FA verification
-            # Get session token from login response
-            session_token = login_data.get("session_token") or login_data.get("token")
-
-            if session_token:
-                totp_url = "https://api.groww.in/v1/login/verify-otp"
-                totp_payload = {
-                    "session_token": session_token,
-                    "otp": totp_code,
-                    "otp_type": "TOTP"
-                }
-                totp_resp = requests.post(
-                    totp_url,
-                    json=totp_payload,
-                    headers={"Content-Type": "application/json"},
-                    timeout=15
+            if login_resp.status_code in (200, 201):
+                data = login_resp.json()
+                # Extract session / interim token
+                session_token = (
+                    data.get("session_token") or data.get("sessionToken") or
+                    data.get("token") or data.get("data", {}).get("session_token")
                 )
 
-                if totp_resp.status_code == 200:
-                    token_data = totp_resp.json()
-                    new_token = (
-                        token_data.get("auth_token") or
-                        token_data.get("access_token") or
-                        token_data.get("token")
-                    )
-
-                    if new_token:
-                        self._token = new_token
-                        self._token_timestamp = get_current_ist_time()
-                        logger.info(
-                            f"[{format_ist_timestamp()}] ✅ Groww token refreshed via TOTP. "
-                            f"Valid from: {format_ist_timestamp(self._token_timestamp)}"
-                        )
-                        return new_token
-                    else:
-                        logger.warning(
-                            f"[{format_ist_timestamp()}] TOTP verified but no token in response. "
-                            f"Response keys: {list(token_data.keys())}"
-                        )
-                else:
-                    logger.error(
-                        f"[{format_ist_timestamp()}] TOTP verification failed: "
-                        f"HTTP {totp_resp.status_code}"
-                    )
-            else:
-                # Some Groww API versions return token directly on password login
-                direct_token = login_data.get("auth_token") or login_data.get("access_token")
-                if direct_token:
+                # If direct token returned (some API versions skip TOTP step)
+                direct_token = (
+                    data.get("auth_token") or data.get("authToken") or
+                    data.get("access_token") or data.get("data", {}).get("auth_token")
+                )
+                if direct_token and len(direct_token) > 20:
                     self._token = direct_token
                     self._token_timestamp = get_current_ist_time()
-                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww token from direct login")
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww login successful (direct token)")
                     return direct_token
 
-        except requests.exceptions.RequestException as e:
-            logger.error(f"[{format_ist_timestamp()}] Groww login request failed: {e}")
+                if session_token:
+                    # Step 2: TOTP verification
+                    totp_resp = session.post(
+                        "https://api.groww.in/v1/user/login/2fa",
+                        json={"sessionToken": session_token, "totp": totp_code, "type": "TOTP"},
+                        headers=headers, timeout=20
+                    )
+                    if totp_resp.status_code in (200, 201):
+                        tdata = totp_resp.json()
+                        new_token = (
+                            tdata.get("auth_token") or tdata.get("authToken") or
+                            tdata.get("access_token") or tdata.get("token") or
+                            tdata.get("data", {}).get("auth_token")
+                        )
+                        if new_token and len(new_token) > 20:
+                            self._token = new_token
+                            self._token_timestamp = get_current_ist_time()
+                            logger.info(f"[{format_ist_timestamp()}] ✅ Groww TOTP login successful")
+                            return new_token
+                        logger.debug(f"TOTP response keys: {list(tdata.keys())}")
+                    else:
+                        logger.debug(f"TOTP verify status: {totp_resp.status_code}")
 
-        logger.warning(
-            f"[{format_ist_timestamp()}] Auto-login failed. Using existing .env token."
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"Login attempt 1 network error: {e}")
+
+        # --- ATTEMPT 2: Alternative endpoint ---
+        try:
+            logger.info(f"[{format_ist_timestamp()}] TOTP login attempt 2/2 (alt endpoint)...")
+            session2 = requests.Session()
+            login_resp2 = session2.post(
+                "https://api.groww.in/v1/login",
+                json={"email": self.email, "password": self.password, "totp": totp_code},
+                headers=headers, timeout=20
+            )
+            if login_resp2.status_code in (200, 201):
+                d = login_resp2.json()
+                tok = (
+                    d.get("auth_token") or d.get("authToken") or
+                    d.get("access_token") or d.get("token") or
+                    (d.get("data") or {}).get("auth_token")
+                )
+                if tok and len(tok) > 20:
+                    self._token = tok
+                    self._token_timestamp = get_current_ist_time()
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww login via alt endpoint")
+                    return tok
+        except requests.exceptions.RequestException as e:
+            logger.debug(f"Login attempt 2 network error: {e}")
+
+        # --- FALLBACK: Use static token from environment ---
+        if self._token:
+            logger.warning(
+                f"[{format_ist_timestamp()}] TOTP login failed — using GROWW_AUTH_TOKEN from env. "
+                "Check GROWW_EMAIL / GROWW_PASSWORD / GROWW_TOTP_SECRET on Render."
+            )
+            return self._token
+
+        logger.error(
+            f"[{format_ist_timestamp()}] ❌ No Groww token available. "
+            "Set GROWW_AUTH_TOKEN in Render Environment Variables."
         )
-        return self._token
+        return None
 
     def get_valid_token(self) -> Optional[str]:
         """
