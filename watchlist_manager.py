@@ -76,7 +76,6 @@ class WatchlistManager:
         self.symbols = symbols if symbols is not None else []
         self.last_updated = None
         # Add any other initialization logic you need here
-
         print(f"✅ WatchlistManager initialized: {self.name} with {len(self.symbols)} symbols")
 
     # -------------------------------------------------------
