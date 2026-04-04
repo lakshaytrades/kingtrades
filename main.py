@@ -90,7 +90,7 @@ class TradingBot:
     def initialize(self) -> bool:
         """Initialize all bot components. Returns True if ready."""
         logger.info(f"[{format_ist_timestamp()}] 🚀 NSE Momentum Bot initializing...")
-        logger.info(f"[{format_ist_timestamp()}] Server time: {datetime.utcnow()} UTC")
+        logger.info(f"[{format_ist_timestamp()}] Server time: {datetime.now(IST).astimezone(ZoneInfo('UTC'))} UTC")
         logger.info(f"[{format_ist_timestamp()}] IST time: {format_ist_timestamp()}")
 
         # Validate config
@@ -145,10 +145,7 @@ class TradingBot:
 
         # Initialize watchlist manager
         from watchlist_manager import WatchlistManager
-        self.watchlist_mgr = WatchlistManager(
-            fetcher=self.fetcher,
-            custom_list=config.WATCHLIST if config.CUSTOM_WATCHLIST_STR else [],
-        )
+        self.watchlist_mgr = WatchlistManager()
 
         # Initialize signal generator
         from signal_generator import SignalGenerator
@@ -678,7 +675,7 @@ class TradingBot:
             async def cmd_watchlist(update, context):
                 if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
                     return
-                status = self.watchlist_mgr.get_status()
+                status = self.watchlist_mgr.format_watchlist_message()
                 self.alerter.send_text(status)
 
             async def cmd_report(update, context):

@@ -269,30 +269,42 @@ def get_groww_token() -> Optional[str]:
 def initialize_auth() -> bool:
     """
     Initialize authentication on bot startup.
-    Should be called once at startup, before any trading.
+    Always returns True — credential failures are non-fatal at startup.
+    The bot runs in dry-run mode until credentials are available.
+    Token is retried at 8:45 AM IST via TOTP.
     """
     manager = get_auth_manager()
 
-    # If TOTP is configured and it's morning, do a fresh login
+    # If TOTP is fully configured and it's early morning, try fresh login
     now_ist = get_current_ist_time()
-    if manager.totp_secret and now_ist.hour < 10:
-        logger.info(f"[{format_ist_timestamp()}] Performing morning TOTP login...")
-        success = manager.refresh_token_if_needed()
-        if not success:
-            logger.error(
-                f"[{format_ist_timestamp()}] Auth initialization failed!"
-            )
-            return False
-    else:
-        # Use existing .env token
-        token = manager.get_valid_token()
-        if not token:
-            logger.error(
-                f"[{format_ist_timestamp()}] No valid token available!"
-            )
-            return False
-        logger.info(f"[{format_ist_timestamp()}] Auth initialized with existing token")
+    has_full_creds = all([manager.email, manager.password, manager.totp_secret])
 
+    if has_full_creds and now_ist.hour < 10:
+        logger.info(f"[{format_ist_timestamp()}] Performing morning TOTP login...")
+        try:
+            success = manager.refresh_token_if_needed()
+            if success:
+                logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login successful")
+            else:
+                logger.warning(
+                    f"[{format_ist_timestamp()}] TOTP login failed — "
+                    "will retry at 8:45 AM IST. Bot starts in dry-run mode."
+                )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] TOTP login error: {e}")
+
+    elif manager._token:
+        logger.info(f"[{format_ist_timestamp()}] Auth initialized with token from environment")
+
+    else:
+        logger.warning(
+            f"[{format_ist_timestamp()}] No Groww credentials configured.\n"
+            "  → Set in Render environment variables:\n"
+            "    GROWW_EMAIL, GROWW_PASSWORD, GROWW_TOTP_SECRET, GROWW_AUTH_TOKEN\n"
+            "  → Bot will run in DRY-RUN mode (no real trades) until credentials are set."
+        )
+
+    # Always return True — bot starts regardless, trades disabled without token
     return True
 
 

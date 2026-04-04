@@ -1,0 +1,56 @@
+# render.yaml — Render.com deployment configuration for KingTrades Bot
+# This file tells Render how to build and run the bot automatically.
+#
+# After pushing this file, go to Render Dashboard:
+#   1. Connect your GitHub repo
+#   2. Render will detect this file and auto-configure the service
+#   3. Set environment variables (see below)
+#   4. Click "Deploy"
+#
+# REQUIRED Environment Variables (set in Render Dashboard → Environment):
+#   GROWW_EMAIL          your Groww login email
+#   GROWW_PASSWORD       your Groww password
+#   GROWW_TOTP_SECRET    32-char TOTP secret from Groww 2FA setup
+#   GROWW_AUTH_TOKEN     your Groww API auth token
+#   TELEGRAM_BOT_TOKEN   token from @BotFather
+#   TELEGRAM_CHAT_ID     your Telegram chat ID
+#   LIVE_TRADING_ENABLED False (start here, change to True only when ready)
+#   MAX_DAILY_CAPITAL    10000 (start with ₹10,000)
+
+services:
+  - type: worker
+    name: kingtrades
+    runtime: python
+    repo: https://github.com/lakshaytrades/kingtrades
+    branch: claude/nse-momentum-groww-bot-v8Rma
+    buildCommand: pip install -r requirements.txt
+    startCommand: python main.py
+    plan: starter
+    region: singapore   # Closest to India for lowest API latency
+
+    envVars:
+      - key: TIMEZONE
+        value: Asia/Kolkata
+      - key: LOG_LEVEL
+        value: INFO
+      - key: LOG_DIR
+        value: logs
+      - key: LIVE_TRADING_ENABLED
+        value: "False"          # Change to "True" in Render Dashboard when ready
+      - key: MAX_DAILY_CAPITAL
+        value: "10000"
+      - key: MAX_RISK_PER_TRADE_PCT
+        value: "0.5"
+      - key: DAILY_LOSS_LIMIT_PCT
+        value: "2.0"
+      # These MUST be set manually in Render Dashboard (sensitive credentials):
+      # GROWW_EMAIL
+      # GROWW_PASSWORD
+      # GROWW_TOTP_SECRET
+      # GROWW_AUTH_TOKEN
+      # TELEGRAM_BOT_TOKEN
+      # TELEGRAM_CHAT_ID
+      # ANTHROPIC_API_KEY    (optional - for AI morning thesis)
+      # NEWS_API_KEY         (optional)
+
+    autoDeploy: true    # Auto-deploy on every git push
