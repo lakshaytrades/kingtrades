@@ -71,11 +71,12 @@ SECTOR_MAP = {
 }
 
 class WatchlistManager:
-    def __init__(self, name: str = "momentum_watchlist", symbols: list = None):
-        self.name = name
-        self.symbols = symbols or []          # default to empty list
-        self.last_updated = None
-        # Add any other initialization logic you need here
+    # Add the two arguments here (e.g., api_client and config)
+    def __init__(self, arg1, arg2): 
+        self.arg1 = arg1
+        self.arg2 = arg2
+        # ... rest of your setup code
+
         print(f"✅ WatchlistManager initialized: {self.name} with {len(self.symbols)} symbols")
 
     # -------------------------------------------------------
