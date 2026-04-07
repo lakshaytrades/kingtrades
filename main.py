@@ -8,7 +8,7 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 # Your existing imports...
 def start_simple_telegram_listener():
-    """Simple Telegram - import moved inside to avoid circular import"""
+    """Simple alerts_telegram.py - import moved inside to avoid circular import"""
     from alerts_telegram import TelegramAlerter   # safe import here
 
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
