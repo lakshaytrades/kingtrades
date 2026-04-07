@@ -2,18 +2,28 @@ import io
 import logging
 import asyncio
 from typing import Optional
+from telegram import Bot
 
-# Setup a basic logger if it's not defined elsewhere
+# Basic logging setup
 logger = logging.getLogger(__name__)
 
 class TelegramAlerter:
-    def __init__(self, bot, chat_id):
-        self._bot = bot
+    def __init__(self, bot_token: str, chat_id: str):
+        """
+        Initializes the Alerter with credentials provided by main.py
+        """
+        self.bot_token = bot_token
         self.chat_id = chat_id
+        # Initialize the actual Telegram Bot object using the token
+        try:
+            self._bot = Bot(token=self.bot_token)
+        except Exception as e:
+            logger.error(f"Failed to initialize Telegram Bot: {e}")
+            self._bot = None
 
     def _is_ready(self) -> bool:
-        # Ensure this method exists or logic is handled
-        return self._bot is not None
+        """Checks if both credentials and the bot object are present."""
+        return bool(self.bot_token and self.chat_id and self._bot)
 
     def _send(
         self,
@@ -21,8 +31,11 @@ class TelegramAlerter:
         image_buf: Optional[io.BytesIO] = None,
         parse_mode: str = "Markdown",
     ) -> bool:
+        """
+        Sends a message or photo to Telegram asynchronously.
+        """
         if not self._is_ready():
-            logger.debug("Telegram alerter not ready — alert skipped")
+            logger.warning("Telegram alerter not ready (missing token/chat_id) — alert skipped")
             return False
 
         try:
@@ -42,18 +55,24 @@ class TelegramAlerter:
                         parse_mode=parse_mode,
                     )
 
-            # Fire-and-forget logic
+            # Execution logic for Render/Background Workers
             try:
+                # Check for an existing event loop
                 loop = asyncio.get_running_loop()
                 loop.create_task(_do_send()) 
-                logger.debug(f"Telegram alert scheduled: {text[:100]}...")
                 return True
             except RuntimeError: 
-                # Fallback if no loop is running
+                # If no loop is running, create one
                 asyncio.run(_do_send())
                 return True
 
         except Exception as e:
-            # Note: Ensure format_ist_timestamp() is imported or defined
+            # Note: Ensure any custom timestamp functions are imported if needed
             logger.error(f"Telegram send failed: {e}", exc_info=True)
             return False
+
+    def initialize(self) -> bool:
+        """
+        Used by main.py to verify the bot is ready to start scanning.
+        """
+        return self._is_ready()
