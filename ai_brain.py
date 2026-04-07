@@ -1,17 +1,14 @@
 """
 ai_brain.py — NSE Momentum Groww AI Bot
-Central AI Intelligence Engine — Powered by Claude API
+Central AI Intelligence Engine — Powered by Gemini API
 
-This is the "thinking" layer of the bot. It uses Claude AI to:
+This is the "thinking" layer of the bot. It uses Gemini AI to:
 1. Analyse market patterns and generate human-like trading insight
 2. Review each day's trades and extract lessons
 3. Synthesise news + price action + indicators into a daily market thesis
 4. Suggest strategy improvements based on changing market conditions
 5. Explain EVERY signal in plain English (why this trade, why now)
 6. Learn from 18 years of encoded trading rules + live performance data
-
-18yr Rule: "The best traders THINK before they trade.
-They ask: Why is price HERE? Who is buying/selling? What does it MEAN?"
 """
 
 import json
@@ -21,6 +18,7 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import google.generativeai as genai
 from utils import format_ist_timestamp, get_current_ist_time, get_current_ist_date
 
 logger = logging.getLogger(__name__)
@@ -61,14 +59,14 @@ NSE-specific knowledge:
 
 class AIBrain:
     """
-    Claude-powered AI brain for market analysis and continuous learning.
+    Gemini-powered AI brain for market analysis and continuous learning.
     Runs during off-market hours and provides insights before market opens.
     """
 
     def __init__(self):
         self._client = None
-        self._model  = "claude-sonnet-4-6"
-        self._enabled = bool(os.getenv("ANTHROPIC_API_KEY"))
+        self._model  = "gemini-1.5-flash"
+        self._enabled = bool(os.getenv("GEMINI_API_KEY"))
         if not self._enabled:
             logger.warning(
                 f"[{format_ist_timestamp()}] GEMINI_API_KEY not set — "
@@ -79,26 +77,28 @@ class AIBrain:
 
     def _init_client(self):
         try:
-            import anthropic
-            self._client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            logger.info(f"[{format_ist_timestamp()}] AI Brain (Claude) initialized")
-        except ImportError:
-            logger.error("anthropic not installed: pip install anthropic")
+            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            self._client = genai.GenerativeModel(
+                model_name=self._model,
+                system_instruction=TRADING_WISDOM
+            )
+            logger.info(f"[{format_ist_timestamp()}] AI Brain (Gemini) initialized")
         except Exception as e:
             logger.error(f"AI Brain init failed: {e}")
 
     def _ask(self, prompt: str, max_tokens: int = 1024) -> str:
-        """Send a prompt to Claude and get response."""
+        """Send a prompt to Gemini and get response."""
         if not self._client:
-            return "[AI Brain offline — set ANTHROPIC_API_KEY]"
+            return "[AI Brain offline — set GEMINI_API_KEY]"
         try:
-            resp = self._client.messages.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                system=TRADING_WISDOM,
-                messages=[{"role": "user", "content": prompt}]
+            response = self._client.generate_content(
+                prompt,
+                generation_config=genai.types.GenerationConfig(
+                    max_output_tokens=max_tokens,
+                    temperature=0.7
+                )
             )
-            return resp.content[0].text
+            return response.text
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] AI Brain query failed: {e}")
             return f"[AI query failed: {e}]"
