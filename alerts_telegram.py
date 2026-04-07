@@ -1,6 +1,21 @@
 import io
+import logging
+import asyncio
 from typing import Optional
-def _send(
+
+# Setup a basic logger if it's not defined elsewhere
+logger = logging.getLogger(__name__)
+
+class TelegramAlerter:
+    def __init__(self, bot, chat_id):
+        self._bot = bot
+        self.chat_id = chat_id
+
+    def _is_ready(self) -> bool:
+        # Ensure this method exists or logic is handled
+        return self._bot is not None
+
+    def _send(
         self,
         text: str,
         image_buf: Optional[io.BytesIO] = None,
@@ -11,8 +26,6 @@ def _send(
             return False
 
         try:
-            import asyncio
-
             async def _do_send():
                 if image_buf:
                     image_buf.seek(0)
@@ -29,18 +42,18 @@ def _send(
                         parse_mode=parse_mode,
                     )
 
-            # Best practice for background worker (no assumption about existing loop)
+            # Fire-and-forget logic
             try:
-                # If there's already a running loop (common in some schedulers), use create_task + ensure_future
                 loop = asyncio.get_running_loop()
-                asyncio.create_task(_do_send())   # Fire-and-forget (non-blocking)
-                logger.debug(f"Telegram alert scheduled asynchronously: {text[:100]}...")
+                loop.create_task(_do_send()) 
+                logger.debug(f"Telegram alert scheduled: {text[:100]}...")
                 return True
-            except RuntimeError:  # No running loop
-                # Fallback: run in a new loop (safe in most background workers)
+            except RuntimeError: 
+                # Fallback if no loop is running
                 asyncio.run(_do_send())
                 return True
 
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Telegram send failed: {e}", exc_info=True)
+            # Note: Ensure format_ist_timestamp() is imported or defined
+            logger.error(f"Telegram send failed: {e}", exc_info=True)
             return False
