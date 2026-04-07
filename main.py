@@ -8,7 +8,41 @@ from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 # Your existing imports...
 def start_simple_telegram_listener():
-    from alerts_telegram import TelegramAlerter   # ← move import here
+   def start_simple_telegram_listener():
+    """Simple Telegram listener - import moved inside to avoid circular import"""
+    from alerts_telegram import TelegramAlerter   # ← Import here (safe)
+
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not token or not chat_id:
+        logger.warning("Telegram token or chat_id missing")
+        return
+
+    alerter = TelegramAlerter(token, chat_id)
+
+    async def start_cmd(update, context):
+        await update.message.reply_text("✅ Bot is running! Send /status for info.")
+
+    async def status_cmd(update, context):
+        await update.message.reply_text("📊 Bot is alive.")
+
+    async def run_bot():
+        app = Application.builder().token(token).build()
+        app.add_handler(CommandHandler("start", start_cmd))
+        app.add_handler(CommandHandler("status", status_cmd))
+        
+        logger.info("Starting Telegram listener...")
+        await app.run_polling(drop_pending_updates=True)
+
+    def run_in_thread():
+        loop = asyncio.new_event_loop()
+        asyncio.set_event_loop(loop)
+        loop.run_until_complete(run_bot())
+
+    thread = threading.Thread(target=run_in_thread, daemon=True)
+    thread.start()
+    logger.info("✅ Simple Telegram listener started in background")
     
     token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
     chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
