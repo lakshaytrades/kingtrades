@@ -1,3 +1,5 @@
+import io
+from typing import Optional
 def _send(
         self,
         text: str,
