@@ -83,3 +83,4 @@ ta>=0.11.0                    # Alternative TA library (fallback for pandas-ta)
 
 # ---- Smart Scheduling (continuous learner) ----
 APScheduler>=3.10.0           # Advanced scheduler for nightly tasks
+google-generativeai
