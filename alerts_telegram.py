@@ -1,4 +1,4 @@
-    def _send(
+def _send(
         self,
         text: str,
         image_buf: Optional[io.BytesIO] = None,
