@@ -7,7 +7,19 @@ from typing import Optional
 from telegram import Update
 from telegram.ext import Application, CommandHandler, ContextTypes
 # Your existing imports...
-# from alerts_telegram import TelegramAlerter   ← add this if not already present
+def start_simple_telegram_listener():
+    from alerts_telegram import TelegramAlerter   # ← move import here
+    
+    token = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+    chat_id = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+
+    if not token or not chat_id:
+        logger.warning("Telegram token or chat_id missing")
+        return
+
+    alerter = TelegramAlerter(token, chat_id)
+
+    # ... rest of your listener code
 main.py — NSE Momentum Groww AI Bot
 Central Orchestrator with IST Market Hours + Auto-Shutdown + AI Learning
 
