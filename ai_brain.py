@@ -71,7 +71,7 @@ class AIBrain:
         self._enabled = bool(os.getenv("ANTHROPIC_API_KEY"))
         if not self._enabled:
             logger.warning(
-                f"[{format_ist_timestamp()}] ANTHROPIC_API_KEY not set — "
+                f"[{format_ist_timestamp()}] GEMINI_API_KEY not set — "
                 "AI brain running in rule-based mode only"
             )
         else:
