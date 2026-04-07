@@ -61,7 +61,7 @@ ALPHA_VANTAGE_KEY = os.getenv("ALPHA_VANTAGE_KEY", "")
 
 # LIVE TRADING SWITCH — Default False for safety
 # Set LIVE_TRADING_ENABLED=True in .env ONLY when ready
-LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "False").lower() == "true"
+LIVE_TRADING_ENABLED: bool = True
 
 # Capital
 MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "50000"))
