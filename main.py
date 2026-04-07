@@ -1,4 +1,13 @@
 """
+import asyncio
+import threading
+import os
+from typing import Optional
+
+from telegram import Update
+from telegram.ext import Application, CommandHandler, ContextTypes
+# Your existing imports...
+# from alerts_telegram import TelegramAlerter   ← add this if not already present
 main.py — NSE Momentum Groww AI Bot
 Central Orchestrator with IST Market Hours + Auto-Shutdown + AI Learning
 
