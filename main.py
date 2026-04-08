@@ -80,8 +80,13 @@ class TradingBot:
         self.calendar = None
         self.data_store = None
         self.cont_learner = None
+        self.compounder = None   # Profit compounder
+        self.orb = None          # Opening Range Breakout tracker
+        self.burst = None        # Momentum burst detector
         self._last_trade_date = ""
         self._overnight_run_today = False
+        self._orb_built_today = False
+        self._nifty_change_pct = 0.0
 
     # --------------------------------------------------------
     # STARTUP
@@ -230,6 +235,41 @@ class TradingBot:
         # Start Telegram command listener (background thread)
         self._start_telegram_listener()
 
+        # Initialize profit compounder
+        try:
+            from profit_compounder import get_compounder
+            self.compounder = get_compounder(config.MAX_DAILY_CAPITAL)
+            logger.info(
+                f"[{format_ist_timestamp()}] Profit compounder loaded | "
+                f"Today capital: ₹{self.compounder.get_today_capital():,.0f} | "
+                f"Streak: {self.compounder.state.consecutive_wins}W/"
+                f"{self.compounder.state.consecutive_losses}L"
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Compounder failed: {e}")
+
+        # Initialize ORB tracker
+        try:
+            from orb_tracker import get_orb_tracker
+            self.orb = get_orb_tracker()
+            logger.info(f"[{format_ist_timestamp()}] ORB tracker ready")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] ORB tracker failed: {e}")
+
+        # Initialize momentum burst detector
+        try:
+            from momentum_burst import get_burst_detector
+            self.burst = get_burst_detector()
+            logger.info(f"[{format_ist_timestamp()}] Momentum burst detector ready")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Burst detector failed: {e}")
+
+        # Wire learner + ORB direction into signal generator
+        if self.signal_gen:
+            if self.learner:
+                self.signal_gen.set_learner(self.learner)
+            logger.debug(f"[{format_ist_timestamp()}] SignalGen: learner wired")
+
         # Start continuous learner in background (24/7 learning)
         try:
             from continuous_learner import ContinuousLearner
@@ -258,6 +298,15 @@ class TradingBot:
         available = balance_info.get("available", 0)
         if available == 0 and not config.LIVE_TRADING_ENABLED:
             available = config.MAX_DAILY_CAPITAL  # Use configured capital in dry run
+
+        # Apply compounded capital (grows with profits each day)
+        if self.compounder:
+            compound_cap = self.compounder.get_today_capital()
+            available = min(available, compound_cap) if available > 0 else compound_cap
+            logger.info(
+                f"[{format_ist_timestamp()}] Compounded capital today: ₹{available:,.0f} "
+                f"(size mult: {self.compounder.get_size_multiplier():.2f}x)"
+            )
 
         # Get Nifty opening price
         nifty_q = self.fetcher.get_nifty_quote()
@@ -321,7 +370,12 @@ class TradingBot:
                         self._day_initialized = False
                         self.eod_done = False
                         self._token_refreshed_today = False
+                        self._orb_built_today = False
+                        self._overnight_run_today = False
+                        self._nifty_change_pct = 0.0
                         self._last_trade_date = now_ist.strftime("%Y-%m-%d")
+                        if self.orb:
+                            self.orb.reset_for_new_day()
 
                 # Overnight analysis at 8:00 AM IST (before market)
                 if (now_ist.hour == 8 and now_ist.minute < 5
@@ -410,10 +464,25 @@ class TradingBot:
             # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
-            # 2. Check Nifty circuit
+            # 2. Check Nifty circuit + track Nifty % change for filter
             nifty_q = self.fetcher.get_nifty_quote()
             if nifty_q:
                 self.risk_manager.check_nifty_circuit(nifty_q.get("ltp", 0))
+                nifty_change = float(nifty_q.get("change_pct", 0))
+                self._nifty_change_pct = nifty_change
+                if self.signal_gen:
+                    self.signal_gen.update_nifty_change(nifty_change)
+
+            # 2b. Build ORB levels at 9:30 AM IST (first time only)
+            now_ist = get_current_ist_time()
+            if (not self._orb_built_today and
+                    now_ist.hour == 9 and now_ist.minute >= 30 and self.orb):
+                watchlist = self.watchlist_mgr.get_watchlist(
+                    data_fetcher=self.fetcher, learner=self.learner
+                )
+                built = self.orb.build_levels(watchlist, self.fetcher)
+                self._orb_built_today = True
+                logger.info(f"[{format_ist_timestamp()}] ORB levels built for {built} stocks")
 
             # 3. Economic calendar blackout check
             if self.calendar:
@@ -449,12 +518,101 @@ class TradingBot:
                 logger.debug(f"[{format_ist_timestamp()}] Max positions reached — no new entries")
                 return
 
+            # 4a. ORB breakout scan (9:30–10:30 AM IST — most powerful window)
+            orb_signals = []
+            if self.orb and self._orb_built_today:
+                orb_signals = self.orb.scan_breakouts(self.fetcher)
+                for orb_sig in orb_signals[:max_new]:
+                    can = self.risk_manager.can_take_trade(orb_sig.symbol, orb_sig.direction)
+                    if not can["allowed"]:
+                        continue
+                    # Convert ORB signal to TradeSignal
+                    from signal_generator import TradeSignal
+                    ts = TradeSignal(
+                        symbol=orb_sig.symbol,
+                        direction=orb_sig.direction,
+                        signal_score=85.0,  # ORB breakouts are inherently high quality
+                        entry_price=orb_sig.entry_price,
+                        stop_loss=orb_sig.stop_loss,
+                        target_1=orb_sig.target_1,
+                        target_2=orb_sig.target_2,
+                        risk_reward=2.0,
+                        atr=abs(orb_sig.entry_price - orb_sig.stop_loss),
+                        patterns=[f"ORB_{orb_sig.gap_type}"],
+                        quality_grade="A" if orb_sig.quality == "PREMIUM" else "B",
+                        size_multiplier=orb_sig.size_mult,
+                        rationale=f"ORB breakout | {orb_sig.quality} | Gap:{orb_sig.gap_type}",
+                    )
+                    logger.info(f"[{format_ist_timestamp()}] {orb_sig.summary}")
+                    result = self.executor.place_entry_order(ts)
+                    if result.success:
+                        max_new -= 1
+                        try:
+                            df_5m = self.fetcher.get_today_candles(orb_sig.symbol)
+                            self.alerter.send_entry_alert(ts, df_5m)
+                        except Exception:
+                            pass
+
+            # 4b. Momentum burst scan (fires on explosive volume/price moves)
+            if self.burst and max_new > 0:
+                burst_signals = self.burst.scan(watchlist, self.fetcher)
+                for bsig in burst_signals[:max_new]:
+                    if bsig.burst_score < 80:  # Only EXPLOSIVE bursts get auto-executed
+                        logger.info(f"[{format_ist_timestamp()}] Burst building: {bsig.summary}")
+                        continue
+                    can = self.risk_manager.can_take_trade(bsig.symbol, bsig.direction)
+                    if not can["allowed"]:
+                        continue
+                    from signal_generator import TradeSignal
+                    from utils import round_to_tick_size
+                    atr_est = bsig.ltp * 0.008
+                    sl = round_to_tick_size(
+                        bsig.ltp - atr_est if bsig.direction == "LONG" else bsig.ltp + atr_est
+                    )
+                    t1 = round_to_tick_size(
+                        bsig.ltp + atr_est * 2 if bsig.direction == "LONG" else bsig.ltp - atr_est * 2
+                    )
+                    t2 = round_to_tick_size(
+                        bsig.ltp + atr_est * 3.5 if bsig.direction == "LONG" else bsig.ltp - atr_est * 3.5
+                    )
+                    ts = TradeSignal(
+                        symbol=bsig.symbol, direction=bsig.direction,
+                        signal_score=bsig.burst_score,
+                        entry_price=bsig.ltp, stop_loss=sl,
+                        target_1=t1, target_2=t2,
+                        risk_reward=2.0, atr=atr_est,
+                        patterns=[bsig.trigger_type],
+                        quality_grade="A+" if bsig.burst_score >= 90 else "A",
+                        size_multiplier=bsig.size_mult,
+                        rationale=f"BURST score={bsig.burst_score:.0f} vol={bsig.volume_ratio:.1f}x",
+                    )
+                    logger.info(f"[{format_ist_timestamp()}] 🔥 BURST FIRE: {bsig.summary}")
+                    result = self.executor.place_entry_order(ts)
+                    if result.success:
+                        max_new -= 1
+                        try:
+                            df_5m = self.fetcher.get_today_candles(bsig.symbol)
+                            self.alerter.send_entry_alert(ts, df_5m)
+                        except Exception:
+                            pass
+
+            # 4c. Standard multi-timeframe signal scan
+            if max_new > 0:
+                # Wire ORB direction for each symbol into signal generator
+                if self.signal_gen and self.orb:
+                    # Use first symbol's ORB direction as market direction hint
+                    for sym in watchlist[:3]:
+                        orb_dir = self.orb.get_direction(sym)
+                        if orb_dir:
+                            self.signal_gen.set_orb_direction(orb_dir)
+                            break
+
             signals = self.signal_gen.scan_watchlist(
                 symbols=watchlist,
-                max_signals=min(max_new, 3)  # Max 3 new signals per cycle
+                max_signals=min(max_new, 3)
             )
 
-            # 5. Execute signals
+            # 5. Execute standard signals
             for signal in signals:
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
@@ -576,6 +734,26 @@ class TradingBot:
                             f"WR={report.get('win_rate',0):.1f}%")
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
+
+        # Record day in profit compounder (updates tomorrow's capital)
+        if self.compounder:
+            try:
+                summary = self.risk_manager.get_daily_summary()
+                tomorrow_cap = self.compounder.record_day(
+                    pnl=summary.get("daily_pnl", 0),
+                    trades=summary.get("total_trades", 0),
+                    wins=summary.get("wins", 0),
+                    starting_capital=self.risk_manager.state.daily_capital,
+                )
+                try:
+                    self.alerter.send_text(
+                        self.compounder.format_summary() +
+                        f"\n\nTomorrow's capital: ₹{tomorrow_cap:,.0f}"
+                    )
+                except Exception:
+                    pass
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] Compounder record_day failed: {e}")
 
         self.market_open_today = False
         self.eod_done = True

@@ -323,6 +323,25 @@ class GrowwDataFetcher:
             to_dt=now_ist
         )
 
+    def get_prev_close(self, symbol: str) -> Optional[float]:
+        """
+        Get previous day's closing price for gap calculation.
+        Used by ORBTracker for gap-up/gap-down detection.
+        """
+        try:
+            quote = self.get_quote(symbol)
+            if quote:
+                prev = float(quote.get("prev_close") or quote.get("close") or 0)
+                if prev > 0:
+                    return prev
+            # Fallback: last candle of previous day from daily data
+            df = self.get_candles(symbol, interval="1d", days=3)
+            if df is not None and len(df) >= 2:
+                return float(df["close"].iloc[-2])
+        except Exception as e:
+            logger.debug(f"get_prev_close {symbol}: {e}")
+        return None
+
     # --------------------------------------------------------
     # NIFTY50 REFERENCE DATA
     # --------------------------------------------------------

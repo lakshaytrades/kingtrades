@@ -14,12 +14,21 @@ All timestamps in IST. Server runs in UK (UTC).
 """
 
 import logging
+import os
 from datetime import timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
 import numpy as np
 import pandas as pd
+
+# Headless backend — MUST be set before any plt import (required for Render/VPS)
+os.environ.setdefault("MPLBACKEND", "Agg")
+try:
+    import matplotlib
+    matplotlib.use("Agg")
+except Exception:
+    pass
 
 from utils import (
     format_ist_timestamp, format_currency,
