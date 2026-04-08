@@ -11,6 +11,7 @@ Features:
 - Nifty50 index data for relative strength
 - Auto-retry with exponential backoff
 - All timestamps in IST
+- LEVERAGE: Configured for MIS (Intraday)
 """
 
 import logging
@@ -95,15 +96,16 @@ class GrowwDataFetcher:
             if not self._api:
                 return None
 
+        # Check cache
         cache_key = f"quote_{symbol}"
         if cache_key in self._cache:
-            cached_df, cached_time = self._cache[cache_key]
+            cached_data, cached_time = self._cache[cache_key]
             age = (get_current_ist_time() - cached_time).total_seconds()
             if age < self._cache_ttl_seconds:
-                return cached_df
+                return cached_data
 
         try:
-            # EDIT 1: Added mandatory exchange and segment parameters
+            # FIX 1: Added mandatory exchange and segment parameters
             raw = self._api.get_quote(trading_symbol=symbol, exchange="NSE", segment="CASH")
             if not raw:
                 return None
@@ -120,10 +122,12 @@ class GrowwDataFetcher:
                 "change_pct": float(raw.get("change_percent") or raw.get("pct_change") or 0),
                 "bid": float(raw.get("bid") or 0),
                 "ask": float(raw.get("ask") or 0),
+                "product": "MIS", # LEVERAGE: Default to MIS for leveraged trading data
                 "timestamp": format_ist_timestamp(),
                 "timestamp_dt": get_current_ist_time(),
             }
 
+            # Cache it
             self._cache[cache_key] = (quote, get_current_ist_time())
             logger.debug(f"[{format_ist_timestamp()}] Quote {symbol}: ₹{quote['ltp']}")
             return quote
@@ -177,13 +181,14 @@ class GrowwDataFetcher:
         if from_dt is None:
             from_dt = to_dt - timedelta(days=days)
 
+        # Convert to timestamps for API
         from_ts = int(from_dt.timestamp() * 1000)
         to_ts = int(to_dt.timestamp() * 1000)
 
         groww_interval = INTERVAL_MAP.get(interval, "5minute")
 
         try:
-            # EDIT 2: Added mandatory exchange and segment for historical data
+            # FIX 2: Added mandatory exchange and segment for historical data
             raw_candles = self._api.get_historical_data(
                 symbol=symbol,
                 exchange="NSE",
@@ -217,14 +222,12 @@ class GrowwDataFetcher:
         records = []
         for candle in raw:
             try:
+                # Groww format handling
                 if isinstance(candle, (list, tuple)):
                     ts, o, h, l, c, v = candle[0], candle[1], candle[2], candle[3], candle[4], candle[5]
                 elif isinstance(candle, dict):
                     ts = candle.get("timestamp") or candle.get("time") or candle.get("date")
-                    o = candle.get("open")
-                    h = candle.get("high")
-                    l = candle.get("low")
-                    c = candle.get("close")
+                    o, h, l, c = candle.get("open"), candle.get("high"), candle.get("low"), candle.get("close")
                     v = candle.get("volume", 0)
                 else:
                     continue
@@ -248,7 +251,8 @@ class GrowwDataFetcher:
                 logger.debug(f"Candle parse error: {e}")
                 continue
 
-        if not records: return None
+        if not records:
+            return None
 
         df = pd.DataFrame(records)
         df = df.sort_values("datetime").drop_duplicates("datetime")
@@ -257,6 +261,10 @@ class GrowwDataFetcher:
         df.attrs["symbol"] = symbol
         df.attrs["interval"] = interval
         return df
+
+    # --------------------------------------------------------
+    # ANALYSIS & UTILITIES
+    # --------------------------------------------------------
 
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
         data = {}
@@ -272,28 +280,35 @@ class GrowwDataFetcher:
 
     def get_today_candles(self, symbol: str, interval: str = "5m") -> Optional[pd.DataFrame]:
         market_open = get_market_open_datetime_ist()
-        now_ist = get_current_ist_time()
-        return self.get_candles(symbol, interval=interval, from_dt=market_open, to_dt=now_ist)
+        return self.get_candles(symbol, interval=interval, from_dt=market_open, to_dt=get_current_ist_time())
+
+    # --------------------------------------------------------
+    # NIFTY50 (With 'Forbidden' Access Fallbacks)
+    # --------------------------------------------------------
 
     def get_nifty_quote(self) -> Optional[Dict]:
-        nifty_symbols = ["NIFTY 50", "NIFTY50"]
-        for sym in nifty_symbols:
+        """Tries various Nifty symbols to bypass access restrictions."""
+        for sym in ["NIFTY", "NIFTY 50", "NSE_NIFTY", "NIFTY50"]:
             try:
                 quote = self.get_quote(sym)
                 if quote and quote.get("ltp"):
                     return quote
-            except Exception:
+            except:
                 continue
         return None
 
     def get_nifty_candles(self, interval: str = "5m", days: int = 5) -> Optional[pd.DataFrame]:
-        for sym in ["NIFTY 50", "NIFTY50"]:
+        for sym in ["NIFTY", "NIFTY 50", "NSE_NIFTY"]:
             try:
                 df = self.get_candles(sym, interval=interval, days=days)
                 if df is not None and not df.empty: return df
-            except Exception:
+            except:
                 continue
         return None
+
+    # --------------------------------------------------------
+    # ACCOUNT & POSITIONS (LEVERAGE/MIS)
+    # --------------------------------------------------------
 
     @retry_with_backoff(max_retries=3, delays=[2, 4, 8])
     def get_account_balance(self) -> Dict:
@@ -303,69 +318,60 @@ class GrowwDataFetcher:
             if isinstance(funds, dict):
                 available = float(funds.get("available_cash") or funds.get("available_margin") or 0)
                 used = float(funds.get("used_margin") or 0)
-                return {"available": available, "used": used, "total": available + used, "timestamp": format_ist_timestamp()}
+                return {
+                    "available": available, 
+                    "used": used, 
+                    "total": available + used, 
+                    "timestamp": format_ist_timestamp()
+                }
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] balance failed: {e}")
         return {"available": 0, "used": 0, "total": 0}
 
     @retry_with_backoff(max_retries=3, delays=[2, 4, 8])
     def get_positions(self) -> List[Dict]:
-        """Fetch current open intraday positions (Leverage/MIS)."""
+        """Fetch open positions explicitly showing MIS/Leverage."""
         if not self._api: return []
         try:
             raw_positions = self._api.get_positions()
             positions = []
             for pos in (raw_positions or []):
-                if isinstance(pos, dict):
-                    qty = int(pos.get("quantity") or 0)
-                    if qty == 0: continue
-                    positions.append({
-                        "symbol": pos.get("symbol") or pos.get("trading_symbol", ""),
-                        "quantity": qty,
-                        "avg_price": float(pos.get("average_price") or 0),
-                        "ltp": float(pos.get("ltp") or 0),
-                        "product": pos.get("product", "MIS"), # LEVERAGE: Ensures it shows as MIS
-                        "direction": "BUY" if qty > 0 else "SELL",
-                    })
+                qty = int(pos.get("quantity") or 0)
+                if qty == 0: continue
+                positions.append({
+                    "symbol": pos.get("symbol") or pos.get("trading_symbol", ""),
+                    "quantity": qty,
+                    "avg_price": float(pos.get("average_price") or 0),
+                    "ltp": float(pos.get("ltp") or 0),
+                    "pnl": float(pos.get("pnl") or 0),
+                    "product": "MIS", # LEVERAGE: Force label for intraday management
+                    "direction": "BUY" if qty > 0 else "SELL",
+                })
             return positions
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] positions failed: {e}")
-            return []
-
-    @retry_with_backoff(max_retries=3, delays=[2, 4, 8])
-    def get_orders(self) -> List[Dict]:
-        if not self._api: return []
-        try:
-            raw_orders = self._api.get_orders()
-            orders = []
-            for order in (raw_orders or []):
-                if isinstance(order, dict):
-                    orders.append({
-                        "order_id": order.get("order_id", ""),
-                        "symbol": order.get("symbol", ""),
-                        "quantity": int(order.get("quantity") or 0),
-                        "status": order.get("status", ""),
-                        "product": order.get("product", "MIS"), # LEVERAGE
-                    })
-            return orders
-        except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] orders failed: {e}")
+            logger.error(f"[{format_ist_timestamp()}] get_positions failed: {e}")
             return []
 
     def get_opening_range(self, symbol: str) -> Optional[Dict]:
-        now_ist = get_current_ist_time()
+        """Calculates 9:15-9:30 AM ORB levels."""
         market_open = get_market_open_datetime_ist()
         orb_end = market_open.replace(hour=9, minute=30)
-        df = self.get_candles(symbol, interval="5m", from_dt=market_open, to_dt=min(now_ist, orb_end + timedelta(minutes=5)))
+        df = self.get_candles(symbol, interval="5m", from_dt=market_open, to_dt=orb_end + timedelta(minutes=5))
         if df is None or df.empty: return None
         orb_candles = df[(df.index.time >= pd.Timestamp("09:15").time()) & (df.index.time <= pd.Timestamp("09:30").time())]
         if orb_candles.empty: return None
-        orb_high, orb_low = orb_candles["high"].max(), orb_candles["low"].min()
-        return {"symbol": symbol, "orb_high": orb_high, "orb_low": orb_low, "orb_mid": (orb_high + orb_low) / 2}
+        return {
+            "symbol": symbol,
+            "orb_high": orb_candles["high"].max(),
+            "orb_low": orb_candles["low"].min(),
+            "orb_mid": (orb_candles["high"].max() + orb_candles["low"].min()) / 2
+        }
 
+# Singleton
 _fetcher: Optional[GrowwDataFetcher] = None
 
 def get_data_fetcher() -> GrowwDataFetcher:
     global _fetcher
-    if _fetcher is None: _fetcher = GrowwDataFetcher()
+    if _fetcher is None:
+        _fetcher = GrowwDataFetcher()
     return _fetcher
