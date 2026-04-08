@@ -50,6 +50,12 @@ TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 # ============================================================
+# AI BRAIN — Google Gemini (free)
+# Get key: https://aistudio.google.com/app/apikey
+# ============================================================
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
+
+# ============================================================
 # NEWS / SENTIMENT
 # ============================================================
 NEWS_API_KEY = os.getenv("NEWS_API_KEY", "")

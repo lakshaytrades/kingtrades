@@ -21,10 +21,8 @@ Pillow>=10.0.0
 python-telegram-bot>=20.0
 
 # ---- TOTP / Authentication ----
-pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login
+pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login (headless, no browser)
 requests>=2.31.0
-selenium>=4.15.0           # Groww web login automation (TOTP)
-webdriver-manager>=4.0.0  # Auto ChromeDriver management
 
 # ---- Timezone Handling (IST for UK server) ----
 pytz>=2023.3               # Timezone conversions
@@ -69,8 +67,8 @@ cryptography>=41.0.0
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
 
-# ---- AI Brain (Claude API — for market intelligence & learning) ----
-anthropic>=0.40.0             # Claude API — set ANTHROPIC_API_KEY in .env
+# ---- AI Brain (Google Gemini — FREE, no cost) ----
+google-generativeai>=0.8.0    # Gemini API — set GEMINI_API_KEY in .env (free: aistudio.google.com)
 
 # ---- Global Market Data (overnight analysis) ----
 yfinance>=0.2.40              # Free global market data: US, Asian markets, VIX, FX, commodities

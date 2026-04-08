@@ -1,8 +1,8 @@
 """
 ai_brain.py — NSE Momentum Groww AI Bot
-Central AI Intelligence Engine — Powered by Claude API
+Central AI Intelligence Engine — Powered by Google Gemini
 
-This is the "thinking" layer of the bot. It uses Claude AI to:
+This is the "thinking" layer of the bot. It uses Gemini AI to:
 1. Analyse market patterns and generate human-like trading insight
 2. Review each day's trades and extract lessons
 3. Synthesise news + price action + indicators into a daily market thesis
@@ -12,6 +12,9 @@ This is the "thinking" layer of the bot. It uses Claude AI to:
 
 18yr Rule: "The best traders THINK before they trade.
 They ask: Why is price HERE? Who is buying/selling? What does it MEAN?"
+
+API: Google Gemini (free tier — set GEMINI_API_KEY in .env)
+Get key: https://aistudio.google.com/app/apikey
 """
 
 import json
@@ -61,44 +64,57 @@ NSE-specific knowledge:
 
 class AIBrain:
     """
-    Claude-powered AI brain for market analysis and continuous learning.
+    Gemini-powered AI brain for market analysis and continuous learning.
     Runs during off-market hours and provides insights before market opens.
+    Free tier: 15 RPM, 1M tokens/month — more than sufficient for this bot.
     """
 
     def __init__(self):
-        self._client = None
-        self._model  = "claude-sonnet-4-6"
-        self._enabled = bool(os.getenv("ANTHROPIC_API_KEY"))
+        self._model  = None
+        self._model_name = "gemini-1.5-flash"   # Free tier, fast, capable
+        self._enabled = bool(os.getenv("GEMINI_API_KEY"))
         if not self._enabled:
             logger.warning(
-                f"[{format_ist_timestamp()}] ANTHROPIC_API_KEY not set — "
-                "AI brain running in rule-based mode only"
+                f"[{format_ist_timestamp()}] GEMINI_API_KEY not set — "
+                "AI brain running in rule-based mode only. "
+                "Get free key: https://aistudio.google.com/app/apikey"
             )
         else:
             self._init_client()
 
     def _init_client(self):
         try:
-            import anthropic
-            self._client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
-            logger.info(f"[{format_ist_timestamp()}] AI Brain (Claude) initialized")
+            import google.generativeai as genai
+            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
+            self._model = genai.GenerativeModel(
+                model_name=self._model_name,
+                system_instruction=TRADING_WISDOM,
+            )
+            logger.info(
+                f"[{format_ist_timestamp()}] AI Brain (Gemini {self._model_name}) initialized"
+            )
         except ImportError:
-            logger.error("anthropic not installed: pip install anthropic")
+            logger.error(
+                "google-generativeai not installed: pip install google-generativeai"
+            )
         except Exception as e:
             logger.error(f"AI Brain init failed: {e}")
 
     def _ask(self, prompt: str, max_tokens: int = 1024) -> str:
-        """Send a prompt to Claude and get response."""
-        if not self._client:
-            return "[AI Brain offline — set ANTHROPIC_API_KEY]"
+        """Send a prompt to Gemini and get response."""
+        if not self._model:
+            return "[AI Brain offline — set GEMINI_API_KEY (free: aistudio.google.com)]"
         try:
-            resp = self._client.messages.create(
-                model=self._model,
-                max_tokens=max_tokens,
-                system=TRADING_WISDOM,
-                messages=[{"role": "user", "content": prompt}]
+            import google.generativeai as genai
+            generation_config = genai.types.GenerationConfig(
+                max_output_tokens=max_tokens,
+                temperature=0.3,    # Lower temp = more consistent, analytical responses
             )
-            return resp.content[0].text
+            response = self._model.generate_content(
+                prompt,
+                generation_config=generation_config,
+            )
+            return response.text
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] AI Brain query failed: {e}")
             return f"[AI query failed: {e}]"
@@ -262,7 +278,7 @@ As an 18-year NSE veteran, analyse these trades and provide:
 5. PATTERN_SCORES: Rate each pattern that appeared (0-100 confidence for tomorrow)
 6. ONE RULE: One specific rule to add/change based on today
 
-Format as JSON: lessons (list), pattern_feedback (dict name->score), 
+Format as JSON: lessons (list), pattern_feedback (dict name->score),
 tomorrow_focus (string), rule_change (string), summary (string)
 """
         response = self._ask(prompt, max_tokens=1000)
@@ -390,7 +406,7 @@ Technical snapshot:
 Recent news:
 {news_text}
 
-In 2 sentences: Is this stock worth watching today for momentum trading? 
+In 2 sentences: Is this stock worth watching today for momentum trading?
 Flag any red flags. Be direct.
 """
         return self._ask(prompt, max_tokens=150)
@@ -428,6 +444,16 @@ Flag any red flags. Be direct.
             except Exception:
                 pass
         return None
+
+    def get_learning_summary(self) -> str:
+        """Short summary of today's AI insights for EOD report."""
+        thesis = self.get_today_thesis()
+        if thesis:
+            bias = thesis.get("bias", "NEUTRAL")
+            conf = thesis.get("confidence", 50)
+            text = thesis.get("thesis", "")[:100]
+            return f"AI ({self._model_name}): {bias} ({conf}%) — {text}"
+        return f"AI ({self._model_name}): No thesis generated today"
 
 
 # Singleton
