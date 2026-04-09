@@ -27,13 +27,15 @@ Full lifecycle:
 """
 
 import asyncio
+import json
 import logging
 import os
 import signal
 import sys
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
+from pathlib import Path
 from typing import Optional, List
 from zoneinfo import ZoneInfo
 
@@ -84,6 +86,16 @@ class TradingBot:
         self.fii_tracker = None   # FII/DII flow tracker
         self._last_trade_date = ""
         self._overnight_run_today = False
+
+        # Automation state
+        self._watchlist_cache: List[str] = []
+        self._watchlist_cache_time: Optional[datetime] = None
+        self._watchlist_cache_ttl = 900       # 15 min cache
+        self._last_heartbeat_min = -1          # track heartbeat by minute
+        self._token_refresh_attempts = 0
+        self._premarket_scan_done = False
+        self._capital_file = Path("data/capital.json")
+        self._capital_file.parent.mkdir(exist_ok=True)
 
     # --------------------------------------------------------
     # STARTUP
@@ -272,11 +284,14 @@ class TradingBot:
 
         logger.info(f"[{format_ist_timestamp()}] 🔔 MARKET OPEN — Initializing trading day...")
 
-        # Get live balance from Groww
+        # Get live balance from Groww; fall back to auto-compounded capital
         balance_info = self.fetcher.get_account_balance()
         available = balance_info.get("available", 0)
-        if available == 0 and not config.LIVE_TRADING_ENABLED:
-            available = config.MAX_DAILY_CAPITAL  # Use configured capital in dry run
+        if available == 0:
+            available = self._load_compounded_capital()
+
+        # Sync any open positions from Groww (recovery after restart)
+        self._sync_positions_from_groww()
 
         # Get Nifty opening price
         nifty_q = self.fetcher.get_nifty_quote()
@@ -364,8 +379,16 @@ class TradingBot:
             while self.running:
                 now_ist = get_current_ist_time()
 
-                # Daily TOTP token refresh at 8:45 AM IST
+                # TOTP token refresh: primary at 8:45 AM, retry at 9:00 and 9:10 if failed
                 if is_token_refresh_time() and not self._token_refreshed_today:
+                    self._do_token_refresh()
+                elif (not self._token_refreshed_today
+                        and now_ist.hour == 9
+                        and now_ist.minute in (0, 10)
+                        and self._token_refresh_attempts < 3):
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] Token refresh retry #{self._token_refresh_attempts + 1}..."
+                    )
                     self._do_token_refresh()
 
                 # Reset for new day
@@ -374,12 +397,23 @@ class TradingBot:
                         self._day_initialized = False
                         self.eod_done = False
                         self._token_refreshed_today = False
+                        self._token_refresh_attempts = 0
+                        self._premarket_scan_done = False
+                        self._watchlist_cache = []
+                        self._watchlist_cache_time = None
+                        self._last_heartbeat_min = -1
                         self._last_trade_date = now_ist.strftime("%Y-%m-%d")
 
                 # Overnight analysis at 8:00 AM IST (before market)
                 if (now_ist.hour == 8 and now_ist.minute < 5
                         and not self._overnight_run_today):
                     self._run_overnight_analysis()
+
+                # Pre-market top-picks scan at 9:05 AM IST
+                if (now_ist.hour == 9 and now_ist.minute >= 5
+                        and now_ist.minute < 15 and not self._premarket_scan_done):
+                    self._send_premarket_scan()
+                    self._premarket_scan_done = True
 
                 # Pre-market: build watchlist + holiday check
                 if is_pre_market_ist() and not self._day_initialized:
@@ -493,10 +527,14 @@ class TradingBot:
                 logger.debug(f"[{format_ist_timestamp()}] Trading paused — skipping signals")
                 return
 
-            # 4. Scan watchlist
-            watchlist = self.watchlist_mgr.get_watchlist(
-                data_fetcher=self.fetcher, learner=self.learner
-            )
+            # Hourly heartbeat (on the hour, e.g. 9:00, 10:00, 11:00...)
+            now_ist = get_current_ist_time()
+            if now_ist.minute < 2 and now_ist.hour != self._last_heartbeat_min:
+                self._send_heartbeat()
+                self._last_heartbeat_min = now_ist.hour
+
+            # 4. Scan watchlist (15-min cached)
+            watchlist = self._get_watchlist_cached()
             max_new = config.MAX_POSITIONS - len(self.risk_manager.state.positions)
             if max_new <= 0:
                 logger.debug(f"[{format_ist_timestamp()}] Max positions reached — no new entries")
@@ -641,6 +679,9 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
 
+        # Save compounded capital for tomorrow
+        self._save_compounded_capital()
+
         self.market_open_today = False
         self.eod_done = True
         logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
@@ -694,7 +735,9 @@ class TradingBot:
             self.fetcher._refresh_api_if_needed()
             if self.executor:
                 self.executor._init_api()
-        self._token_refreshed_today = True
+        self._token_refresh_attempts += 1
+        if success:
+            self._token_refreshed_today = True
         logger.info(f"[{format_ist_timestamp()}] Token refresh {'✅ succeeded' if success else '❌ failed'}")
 
     # --------------------------------------------------------
@@ -760,12 +803,51 @@ class TradingBot:
                     return
                 self.alerter.send_eod_report(self.risk_manager)
 
+            async def cmd_balance(update, context):
+                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                    return
+                try:
+                    bal = self.fetcher.get_account_balance() if self.fetcher else {}
+                    avail = bal.get("available", 0)
+                    compounded = self._load_compounded_capital()
+                    pnl = self.risk_manager.state.daily_pnl if self.risk_manager else 0
+                    self.alerter.send_text(
+                        f"💰 <b>Account Balance</b>\n"
+                        f"Groww Available: ₹{avail:,.0f}\n"
+                        f"Bot Capital (compounded): ₹{compounded:,.0f}\n"
+                        f"Today P&L: ₹{pnl:+,.0f}\n"
+                        f"Base Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f}"
+                    )
+                except Exception as e:
+                    self.alerter.send_text(f"Balance fetch error: {e}")
+
+            async def cmd_capital(update, context):
+                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                    return
+                try:
+                    data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+                    base = config.MAX_DAILY_CAPITAL
+                    compounded = data.get("compounded_capital", base)
+                    growth = data.get("total_growth_pct", 0)
+                    date = data.get("date", "never")
+                    self.alerter.send_text(
+                        f"📈 <b>Capital Growth</b>\n"
+                        f"Base: ₹{base:,.0f}\n"
+                        f"Current: ₹{compounded:,.0f}\n"
+                        f"Total Growth: {growth:+.2f}%\n"
+                        f"Last Updated: {date}"
+                    )
+                except Exception as e:
+                    self.alerter.send_text(f"Capital data error: {e}")
+
             app.add_handler(CommandHandler("kill", cmd_kill))
             app.add_handler(CommandHandler("status", cmd_status))
             app.add_handler(CommandHandler("pause", cmd_pause))
             app.add_handler(CommandHandler("resume", cmd_resume))
             app.add_handler(CommandHandler("watchlist", cmd_watchlist))
             app.add_handler(CommandHandler("report", cmd_report))
+            app.add_handler(CommandHandler("balance", cmd_balance))
+            app.add_handler(CommandHandler("capital", cmd_capital))
 
             await app.initialize()
             await app.start()
@@ -778,6 +860,203 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"Telegram listener exception: {e}")
+
+    # --------------------------------------------------------
+    # AUTO-COMPOUND CAPITAL
+    # --------------------------------------------------------
+
+    def _load_compounded_capital(self) -> float:
+        """
+        Returns today's capital = base + cumulative net P&L.
+        Reads from data/capital.json written each EOD.
+        Caps at 5× base to prevent runaway sizing after a lucky streak.
+        """
+        base = config.MAX_DAILY_CAPITAL
+        try:
+            if self._capital_file.exists():
+                data = json.loads(self._capital_file.read_text())
+                compounded = float(data.get("compounded_capital", base))
+                cap = base * 5
+                compounded = max(base, min(compounded, cap))
+                if compounded != base:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Auto-compound: "
+                        f"base ₹{base:,.0f} → today ₹{compounded:,.0f}"
+                    )
+                return compounded
+        except Exception as e:
+            logger.warning(f"Capital load error: {e}")
+        return base
+
+    def _save_compounded_capital(self):
+        """Save today's P&L to capital.json for tomorrow's compound."""
+        try:
+            if not self.risk_manager:
+                return
+            today_pnl = self.risk_manager.state.daily_pnl
+            base = config.MAX_DAILY_CAPITAL
+            existing = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+            prev = float(existing.get("compounded_capital", base))
+            new_capital = max(base * 0.8, prev + today_pnl)  # max 20% drawdown on capital
+            self._capital_file.write_text(json.dumps({
+                "date": get_current_ist_time().strftime("%Y-%m-%d"),
+                "base_capital": base,
+                "today_pnl": round(today_pnl, 2),
+                "compounded_capital": round(new_capital, 2),
+                "total_growth_pct": round((new_capital - base) / base * 100, 2),
+            }, indent=2))
+            logger.info(
+                f"[{format_ist_timestamp()}] Capital saved: "
+                f"₹{prev:,.0f} + P&L ₹{today_pnl:+,.0f} = ₹{new_capital:,.0f}"
+            )
+        except Exception as e:
+            logger.warning(f"Capital save error: {e}")
+
+    # --------------------------------------------------------
+    # POSITION SYNC ON RESTART
+    # --------------------------------------------------------
+
+    def _sync_positions_from_groww(self):
+        """
+        On startup/restart, read open positions from Groww and register
+        them in the risk manager so trailing stops & exits work correctly.
+        Called during initialize_market_day() if market is open.
+        """
+        if not self.fetcher or not self.risk_manager:
+            return
+        try:
+            positions = self.fetcher.get_positions()
+            if not positions:
+                return
+            synced = 0
+            for p in positions:
+                sym = p.get("symbol", "")
+                qty = int(p.get("quantity", 0))
+                avg = float(p.get("avg_price", 0))
+                if not sym or qty == 0:
+                    continue
+                # Register in risk manager state so bot tracks them
+                if sym not in self.risk_manager.state.positions:
+                    from risk_manager import Position
+                    pos = Position(
+                        symbol=sym,
+                        direction="LONG" if qty > 0 else "SHORT",
+                        quantity=abs(qty),
+                        entry_price=avg,
+                        stop_loss=avg * 0.98,   # 2% fallback SL until ATR recalculated
+                        target1=avg * 1.02,
+                        target2=avg * 1.04,
+                        entry_time=get_current_ist_time(),
+                    )
+                    self.risk_manager.state.positions[sym] = pos
+                    synced += 1
+            if synced:
+                logger.info(
+                    f"[{format_ist_timestamp()}] Synced {synced} open position(s) from Groww"
+                )
+                self.alerter.send_text(
+                    f"🔄 Bot restarted — synced {synced} open position(s) from Groww.\n"
+                    "Trailing stops re-applied. Monitoring active."
+                )
+        except Exception as e:
+            logger.warning(f"Position sync error: {e}")
+
+    # --------------------------------------------------------
+    # PRE-MARKET TOP PICKS SCAN
+    # --------------------------------------------------------
+
+    def _send_premarket_scan(self):
+        """
+        At 9:05 AM IST: scan full watchlist for the top 5 high-momentum
+        setups and send a 'Today's Top Picks' Telegram alert.
+        """
+        if not self.signal_gen or not self.alerter:
+            return
+        try:
+            watchlist = self.watchlist_mgr.get_watchlist(
+                data_fetcher=self.fetcher, learner=self.learner
+            )
+            logger.info(
+                f"[{format_ist_timestamp()}] Pre-market scan: {len(watchlist)} stocks..."
+            )
+            # Quick score scan (limit candle fetches)
+            picks = []
+            for sym in watchlist[:30]:
+                try:
+                    df = self.fetcher.get_candles(sym, interval="5m", days=2)
+                    if df is None or len(df) < 20:
+                        continue
+                    q = self.fetcher.get_quote(sym)
+                    if not q:
+                        continue
+                    chg = float(q.get("change_pct", 0))
+                    vol = int(q.get("volume", 0))
+                    ltp = float(q.get("ltp", 0))
+                    # Simple momentum score: abs(change) + volume surge proxy
+                    score = abs(chg) * 10 + (1 if vol > 500000 else 0)
+                    if abs(chg) >= 0.3:  # Only stocks moving
+                        picks.append((sym, chg, ltp, vol, score))
+                except Exception:
+                    continue
+            picks.sort(key=lambda x: x[4], reverse=True)
+            top5 = picks[:5]
+            if not top5:
+                return
+            lines = [f"🎯 <b>Pre-Market Top Picks</b> — {get_current_ist_time().strftime('%d %b %Y')}\n"]
+            for i, (sym, chg, ltp, vol, _) in enumerate(top5, 1):
+                arrow = "📈" if chg > 0 else "📉"
+                lines.append(f"{i}. {arrow} <b>{sym}</b> ₹{ltp:.1f} ({chg:+.2f}%)")
+            lines.append("\n⏰ Market opens 9:15 AM IST — watch for breakout confirmation")
+            self.alerter.send_text("\n".join(lines))
+            logger.info(
+                f"[{format_ist_timestamp()}] Pre-market picks sent: "
+                + ", ".join(p[0] for p in top5)
+            )
+        except Exception as e:
+            logger.warning(f"Pre-market scan error: {e}")
+
+    # --------------------------------------------------------
+    # HEARTBEAT
+    # --------------------------------------------------------
+
+    def _send_heartbeat(self):
+        """Send hourly 'bot alive' status to Telegram during market hours."""
+        try:
+            if not self.risk_manager or not self.alerter:
+                return
+            state = self.risk_manager.state
+            n_pos = len(state.positions)
+            pnl = state.daily_pnl
+            cap = state.available_capital
+            status = "🟢 TRADING" if not state.trading_paused else "⏸ PAUSED"
+            if state.circuit_breaker_active:
+                status = "🔴 CIRCUIT BREAK"
+            pos_symbols = ", ".join(state.positions.keys()) if state.positions else "none"
+            self.alerter.send_text(
+                f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
+                f"Status: {status}\n"
+                f"Positions: {n_pos} ({pos_symbols})\n"
+                f"Day P&L: ₹{pnl:+,.0f}\n"
+                f"Available: ₹{cap:,.0f}"
+            )
+        except Exception as e:
+            logger.debug(f"Heartbeat error: {e}")
+
+    # --------------------------------------------------------
+    # CACHED WATCHLIST
+    # --------------------------------------------------------
+
+    def _get_watchlist_cached(self) -> List[str]:
+        """Get watchlist with 15-min cache to avoid excessive API calls."""
+        now = get_current_ist_time()
+        if (not self._watchlist_cache or
+                self._watchlist_cache_time is None or
+                (now - self._watchlist_cache_time).total_seconds() > self._watchlist_cache_ttl):
+            self._watchlist_cache = self.watchlist_mgr.get_watchlist(
+                data_fetcher=self.fetcher, learner=self.learner
+            )
+            self._watchlist_cache_time = now
+        return self._watchlist_cache
 
     # --------------------------------------------------------
     # CLEANUP

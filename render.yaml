@@ -24,7 +24,7 @@ services:
     repo: https://github.com/lakshaytrades/kingtrades
     branch: claude/nse-momentum-groww-bot-hvkv9
     buildCommand: pip install -r requirements.txt
-    startCommand: python main.py
+    startCommand: python watchdog.py
     plan: starter
     region: singapore   # Closest to India for lowest API latency
 
