@@ -530,35 +530,74 @@ class TelegramAlerter:
     # MORNING BRIEF
     # --------------------------------------------------------
 
-    def send_morning_brief(self, brief: Dict) -> bool:
-        bias       = brief.get("day_bias", "NEUTRAL")
-        bias_score = brief.get("bias_score", 0)
-        vix_data   = brief.get("vix", {})
-        vix        = vix_data.get("vix", 0) if isinstance(vix_data, dict) else 0
-        gift_data  = brief.get("gift_nifty", {})
-        gap_pct    = gift_data.get("gap_pct", 0) if isinstance(gift_data, dict) else 0
-        risks      = brief.get("key_risks", [])
-        ai_thesis  = brief.get("ai_thesis", "")
-        watchlist  = brief.get("top_watchlist", [])
+    def send_morning_brief(
+        self,
+        brief_or_watchlist=None,
+        available: float = 0,
+        nifty_open: float = 0,
+        oc_summary: str = "",
+        fii_summary: str = "",
+    ) -> bool:
+        """
+        Backward-compatible morning brief.
+
+        Can be called two ways:
+          1. send_morning_brief(brief_dict)             — new style (dict from overnight_analyzer)
+          2. send_morning_brief(watchlist, avail, nifty) — legacy style from main.py
+        """
+        # Detect calling style
+        if isinstance(brief_or_watchlist, dict):
+            brief      = brief_or_watchlist
+            bias       = brief.get("day_bias", "NEUTRAL")
+            bias_score = brief.get("bias_score", 0)
+            vix_data   = brief.get("vix", {})
+            vix        = vix_data.get("vix", 0) if isinstance(vix_data, dict) else 0
+            gift_data  = brief.get("gift_nifty", {})
+            gap_pct    = gift_data.get("gap_pct", 0) if isinstance(gift_data, dict) else 0
+            risks      = brief.get("key_risks", [])
+            ai_thesis  = brief.get("ai_thesis", "")
+            watchlist  = brief.get("top_watchlist", [])
+            avail_cap  = available or brief.get("available_capital", 0)
+            nifty_ltp  = nifty_open or brief.get("nifty_open", 0)
+        else:
+            # Legacy: send_morning_brief(watchlist_list, available_float, nifty_open_float)
+            watchlist  = brief_or_watchlist or []
+            avail_cap  = available
+            nifty_ltp  = nifty_open
+            bias, bias_score, vix, gap_pct = "NEUTRAL", 0, 15.0, 0.0
+            risks, ai_thesis = [], ""
 
         bias_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(bias, "🟡")
-        wl_str     = ", ".join(f"`{s}`" for s in watchlist[:8]) if watchlist else "—"
-        risks_str  = "\n".join(f"  • {r}" for r in risks[:4]) if risks else "  None identified"
-        thesis     = textwrap.shorten(ai_thesis or "Awaiting market open...", 400, placeholder="...")
+        wl_str     = ", ".join(f"`{s}`" for s in watchlist[:10]) if watchlist else "—"
+        risks_str  = "\n".join(f"  • {r}" for r in risks[:4]) if risks else "  No high-impact events"
+        thesis     = textwrap.shorten(ai_thesis or "Scanning for momentum setups...", 350, placeholder="...")
 
         text = (
             f"{E['rocket']} *MORNING BRIEF — {format_ist_timestamp()} IST*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{bias_emoji} Day Bias: *{bias}* (score: `{bias_score:+d}`)\n"
-            f"VIX: `{vix:.1f}` | Gift Nifty Gap: `{gap_pct:+.2f}%`\n"
+            f"VIX: `{vix:.1f}` | Gift Nifty: `{gap_pct:+.2f}%` | "
+            f"Nifty: `₹{nifty_ltp:,.0f}` | Capital: `₹{avail_cap:,.0f}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"*Key Risks:*\n{risks_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"*Watchlist:* {wl_str}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['brain']} *AI Market Thesis:*\n_{thesis}_"
+            f"*Watchlist ({len(watchlist)} stocks):* {wl_str}\n"
         )
+        if oc_summary:
+            text += f"━━━━━━━━━━━━━━━━━━━━\n{oc_summary}\n"
+        if fii_summary:
+            text += f"━━━━━━━━━━━━━━━━━━━━\n{fii_summary}\n"
+        if ai_thesis:
+            text += f"━━━━━━━━━━━━━━━━━━━━\n{E['brain']} *AI Thesis:* _{thesis}_"
         return self._send(text)
+
+    # --------------------------------------------------------
+    # ENTRY ALERT (alias for send_signal — used by main.py)
+    # --------------------------------------------------------
+
+    def send_entry_alert(self, signal, candles_df=None) -> bool:
+        """Alias for send_signal() — called by main.py after order placement."""
+        return self.send_signal(signal, candles_df)
 
     # --------------------------------------------------------
     # EOD PERFORMANCE REPORT

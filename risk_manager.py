@@ -152,6 +152,11 @@ class RiskManager:
         self.state = RiskState()
         self._available_balance: float = 0.0
 
+        # Institutional intelligence multipliers (set by main.py each morning)
+        self._fii_mult:  float = 1.0   # FII/DII flow: 0.5–1.5×
+        self._oc_mult:   float = 1.0   # Option chain bias: 0.9–1.1×
+        self._inst_mult: float = 1.0   # Combined: fii_mult × oc_mult
+
         logger.info(
             f"[{format_ist_timestamp()}] RiskManager initialized | "
             f"Capital: {format_currency(max_daily_capital)} | "
@@ -184,6 +189,27 @@ class RiskManager:
         effective_capital = min(balance, self.max_daily_capital)
         if effective_capital != self.state.daily_capital:
             self.state.daily_capital = effective_capital
+
+    def set_institutional_multiplier(
+        self, fii_mult: float = 1.0, oc_mult: float = 1.0
+    ) -> None:
+        """
+        Set institutional flow multipliers.
+        Called by main.py each morning after FII/DII and option chain analysis.
+
+        fii_mult: from FIIDIITracker.get_position_size_multiplier() — 0.5 to 1.5
+        oc_mult:  from option chain bias — 0.9 (bearish) / 1.0 (neutral) / 1.1 (bullish)
+
+        Combined effect on position size: fii_mult × oc_mult (capped 0.5–1.5)
+        """
+        self._fii_mult  = max(0.5, min(fii_mult, 1.5))
+        self._oc_mult   = max(0.8, min(oc_mult, 1.2))
+        self._inst_mult = max(0.5, min(self._fii_mult * self._oc_mult, 1.5))
+        logger.info(
+            f"[{format_ist_timestamp()}] Institutional multiplier set: "
+            f"FII={self._fii_mult:.2f}× OC={self._oc_mult:.2f}× "
+            f"→ Combined={self._inst_mult:.2f}×"
+        )
 
     # --------------------------------------------------------
     # POSITION SIZING
@@ -234,6 +260,11 @@ class RiskManager:
         # Use the more conservative of the two
         quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
 
+        # Apply institutional intelligence multiplier (FII/DII + Option Chain)
+        # FII strong buy day → trade bigger; FII sell day → trade smaller
+        inst_mult = getattr(self, "_inst_mult", 1.0)
+        quantity  = max(1, int(quantity * inst_mult))
+
         # Hard cap: max 15% of capital in a single trade
         max_qty_by_capital = int((capital * 0.15) / entry_price)
         quantity = min(quantity, max_qty_by_capital)
@@ -242,7 +273,7 @@ class RiskManager:
         quantity = max(quantity, 1)
 
         capital_used = entry_price * quantity
-        actual_risk = sl_distance * quantity
+        actual_risk  = sl_distance * quantity
 
         return {
             "quantity": quantity,
@@ -253,6 +284,7 @@ class RiskManager:
             "risk_qty": risk_qty,
             "kelly_qty": kelly_qty,
             "sl_distance": round(sl_distance, 2),
+            "inst_mult": round(inst_mult, 2),
         }
 
     # --------------------------------------------------------

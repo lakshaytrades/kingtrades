@@ -80,6 +80,8 @@ class TradingBot:
         self.calendar = None
         self.data_store = None
         self.cont_learner = None
+        self.oc_analyzer = None   # Option Chain analyzer
+        self.fii_tracker = None   # FII/DII flow tracker
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -223,6 +225,23 @@ class TradingBot:
         self.mtf_analyzer = MultiTimeframeAnalyzer()
         logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
 
+        # Initialize institutional intelligence modules
+        try:
+            from option_chain import get_option_chain_analyzer
+            self.oc_analyzer = get_option_chain_analyzer()
+            logger.info(f"[{format_ist_timestamp()}] Option Chain analyzer ready")
+        except Exception as e:
+            self.oc_analyzer = None
+            logger.warning(f"[{format_ist_timestamp()}] Option Chain init failed: {e}")
+
+        try:
+            from fii_dii_tracker import get_fii_dii_tracker
+            self.fii_tracker = get_fii_dii_tracker()
+            logger.info(f"[{format_ist_timestamp()}] FII/DII tracker ready")
+        except Exception as e:
+            self.fii_tracker = None
+            logger.warning(f"[{format_ist_timestamp()}] FII/DII tracker init failed: {e}")
+
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
         self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
@@ -278,9 +297,43 @@ class TradingBot:
                     if self.watchlist_mgr.get_sector_for_symbol(s) not in avoid_sectors
                 ]
 
-        # Morning brief (AI thesis + global cues + events)
+        # Morning brief (AI thesis + global cues + events + OC + FII/DII)
         try:
-            self.alerter.send_morning_brief(watchlist, available, nifty_open)
+            # Gather option chain summary
+            oc_summary = ""
+            if self.oc_analyzer:
+                try:
+                    oc_summary = self.oc_analyzer.format_telegram("NIFTY")
+                    # Apply OC FII size multiplier to risk manager
+                    oc_result = self.oc_analyzer.analyze("NIFTY")
+                    if oc_result and self.risk_manager:
+                        self.risk_manager.set_institutional_multiplier(
+                            oc_mult=1.1 if oc_result.direction_bias == "BULLISH" else (
+                                0.9 if oc_result.direction_bias == "BEARISH" else 1.0
+                            )
+                        )
+                except Exception as e:
+                    logger.warning(f"OC morning: {e}")
+
+            # Gather FII/DII summary + apply size multiplier
+            fii_summary = ""
+            if self.fii_tracker:
+                try:
+                    fii_summary = self.fii_tracker.format_telegram()
+                    fii_mult = self.fii_tracker.get_position_size_multiplier()
+                    if self.risk_manager:
+                        self.risk_manager.set_institutional_multiplier(fii_mult=fii_mult)
+                except Exception as e:
+                    logger.warning(f"FII/DII morning: {e}")
+
+            # Send combined morning brief
+            self.alerter.send_morning_brief(
+                watchlist, available, nifty_open,
+                oc_summary=oc_summary,
+                fii_summary=fii_summary,
+            )
+
+            # Also send overnight analysis text
             if self.overnight:
                 brief = self.overnight.format_morning_brief()
                 if self.calendar:
@@ -456,6 +509,17 @@ class TradingBot:
 
             # 5. Execute signals
             for signal in signals:
+                # Apply FII/DII institutional size multiplier to signal
+                if self.fii_tracker:
+                    try:
+                        fii_mult = self.fii_tracker.get_position_size_multiplier()
+                        signal.size_multiplier = round(
+                            signal.size_multiplier * fii_mult * overnight_mult, 2
+                        )
+                        signal.size_multiplier = max(0.25, min(signal.size_multiplier, 2.0))
+                    except Exception:
+                        pass
+
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
                 if result.success:
