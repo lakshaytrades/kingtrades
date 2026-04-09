@@ -766,105 +766,154 @@ class TradingBot:
         logger.info(f"[{format_ist_timestamp()}] Telegram command listener started")
 
     async def _telegram_listener(self):
-        """Async Telegram command handler."""
-        try:
-            from telegram.ext import Application, CommandHandler
+        """
+        Async Telegram command handler with Conflict retry.
+        Render deploys overlap briefly — old + new instance both poll simultaneously,
+        causing 409 Conflict. Retry with backoff until old instance dies (~30s).
+        """
+        import telegram.error as tg_error
+        from telegram.ext import Application, CommandHandler
 
-            app = Application.builder().token(config.TELEGRAM_BOT_TOKEN).build()
+        # ── Command handlers (defined once, reused across retries) ──────
+        async def cmd_kill(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            logger.critical(f"[{format_ist_timestamp()}] /kill received!")
+            self.risk_manager.emergency_stop()
+            self.alerter.send_kill_alert()
+            self.executor.square_off_all("KILL SWITCH by Telegram /kill")
 
-            async def cmd_kill(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                logger.critical(f"[{format_ist_timestamp()}] /kill received!")
-                self.risk_manager.emergency_stop()
-                self.alerter.send_kill_alert()
-                self.executor.square_off_all("KILL SWITCH by Telegram /kill")
+        async def cmd_status(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            self.alerter.send_status(self.risk_manager)
 
-            async def cmd_status(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                self.alerter.send_status(self.risk_manager)
+        async def cmd_pause(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            self.risk_manager._pause_trading("Manual pause via /pause")
+            self.alerter.send_text(f"⏸ Trading paused at {format_ist_timestamp()}")
 
-            async def cmd_pause(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                self.risk_manager._pause_trading("Manual pause via /pause")
-                self.alerter.send_text(f"⏸ Trading paused at {format_ist_timestamp()}")
+        async def cmd_resume(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            self.risk_manager.manual_resume()
+            self.alerter.send_text(f"▶️ Trading resumed at {format_ist_timestamp()}")
 
-            async def cmd_resume(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                self.risk_manager.manual_resume()
-                self.alerter.send_text(f"▶️ Trading resumed at {format_ist_timestamp()}")
+        async def cmd_watchlist(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            status = self.watchlist_mgr.format_watchlist_message()
+            self.alerter.send_text(status)
 
-            async def cmd_watchlist(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                status = self.watchlist_mgr.format_watchlist_message()
-                self.alerter.send_text(status)
+        async def cmd_report(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            self.alerter.send_eod_report(self.risk_manager)
 
-            async def cmd_report(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                self.alerter.send_eod_report(self.risk_manager)
+        async def cmd_balance(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            try:
+                bal = self.fetcher.get_account_balance() if self.fetcher else {}
+                avail = bal.get("available", 0)
+                compounded = self._load_compounded_capital()
+                pnl = self.risk_manager.state.daily_pnl if self.risk_manager else 0
+                self.alerter.send_text(
+                    f"💰 <b>Account Balance</b>\n"
+                    f"Groww Available: ₹{avail:,.0f}\n"
+                    f"Bot Capital (compounded): ₹{compounded:,.0f}\n"
+                    f"Today P&L: ₹{pnl:+,.0f}\n"
+                    f"Base Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f}"
+                )
+            except Exception as e:
+                self.alerter.send_text(f"Balance fetch error: {e}")
 
-            async def cmd_balance(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                try:
-                    bal = self.fetcher.get_account_balance() if self.fetcher else {}
-                    avail = bal.get("available", 0)
-                    compounded = self._load_compounded_capital()
-                    pnl = self.risk_manager.state.daily_pnl if self.risk_manager else 0
-                    self.alerter.send_text(
-                        f"💰 <b>Account Balance</b>\n"
-                        f"Groww Available: ₹{avail:,.0f}\n"
-                        f"Bot Capital (compounded): ₹{compounded:,.0f}\n"
-                        f"Today P&L: ₹{pnl:+,.0f}\n"
-                        f"Base Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f}"
-                    )
-                except Exception as e:
-                    self.alerter.send_text(f"Balance fetch error: {e}")
+        async def cmd_capital(update, context):
+            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                return
+            try:
+                data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+                base = config.MAX_DAILY_CAPITAL
+                compounded = data.get("compounded_capital", base)
+                growth = data.get("total_growth_pct", 0)
+                date = data.get("date", "never")
+                self.alerter.send_text(
+                    f"📈 <b>Capital Growth</b>\n"
+                    f"Base: ₹{base:,.0f}\n"
+                    f"Current: ₹{compounded:,.0f}\n"
+                    f"Total Growth: {growth:+.2f}%\n"
+                    f"Last Updated: {date}"
+                )
+            except Exception as e:
+                self.alerter.send_text(f"Capital data error: {e}")
 
-            async def cmd_capital(update, context):
-                if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
-                    return
-                try:
-                    data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
-                    base = config.MAX_DAILY_CAPITAL
-                    compounded = data.get("compounded_capital", base)
-                    growth = data.get("total_growth_pct", 0)
-                    date = data.get("date", "never")
-                    self.alerter.send_text(
-                        f"📈 <b>Capital Growth</b>\n"
-                        f"Base: ₹{base:,.0f}\n"
-                        f"Current: ₹{compounded:,.0f}\n"
-                        f"Total Growth: {growth:+.2f}%\n"
-                        f"Last Updated: {date}"
-                    )
-                except Exception as e:
-                    self.alerter.send_text(f"Capital data error: {e}")
+        # ── Retry loop — handles Render deployment overlap ───────────────
+        max_retries = 15
+        retry_delay = 20  # seconds; old instance usually dies within 30s
 
-            app.add_handler(CommandHandler("kill", cmd_kill))
-            app.add_handler(CommandHandler("status", cmd_status))
-            app.add_handler(CommandHandler("pause", cmd_pause))
-            app.add_handler(CommandHandler("resume", cmd_resume))
-            app.add_handler(CommandHandler("watchlist", cmd_watchlist))
-            app.add_handler(CommandHandler("report", cmd_report))
-            app.add_handler(CommandHandler("balance", cmd_balance))
-            app.add_handler(CommandHandler("capital", cmd_capital))
+        for attempt in range(max_retries):
+            app = None
+            try:
+                app = (
+                    Application.builder()
+                    .token(config.TELEGRAM_BOT_TOKEN)
+                    .connect_timeout(30)
+                    .read_timeout(30)
+                    .build()
+                )
 
-            await app.initialize()
-            await app.start()
-            await app.updater.start_polling(drop_pending_updates=True)
-            # Run indefinitely
-            while self.running:
-                await asyncio.sleep(1)
-            await app.updater.stop()
-            await app.stop()
+                app.add_handler(CommandHandler("kill",       cmd_kill))
+                app.add_handler(CommandHandler("status",     cmd_status))
+                app.add_handler(CommandHandler("pause",      cmd_pause))
+                app.add_handler(CommandHandler("resume",     cmd_resume))
+                app.add_handler(CommandHandler("watchlist",  cmd_watchlist))
+                app.add_handler(CommandHandler("report",     cmd_report))
+                app.add_handler(CommandHandler("balance",    cmd_balance))
+                app.add_handler(CommandHandler("capital",    cmd_capital))
 
-        except Exception as e:
-            logger.error(f"Telegram listener exception: {e}")
+                await app.initialize()
+                await app.start()
+                await app.updater.start_polling(
+                    drop_pending_updates=True,
+                    allowed_updates=["message"],
+                )
+                logger.info(f"[{format_ist_timestamp()}] Telegram polling active")
+
+                while self.running:
+                    await asyncio.sleep(1)
+
+                await app.updater.stop()
+                await app.stop()
+                await app.shutdown()
+                return  # Clean exit
+
+            except tg_error.Conflict:
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Telegram Conflict — previous instance still running. "
+                    f"Retry {attempt + 1}/{max_retries} in {retry_delay}s..."
+                )
+                if app:
+                    try:
+                        await app.shutdown()
+                    except Exception:
+                        pass
+                await asyncio.sleep(retry_delay)
+                retry_delay = min(int(retry_delay * 1.5), 120)
+
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] Telegram listener error: {e}")
+                if app:
+                    try:
+                        await app.shutdown()
+                    except Exception:
+                        pass
+                return
+
+        logger.error(
+            f"[{format_ist_timestamp()}] Telegram listener gave up after {max_retries} retries. "
+            "Alerts still work — only /commands are unavailable."
+        )
 
     # --------------------------------------------------------
     # EOD-TRAINED ADAPTIVE PARAMETERS
