@@ -600,6 +600,37 @@ class TelegramAlerter:
         return self.send_signal(signal, candles_df)
 
     # --------------------------------------------------------
+    # EXIT ALERT — positional signature used by main.py
+    # --------------------------------------------------------
+
+    def send_exit_alert(
+        self,
+        symbol: str,
+        direction: str,
+        entry_price: float,
+        exit_price: float,
+        quantity: int,
+        pnl: float,
+        reason: str = "Target",
+        order_id: str = "",
+    ) -> bool:
+        """
+        Exit alert called by main.py after a position is closed.
+        Signature: (symbol, direction, entry_price, exit_price, qty, pnl, reason)
+        Delegates to send_exit() which has qty before entry in its signature.
+        """
+        return self.send_exit(
+            symbol=symbol,
+            direction=direction,
+            qty=quantity,
+            entry=entry_price,
+            exit_price=exit_price,
+            pnl=pnl,
+            reason=reason,
+            order_id=order_id,
+        )
+
+    # --------------------------------------------------------
     # EOD PERFORMANCE REPORT
     # --------------------------------------------------------
 

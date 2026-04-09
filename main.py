@@ -730,7 +730,7 @@ class TradingBot:
                 logger.critical(f"[{format_ist_timestamp()}] /kill received!")
                 self.risk_manager.emergency_stop()
                 self.alerter.send_kill_alert()
-                await self.executor.square_off_all("KILL SWITCH by Telegram /kill")
+                self.executor.square_off_all("KILL SWITCH by Telegram /kill")
 
             async def cmd_status(update, context):
                 if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):

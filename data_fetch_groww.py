@@ -114,6 +114,15 @@ class GrowwDataFetcher:
     # ACCOUNT & LEVERAGE (FIXED Attribute Error)
     # --------------------------------------------------------
 
+    def _refresh_api_if_needed(self):
+        """
+        Re-initialize the GrowwAPI client with the latest token.
+        Called by main.py after a TOTP token refresh at 8:45 AM IST.
+        """
+        self._init_api()
+
+    # --------------------------------------------------------
+
     def get_account_balance(self) -> Dict:
         """Updated to use get_balance() to fix 'no attribute get_funds'."""
         if not self._api: return {"available": 0}

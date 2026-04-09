@@ -12,8 +12,6 @@ numpy>=1.26.0
 pandas-ta>=0.3.14b         # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
 scipy>=1.10.0
 
-numba==0.61.2
-
 # ---- Visualization ----
 matplotlib
 mplfinance>=0.12.10b0         # Candlestick charts
@@ -25,8 +23,6 @@ python-telegram-bot>=20.0
 # ---- TOTP / Authentication ----
 pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login
 requests>=2.31.0
-selenium>=4.15.0           # Groww web login automation (TOTP)
-webdriver-manager>=4.0.0  # Auto ChromeDriver management
 
 # ---- Timezone Handling (IST for UK server) ----
 pytz>=2023.3               # Timezone conversions
