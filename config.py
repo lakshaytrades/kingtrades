@@ -222,6 +222,36 @@ for d in [TRAINER_DATA_DIR, TRAINER_RESULTS_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
 
 # ============================================================
+# OPTION CHAIN ANALYSIS
+# ============================================================
+# Uses NSE public API — no API key required, just proper headers
+OPTION_CHAIN_ENABLED:  bool  = True
+OC_SYMBOLS:           list  = ["NIFTY", "BANKNIFTY"]  # Indices to read
+OC_CACHE_TTL_SECONDS: int   = 300          # Refresh every 5 min
+OC_PCR_BULLISH_THRESHOLD:  float = 1.2     # PCR > this → bullish
+OC_PCR_BEARISH_THRESHOLD:  float = 0.7     # PCR < this → bearish
+OC_MAX_PAIN_INFLUENCE_PCT: float = 1.5     # Max pain gravity within this % range
+
+# ============================================================
+# FII / DII FLOW TRACKER
+# ============================================================
+FII_DII_ENABLED:        bool  = True
+FII_BULLISH_THRESHOLD:  float = 500.0      # FII net > ₹500cr = bullish
+FII_BEARISH_THRESHOLD:  float = -500.0     # FII net < -₹500cr = bearish
+FII_STRONG_BUY:         float = 2000.0     # Strong buy signal
+FII_CACHE_MINUTES:      int   = 30         # How often to refresh flow data
+
+# ============================================================
+# VOLUME PROFILE
+# ============================================================
+VP_ENABLED:             bool  = True
+VP_NUM_BINS:            int   = 100        # Price level resolution
+VP_VALUE_AREA_PCT:      float = 70.0       # Standard 70% value area
+VP_COMPOSITE_DAYS:      int   = 5          # Multi-day composite lookback
+VP_HVN_STD_THRESHOLD:  float = 0.5        # HVN: above mean + 0.5 std
+VP_LVN_STD_THRESHOLD:  float = 1.0        # LVN: below mean - 1.0 std
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config() -> list:

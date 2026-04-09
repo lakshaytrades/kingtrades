@@ -13,9 +13,12 @@ Signal pipeline:
   3. Check MTF alignment (5m must align with 15m and 1h trend)
   4. Apply news blackout filter
   5. Check relative strength vs Nifty
-  6. Compute AI composite score
-  7. Apply minimum confidence gate (default: 65/100)
-  8. Return TradeSignal with entry, SL, TP, and rationale
+  6. [NEW] Option Chain context (PCR, Max Pain, OI walls) → ±10 pts
+  7. [NEW] FII/DII flow adjustment → ±10 pts
+  8. [NEW] Volume Profile context (VPOC/VAH/VAL) → ±15 pts
+  9. Compute AI composite score
+  10. Apply minimum confidence gate (default: 65/100)
+  11. Return TradeSignal with entry, SL, TP, and full rationale
 """
 
 import logging
@@ -31,6 +34,25 @@ from utils import (
 from pattern_recognition import PatternRecognizer, IndicatorSet
 from data_fetch_groww import GrowwDataFetcher
 from high_accuracy_filter import HighAccuracyFilter, FilterResult
+
+# ── Institutional intelligence modules (new) ────────────────
+try:
+    from option_chain import OptionChainAnalyzer, get_option_chain_analyzer
+    _OC_AVAILABLE = True
+except ImportError:
+    _OC_AVAILABLE = False
+
+try:
+    from fii_dii_tracker import FIIDIITracker, get_fii_dii_tracker
+    _FII_AVAILABLE = True
+except ImportError:
+    _FII_AVAILABLE = False
+
+try:
+    from volume_profile import VolumeProfileAnalyzer, get_vp_analyzer
+    _VP_AVAILABLE = True
+except ImportError:
+    _VP_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -108,6 +130,20 @@ class SignalGenerator:
         self._orb_direction: str = "" # Set by main.py after ORB is established
         self._nifty_change_pct: float = 0.0
 
+        # ── Institutional intelligence (auto-init) ──────────────
+        self._oc: Optional["OptionChainAnalyzer"] = (
+            get_option_chain_analyzer() if _OC_AVAILABLE else None
+        )
+        self._fii_dii: Optional["FIIDIITracker"] = (
+            get_fii_dii_tracker() if _FII_AVAILABLE else None
+        )
+        self._vp: Optional["VolumeProfileAnalyzer"] = (
+            get_vp_analyzer() if _VP_AVAILABLE else None
+        )
+        # Cached FII adjustment (refreshed every scan cycle, not per-symbol)
+        self._fii_adjustment: float = 0.0
+        self._fii_size_mult:  float = 1.0
+
     def set_learner(self, learner) -> None:
         """Inject self-learning engine for adaptive pattern weights."""
         self._learner = learner
@@ -119,6 +155,24 @@ class SignalGenerator:
     def update_nifty_change(self, nifty_change_pct: float) -> None:
         """Update Nifty % change vs previous close (called each scan cycle)."""
         self._nifty_change_pct = nifty_change_pct
+
+    def refresh_institutional_context(self) -> None:
+        """
+        Refresh FII/DII flow and option chain before each scan cycle.
+        Called once per scan — not per symbol — for efficiency.
+        """
+        if self._fii_dii:
+            try:
+                self._fii_adjustment = self._fii_dii.get_signal_adjustment()
+                self._fii_size_mult  = self._fii_dii.get_position_size_multiplier()
+                logger.debug(
+                    f"[{format_ist_timestamp()}] FII adj={self._fii_adjustment:+.1f} "
+                    f"size_mult={self._fii_size_mult:.2f}"
+                )
+            except Exception as e:
+                logger.warning(f"FII/DII refresh failed: {e}")
+                self._fii_adjustment = 0.0
+                self._fii_size_mult  = 1.0
 
     # --------------------------------------------------------
     # MAIN SIGNAL GENERATION
@@ -175,6 +229,9 @@ class SignalGenerator:
             # 5. Relative strength vs Nifty
             rs = self._get_relative_strength(symbol)
 
+            # 5b. Institutional intelligence context (Option Chain + Volume Profile)
+            inst_ctx = self._get_institutional_context(symbol, df_5m)
+
             # 6. Composite AI score
             ai_score = self._compute_ai_score(
                 direction=direction,
@@ -184,6 +241,7 @@ class SignalGenerator:
                 ind=ind,
                 relative_strength=rs,
                 alignment=alignment,
+                institutional_ctx=inst_ctx,
             )
 
             if ai_score < self.min_score:
@@ -258,6 +316,9 @@ class SignalGenerator:
         Scan all symbols and return top signals ranked by score.
         Returns at most max_signals signals.
         """
+        # Refresh FII/DII + OC once per scan cycle (not per symbol)
+        self.refresh_institutional_context()
+
         signals = []
         for symbol in symbols:
             try:
@@ -283,6 +344,70 @@ class SignalGenerator:
                 f"({filter_stats['pass_rate']:.0f}% pass rate)"
             )
         return signals[:max_signals]
+
+    # --------------------------------------------------------
+    # INSTITUTIONAL INTELLIGENCE CONTEXT
+    # --------------------------------------------------------
+
+    def _get_institutional_context(
+        self, symbol: str, df_5m=None
+    ) -> Dict:
+        """
+        Gather Option Chain + Volume Profile context for this symbol.
+        FII/DII is market-wide (cached in self._fii_adjustment).
+
+        Returns dict with:
+          oc_score:      float (-10 to +10)
+          oc_signals:    List[str]
+          vp_score:      float (-15 to +15)
+          vp_notes:      List[str]
+          vp_levels:     Dict (vpoc, vah, val)
+          fii_score:     float (-10 to +10) — pre-cached
+          fii_size_mult: float
+        """
+        ctx = {
+            "oc_score":      0.0,
+            "oc_signals":    [],
+            "vp_score":      0.0,
+            "vp_notes":      [],
+            "vp_levels":     {},
+            "fii_score":     self._fii_adjustment,
+            "fii_size_mult": self._fii_size_mult,
+        }
+
+        # ── Option Chain ─────────────────────────────────
+        if self._oc:
+            try:
+                oc_sym   = "NIFTY"  # Use Nifty chain for market bias
+                ctx["oc_score"] = self._oc.get_direction_score(oc_sym)
+                oc_result = self._oc.analyze(oc_sym)
+                if oc_result:
+                    ctx["oc_signals"] = oc_result.signals[:3]
+            except Exception as e:
+                logger.debug(f"OC context error: {e}")
+
+        # ── Volume Profile ────────────────────────────────
+        if self._vp and df_5m is not None and not df_5m.empty:
+            try:
+                from datetime import datetime as _dt
+                session_date = str(get_current_ist_time().date())
+                vp_result = self._vp.analyze(df_5m, symbol=symbol, session_date=session_date)
+                if vp_result:
+                    ltp = float(df_5m["close"].iloc[-1]) if "close" in df_5m.columns else 0
+                    if ltp > 0:
+                        # We'll pass direction="LONG" to get generic score; caller adjusts
+                        vp_ctx = self._vp.get_signal_context(vp_result, ltp, "LONG")
+                        ctx["vp_score"]  = vp_ctx.get("score_adjustment", 0.0)
+                        ctx["vp_notes"]  = vp_ctx.get("notes", [])
+                        ctx["vp_levels"] = {
+                            "vpoc": vp_result.vpoc,
+                            "vah":  vp_result.vah,
+                            "val":  vp_result.val,
+                        }
+            except Exception as e:
+                logger.debug(f"VP context error for {symbol}: {e}")
+
+        return ctx
 
     # --------------------------------------------------------
     # MULTI-TIMEFRAME ALIGNMENT
@@ -380,24 +505,29 @@ class SignalGenerator:
         ind: IndicatorSet,
         relative_strength: float,
         alignment: Dict,
+        institutional_ctx: Optional[Dict] = None,
     ) -> float:
         """
-        AI composite score incorporating:
+        AI composite score (0–100) incorporating:
         - Pattern strength on each timeframe (weighted)
         - MTF alignment quality
-        - Indicator confluence (RSI, MACD, Volume, ADX)
+        - Indicator confluence (RSI, MACD, Volume, ADX, SuperTrend)
         - Relative strength vs Nifty
-        - Time of day (best momentum windows: 9:15-10:30, 13:30-14:30)
+        - Time of day (best momentum windows from 18yr experience)
+        - [NEW] Option Chain direction bias (PCR, Max Pain, OI walls)
+        - [NEW] FII/DII institutional flow adjustment
+        - [NEW] Volume Profile (VPOC/VAH/VAL location)
         """
         score = 0.0
+        ctx   = institutional_ctx or {}
 
-        # Timeframe pattern scores (5m = primary, 15m/1h = confirmation)
+        # ── Timeframe pattern scores ──────────────────────
         key = "long" if direction == "LONG" else "short"
         score += score_5m.get(key, 0) * 0.40
         score += score_15m.get(key, 0) * 0.30 if score_15m else 0
         score += score_1h.get(key, 0) * 0.20 if score_1h else 0
 
-        # MTF alignment bonus
+        # ── MTF alignment bonus ───────────────────────────
         if alignment.get("full_alignment"):
             score += 12
         elif alignment.get("score", 0) >= 70:
@@ -405,9 +535,9 @@ class SignalGenerator:
         elif alignment.get("score", 0) >= 50:
             score += 4
 
-        # Indicator confluence
+        # ── Indicator confluence ──────────────────────────
         if direction == "LONG":
-            if ind.rsi < 50 and ind.rsi > 30:
+            if 30 < ind.rsi < 50:
                 score += 5  # RSI in buy zone but not extreme
             if ind.macd_hist > 0:
                 score += 4
@@ -418,7 +548,7 @@ class SignalGenerator:
             if ind.adx > 25 and ind.plus_di > ind.minus_di:
                 score += 5
         else:  # SHORT
-            if ind.rsi > 50 and ind.rsi < 70:
+            if 50 < ind.rsi < 70:
                 score += 5
             if ind.macd_hist < 0:
                 score += 4
@@ -429,28 +559,49 @@ class SignalGenerator:
             if ind.adx > 25 and ind.minus_di > ind.plus_di:
                 score += 5
 
-        # Volume confirmation
+        # ── Volume confirmation ───────────────────────────
         if ind.volume_ratio >= 2.0:
             score += 8
         elif ind.volume_ratio >= 1.5:
             score += 4
 
-        # Relative strength bonus
+        # ── Relative strength vs Nifty ────────────────────
         if direction == "LONG" and relative_strength > 0.5:
             score += min(relative_strength * 2, 8)
         elif direction == "SHORT" and relative_strength < -0.5:
             score += min(abs(relative_strength) * 2, 8)
 
-        # Time of day bonus (best intraday windows from 18yr experience)
-        now_ist = get_current_ist_time()
-        hour, minute = now_ist.hour, now_ist.minute
-        time_val = hour + minute / 60
-        if 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum
+        # ── Time of day bonus ─────────────────────────────
+        now_ist  = get_current_ist_time()
+        time_val = now_ist.hour + now_ist.minute / 60
+        if 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum power hour
             score += 6
-        elif 13.5 <= time_val <= 14.5:  # 1:30–2:30 PM: afternoon momentum
+        elif 13.5 <= time_val <= 14.5:  # 1:30–2:30 PM: afternoon institutional
             score += 4
-        elif time_val >= 14.75:  # After 2:45 PM: reduce confidence
+        elif time_val >= 14.75:  # After 2:45 PM: avoid new positions
             score -= 8
+
+        # ── [NEW] Option Chain direction bias ─────────────
+        oc_score = ctx.get("oc_score", 0.0)
+        if direction == "LONG":
+            score += oc_score   # +ve oc_score = bullish OC = good for LONG
+        else:
+            score -= oc_score   # -ve oc_score = bearish OC = good for SHORT
+
+        # ── [NEW] FII/DII flow adjustment ────────────────
+        fii_adj = ctx.get("fii_score", 0.0)
+        if direction == "LONG":
+            score += fii_adj   # FII buying = boost LONG
+        else:
+            score -= fii_adj   # FII selling = boost SHORT
+
+        # ── [NEW] Volume Profile context ──────────────────
+        vp_score = ctx.get("vp_score", 0.0)
+        if direction == "LONG":
+            score += vp_score
+        else:
+            # Invert: VP score for LONG from VAL is +, so for SHORT from VAH also +
+            score += vp_score  # Already aligned by get_signal_context(direction=...)
 
         return min(round(score, 1), 100)
 

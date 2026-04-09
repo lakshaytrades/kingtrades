@@ -83,4 +83,9 @@ ta>=0.11.0                    # Alternative TA library (fallback for pandas-ta)
 
 # ---- Smart Scheduling (continuous learner) ----
 APScheduler>=3.10.0           # Advanced scheduler for nightly tasks
-google-generativeai
+google-generativeai>=0.5.0    # Gemini AI brain for market intelligence
+
+# ---- NSE Option Chain + FII/DII (no extra libs — uses requests already listed) ----
+# option_chain.py: requests + pandas (already above)
+# fii_dii_tracker.py: requests + sqlite3 (stdlib) + pandas (already above)
+# volume_profile.py: numpy + pandas (already above)
