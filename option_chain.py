@@ -147,12 +147,21 @@ class OptionChainAnalyzer:
       - OI-based support/resistance levels
       - IV skew (put demand > call demand = bearish hedge by institutions)
       - Gamma Exposure (GEX): negative = volatile/trending moves amplified
+
+    Note: NSE blocks non-Indian IPs (e.g., Render Singapore). When blocked,
+    the analyzer gracefully returns None and the bot runs without OC data.
     """
 
+    _MAX_SESSION_FAILURES = 3          # Stop retrying after this many 403s
+    _SESSION_RETRY_COOLDOWN = 1800     # Seconds between retry attempts (30 min)
+
     def __init__(self):
-        self._session     = requests.Session()
-        self._cache:      Dict[str, Tuple[OptionChainResult, datetime]] = {}
-        self._session_ok  = False
+        self._session          = requests.Session()
+        self._cache:           Dict[str, Tuple[OptionChainResult, datetime]] = {}
+        self._session_ok       = False
+        self._session_failures = 0
+        self._last_init_time   = 0.0   # epoch seconds
+        self._permanently_down = False
         self._init_session()
 
     # ──────────────────────────────────────────────────────
@@ -161,26 +170,61 @@ class OptionChainAnalyzer:
 
     def _init_session(self):
         """Establish NSE session (required before API calls)."""
+        if self._permanently_down:
+            return
+
+        now = time.time()
+        if now - self._last_init_time < 60:  # Don't hammer NSE faster than 1/min
+            return
+        self._last_init_time = now
+
         try:
             self._session.headers.update(NSE_HEADERS)
-            # Visit NSE homepage to set cookies
+            # Must visit homepage first — NSE sets required cookies here
             resp = self._session.get(
                 "https://www.nseindia.com/",
                 timeout=15,
                 allow_redirects=True,
             )
             if resp.status_code == 200:
-                self._session_ok = True
+                self._session_ok       = True
+                self._session_failures = 0
                 logger.info(f"[{format_ist_timestamp()}] NSE session established")
             else:
-                logger.warning(f"[{format_ist_timestamp()}] NSE session status: {resp.status_code}")
+                self._session_failures += 1
+                logger.warning(
+                    f"[{format_ist_timestamp()}] NSE session status: {resp.status_code} "
+                    f"(failure {self._session_failures}/{self._MAX_SESSION_FAILURES})"
+                )
+                if resp.status_code == 403:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] NSE is blocking this server's IP "
+                        f"(common with non-Indian cloud servers). "
+                        f"Option chain analysis disabled — bot continues without it."
+                    )
+                if self._session_failures >= self._MAX_SESSION_FAILURES:
+                    self._permanently_down = True
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] NSE option chain permanently disabled "
+                        f"for this session (IP blocked). All other features unaffected."
+                    )
         except Exception as e:
+            self._session_failures += 1
             logger.warning(f"[{format_ist_timestamp()}] NSE session init failed: {e}")
             self._session_ok = False
+            if self._session_failures >= self._MAX_SESSION_FAILURES:
+                self._permanently_down = True
 
     def _refresh_session_if_needed(self):
+        if self._permanently_down:
+            raise Exception("NSE option chain unavailable (IP blocked)")
         if not self._session_ok:
-            self._init_session()
+            # Only retry every 30 minutes
+            if time.time() - self._last_init_time > self._SESSION_RETRY_COOLDOWN:
+                self._session_failures = 0  # Reset counter for retry
+                self._init_session()
+            if not self._session_ok:
+                raise Exception("NSE session not available")
 
     # ──────────────────────────────────────────────────────
     # DATA FETCH

@@ -18,7 +18,8 @@ from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional
 
-import google.generativeai as genai
+import google.genai as genai
+from google.genai import types as genai_types
 from utils import format_ist_timestamp, get_current_ist_time, get_current_ist_date
 
 logger = logging.getLogger(__name__)
@@ -65,7 +66,7 @@ class AIBrain:
 
     def __init__(self):
         self._client = None
-        self._model  = "gemini-1.5-flash"
+        self._model  = "gemini-2.0-flash"
         self._enabled = bool(os.getenv("GEMINI_API_KEY"))
         if not self._enabled:
             logger.warning(
@@ -77,11 +78,7 @@ class AIBrain:
 
     def _init_client(self):
         try:
-            genai.configure(api_key=os.getenv("GEMINI_API_KEY"))
-            self._client = genai.GenerativeModel(
-                model_name=self._model,
-                system_instruction=TRADING_WISDOM
-            )
+            self._client = genai.Client(api_key=os.getenv("GEMINI_API_KEY"))
             logger.info(f"[{format_ist_timestamp()}] AI Brain (Gemini) initialized")
         except Exception as e:
             logger.error(f"AI Brain init failed: {e}")
@@ -91,11 +88,13 @@ class AIBrain:
         if not self._client:
             return "[AI Brain offline — set GEMINI_API_KEY]"
         try:
-            response = self._client.generate_content(
-                prompt,
-                generation_config=genai.types.GenerationConfig(
+            response = self._client.models.generate_content(
+                model=self._model,
+                contents=prompt,
+                config=genai_types.GenerateContentConfig(
+                    system_instruction=TRADING_WISDOM,
                     max_output_tokens=max_tokens,
-                    temperature=0.7
+                    temperature=0.7,
                 )
             )
             return response.text
