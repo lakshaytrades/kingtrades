@@ -624,10 +624,11 @@ class RiskManager:
 
     def get_daily_summary(self) -> Dict:
         """Get today's trading summary."""
+        capital = max(self.state.daily_capital, 1)
         return {
             "date": self.state.date,
             "daily_pnl": round(self.state.daily_pnl, 2),
-            "daily_pnl_pct": round((self.state.daily_pnl / max(self.state.daily_capital, 1)) * 100, 2),
+            "daily_pnl_pct": round((self.state.daily_pnl / capital) * 100, 2),
             "total_trades": self.state.daily_trades,
             "wins": self.state.winning_trades,
             "losses": self.state.losing_trades,
@@ -636,5 +637,22 @@ class RiskManager:
             "max_drawdown": round(self.state.max_drawdown, 2),
             "consecutive_losses": self.state.consecutive_losses,
             "paused": self.state.trading_paused,
+            "pause_reason": self.state.pause_reason,
             "circuit_breaker": self.state.circuit_breaker_active,
+            "peak_pnl": round(self.state.peak_pnl, 2),
+            "daily_capital": round(self.state.daily_capital, 2),
         }
+
+    def get_position_summary(self) -> str:
+        """One-line summary of all open positions for logging."""
+        if not self.state.positions:
+            return "No open positions"
+        lines = []
+        for sym, pos in self.state.positions.items():
+            pnl_str = f"₹{pos.pnl:+.0f}"
+            lines.append(
+                f"{sym} {pos.direction} x{pos.quantity} @ ₹{pos.entry_price:.2f} | "
+                f"LTP ₹{pos.current_price:.2f} | P&L {pnl_str} | "
+                f"Grade {pos.quality_grade}"
+            )
+        return "\n".join(lines)

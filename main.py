@@ -173,7 +173,7 @@ class TradingBot:
             from ai_brain import get_ai_brain
             self.ai_brain = get_ai_brain()
             logger.info(f"[{format_ist_timestamp()}] AI Brain initialized "
-                        f"({'Claude API connected' if self.ai_brain._enabled else 'rule-based mode'})")
+                        f"({'Gemini API connected' if self.ai_brain._enabled else 'rule-based mode'})")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] AI Brain failed: {e}")
 
@@ -464,6 +464,30 @@ class TradingBot:
             # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
+            # 1b. Daily profit target lock — "note printing machine" rule
+            # If we've hit 1.5% profit on the day, stop new entries (protect gains)
+            daily_pnl = self.risk_manager.state.daily_pnl
+            daily_cap = self.risk_manager.state.daily_capital
+            if daily_cap > 0:
+                daily_pnl_pct = (daily_pnl / daily_cap) * 100
+                if daily_pnl_pct >= 1.5 and not self.risk_manager.state.trading_paused:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 💰 DAILY TARGET HIT: "
+                        f"₹{daily_pnl:.0f} ({daily_pnl_pct:.1f}%) — "
+                        "Protecting gains. No new entries until next day."
+                    )
+                    self.risk_manager.state.trading_paused = True
+                    self.risk_manager.state.pause_reason = f"Daily target hit: {daily_pnl_pct:.1f}%"
+                    try:
+                        self.alerter.send_text(
+                            f"💰 *DAILY TARGET HIT!*\n"
+                            f"P&L: ₹{daily_pnl:.0f} ({daily_pnl_pct:.1f}%)\n"
+                            f"Protecting gains — no new entries.\n"
+                            f"Open positions still managed."
+                        )
+                    except Exception:
+                        pass
+
             # 2. Check Nifty circuit + track Nifty % change for filter
             nifty_q = self.fetcher.get_nifty_quote()
             if nifty_q:
@@ -607,10 +631,12 @@ class TradingBot:
                             self.signal_gen.set_orb_direction(orb_dir)
                             break
 
-            signals = self.signal_gen.scan_watchlist(
-                symbols=watchlist,
-                max_signals=min(max_new, 3)
-            )
+                signals = self.signal_gen.scan_watchlist(
+                    symbols=watchlist,
+                    max_signals=min(max_new, 3)
+                )
+            else:
+                signals = []
 
             # 5. Execute standard signals
             for signal in signals:
@@ -708,7 +734,7 @@ class TradingBot:
             self.eod_done = True
 
     def _do_eod_shutdown(self):
-        """End-of-day tasks: report, logging, shutdown."""
+        """End-of-day tasks: report, logging, Gemini review, shutdown."""
         logger.info(f"[{format_ist_timestamp()}] Market closed. Running EOD tasks...")
         if not self.eod_done:
             self._do_eod_squareoff()
@@ -722,7 +748,53 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] Self-learning error: {e}")
 
-        # EOD performance report (sends to Telegram with chart)
+        # Gemini AI EOD trade review
+        ai_eod_text = ""
+        if self.ai_brain and self.ai_brain._enabled:
+            try:
+                summary = self.risk_manager.get_daily_summary()
+                closed = self.risk_manager.state.closed_trades
+                regime_str = "NSE intraday session"
+                eod_result = self.ai_brain.analyse_day_trades(
+                    trades=closed,
+                    daily_pnl=summary.get("daily_pnl", 0),
+                    market_context=regime_str,
+                )
+                ai_eod_text = eod_result.get("summary", "")
+                logger.info(f"[{format_ist_timestamp()}] AI EOD: {ai_eod_text[:150]}")
+            except Exception as e:
+                logger.warning(f"[{format_ist_timestamp()}] AI EOD review failed: {e}")
+
+        # Record day in profit compounder (updates tomorrow's capital)
+        compounder_summary = ""
+        if self.compounder:
+            try:
+                summary = self.risk_manager.get_daily_summary()
+                tomorrow_cap = self.compounder.record_day(
+                    pnl=summary.get("daily_pnl", 0),
+                    trades=summary.get("total_trades", 0),
+                    wins=summary.get("wins", 0),
+                    starting_capital=self.risk_manager.state.daily_capital,
+                )
+                compounder_summary = (
+                    self.compounder.format_summary() +
+                    f"\nTomorrow's capital: ₹{tomorrow_cap:,.0f}"
+                )
+                logger.info(f"[{format_ist_timestamp()}] {compounder_summary}")
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] Compounder record_day failed: {e}")
+
+        # Send EOD Telegram report (with Gemini analysis + compounding)
+        try:
+            self.alerter.send_eod_report(
+                self.risk_manager,
+                compounder_summary=compounder_summary,
+                ai_eod=ai_eod_text,
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] EOD alert failed: {e}")
+
+        # EOD performance report (dashboard)
         if self.dashboard:
             try:
                 report = self.dashboard.generate_eod_report(
@@ -733,27 +805,7 @@ class TradingBot:
                 logger.info(f"[{format_ist_timestamp()}] EOD: P&L={report.get('net_pnl',0):+.0f} "
                             f"WR={report.get('win_rate',0):.1f}%")
             except Exception as e:
-                logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
-
-        # Record day in profit compounder (updates tomorrow's capital)
-        if self.compounder:
-            try:
-                summary = self.risk_manager.get_daily_summary()
-                tomorrow_cap = self.compounder.record_day(
-                    pnl=summary.get("daily_pnl", 0),
-                    trades=summary.get("total_trades", 0),
-                    wins=summary.get("wins", 0),
-                    starting_capital=self.risk_manager.state.daily_capital,
-                )
-                try:
-                    self.alerter.send_text(
-                        self.compounder.format_summary() +
-                        f"\n\nTomorrow's capital: ₹{tomorrow_cap:,.0f}"
-                    )
-                except Exception:
-                    pass
-            except Exception as e:
-                logger.error(f"[{format_ist_timestamp()}] Compounder record_day failed: {e}")
+                logger.error(f"[{format_ist_timestamp()}] EOD dashboard error: {e}")
 
         self.market_open_today = False
         self.eod_done = True
@@ -789,6 +841,36 @@ class TradingBot:
                 if risks:
                     for r in risks:
                         logger.warning(f"[{format_ist_timestamp()}] Risk: {r}")
+
+            # Gemini AI morning thesis — deep market intelligence
+            if self.ai_brain and self.ai_brain._enabled:
+                try:
+                    import yfinance as yf
+                    nifty_hist = yf.download("^NSEI", period="2d", interval="1d", progress=False)
+                    nifty_prev = float(nifty_hist["Close"].iloc[-2]) if len(nifty_hist) >= 2 else 22000
+                    gift_nifty = float(nifty_hist["Close"].iloc[-1]) if len(nifty_hist) >= 1 else nifty_prev
+                    spy = yf.download("SPY", period="1d", interval="1d", progress=False)
+                    us_chg = float(spy["Close"].pct_change().iloc[-1] * 100) if len(spy) > 1 else 0.0
+                    thesis = self.ai_brain.generate_morning_thesis(
+                        nifty_prev_close=nifty_prev,
+                        gift_nifty=gift_nifty,
+                        us_market_change=us_chg,
+                        asian_markets={},
+                        top_news=[],
+                        economic_events=[],
+                    )
+                    bias_line = (
+                        f"🤖 *AI Thesis:* {thesis.get('bias','?')} "
+                        f"({thesis.get('confidence',50)}%) — "
+                        f"{thesis.get('thesis','')[:200]}"
+                    )
+                    logger.info(f"[{format_ist_timestamp()}] {bias_line}")
+                    try:
+                        self.alerter.send_text(bias_line)
+                    except Exception:
+                        pass
+                except Exception as e:
+                    logger.warning(f"[{format_ist_timestamp()}] Gemini thesis failed: {e}")
 
             self._overnight_run_today = True
         except Exception as e:

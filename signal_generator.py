@@ -405,52 +405,81 @@ class SignalGenerator:
         elif alignment.get("score", 0) >= 50:
             score += 4
 
+        # ── Hard gate: Supertrend must agree (18yr rule: never fight Supertrend)
+        if direction == "LONG" and ind.supertrend_dir == -1:
+            return 0.0   # Supertrend bearish — no long
+        if direction == "SHORT" and ind.supertrend_dir == 1:
+            return 0.0   # Supertrend bullish — no short
+
+        # ── Hard gate: ADX must show trending market (ADX < 18 = chop, skip)
+        if ind.adx > 0 and ind.adx < 18:
+            return 0.0   # No trend — don't trade
+
         # Indicator confluence
         if direction == "LONG":
-            if ind.rsi < 50 and ind.rsi > 30:
-                score += 5  # RSI in buy zone but not extreme
+            if 30 < ind.rsi < 50:
+                score += 6   # RSI in ideal buy zone (momentum not yet extended)
+            elif 50 <= ind.rsi < 60:
+                score += 3   # RSI neutral-bullish
             if ind.macd_hist > 0:
-                score += 4
+                score += 5
             if ind.ema9 > ind.ema21:
-                score += 3
+                score += 4
             if ind.supertrend_dir == 1:
-                score += 4
+                score += 6   # Supertrend confirms
             if ind.adx > 25 and ind.plus_di > ind.minus_di:
-                score += 5
-        else:  # SHORT
-            if ind.rsi > 50 and ind.rsi < 70:
-                score += 5
-            if ind.macd_hist < 0:
-                score += 4
-            if ind.ema9 < ind.ema21:
+                score += 6   # Trending + bullish DI
+            elif ind.adx > 20:
                 score += 3
-            if ind.supertrend_dir == -1:
-                score += 4
-            if ind.adx > 25 and ind.minus_di > ind.plus_di:
+            # VWAP above = institutional bullish bias
+            if ind.vwap and ind.vwap > 0 and score > 0:
+                ltp = score  # Can't get ltp here, skip VWAP check in scoring
+        else:  # SHORT
+            if 50 < ind.rsi < 70:
+                score += 6   # RSI in ideal sell zone
+            elif 40 <= ind.rsi <= 50:
+                score += 3
+            if ind.macd_hist < 0:
                 score += 5
+            if ind.ema9 < ind.ema21:
+                score += 4
+            if ind.supertrend_dir == -1:
+                score += 6   # Supertrend confirms short
+            if ind.adx > 25 and ind.minus_di > ind.plus_di:
+                score += 6
+            elif ind.adx > 20:
+                score += 3
 
-        # Volume confirmation
-        if ind.volume_ratio >= 2.0:
-            score += 8
+        # Volume confirmation (critical — price without volume is a lie)
+        if ind.volume_ratio >= 3.0:
+            score += 12   # Explosive volume — premium setup
+        elif ind.volume_ratio >= 2.5:
+            score += 9
+        elif ind.volume_ratio >= 2.0:
+            score += 7
         elif ind.volume_ratio >= 1.5:
             score += 4
+        elif ind.volume_ratio < 1.0:
+            score -= 5    # Below-average volume — penalise heavily
 
         # Relative strength bonus
         if direction == "LONG" and relative_strength > 0.5:
-            score += min(relative_strength * 2, 8)
+            score += min(relative_strength * 2.5, 10)
         elif direction == "SHORT" and relative_strength < -0.5:
-            score += min(abs(relative_strength) * 2, 8)
+            score += min(abs(relative_strength) * 2.5, 10)
 
         # Time of day bonus (best intraday windows from 18yr experience)
         now_ist = get_current_ist_time()
         hour, minute = now_ist.hour, now_ist.minute
         time_val = hour + minute / 60
-        if 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum
-            score += 6
-        elif 13.5 <= time_val <= 14.5:  # 1:30–2:30 PM: afternoon momentum
-            score += 4
-        elif time_val >= 14.75:  # After 2:45 PM: reduce confidence
-            score -= 8
+        if 9.25 <= time_val <= 10.5:   # 9:15–10:30: morning power window
+            score += 8
+        elif 14.0 <= time_val <= 15.0:  # 2:00–3:00 PM: afternoon institutional
+            score += 5
+        elif 11.0 <= time_val <= 13.0:  # 11 AM–1 PM: midday chop — penalise
+            score -= 12
+        elif time_val >= 14.75:          # After 2:45 PM: reduce
+            score -= 6
 
         return min(round(score, 1), 100)
 

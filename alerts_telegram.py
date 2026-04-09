@@ -75,34 +75,68 @@ class TelegramAlerter:
         self,
         signal: TradeSignal,
         df_5m: Optional[pd.DataFrame] = None,
+        ai_explanation: str = "",
     ) -> bool:
-        """Send trade entry alert with chart image."""
+        """Send trade entry alert with chart image and Gemini AI explanation."""
         direction_emoji = "🟢📈" if signal.direction == "LONG" else "🔴📉"
-        conf_stars = "⭐⭐⭐" if signal.signal_score >= 80 else "⭐⭐" if signal.signal_score >= 65 else "⭐"
+        grade_emoji = {"A+": "💎", "A": "⭐", "B": "✅", "C": "⚠️"}.get(signal.quality_grade, "📊")
+        conf_stars = "⭐⭐⭐" if signal.signal_score >= 85 else "⭐⭐" if signal.signal_score >= 72 else "⭐"
 
-        sl_pct = abs(signal.entry_price - signal.stop_loss) / signal.entry_price * 100
-        t1_pct = abs(signal.target_1 - signal.entry_price) / signal.entry_price * 100
+        sl_pct  = abs(signal.entry_price - signal.stop_loss) / signal.entry_price * 100
+        t1_pct  = abs(signal.target_1 - signal.entry_price) / signal.entry_price * 100
+        t2_pct  = abs(signal.target_2 - signal.entry_price) / signal.entry_price * 100
+        mtf_str = (
+            f"5m:{signal.timeframe_alignment.get('5m','?')} / "
+            f"15m:{signal.timeframe_alignment.get('15m','?')} / "
+            f"1h:{signal.timeframe_alignment.get('1h','?')}"
+        )
+
+        # Build AI explanation line
+        ai_line = ""
+        if not ai_explanation:
+            # Try to get Gemini explanation automatically
+            try:
+                from ai_brain import get_ai_brain
+                brain = get_ai_brain()
+                if brain._enabled and signal.indicators:
+                    ind = signal.indicators
+                    vwap_pos = "above VWAP" if ind.vwap and signal.entry_price >= ind.vwap else "below VWAP"
+                    ai_explanation = brain.explain_signal(
+                        symbol=signal.symbol,
+                        direction=signal.direction,
+                        patterns=signal.patterns,
+                        score=signal.signal_score,
+                        regime=signal.timeframe_alignment.get("regime", "UNKNOWN"),
+                        mtf_info=mtf_str,
+                        rsi=ind.rsi if ind.rsi else 50,
+                        vwap_pos=vwap_pos,
+                        volume_ratio=ind.volume_ratio if ind.volume_ratio else 1.0,
+                    )
+            except Exception:
+                pass
+        if ai_explanation:
+            ai_line = f"\n🤖 *AI Insight:* _{ai_explanation[:300]}_\n"
 
         text = (
             f"{direction_emoji} *{signal.direction} SIGNAL — {signal.symbol}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🎯 *Score:* {signal.signal_score:.0f}/100 {conf_stars}\n"
+            f"{grade_emoji} *Grade:* {signal.quality_grade} | "
+            f"*Score:* {signal.signal_score:.0f}/100 {conf_stars} | "
+            f"*Size:* {signal.size_multiplier:.1f}x\n"
             f"⏰ *Time:* {signal.signal_time}\n"
             f"\n"
             f"💰 *Entry:* ₹{signal.entry_price:.2f}\n"
             f"🛑 *Stop Loss:* ₹{signal.stop_loss:.2f} (-{sl_pct:.1f}%)\n"
-            f"✅ *Target 1:* ₹{signal.target_1:.2f} (+{t1_pct:.1f}%)\n"
-            f"🚀 *Target 2:* ₹{signal.target_2:.2f} (+{t1_pct*1.5:.1f}%)\n"
-            f"📊 *R:R Ratio:* {signal.risk_reward:.1f}:1\n"
-            f"🌡️ *ATR:* ₹{signal.atr:.2f}\n"
+            f"✅ *Target 1:* ₹{signal.target_1:.2f} (+{t1_pct:.1f}%) → exit 50%\n"
+            f"🚀 *Target 2:* ₹{signal.target_2:.2f} (+{t2_pct:.1f}%) → exit 30%\n"
+            f"🏃 *Runner:* 20% with trailing stop\n"
+            f"📊 *R:R:* {signal.risk_reward:.1f}:1 | *ATR:* ₹{signal.atr:.2f}\n"
             f"\n"
             f"📋 *Patterns:* {', '.join(signal.patterns[:3]) if signal.patterns else 'N/A'}\n"
-            f"📈 *MTF:* 5m:{signal.timeframe_alignment.get('5m','?')} / "
-            f"15m:{signal.timeframe_alignment.get('15m','?')} / "
-            f"1h:{signal.timeframe_alignment.get('1h','?')}\n"
+            f"📈 *MTF:* {mtf_str}\n"
             f"💹 *RS vs Nifty:* {signal.relative_strength:+.1f}%\n"
-            f"\n"
-            f"📝 *Analysis:* {signal.rationale[:200]}\n"
+            f"📝 *Setup:* {signal.rationale[:180]}\n"
+            f"{ai_line}"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"⚠️ _Real money at risk. SL is mandatory._"
         )
@@ -186,28 +220,56 @@ class TelegramAlerter:
         )
         return self._send(text, parse_mode="Markdown")
 
-    def send_eod_report(self, risk_manager: RiskManager) -> bool:
-        """Send end-of-day performance summary."""
+    def send_eod_report(self, risk_manager: RiskManager,
+                        compounder_summary: str = "",
+                        ai_eod: str = "") -> bool:
+        """Send end-of-day performance summary with Gemini AI analysis."""
         summary = risk_manager.get_daily_summary()
         pnl = summary["daily_pnl"]
         pnl_pct = summary["daily_pnl_pct"]
-        pnl_emoji = "✅" if pnl >= 0 else "❌"
         win_rate = summary["win_rate"]
+
+        # Profit emoji with note printing machine style
+        if pnl >= 0:
+            if pnl_pct >= 1.5:
+                pnl_emoji = "💰💰💰 GREAT DAY"
+            elif pnl_pct >= 0.5:
+                pnl_emoji = "💰💰 GOOD DAY"
+            else:
+                pnl_emoji = "💰 PROFIT DAY"
+        else:
+            pnl_emoji = "❌ LOSS DAY"
+
+        # Win rate badge
+        if win_rate >= 70:
+            wr_badge = "🎯🎯 SNIPER"
+        elif win_rate >= 55:
+            wr_badge = "🎯 ON TARGET"
+        else:
+            wr_badge = "📉 REVIEW"
+
+        # Compounder line
+        comp_line = f"\n💹 *Compounding:*\n_{compounder_summary[:200]}_\n" if compounder_summary else ""
+
+        # Gemini AI EOD line
+        ai_line = f"\n🤖 *AI Review:*\n_{ai_eod[:300]}_\n" if ai_eod else ""
 
         text = (
             f"📊 *EOD REPORT — {summary['date']}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"⏰ {format_ist_timestamp()}\n"
+            f"⏰ {format_ist_timestamp()} IST\n"
             f"\n"
-            f"{pnl_emoji} *Daily P&L:* {format_currency(pnl)} ({pnl_pct:+.2f}%)\n"
+            f"{pnl_emoji}\n"
+            f"💵 *P&L:* {format_currency(pnl)} ({pnl_pct:+.2f}%)\n"
             f"📈 *Trades:* {summary['total_trades']} "
-            f"(W:{summary['wins']} L:{summary['losses']})\n"
-            f"🎯 *Win Rate:* {win_rate:.1f}%\n"
+            f"(✅ {summary['wins']} wins | ❌ {summary['losses']} losses)\n"
+            f"{wr_badge} *Win Rate:* {win_rate:.1f}%\n"
             f"📉 *Max Drawdown:* {format_currency(summary['max_drawdown'])}\n"
-            f"🔴 *Consecutive Losses:* {summary['consecutive_losses']}\n"
-            f"\n"
+            f"🔴 *Cons. Losses:* {summary['consecutive_losses']}\n"
+            f"{comp_line}"
+            f"{ai_line}"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🤖 Bot shutting down for the day (IST 3:30 PM)"
+            f"🤖 Bot shutting down. Markets reopen 9:15 AM IST."
         )
         return self._send(text, parse_mode="Markdown")
 
