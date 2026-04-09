@@ -22,6 +22,7 @@ Signal pipeline:
 """
 
 import logging
+from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, Dict, List
@@ -53,6 +54,12 @@ try:
     _VP_AVAILABLE = True
 except ImportError:
     _VP_AVAILABLE = False
+
+try:
+    from nse_data import NSEDataFetcher, get_nse_data_fetcher
+    _NSE_DATA_AVAILABLE = True
+except ImportError:
+    _NSE_DATA_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -143,6 +150,14 @@ class SignalGenerator:
         # Cached FII adjustment (refreshed every scan cycle, not per-symbol)
         self._fii_adjustment: float = 0.0
         self._fii_size_mult:  float = 1.0
+
+        # NSE supplementary data (bulk/block deals, delivery %, FII futures)
+        self._nse_data: Optional["NSEDataFetcher"] = (
+            get_nse_data_fetcher() if _NSE_DATA_AVAILABLE else None
+        )
+
+        # Concurrent scanning config
+        self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
 
     def set_learner(self, learner) -> None:
         """Inject self-learning engine for adaptive pattern weights."""
@@ -313,37 +328,54 @@ class SignalGenerator:
         self, symbols: List[str], max_signals: int = 5
     ) -> List[TradeSignal]:
         """
-        Scan all symbols and return top signals ranked by score.
-        Returns at most max_signals signals.
+        Concurrent watchlist scan using ThreadPoolExecutor.
+
+        Performance: 30 symbols × ~4s each → 120s sequential vs ~20s concurrent.
+        Rate-limit safe: max 6 workers (Groww allows ~10 req/s).
         """
-        # Refresh FII/DII + OC once per scan cycle (not per symbol)
+        # Refresh FII/DII + OC + FII futures once per cycle (not per symbol)
         self.refresh_institutional_context()
 
-        signals = []
-        for symbol in symbols:
-            try:
-                sig = self.generate_signal(symbol)
-                if sig:
-                    signals.append(sig)
-            except Exception as e:
-                logger.error(f"Scan error {symbol}: {e}")
+        signals: List[TradeSignal] = []
+        errors  = 0
+
+        with ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="sig") as pool:
+            futures = {pool.submit(self._scan_one, sym): sym for sym in symbols}
+            for fut in as_completed(futures, timeout=90):
+                sym = futures[fut]
+                try:
+                    sig = fut.result(timeout=20)
+                    if sig:
+                        signals.append(sig)
+                except FuturesTimeout:
+                    logger.debug(f"Scan timeout: {sym}")
+                    errors += 1
+                except Exception as e:
+                    logger.debug(f"Scan error {sym}: {e}")
+                    errors += 1
 
         # Sort: grade first (A+ > A > B > C), then score
         grade_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
         signals.sort(
             key=lambda s: (grade_rank.get(s.quality_grade, 0), s.signal_score),
-            reverse=True
+            reverse=True,
         )
 
-        if signals:
-            filter_stats = self.ha_filter.get_stats()
-            logger.info(
-                f"[{format_ist_timestamp()}] Scan complete: {len(signals)} signals "
-                f"from {len(symbols)} symbols | "
-                f"Filter: {filter_stats['passed']} passed / {filter_stats['rejected']} rejected "
-                f"({filter_stats['pass_rate']:.0f}% pass rate)"
-            )
+        filter_stats = self.ha_filter.get_stats()
+        logger.info(
+            f"[{format_ist_timestamp()}] Scan: {len(signals)} signals "
+            f"/ {len(symbols)} symbols | "
+            f"Pass rate {filter_stats['pass_rate']:.0f}% | Errors={errors}"
+        )
         return signals[:max_signals]
+
+    def _scan_one(self, symbol: str) -> Optional[TradeSignal]:
+        """Wrapper for generate_signal — safe for ThreadPoolExecutor."""
+        try:
+            return self.generate_signal(symbol)
+        except Exception as e:
+            logger.debug(f"_scan_one({symbol}): {e}")
+            return None
 
     # --------------------------------------------------------
     # INSTITUTIONAL INTELLIGENCE CONTEXT
@@ -366,13 +398,15 @@ class SignalGenerator:
           fii_size_mult: float
         """
         ctx = {
-            "oc_score":      0.0,
-            "oc_signals":    [],
-            "vp_score":      0.0,
-            "vp_notes":      [],
-            "vp_levels":     {},
-            "fii_score":     self._fii_adjustment,
-            "fii_size_mult": self._fii_size_mult,
+            "oc_score":        0.0,
+            "oc_signals":      [],
+            "vp_score":        0.0,
+            "vp_notes":        [],
+            "vp_levels":       {},
+            "fii_score":       self._fii_adjustment,
+            "fii_size_mult":   self._fii_size_mult,
+            "nse_score":       0,
+            "nse_reason":      "",
         }
 
         # ── Option Chain ─────────────────────────────────
@@ -406,6 +440,18 @@ class SignalGenerator:
                         }
             except Exception as e:
                 logger.debug(f"VP context error for {symbol}: {e}")
+
+        # ── NSE supplementary data (bulk/block, delivery, 52wk) ──
+        if self._nse_data:
+            try:
+                # direction placeholder — adjusted in _compute_ai_score
+                nse_score, nse_reason = self._nse_data.get_composite_score(
+                    symbol, "LONG"
+                )
+                ctx["nse_score"]  = nse_score
+                ctx["nse_reason"] = nse_reason
+            except Exception as e:
+                logger.debug(f"NSE data context error for {symbol}: {e}")
 
         return ctx
 
@@ -600,8 +646,18 @@ class SignalGenerator:
         if direction == "LONG":
             score += vp_score
         else:
-            # Invert: VP score for LONG from VAL is +, so for SHORT from VAH also +
-            score += vp_score  # Already aligned by get_signal_context(direction=...)
+            score += vp_score  # Already direction-aligned by get_signal_context
+
+        # ── [NEW] NSE bulk/block deal + delivery + 52wk ───
+        nse_raw = ctx.get("nse_score", 0)
+        if nse_raw != 0:
+            # Flip sign for SHORT (buy signal = bad for short)
+            nse_adj = nse_raw if direction == "LONG" else -nse_raw
+            score += nse_adj
+            if abs(nse_adj) >= 5:
+                logger.debug(
+                    f"NSE data adj={nse_adj:+d} | {ctx.get('nse_reason', '')}"
+                )
 
         return min(round(score, 1), 100)
 

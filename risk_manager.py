@@ -18,8 +18,10 @@ Features:
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from typing import Optional, Dict, List
+from typing import Optional, Dict, List, Tuple
 from zoneinfo import ZoneInfo
+
+import numpy as np
 
 from utils import format_ist_timestamp, get_current_ist_time, format_currency
 
@@ -93,6 +95,7 @@ class RiskState:
     """Daily risk tracking state — resets each morning."""
     date: str = ""
     daily_capital: float = 0.0
+    available_capital: float = 0.0
     daily_pnl: float = 0.0
     daily_trades: int = 0
     winning_trades: int = 0
@@ -112,6 +115,8 @@ class RiskState:
     def __post_init__(self):
         if not self.date:
             self.date = get_current_ist_time().strftime("%Y-%m-%d")
+        if not self.available_capital:
+            self.available_capital = self.daily_capital
 
     @property
     def win_rate(self) -> float:
@@ -123,6 +128,12 @@ class RiskState:
         if self.daily_capital == 0:
             return 0.0
         return (abs(min(self.daily_pnl, 0)) / self.daily_capital) * 100
+
+    @property
+    def portfolio_heat(self) -> float:
+        """Total risk across all open positions as % of capital."""
+        total_risk = sum(p.risk_amount for p in self.positions.values())
+        return (total_risk / max(self.daily_capital, 1)) * 100
 
 
 class RiskManager:
@@ -171,15 +182,17 @@ class RiskManager:
     def initialize_day(self, available_balance: float, nifty_open: float = 0):
         """Call this at market open (9:15 AM IST) each day."""
         now_ist = get_current_ist_time()
+        cap = min(available_balance, self.max_daily_capital)
         self.state = RiskState(
             date=now_ist.strftime("%Y-%m-%d"),
-            daily_capital=min(available_balance, self.max_daily_capital),
+            daily_capital=cap,
+            available_capital=cap,
             nifty_open=nifty_open,
         )
         self._available_balance = available_balance
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
-            f"Capital: {format_currency(self.state.daily_capital)} | "
+            f"Capital: {format_currency(cap)} | "
             f"Nifty open: {nifty_open:.2f}"
         )
 
@@ -187,6 +200,7 @@ class RiskManager:
         """Update available balance (called before each trade)."""
         self._available_balance = balance
         effective_capital = min(balance, self.max_daily_capital)
+        self.state.available_capital = effective_capital
         if effective_capital != self.state.daily_capital:
             self.state.daily_capital = effective_capital
 
@@ -212,6 +226,137 @@ class RiskManager:
         )
 
     # --------------------------------------------------------
+    # SESSION MULTIPLIER
+    # --------------------------------------------------------
+
+    def _get_session_multiplier(self) -> Tuple[float, str]:
+        """
+        Session-based position size multiplier.
+        18yr Rule: 60% of intraday P&L comes from the opening drive (9:15-10:00).
+        Midday (11:00-13:30) is a trap — algos chop retail to death.
+
+        Returns (multiplier, session_name)
+        """
+        now = get_current_ist_time()
+        h, m = now.hour, now.minute
+        total_min = h * 60 + m
+
+        if 555 <= total_min < 600:    # 09:15-10:00 Opening drive
+            return 1.0, "OPENING_DRIVE"
+        elif 600 <= total_min < 660:  # 10:00-11:00 Morning session
+            return 0.80, "MORNING"
+        elif 660 <= total_min < 810:  # 11:00-13:30 Midday chop
+            return 0.50, "MIDDAY_CHOP"
+        elif 810 <= total_min < 900:  # 13:30-15:00 Afternoon trend
+            return 0.80, "AFTERNOON"
+        elif 900 <= total_min < 920:  # 15:00-15:20 Closing risk
+            return 0.30, "CLOSING"
+        else:
+            return 0.0, "AFTER_HOURS"
+
+    # --------------------------------------------------------
+    # DYNAMIC KELLY CRITERION
+    # --------------------------------------------------------
+
+    def _dynamic_kelly_fraction(self) -> float:
+        """
+        Dynamic Kelly using the last 20 closed trades (updates intraday).
+        Falls back to 0.55 win-rate estimate if fewer than 5 trades.
+
+        Kelly% = W - (1-W)/R  where R = avg_win / avg_loss
+        Capped at 25% to prevent overbetting.
+        """
+        recent = self.state.closed_trades[-20:]
+        if len(recent) < 5:
+            return 0.55   # Fallback
+
+        wins   = [t for t in recent if t.get("pnl", 0) > 0]
+        losses = [t for t in recent if t.get("pnl", 0) <= 0]
+        if not wins or not losses:
+            return 0.55
+
+        wr      = len(wins) / len(recent)
+        avg_win = abs(sum(t["pnl"] for t in wins)   / len(wins))
+        avg_los = abs(sum(t["pnl"] for t in losses) / len(losses))
+        if avg_los < 1:
+            return 0.55
+
+        kelly = wr - (1 - wr) / (avg_win / avg_los)
+        return max(0.10, min(kelly, 0.25))   # Clamp 10-25%
+
+    # --------------------------------------------------------
+    # SECTOR CORRELATION GUARD
+    # --------------------------------------------------------
+
+    def _check_sector_correlation(self, symbol: str) -> Dict:
+        """
+        Prevent more than 2 open positions in the same sector.
+        18yr Rule: "Sector correlation kills diversification. 3 bank stocks
+        in a bank rout = 3× the loss."
+        """
+        try:
+            from nse_data import get_sector
+            sector = get_sector(symbol)
+            if sector == "OTHER":
+                return {"allowed": True, "reason": "Unknown sector — allowing"}
+
+            same_sector = [
+                s for s in self.state.positions
+                if get_sector(s) == sector
+            ]
+            max_per_sector = getattr(config, "MAX_POSITIONS_PER_SECTOR", 2)
+            if len(same_sector) >= max_per_sector:
+                return {
+                    "allowed": False,
+                    "reason": (
+                        f"Sector limit: already {len(same_sector)} open in "
+                        f"{sector} ({', '.join(same_sector)})"
+                    ),
+                }
+        except Exception:
+            pass
+        return {"allowed": True, "reason": "Sector check passed"}
+
+    # --------------------------------------------------------
+    # PORTFOLIO VAR
+    # --------------------------------------------------------
+
+    def calculate_portfolio_var(self, confidence: float = 0.95) -> Dict:
+        """
+        Calculate Value at Risk across all open positions.
+        Uses ATR as a 1-day volatility proxy for each position.
+
+        Returns:
+          var_95:  95% 1-day Value at Risk in ₹
+          cvar_95: Conditional VaR (expected loss beyond VaR)
+          heat_pct: Portfolio heat (% of capital at risk via SL)
+        """
+        if not self.state.positions:
+            return {"var_95": 0, "cvar_95": 0, "heat_pct": 0}
+
+        losses = []
+        for pos in self.state.positions.values():
+            # Max loss = SL distance × quantity
+            sl_loss = abs(pos.entry_price - pos.active_sl) * pos.quantity
+            # Simulate 100 scenarios using ATR
+            atr = pos.atr if pos.atr > 0 else pos.entry_price * 0.005
+            scenarios = np.random.normal(-atr * pos.quantity, atr * pos.quantity * 0.5, 1000)
+            losses.extend(scenarios.tolist())
+
+        if not losses:
+            return {"var_95": 0, "cvar_95": 0, "heat_pct": 0}
+
+        loss_arr = np.array(losses)
+        var_95   = float(np.percentile(-loss_arr, 95))
+        cvar_95  = float(np.mean(-loss_arr[-loss_arr >= var_95])) if var_95 > 0 else 0
+
+        return {
+            "var_95":   round(max(var_95, 0), 2),
+            "cvar_95":  round(max(cvar_95, 0), 2),
+            "heat_pct": round(self.state.portfolio_heat, 2),
+        }
+
+    # --------------------------------------------------------
     # POSITION SIZING
     # --------------------------------------------------------
 
@@ -224,18 +369,15 @@ class RiskManager:
         win_rate_estimate: float = 0.55,
     ) -> Dict:
         """
-        Calculate position size using risk-based method + Kelly Criterion check.
-
-        Args:
-            symbol: Stock symbol
-            entry_price: Planned entry price
-            stop_loss: Planned stop loss price
-            direction: "LONG" or "SHORT"
-            win_rate_estimate: Historical win rate (0.55 default from trainer)
-
-        Returns:
-            dict with quantity, risk_amount, capital_used, sizing_details
+        Multi-layer position sizing:
+          1. Risk-based (primary): risk_pct × capital / SL_distance
+          2. Dynamic Kelly (secondary): uses last 20 trades
+          3. Session multiplier: reduce size during midday chop
+          4. Institutional multiplier: FII/DII + Option Chain
+          5. Portfolio heat cap: no trade if total heat > MAX_PORTFOLIO_HEAT
+          6. Capital cap: max 15% per position
         """
+        import config as _cfg
         capital = self.state.daily_capital
         if capital <= 0 or entry_price <= 0:
             return {"quantity": 0, "reason": "Insufficient capital"}
@@ -244,47 +386,59 @@ class RiskManager:
         if sl_distance <= 0:
             return {"quantity": 0, "reason": "Invalid SL distance"}
 
-        # Risk amount in INR
+        # 1. Risk-based sizing
         risk_amount = capital * (self.max_risk_pct / 100)
+        risk_qty    = int(risk_amount / sl_distance)
 
-        # Primary sizing: risk-based
-        risk_qty = int(risk_amount / sl_distance)
+        # 2. Dynamic Kelly
+        kelly_frac  = self._dynamic_kelly_fraction()
+        kelly_qty   = int((capital * kelly_frac) / entry_price)
 
-        # Kelly Criterion check (informational, not primary)
-        # Kelly% = W - (1-W)/R where R = avg_win/avg_loss
-        avg_rr = 2.5  # Default 2.5:1 target from strategy
-        kelly_pct = win_rate_estimate - (1 - win_rate_estimate) / avg_rr
-        kelly_pct = max(0, min(kelly_pct, 0.25))  # Cap at 25%
-        kelly_qty = int((capital * kelly_pct) / entry_price)
-
-        # Use the more conservative of the two
+        # More conservative of the two
         quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
 
-        # Apply institutional intelligence multiplier (FII/DII + Option Chain)
-        # FII strong buy day → trade bigger; FII sell day → trade smaller
+        # 3. Session multiplier (reduce during midday, closing)
+        sess_mult, session = self._get_session_multiplier()
+        quantity = max(1, int(quantity * sess_mult))
+
+        # 4. Institutional multiplier (FII/DII + Option Chain)
         inst_mult = getattr(self, "_inst_mult", 1.0)
         quantity  = max(1, int(quantity * inst_mult))
 
-        # Hard cap: max 15% of capital in a single trade
-        max_qty_by_capital = int((capital * 0.15) / entry_price)
-        quantity = min(quantity, max_qty_by_capital)
+        # 5. Portfolio heat cap
+        max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
+        current_heat       = self.state.portfolio_heat
+        if current_heat >= max_portfolio_heat:
+            return {
+                "quantity": 0,
+                "reason": (
+                    f"Portfolio heat {current_heat:.1f}% ≥ "
+                    f"max {max_portfolio_heat}% — no new entries"
+                ),
+            }
 
-        # Min quantity = 1
+        # 6. Capital cap: max 15% per position
+        max_by_capital = int((capital * 0.15) / entry_price)
+        quantity = min(quantity, max_by_capital)
         quantity = max(quantity, 1)
 
         capital_used = entry_price * quantity
         actual_risk  = sl_distance * quantity
 
         return {
-            "quantity": quantity,
+            "quantity":    quantity,
             "risk_amount": round(actual_risk, 2),
-            "capital_used": round(capital_used, 2),
-            "capital_pct": round((capital_used / capital) * 100, 1),
-            "risk_pct": round((actual_risk / capital) * 100, 2),
-            "risk_qty": risk_qty,
-            "kelly_qty": kelly_qty,
+            "capital_used":round(capital_used, 2),
+            "capital_pct": round(capital_used / capital * 100, 1),
+            "risk_pct":    round(actual_risk  / capital * 100, 2),
+            "risk_qty":    risk_qty,
+            "kelly_qty":   kelly_qty,
+            "kelly_frac":  round(kelly_frac, 3),
             "sl_distance": round(sl_distance, 2),
-            "inst_mult": round(inst_mult, 2),
+            "sess_mult":   round(sess_mult, 2),
+            "session":     session,
+            "inst_mult":   round(inst_mult, 2),
+            "heat_pct":    round(self.state.portfolio_heat, 2),
         }
 
     # --------------------------------------------------------
@@ -331,7 +485,27 @@ class RiskManager:
         if self._available_balance < 1000:
             return {"allowed": False, "reason": "Insufficient balance"}
 
-        return {"allowed": True, "reason": "All checks passed"}
+        # 7. Portfolio heat limit
+        import config as _cfg
+        max_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
+        current_heat = self.state.portfolio_heat
+        if current_heat >= max_heat:
+            return {
+                "allowed": False,
+                "reason": f"Portfolio heat {current_heat:.1f}% ≥ limit {max_heat}%",
+            }
+
+        # 8. Sector correlation guard (max N positions per sector)
+        sector_check = self._check_sector_correlation(symbol)
+        if not sector_check["allowed"]:
+            return sector_check
+
+        # 9. Session gate — no new entries after 3:00 PM IST
+        sess_mult, session = self._get_session_multiplier()
+        if sess_mult == 0.0:
+            return {"allowed": False, "reason": f"Session gate: {session}"}
+
+        return {"allowed": True, "reason": f"All checks passed | Session={session}"}
 
     # --------------------------------------------------------
     # TRAILING STOP MANAGEMENT

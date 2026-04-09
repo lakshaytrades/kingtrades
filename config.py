@@ -252,6 +252,55 @@ VP_HVN_STD_THRESHOLD:  float = 0.5        # HVN: above mean + 0.5 std
 VP_LVN_STD_THRESHOLD:  float = 1.0        # LVN: below mean - 1.0 std
 
 # ============================================================
+# ADVANCED RISK MANAGEMENT
+# ============================================================
+
+# Portfolio heat = total SL risk across all open positions as % of capital
+# 3% = 6 positions × 0.5% each — hard ceiling, no new entries above this
+MAX_PORTFOLIO_HEAT_PCT: float = 3.0
+
+# Maximum positions per sector (correlation guard)
+# Prevents 3 bank stocks from tripling a sector-wide loss
+MAX_POSITIONS_PER_SECTOR: int = 2
+
+# Session-based size multipliers (auto-applied in risk_manager)
+# Override here if you want different behaviour per session
+SESSION_SIZE_MULTIPLIERS = {
+    "OPENING_DRIVE": 1.00,   # 09:15-10:00 — peak momentum, full size
+    "MORNING":       0.80,   # 10:00-11:00 — good but fading momentum
+    "MIDDAY_CHOP":   0.50,   # 11:00-13:30 — chop zone, half size
+    "AFTERNOON":     0.80,   # 13:30-15:00 — institutional resumption
+    "CLOSING":       0.30,   # 15:00-15:20 — only high-conviction exits
+}
+
+# ============================================================
+# NSE SUPPLEMENTARY DATA
+# ============================================================
+NSE_DATA_ENABLED: bool = True       # Bulk/block deals, delivery %, FII futures
+NSE_DATA_CACHE_TTL: int = 3600      # Cache timeout seconds
+NSE_BULK_DEAL_MIN_VALUE_CR: float = 1.0  # Ignore deals < ₹1 crore (noise)
+NSE_DELIVERY_STRONG_PCT: float = 60.0    # Above this = strong conviction
+NSE_DELIVERY_WEAK_PCT:   float = 30.0    # Below this = speculative only
+NSE_FII_FUTURES_BULLISH_PCT: float = 55.0  # FII long % above this = bullish
+NSE_FII_FUTURES_BEARISH_PCT: float = 45.0  # FII long % below this = bearish
+
+# ============================================================
+# CONCURRENT SIGNAL SCANNING
+# ============================================================
+SCAN_MAX_WORKERS: int = 6          # ThreadPoolExecutor workers for watchlist scan
+SCAN_SYMBOL_TIMEOUT: int = 20      # Seconds before a single symbol scan times out
+SCAN_TOTAL_TIMEOUT:  int = 90      # Seconds before full scan cycle aborts
+
+# ============================================================
+# TRAINER — ADVANCED
+# ============================================================
+MONTE_CARLO_SIMULATIONS:   int   = 1000
+MONTE_CARLO_RUIN_THRESHOLD: float = 40.0  # % drawdown = "ruin"
+MONTE_CARLO_MAX_RUIN_PCT:   float = 5.0   # Deployable only if ruin prob < 5%
+SENSITIVITY_ROBUSTNESS_MIN: float = 0.70  # Min robustness score to deploy
+BENCHMARK_SYMBOL:           str   = "^NSEI"  # Nifty50 for benchmark comparison
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config() -> list:
