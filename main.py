@@ -228,9 +228,12 @@ class TradingBot:
             f"WR history={adaptive_cfg.overall_win_rate:.1f}%)"
         )
 
-        # Apply adaptive thresholds to signal generator
+        # Apply adaptive thresholds to signal generator (from self-learning)
         if self.signal_gen and hasattr(self.signal_gen, 'min_signal_score'):
             self.signal_gen.min_signal_score = adaptive_cfg.min_signal_score
+
+        # Apply EOD-trained parameters (from yesterday's walk-forward optimization)
+        self._apply_eod_trained_params()
 
         # Initialize MTF analyzer
         from multi_timeframe import MultiTimeframeAnalyzer
@@ -738,6 +741,8 @@ class TradingBot:
         self._token_refresh_attempts += 1
         if success:
             self._token_refreshed_today = True
+            # Re-apply EOD trained params after token refresh (9:00 AM)
+            self._apply_eod_trained_params()
         logger.info(f"[{format_ist_timestamp()}] Token refresh {'✅ succeeded' if success else '❌ failed'}")
 
     # --------------------------------------------------------
@@ -860,6 +865,69 @@ class TradingBot:
 
         except Exception as e:
             logger.error(f"Telegram listener exception: {e}")
+
+    # --------------------------------------------------------
+    # EOD-TRAINED ADAPTIVE PARAMETERS
+    # --------------------------------------------------------
+
+    def _apply_eod_trained_params(self) -> None:
+        """
+        Load yesterday's walk-forward optimized params and apply to live trading.
+        Called once at startup and again each morning at 9:00 AM IST.
+
+        Updates:
+          config.ATR_SL_MULTIPLIER   → better stop-loss distance
+          config.ATR_TP_MULTIPLIER   → better target distance
+          config.MAX_RISK_PER_TRADE_PCT
+          signal_gen.min_signal_score → adaptive entry quality bar
+        """
+        try:
+            from trainer import EODSelfTrainer
+            params = EODSelfTrainer.load_params()
+            if not params or not params.get("improved", False):
+                return  # No trained params or no improvement — keep defaults
+
+            date_str = params.get("date", "?")
+
+            # Apply ATR SL/TP multipliers to config (live override)
+            if "atr_sl" in params:
+                config.ATR_SL_MULTIPLIER = float(params["atr_sl"])
+            if "atr_t1" in params:
+                config.ATR_TP_MULTIPLIER = float(params["atr_t1"])
+            if "risk_pct" in params:
+                # Hard cap at 1% for safety regardless of trainer output
+                config.MAX_RISK_PER_TRADE_PCT = min(float(params["risk_pct"]), 1.0)
+                if self.risk_manager:
+                    self.risk_manager.max_risk_pct = config.MAX_RISK_PER_TRADE_PCT
+
+            # Apply trained min_score to signal generator
+            if "min_score" in params and self.signal_gen:
+                self.signal_gen.min_score = float(params["min_score"])
+                self.signal_gen.min_signal_score = float(params["min_score"])
+
+            logger.info(
+                f"[{format_ist_timestamp()}] ✅ EOD params applied (trained {date_str}): "
+                f"ATR_SL={config.ATR_SL_MULTIPLIER}x  "
+                f"ATR_T1={config.ATR_TP_MULTIPLIER}x  "
+                f"Risk={config.MAX_RISK_PER_TRADE_PCT}%  "
+                f"MinScore={params.get('min_score', '?')}  "
+                f"Sharpe={params.get('sharpe', 0):.2f}"
+            )
+            # Notify via Telegram so user sees params being applied
+            try:
+                self.alerter.send_text(
+                    f"🧠 <b>Trained Params Active</b> — {date_str}\n"
+                    f"ATR SL: {config.ATR_SL_MULTIPLIER}×  "
+                    f"ATR T1: {config.ATR_TP_MULTIPLIER}×\n"
+                    f"Risk/trade: {config.MAX_RISK_PER_TRADE_PCT}%  "
+                    f"Min score: {params.get('min_score', '?')}\n"
+                    f"OOS Sharpe: {params.get('sharpe', 0):.2f}  "
+                    f"WR: {params.get('win_rate', 0):.1f}%"
+                )
+            except Exception:
+                pass
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] EOD param load failed: {e}")
 
     # --------------------------------------------------------
     # AUTO-COMPOUND CAPITAL

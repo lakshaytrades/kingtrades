@@ -189,10 +189,11 @@ class ContinuousLearner:
             weekdays=[0,1,2,3,4]
         ))
 
-        # Walk-forward trainer (Mon-Fri)
+        # EOD Self-Training (Mon-Fri at 4:30 PM IST)
+        # Runs after market close, optimizes tomorrow's params from last 30 days
         self.tasks.append(ScheduledTask(
-            "Incremental Trainer", 17, 0,
-            self._task_incremental_train,
+            "EOD Self-Training", 16, 30,
+            self._task_eod_self_training,
             weekdays=[0,1,2,3,4]
         ))
 
@@ -356,50 +357,42 @@ class ContinuousLearner:
             except Exception:
                 pass
 
-    def _task_incremental_train(self):
-        """Run a quick incremental backtest on the latest data."""
-        store   = self._modules.get("store")
-        learner = self._modules.get("learner")
-        if not store:
+    def _task_eod_self_training(self):
+        """
+        EOD Self-Training: runs after market close at 4:30 PM IST Mon-Fri.
+
+        Uses last 30 days of 5m data to walk-forward optimize ATR SL/TP,
+        risk%, and minimum signal score. Saves to data/adaptive_params.json.
+        Main.py reads this file every morning at 9:00 AM IST and applies
+        the updated parameters for that day's live trading.
+        """
+        fetcher = self._modules.get("fetcher")
+        alerter = self._modules.get("alerter")
+        if not fetcher:
+            logger.warning(f"[{format_ist_timestamp()}] EOD Self-Train: no fetcher available")
             return
 
         import config
-        symbols = config.DEFAULT_WATCHLIST[:5]  # Quick train on top 5 stocks
-
-        results = []
-        for symbol in symbols:
-            try:
-                df = store.load_candles(symbol, "5m", days=30)
-                if df is None or len(df) < 100:
-                    continue
-                # Add indicators
-                try:
-                    from pattern_recognition import TechnicalIndicators
-                    df = TechnicalIndicators().compute(df)
-                except Exception:
-                    continue
-                from trainer import BacktestEngine, WalkForwardOptimizer
-                signals = WalkForwardOptimizer(df)._generate_signals(df, 1.5)
-                if signals.empty:
-                    continue
-                engine = BacktestEngine(100000)
-                stats  = engine.run(df, signals)
-                if "win_rate" in stats:
-                    results.append((symbol, stats))
-                    logger.info(
-                        f"[{format_ist_timestamp()}] Quick backtest {symbol}: "
-                        f"WR={stats['win_rate']:.1f}% "
-                        f"Sharpe={stats['sharpe']:.2f}"
-                    )
-            except Exception as e:
-                logger.debug(f"Incremental train failed {symbol}: {e}")
-
-        if results:
-            avg_wr = sum(r[1]["win_rate"] for r in results) / len(results)
-            logger.info(
-                f"[{format_ist_timestamp()}] Incremental train: "
-                f"avg WR={avg_wr:.1f}% across {len(results)} symbols"
+        try:
+            from trainer import EODSelfTrainer
+            trainer = EODSelfTrainer()
+            symbols = config.DEFAULT_WATCHLIST[:10]
+            result  = trainer.run(
+                fetcher   = fetcher,
+                symbols   = symbols,
+                lookback  = 30,
+                n_trials  = 20,   # Fast but meaningful (Render CPU-safe)
+                n_splits  = 3,
+                alerter   = alerter,
             )
+            logger.info(
+                f"[{format_ist_timestamp()}] EOD Self-Training done: "
+                f"improved={result.get('improved')} | "
+                f"Sharpe={result.get('sharpe',0):.2f} | "
+                f"WR={result.get('win_rate',0):.1f}%"
+            )
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] EOD Self-Training failed: {e}")
 
     def _task_weekly_review(self):
         """Full weekly strategy review using AI (Sundays)."""

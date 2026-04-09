@@ -477,6 +477,261 @@ class WalkForwardOptimizer:
 
 
 # -----------------------------------------------------------
+# EOD SELF-TRAINER  (runs automatically at 4:30 PM IST daily)
+# -----------------------------------------------------------
+
+ADAPTIVE_PARAMS_FILE = Path("data/adaptive_params.json")
+ADAPTIVE_PARAMS_FILE.parent.mkdir(exist_ok=True)
+
+
+class EODSelfTrainer:
+    """
+    Automatic end-of-day strategy optimizer.
+
+    Runs at 4:30 PM IST after every market close:
+      1. Downloads last 30 days of 5m/15m data for top 10 watchlist stocks
+      2. Walk-forward optimizes ATR_SL, ATR_T1, ATR_T2, risk_pct (20 trials × 3 splits)
+      3. Averages best params across all symbols
+      4. Safety gate: only adopts new params if Sharpe improved ≥ 5%
+      5. Saves to data/adaptive_params.json (read by main.py each morning)
+      6. Sends results summary to Telegram
+
+    18yr Rule: "Your strategy should get smarter every single day.
+    Markets evolve — a strategy that never adapts will eventually die."
+
+    Param file format:
+      {
+        "date":         "2026-04-09",
+        "atr_sl":       1.4,
+        "atr_t1":       2.6,
+        "atr_t2":       4.2,
+        "risk_pct":     0.5,
+        "min_score":    72.0,
+        "sharpe":       1.87,
+        "win_rate":     61.2,
+        "monthly_ret":  6.4,
+        "symbols_used": ["RELIANCE", "TCS", ...],
+        "improved":     true
+      }
+    """
+
+    # Safe bounds — trainer can never drift params outside these
+    PARAM_BOUNDS = {
+        "atr_sl":   (1.0, 2.5),
+        "atr_t1":   (1.5, 4.0),
+        "atr_t2":   (3.0, 7.0),
+        "risk_pct": (0.3, 1.0),
+    }
+
+    def run(
+        self,
+        fetcher,
+        symbols:   List[str] = None,
+        lookback:  int        = 30,
+        n_trials:  int        = 20,
+        n_splits:  int        = 3,
+        alerter                = None,
+    ) -> Dict:
+        """
+        Full EOD training cycle.
+        Returns summary dict (also sent to Telegram).
+        """
+        import config as _cfg
+
+        if symbols is None:
+            symbols = _cfg.DEFAULT_WATCHLIST[:10]
+
+        logger.info(
+            f"[{format_ist_timestamp()}] EOD Self-Trainer starting — "
+            f"{len(symbols)} symbols, {lookback}d lookback, {n_trials} trials"
+        )
+
+        # Load current (yesterday's) params as baseline
+        baseline = self.load_params()
+        baseline_sharpe = baseline.get("sharpe", 0.0)
+
+        per_symbol_params: List[Dict] = []
+        per_symbol_stats:  List[Dict] = []
+
+        for sym in symbols:
+            try:
+                df = fetcher.get_candles(sym, interval="5m", days=lookback)
+                if df is None or len(df) < 100:
+                    continue
+
+                # Add indicators
+                try:
+                    from pattern_recognition import TechnicalIndicators
+                    df = TechnicalIndicators().compute(df)
+                except Exception:
+                    continue
+
+                # Walk-forward optimization
+                opt    = WalkForwardOptimizer(df, n_splits=n_splits)
+                result = opt.optimize(n_trials=n_trials)
+
+                if result.get("best_params") and result.get("split_results"):
+                    best_p = result["best_params"]
+                    oos_stats = [r["oos"] for r in result["split_results"] if "oos" in r]
+
+                    if oos_stats:
+                        avg_sharpe = float(np.mean([s.get("sharpe", 0) for s in oos_stats]))
+                        avg_wr     = float(np.mean([s.get("win_rate", 0) for s in oos_stats]))
+                        avg_ret    = float(np.mean([s.get("monthly_return", 0) for s in oos_stats]))
+
+                        per_symbol_params.append(best_p)
+                        per_symbol_stats.append({
+                            "symbol":  sym,
+                            "sharpe":  round(avg_sharpe, 3),
+                            "win_rate":round(avg_wr, 1),
+                            "monthly": round(avg_ret, 2),
+                        })
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {sym}: "
+                            f"Sharpe={avg_sharpe:.2f} WR={avg_wr:.1f}% "
+                            f"Monthly={avg_ret:.1f}%"
+                        )
+            except Exception as e:
+                logger.warning(f"EOD train failed for {sym}: {e}")
+
+        if not per_symbol_params:
+            logger.warning(f"[{format_ist_timestamp()}] EOD Self-Trainer: no usable results")
+            return {"improved": False, "reason": "No usable optimization results"}
+
+        # Average params across all symbols (ensemble approach)
+        param_keys  = ["atr_sl", "atr_t1", "atr_t2", "risk_pct"]
+        avg_params  = {}
+        for k in param_keys:
+            vals = [p[k] for p in per_symbol_params if k in p]
+            if vals:
+                raw = float(np.mean(vals))
+                lo, hi = self.PARAM_BOUNDS[k]
+                avg_params[k] = round(max(lo, min(raw, hi)), 3)
+
+        # Overall performance summary
+        avg_sharpe  = float(np.mean([s["sharpe"]   for s in per_symbol_stats]))
+        avg_wr      = float(np.mean([s["win_rate"]  for s in per_symbol_stats]))
+        avg_monthly = float(np.mean([s["monthly"]   for s in per_symbol_stats]))
+
+        # Safety gate: only adopt if Sharpe improved ≥ 5% over yesterday's
+        improvement = (avg_sharpe - baseline_sharpe) / max(abs(baseline_sharpe), 0.1)
+        improved    = improvement >= 0.05 or baseline_sharpe == 0.0
+
+        # Adaptive min_score: tighten if win rate is high, loosen if low
+        current_min = baseline.get("min_score", _cfg.MIN_SIGNAL_SCORE)
+        if avg_wr >= 65:
+            new_min_score = min(current_min + 1.0, 82.0)   # Getting better → tighten
+        elif avg_wr <= 50:
+            new_min_score = max(current_min - 1.0, 65.0)   # Getting worse → loosen
+        else:
+            new_min_score = current_min
+
+        new_params = {
+            "date":         get_current_ist_time().strftime("%Y-%m-%d"),
+            **avg_params,
+            "min_score":    round(new_min_score, 1),
+            "sharpe":       round(avg_sharpe, 3),
+            "win_rate":     round(avg_wr, 1),
+            "monthly_ret":  round(avg_monthly, 2),
+            "symbols_used": [s["symbol"] for s in per_symbol_stats],
+            "improved":     improved,
+            "improvement_pct": round(improvement * 100, 1),
+            "baseline_sharpe": round(baseline_sharpe, 3),
+        }
+
+        if improved:
+            self._save_params(new_params)
+            logger.info(
+                f"[{format_ist_timestamp()}] ✅ EOD Self-Trainer: params UPDATED — "
+                f"Sharpe {baseline_sharpe:.2f}→{avg_sharpe:.2f} "
+                f"(+{improvement*100:.1f}%)"
+            )
+        else:
+            # Still save for reference but keep yesterday's params active
+            new_params["active"] = False
+            logger.info(
+                f"[{format_ist_timestamp()}] ℹ️ EOD Self-Trainer: no improvement "
+                f"({improvement*100:+.1f}%) — keeping yesterday's params"
+            )
+
+        # Send Telegram summary
+        if alerter:
+            self._send_telegram_summary(alerter, new_params, per_symbol_stats, improved)
+
+        return new_params
+
+    def _save_params(self, params: Dict) -> None:
+        """Save adaptive params to disk — read by main.py each morning."""
+        try:
+            ADAPTIVE_PARAMS_FILE.write_text(json.dumps(params, indent=2))
+            # Also archive daily copy
+            archive = RESULTS_DIR / f"params_{params['date']}.json"
+            archive.write_text(json.dumps(params, indent=2))
+        except Exception as e:
+            logger.error(f"Failed to save adaptive params: {e}")
+
+    @staticmethod
+    def load_params() -> Dict:
+        """
+        Load yesterday's trained params.
+        Called by main.py at 9:00 AM IST to apply for today's trading.
+        Returns empty dict if no params file exists (use config defaults).
+        """
+        try:
+            if ADAPTIVE_PARAMS_FILE.exists():
+                data = json.loads(ADAPTIVE_PARAMS_FILE.read_text())
+                # Only use if trained today or yesterday (not stale)
+                from datetime import date, timedelta
+                today     = get_current_ist_time().date()
+                train_date = date.fromisoformat(data.get("date", "2000-01-01"))
+                if (today - train_date).days <= 3:   # Accept params up to 3 days old
+                    return data
+        except Exception as e:
+            logger.warning(f"Load adaptive params failed: {e}")
+        return {}
+
+    def _send_telegram_summary(
+        self, alerter, params: Dict, sym_stats: List[Dict], improved: bool
+    ) -> None:
+        try:
+            emoji  = "✅" if improved else "ℹ️"
+            lines  = [
+                f"{emoji} <b>EOD Self-Training Complete</b> — "
+                f"{params.get('date', '')}",
+                "",
+                f"📊 <b>Optimized Parameters:</b>",
+                f"  ATR SL:   {params.get('atr_sl', '-')}×",
+                f"  ATR T1:   {params.get('atr_t1', '-')}×",
+                f"  ATR T2:   {params.get('atr_t2', '-')}×",
+                f"  Risk/trade: {params.get('risk_pct', '-')}%",
+                f"  Min score:  {params.get('min_score', '-')}",
+                "",
+                f"📈 <b>Backtest Performance (OOS avg):</b>",
+                f"  Sharpe: {params.get('baseline_sharpe',0):.2f} → "
+                f"{params.get('sharpe',0):.2f} "
+                f"({params.get('improvement_pct',0):+.1f}%)",
+                f"  Win rate:    {params.get('win_rate',0):.1f}%",
+                f"  Monthly est: {params.get('monthly_ret',0):.1f}%",
+                "",
+            ]
+            if sym_stats:
+                lines.append("🔬 <b>Symbol Results:</b>")
+                for s in sym_stats[:5]:
+                    lines.append(
+                        f"  {s['symbol']:12s} WR={s['win_rate']:.0f}%  "
+                        f"Sharpe={s['sharpe']:.2f}"
+                    )
+            if improved:
+                lines.append("\n✅ Params adopted — trading tomorrow with updated strategy")
+            else:
+                lines.append("\nℹ️ No improvement — keeping yesterday's params")
+
+            alerter.send_text("\n".join(lines))
+        except Exception as e:
+            logger.warning(f"EOD training Telegram summary failed: {e}")
+
+
+# -----------------------------------------------------------
 # MONTE CARLO SIMULATOR
 # -----------------------------------------------------------
 
