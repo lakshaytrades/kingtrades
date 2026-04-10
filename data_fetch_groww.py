@@ -52,15 +52,22 @@ class GrowwDataFetcher:
 
     def _reinit_with_fresh_token(self) -> bool:
         """Force TOTP re-login and rebuild the API client with fresh token."""
-        logger.info(f"[{format_ist_timestamp()}] Auth error — forcing TOTP re-login...")
+        logger.warning(f"[{format_ist_timestamp()}] Auth error — forcing TOTP re-login...")
         try:
             manager = get_auth_manager()
+            # Force a fresh TOTP login (not just cached token)
+            old_token = manager.token
             new_token = manager.login_and_get_token()
-            if new_token:
+            if new_token and new_token != old_token:
                 from growwapi import GrowwAPI
                 self._api = GrowwAPI(new_token)
-                logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with new token")
+                logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with FRESH token")
                 return True
+            elif new_token == old_token:
+                logger.error(
+                    f"[{format_ist_timestamp()}] ❌ TOTP login returned same expired token — "
+                    "update GROWW_AUTH_TOKEN in Render env with a fresh token from groww.in"
+                )
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Token refresh failed: {e}")
         return False

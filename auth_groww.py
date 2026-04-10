@@ -128,173 +128,167 @@ def _extract_token(resp_json: dict, cookies: dict) -> Optional[str]:
     return None
 
 
+def _log_response(label: str, resp: requests.Response) -> dict:
+    """Log HTTP response prominently so it shows in Render logs."""
+    try:
+        body = resp.json()
+    except Exception:
+        body = {"raw": resp.text[:300]}
+    cookies = {k: v[:20] + "..." if len(v) > 20 else v
+               for k, v in resp.cookies.items()}
+    logger.warning(
+        f"  [{label}] HTTP {resp.status_code} | "
+        f"body_keys={list(body.keys())} | "
+        f"cookies={list(cookies.keys())} | "
+        f"body_preview={str(body)[:400]}"
+    )
+    return body
+
+
 def _groww_totp_login(email: str, password: str, totp_secret: str) -> Optional[str]:
     """
-    Full Groww TOTP login.  Tries the v2 two-step flow (the one that actually
-    works as of 2025-2026) plus two fallback variants.
-
-    Returns auth token string on success, None on failure.
+    Full Groww TOTP login with detailed response logging.
+    All HTTP responses are logged at WARNING level so they appear in Render logs.
     """
     totp = pyotp.TOTP(totp_secret)
 
-    # Wait for a TOTP code with ≥ 8 seconds of life left
+    # Wait for TOTP code with ≥ 8 seconds of life left
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 8:
         logger.info(f"[{format_ist_timestamp()}] Waiting {remaining + 1}s for fresh TOTP window...")
         time.sleep(remaining + 1)
     totp_code = totp.now()
+    logger.warning(f"  TOTP code generated, window has {30 - (int(time.time()) % 30)}s remaining")
 
     session = requests.Session()
     session.headers.update(_HEADERS)
 
-    # ── Step 0: visit homepage to collect cookies (csrftoken etc.) ──────────
+    # Step 0: visit login page to collect cookies
     try:
         home = session.get("https://groww.in/login", timeout=15)
-        logger.debug(f"Homepage status: {home.status_code} | cookies: {list(session.cookies.keys())}")
+        logger.warning(
+            f"  [homepage] HTTP {home.status_code} | "
+            f"cookies={list(session.cookies.keys())}"
+        )
     except Exception as e:
-        logger.debug(f"Homepage fetch failed (non-fatal): {e}")
+        logger.warning(f"  [homepage] failed (non-fatal): {e}")
 
-    # Add CSRF header if cookie exists
     csrf = session.cookies.get("csrftoken", "")
     if csrf:
         session.headers["x-csrftoken"] = csrf
 
     # ═══════════════════════════════════════════════════════════════════════
-    # ATTEMPT 1 — v2 two-step: loginId + /validate (most common 2025 flow)
+    # ATTEMPT 1 — v2 loginId + /validate
     # ═══════════════════════════════════════════════════════════════════════
-    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 1/3 — v2 loginId flow...")
+    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 1/3 — v2 loginId+validate...")
     try:
         r1 = session.post(
             "https://groww.in/v1/api/user/v2/login/password",
             json={"loginId": email, "password": password},
             timeout=20,
         )
-        logger.debug(f"  step1 status={r1.status_code}  keys={list(r1.json().keys()) if r1.content else []}")
+        d1 = _log_response("attempt1 step1", r1)
 
         if r1.status_code in (200, 201):
-            d1 = r1.json()
-            request_id = (
-                (d1.get("data") or {}).get("requestId") or
-                d1.get("requestId") or
-                (d1.get("data") or {}).get("request_id") or
-                d1.get("request_id")
-            )
-
-            # Some versions return the token directly on password step
             direct = _extract_token(d1, dict(session.cookies))
             if direct:
-                logger.info(f"[{format_ist_timestamp()}] ✅ Token from password step (no TOTP needed)")
+                logger.info(f"[{format_ist_timestamp()}] ✅ Token from password step")
                 return direct
 
+            request_id = (
+                (d1.get("data") or {}).get("requestId") or d1.get("requestId") or
+                (d1.get("data") or {}).get("request_id") or d1.get("request_id")
+            )
+            logger.warning(f"  requestId found: {bool(request_id)} — value: {request_id}")
+
             if request_id:
-                # Regenerate code if we've been slow
                 if 30 - (int(time.time()) % 30) < 3:
                     time.sleep(4)
                     totp_code = totp.now()
 
                 for validate_url, body in [
-                    (
-                        "https://groww.in/v1/api/user/v2/login/validate",
-                        {"requestId": request_id, "otp": totp_code, "otpType": "TOTP"},
-                    ),
-                    (
-                        "https://groww.in/v1/api/user/v2/login/validate/totp",
-                        {"requestId": request_id, "totp": totp_code},
-                    ),
-                    (
-                        "https://groww.in/v1/api/user/v2/login/totp",
-                        {"requestId": request_id, "otp": totp_code, "otpType": "TOTP"},
-                    ),
+                    ("https://groww.in/v1/api/user/v2/login/validate",
+                     {"requestId": request_id, "otp": totp_code, "otpType": "TOTP"}),
+                    ("https://groww.in/v1/api/user/v2/login/validate/totp",
+                     {"requestId": request_id, "totp": totp_code}),
+                    ("https://groww.in/v1/api/user/v2/login/totp",
+                     {"requestId": request_id, "otp": totp_code, "otpType": "TOTP"}),
                 ]:
                     r2 = session.post(validate_url, json=body, timeout=20)
-                    logger.debug(f"  validate status={r2.status_code}  url={validate_url.split('/')[-1]}")
+                    d2 = _log_response(f"attempt1 {validate_url.split('/')[-1]}", r2)
                     if r2.status_code in (200, 201):
-                        tok = _extract_token(r2.json(), dict(session.cookies))
+                        tok = _extract_token(d2, dict(session.cookies))
                         if tok:
-                            logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v2 loginId flow")
+                            logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v2 loginId")
                             return tok
-            else:
-                logger.debug(f"  no requestId in response — keys: {list(d1.keys())}")
-
     except Exception as e:
-        logger.debug(f"  attempt 1 error: {e}")
+        logger.warning(f"  attempt 1 exception: {e}")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # ATTEMPT 2 — v2 email key (older variant)
+    # ATTEMPT 2 — v2 email key
     # ═══════════════════════════════════════════════════════════════════════
-    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 2/3 — v2 email flow...")
+    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 2/3 — v2 email+validate...")
     try:
-        session2 = requests.Session()
-        session2.headers.update(_HEADERS)
+        s2 = requests.Session()
+        s2.headers.update(_HEADERS)
         try:
-            session2.get("https://groww.in/login", timeout=10)
+            s2.get("https://groww.in/login", timeout=10)
         except Exception:
             pass
 
-        r1 = session2.post(
+        r1 = s2.post(
             "https://groww.in/v1/api/user/v2/login/password",
             json={"email": email, "password": password},
             timeout=20,
         )
-        logger.debug(f"  step1 status={r1.status_code}")
+        d1 = _log_response("attempt2 step1", r1)
 
         if r1.status_code in (200, 201):
-            d1 = r1.json()
-            request_id = (
-                (d1.get("data") or {}).get("requestId") or d1.get("requestId")
-            )
+            request_id = (d1.get("data") or {}).get("requestId") or d1.get("requestId")
             if request_id:
                 if 30 - (int(time.time()) % 30) < 3:
                     time.sleep(4)
                     totp_code = totp.now()
-                r2 = session2.post(
+                r2 = s2.post(
                     "https://groww.in/v1/api/user/v2/login/validate",
                     json={"requestId": request_id, "otp": totp_code, "otpType": "TOTP"},
                     timeout=20,
                 )
-                logger.debug(f"  validate status={r2.status_code}")
+                d2 = _log_response("attempt2 validate", r2)
                 if r2.status_code in (200, 201):
-                    tok = _extract_token(r2.json(), dict(session2.cookies))
+                    tok = _extract_token(d2, dict(s2.cookies))
                     if tok:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v2 email flow")
+                        logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v2 email")
                         return tok
-
     except Exception as e:
-        logger.debug(f"  attempt 2 error: {e}")
+        logger.warning(f"  attempt 2 exception: {e}")
 
     # ═══════════════════════════════════════════════════════════════════════
-    # ATTEMPT 3 — v1 legacy (pre-2024 endpoint)
+    # ATTEMPT 3 — v1 legacy single-step
     # ═══════════════════════════════════════════════════════════════════════
-    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 3/3 — v1 legacy flow...")
+    logger.info(f"[{format_ist_timestamp()}] TOTP attempt 3/3 — v1 legacy...")
     try:
-        session3 = requests.Session()
-        session3.headers.update(_HEADERS)
-
-        # Some v1 endpoints combine email+password+totp in one call
+        s3 = requests.Session()
+        s3.headers.update(_HEADERS)
         if 30 - (int(time.time()) % 30) < 3:
             time.sleep(4)
             totp_code = totp.now()
 
         for url, body in [
-            (
-                "https://groww.in/v1/api/user/login",
-                {"email": email, "password": password, "otp": totp_code, "otpType": "TOTP"},
-            ),
-            (
-                "https://groww.in/v1/api/user/login",
-                {"loginId": email, "password": password, "totp": totp_code},
-            ),
+            ("https://groww.in/v1/api/user/login",
+             {"email": email, "password": password, "otp": totp_code, "otpType": "TOTP"}),
+            ("https://groww.in/v1/api/user/login",
+             {"loginId": email, "password": password, "totp": totp_code}),
         ]:
-            r = session3.post(url, json=body, timeout=20)
-            logger.debug(f"  v1 status={r.status_code}")
+            r = s3.post(url, json=body, timeout=20)
+            d = _log_response(f"attempt3 {body.get('otpType','v2')}", r)
             if r.status_code in (200, 201):
-                tok = _extract_token(r.json(), dict(session3.cookies))
+                tok = _extract_token(d, dict(s3.cookies))
                 if tok:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v1 legacy flow")
+                    logger.info(f"[{format_ist_timestamp()}] ✅ TOTP login via v1 legacy")
                     return tok
-
     except Exception as e:
-        logger.debug(f"  attempt 3 error: {e}")
+        logger.warning(f"  attempt 3 exception: {e}")
 
     return None
 
