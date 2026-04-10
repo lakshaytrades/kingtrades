@@ -96,6 +96,7 @@ class TradingBot:
         self._premarket_scan_done = False
         self._capital_file = Path("data/capital.json")
         self._capital_file.parent.mkdir(exist_ok=True)
+        self._last_reconcile_time: Optional[datetime] = None  # position reconciliation
 
     # --------------------------------------------------------
     # STARTUP
@@ -500,6 +501,9 @@ class TradingBot:
             # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
+            # 1b. Reconcile positions every 10 min (detect server-side SL hits)
+            self._reconcile_positions()
+
             # 2. Check Nifty circuit
             nifty_q = self.fetcher.get_nifty_quote()
             if nifty_q:
@@ -642,6 +646,115 @@ class TradingBot:
 
             except Exception as e:
                 logger.error(f"Position update error {pos.symbol}: {e}")
+
+    # --------------------------------------------------------
+    # POSITION RECONCILIATION (every 10 min during market hours)
+    # --------------------------------------------------------
+
+    def _reconcile_positions(self):
+        """
+        Sync the bot's local position tracker against Groww's actual positions.
+        Runs every 10 minutes during market hours.
+
+        Handles two drift cases:
+        1. Bot tracks position but Groww doesn't have it → exchange/server SL hit
+           Bot removes the ghost entry and alerts Telegram.
+        2. Groww has position the bot doesn't know about → add and monitor it.
+        """
+        if not self.fetcher or not self.risk_manager:
+            return
+
+        now = get_current_ist_time()
+        if (self._last_reconcile_time and
+                (now - self._last_reconcile_time).total_seconds() < 600):
+            return  # Not yet 10 min since last reconcile
+        self._last_reconcile_time = now
+
+        try:
+            groww_raw = self.fetcher.get_positions()
+            if groww_raw is None:
+                return
+
+            # Build set of symbols Groww actually holds (non-zero quantity)
+            groww_syms: set = {
+                str(p.get("symbol", ""))
+                for p in groww_raw
+                if int(p.get("quantity", 0)) != 0
+            }
+            bot_syms: set = set(self.risk_manager.state.positions.keys())
+
+            # ── Case 1: ghost positions (bot tracks, Groww doesn't) ──────────
+            for sym in list(bot_syms - groww_syms):
+                pos = self.risk_manager.state.positions.pop(sym, None)
+                if not pos:
+                    continue
+                # Update daily P&L so the loss/gain is accounted for
+                try:
+                    q = self.fetcher.get_quote(sym)
+                    ltp = float(q.get("ltp", pos.entry_price)) if q else pos.entry_price
+                    pnl = (ltp - pos.entry_price) * pos.quantity if pos.direction == "LONG" \
+                          else (pos.entry_price - ltp) * pos.quantity
+                    self.risk_manager.state.daily_pnl += pnl
+                    self.risk_manager.state.available_capital += ltp * pos.quantity
+                except Exception:
+                    pass
+
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Reconcile REMOVED: {sym} "
+                    f"({pos.direction} {pos.quantity}@₹{pos.entry_price:.2f}) — "
+                    f"Groww shows no position (SL hit or exchange square-off)"
+                )
+                try:
+                    self.alerter.send_text(
+                        f"🔄 <b>Position Auto-Reconciled</b>\n"
+                        f"Symbol: <b>{sym}</b>\n"
+                        f"Direction: {pos.direction} | Qty: {pos.quantity}\n"
+                        f"Entry: ₹{pos.entry_price:.2f}\n"
+                        f"Removed: Groww closed position (SL hit or square-off)\n"
+                        f"Time: {format_ist_timestamp()}"
+                    )
+                except Exception:
+                    pass
+
+            # ── Case 2: unknown positions (Groww has, bot doesn't) ───────────
+            for sym in list(groww_syms - bot_syms):
+                raw = next((p for p in groww_raw if str(p.get("symbol", "")) == sym), None)
+                if not raw:
+                    continue
+                qty = int(raw.get("quantity", 0))
+                avg = float(raw.get("avg_price", 0))
+                if qty == 0 or avg == 0:
+                    continue
+                from risk_manager import Position
+                pos = Position(
+                    symbol=sym,
+                    direction="LONG" if qty > 0 else "SHORT",
+                    quantity=abs(qty),
+                    entry_price=avg,
+                    stop_loss=avg * 0.98,   # 2% fallback SL until ATR calc
+                    target1=avg * 1.02,
+                    target2=avg * 1.04,
+                    entry_time=get_current_ist_time(),
+                )
+                self.risk_manager.state.positions[sym] = pos
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Reconcile ADDED: {sym} "
+                    f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@₹{avg:.2f}) — "
+                    f"found in Groww but not in bot tracker"
+                )
+                try:
+                    self.alerter.send_text(
+                        f"🔄 <b>Unknown Position Detected</b>\n"
+                        f"Symbol: <b>{sym}</b>\n"
+                        f"Direction: {'LONG' if qty > 0 else 'SHORT'} | Qty: {abs(qty)}\n"
+                        f"Avg Price: ₹{avg:.2f}\n"
+                        f"Added to tracker — monitoring with 2% fallback SL."
+                    )
+                except Exception:
+                    pass
+
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Position reconciliation error: {e}")
 
     # --------------------------------------------------------
     # EOD

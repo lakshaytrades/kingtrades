@@ -204,16 +204,29 @@ class GrowwExecutor:
 
             if response and (response.get("order_id") or response.get("id")):
                 order_id = str(response.get("order_id") or response.get("id"))
-                position = self._create_position(signal, quantity, entry_price, order_id)
+
+                # ── Confirm actual fill before adding to position tracker ──
+                filled_price = self._wait_for_fill(order_id, entry_price, timeout=30)
+                if filled_price is None:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⚠️ Order {order_id} not confirmed filled "
+                        f"in 30s — cancelling to avoid phantom position"
+                    )
+                    self._cancel_order(order_id)
+                    return OrderResult(False, order_id=order_id,
+                                       message="Order not filled — cancelled")
+
+                position = self._create_position(signal, quantity, filled_price, order_id)
                 self.risk_manager.add_position(position)
-                self._log_to_db(signal, quantity, entry_price, order_id, live=True)
+                self._log_to_db(signal, quantity, filled_price, order_id, live=True)
 
                 logger.info(
-                    f"[{format_ist_timestamp()}] ✅ ORDER PLACED: {order_id} | "
-                    f"{transaction_type} {signal.symbol} x{quantity} @ ₹{entry_price:.2f}"
+                    f"[{format_ist_timestamp()}] ✅ ORDER FILLED: {order_id} | "
+                    f"{transaction_type} {signal.symbol} x{quantity} "
+                    f"@ ₹{filled_price:.2f} (signal ₹{entry_price:.2f})"
                 )
                 return OrderResult(True, order_id=order_id,
-                                   message=f"Order placed: {order_id}", raw=response)
+                                   message=f"Filled: {order_id}", raw=response)
             else:
                 logger.error(
                     f"[{format_ist_timestamp()}] Order placement failed: {response}"
@@ -378,6 +391,77 @@ class GrowwExecutor:
 
     # --------------------------------------------------------
     # HELPERS
+    # --------------------------------------------------------
+    # ORDER FILL CONFIRMATION
+    # --------------------------------------------------------
+
+    def _wait_for_fill(self, order_id: str, expected_price: float,
+                       timeout: int = 30) -> Optional[float]:
+        """
+        Poll Groww order status until FILLED or timeout.
+        Returns actual fill price on success, None if not filled.
+
+        Groww MIS LIMIT orders typically fill within 1–5 seconds on liquid stocks.
+        We wait up to 30 seconds before cancelling.
+        """
+        import time as _time
+        deadline = _time.time() + timeout
+        poll_interval = 2  # Check every 2 seconds
+
+        while _time.time() < deadline:
+            try:
+                status_resp = self._api.get_order(order_id=order_id)
+                if not status_resp:
+                    _time.sleep(poll_interval)
+                    continue
+
+                status = (
+                    status_resp.get("status") or
+                    status_resp.get("order_status") or
+                    (status_resp.get("data") or {}).get("status", "")
+                ).upper()
+
+                if status in ("COMPLETE", "FILLED", "TRADED", "EXECUTED"):
+                    # Get actual average fill price
+                    fill_price = (
+                        status_resp.get("average_price") or
+                        status_resp.get("avg_price") or
+                        (status_resp.get("data") or {}).get("average_price") or
+                        expected_price  # Fallback to signal price
+                    )
+                    return float(fill_price)
+
+                if status in ("CANCELLED", "REJECTED", "EXPIRED"):
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] Order {order_id} {status}"
+                    )
+                    return None
+
+                # PENDING / OPEN / TRIGGER_PENDING — keep waiting
+                logger.debug(f"Order {order_id} status: {status} — waiting...")
+                _time.sleep(poll_interval)
+
+            except Exception as e:
+                logger.debug(f"Order status check error: {e}")
+                _time.sleep(poll_interval)
+
+        # Timed out — order still pending (price moved away from limit)
+        logger.warning(
+            f"[{format_ist_timestamp()}] Order {order_id} not filled in {timeout}s "
+            f"(price likely moved away from ₹{expected_price:.2f})"
+        )
+        return None
+
+    def _cancel_order(self, order_id: str) -> bool:
+        """Cancel an unfilled order."""
+        try:
+            resp = self._api.cancel_order(order_id=order_id)
+            logger.info(f"[{format_ist_timestamp()}] Order {order_id} cancelled")
+            return bool(resp)
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Cancel order {order_id} failed: {e}")
+            return False
+
     # --------------------------------------------------------
 
     def _create_position(

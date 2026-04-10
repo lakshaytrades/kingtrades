@@ -98,6 +98,7 @@ class ContinuousLearner:
         self.running  = False
         self.tasks:   List[ScheduledTask] = []
         self._modules: Dict = {}
+        self._token_refreshed_date: str = ""  # YYYY-MM-DD — skip cascade once refreshed
 
     # ── INITIALISE ALL MODULES ─────────────────────────────
 
@@ -221,6 +222,17 @@ class ContinuousLearner:
             "Overnight Analysis", 1, 30,
             self._task_overnight_analysis
         ))
+
+        # ── Groww Cloud token refresh cascade (keys reset at 6 AM IST) ──────
+        # Try at 6:05, 6:20, 6:40, 7:00, 8:00 — stop as soon as one succeeds
+        for h, m in [(6, 5), (6, 20), (6, 40), (7, 0), (8, 0)]:
+            self.tasks.append(ScheduledTask(
+                f"Token Refresh {h:02d}:{m:02d}",
+                h, m,
+                self._task_token_refresh,
+                weekdays=[0, 1, 2, 3, 4],
+                run_on_holidays=True,   # Refresh even on holidays — token still expires
+            ))
 
         # Asian markets + Gift Nifty fetch (Mon-Fri)
         self.tasks.append(ScheduledTask(
@@ -524,6 +536,77 @@ class ContinuousLearner:
             logger.warning(f"Morning brief send failed: {e}")
 
         logger.info(f"[{format_ist_timestamp()}] Morning brief sent")
+
+    def _task_token_refresh(self):
+        """
+        Groww Cloud token refresh cascade — runs at 6:05, 6:20, 6:40, 7:00, 8:00 AM IST.
+        Groww Cloud API keys reset at 6 AM IST daily.
+        As soon as one attempt succeeds, all later cascade attempts are skipped.
+        """
+        today = str(get_current_ist_date())
+        if self._token_refreshed_date == today:
+            logger.info(f"[{format_ist_timestamp()}] Token already refreshed today — cascade skip")
+            return
+
+        alerter = self._modules.get("alerter")
+
+        try:
+            from auth_groww import get_auth_manager
+            mgr = get_auth_manager()
+            old_token = mgr.token or ""
+
+            logger.info(f"[{format_ist_timestamp()}] Token refresh cascade attempt...")
+            success = mgr.refresh_token_if_needed()
+            new_token = mgr.token or ""
+
+            if success and new_token and new_token != old_token:
+                # Token genuinely changed — propagate to fetcher + executor
+                self._token_refreshed_date = today
+                logger.info(f"[{format_ist_timestamp()}] ✅ Groww token refreshed (cascade success)")
+
+                # Kick the data-fetcher singleton so it picks up the new token
+                try:
+                    from data_fetch_groww import get_data_fetcher
+                    fetcher = get_data_fetcher()
+                    if hasattr(fetcher, "_refresh_api_if_needed"):
+                        fetcher._refresh_api_if_needed()
+                except Exception as e:
+                    logger.debug(f"Fetcher token propagation: {e}")
+
+                if alerter:
+                    try:
+                        import asyncio
+                        asyncio.run(alerter.send_text(
+                            f"🔑 <b>Groww Token Refreshed</b> — {format_ist_timestamp()}\n"
+                            f"Ready for today's trading session."
+                        ))
+                    except Exception:
+                        pass
+
+            elif success and new_token == old_token:
+                # Same token returned — may be using cached env token; still mark success
+                self._token_refreshed_date = today
+                logger.info(
+                    f"[{format_ist_timestamp()}] Token refresh returned same token "
+                    f"(env fallback). Cascade will not retry."
+                )
+            else:
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Token refresh attempt failed — "
+                    f"next cascade attempt will retry."
+                )
+                if alerter:
+                    try:
+                        import asyncio
+                        asyncio.run(alerter.send_text(
+                            f"⚠️ <b>Token Refresh Failed</b> — {format_ist_timestamp()}\n"
+                            f"Will retry. Check GROWW_TOTP_SECRET in Render env."
+                        ))
+                    except Exception:
+                        pass
+
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Token refresh task error: {e}")
 
     # ── MAIN SCHEDULER LOOP ────────────────────────────────
 

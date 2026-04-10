@@ -231,6 +231,78 @@ class Watchdog:
             time.sleep(min(3600, secs))
             secs -= 3600
 
+    def _preflight_check(self) -> bool:
+        """
+        Quick sanity checks before launching main.py:
+        1. Token cache age — if >20h, trigger a pre-emptive refresh so main.py
+           doesn't start with a stale token.
+        2. Connectivity — light HTTP check to api.groww.in.
+
+        Always returns True (non-fatal) — main.py handles failures gracefully.
+        Problems are logged so user sees them in Render logs.
+        """
+        import json as _json
+        from datetime import datetime as _dt
+        from zoneinfo import ZoneInfo as _ZI
+
+        _ist = _ZI("Asia/Kolkata")
+
+        # ── 1. Token cache age ───────────────────────────────────────────────
+        token_cache = BOT_DIR / "data" / ".token_cache.json"
+        token_age_h = float("inf")
+        if token_cache.exists():
+            try:
+                data = _json.loads(token_cache.read_text())
+                ts_str = data.get("timestamp", "")
+                if ts_str:
+                    ts = _dt.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=_ist)
+                    token_age_h = (_dt.now(tz=_ist) - ts).total_seconds() / 3600
+                    log.info(f"Pre-flight: token cache age {token_age_h:.1f}h")
+            except Exception as e:
+                log.warning(f"Pre-flight: token cache read error: {e}")
+        else:
+            log.warning("Pre-flight: no token cache found — main.py will use env token")
+
+        if token_age_h > 20:
+            log.warning(
+                f"Pre-flight: token is {token_age_h:.1f}h old — "
+                "running pre-emptive token refresh before starting main.py..."
+            )
+            try:
+                result = subprocess.run(
+                    [PYTHON, "-c",
+                     "import logging; logging.basicConfig(level=logging.WARNING); "
+                     "from auth_groww import initialize_auth; initialize_auth()"],
+                    cwd=str(BOT_DIR),
+                    timeout=90,
+                    capture_output=True,
+                    text=True,
+                )
+                if result.returncode == 0:
+                    log.info("Pre-flight: token refresh subprocess OK")
+                else:
+                    log.warning(
+                        f"Pre-flight: token refresh subprocess returned {result.returncode}: "
+                        f"{result.stderr[:300]}"
+                    )
+            except subprocess.TimeoutExpired:
+                log.warning("Pre-flight: token refresh timed out (main.py will retry)")
+            except Exception as e:
+                log.warning(f"Pre-flight: token refresh error: {e}")
+
+        # ── 2. Basic connectivity check ──────────────────────────────────────
+        try:
+            import urllib.request as _urlreq
+            _urlreq.urlopen("https://api.groww.in", timeout=10)
+            log.info("Pre-flight: Groww API reachable ✅")
+        except Exception as e:
+            # Non-fatal — Render occasionally has slow cold starts
+            log.warning(f"Pre-flight: Groww API connectivity: {e} (continuing anyway)")
+
+        return True
+
     def _run_main_once(self) -> int:
         """Launch main.py and wait for it to finish. Returns exit code."""
         cmd = [PYTHON, str(MAIN_PY)]
@@ -299,7 +371,10 @@ class Watchdog:
             if not self.running:
                 break
 
-            # 3. Run main.py for the day
+            # 3. Pre-flight: token freshness + connectivity
+            self._preflight_check()
+
+            # 4. Run main.py for the day
             log.info(f"Launching main.py for {ist_now().strftime('%A %d %b %Y')}")
             exit_code = self._run_main_once()
 
