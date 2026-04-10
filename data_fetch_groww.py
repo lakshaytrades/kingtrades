@@ -17,7 +17,7 @@ from utils import (
     convert_candle_timestamps_to_ist, filter_market_hours,
     retry_with_backoff, get_market_open_datetime_ist
 )
-from auth_groww import get_groww_token
+from auth_groww import get_groww_token, get_auth_manager
 
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
@@ -50,13 +50,27 @@ class GrowwDataFetcher:
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Init failed: {e}")
 
+    def _reinit_with_fresh_token(self) -> bool:
+        """Force TOTP re-login and rebuild the API client with fresh token."""
+        logger.info(f"[{format_ist_timestamp()}] Auth error — forcing TOTP re-login...")
+        try:
+            manager = get_auth_manager()
+            new_token = manager.login_and_get_token()
+            if new_token:
+                from growwapi import GrowwAPI
+                self._api = GrowwAPI(new_token)
+                logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with new token")
+                return True
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Token refresh failed: {e}")
+        return False
+
     @retry_with_backoff(max_retries=4, delays=[2, 4, 8, 16])
     def get_quote(self, symbol: str) -> Optional[Dict]:
         if not self._api: self._init_api()
         if not self._api: return None
 
         try:
-            # FIX: Added required 'exchange' and 'segment'
             raw = self._api.get_quote(trading_symbol=symbol, exchange="NSE", segment="CASH")
             if not raw: return None
 
@@ -69,12 +83,18 @@ class GrowwDataFetcher:
                 "close": float(raw.get("close") or 0),
                 "volume": int(raw.get("volume") or 0),
                 "change_pct": float(raw.get("change_percent") or 0),
-                "product": "MIS", # Added leverage label
+                "product": "MIS",
                 "timestamp": format_ist_timestamp(),
             }
         except Exception as e:
+            err = str(e).lower()
+            if "authentication" in err or "expired" in err or "invalid" in err or "401" in err or "403" in err:
+                logger.warning(f"[{format_ist_timestamp()}] Auth error on get_quote — refreshing token...")
+                if self._reinit_with_fresh_token():
+                    raise  # Retry with new token via @retry_with_backoff
+                return None
             logger.error(f"get_quote({symbol}) failed: {e}")
-            raise 
+            raise
 
     @retry_with_backoff(max_retries=4, delays=[2, 4, 8, 16])
     def get_candles(self, symbol: str, interval: str = "5m", days: int = 5, from_dt=None, to_dt=None) -> Optional[pd.DataFrame]:
