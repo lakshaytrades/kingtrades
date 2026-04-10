@@ -301,6 +301,50 @@ SENSITIVITY_ROBUSTNESS_MIN: float = 0.70  # Min robustness score to deploy
 BENCHMARK_SYMBOL:           str   = "^NSEI"  # Nifty50 for benchmark comparison
 
 # ============================================================
+# DAY-OF-WEEK PROFIT OPTIMIZER  (4 profitable days per week)
+# ============================================================
+# 18yr NSE observation:
+#   Monday   — Gap-and-trap. Institutions test retail. Lower accuracy.
+#   Tuesday  — Best trend day. Institutions deploy capital. Full size.
+#   Wednesday— Best continuation day. Trend confirmed. Full size.
+#   Thursday — F&O expiry games + afternoon volatility. Slightly cautious.
+#   Friday   — Profit booking. Institutions exit positions. Reduce size.
+#
+# Goal: Win 4 out of 5 days/week by adjusting aggressiveness per day.
+
+DOW_SIZE_MULTIPLIERS: dict = {
+    0: 0.65,   # Monday   — volatile open, gap traps, 65% size
+    1: 1.00,   # Tuesday  — best trend day, full size
+    2: 1.00,   # Wednesday— trend continuation, full size
+    3: 0.80,   # Thursday — F&O expiry effect, 80% size
+    4: 0.65,   # Friday   — profit booking / reversals, 65% size
+}
+
+# Minimum signal score by day (higher bar on volatile days)
+DOW_MIN_SCORE: dict = {
+    0: 78.0,   # Monday   — A-grade only
+    1: 72.0,   # Tuesday  — standard
+    2: 72.0,   # Wednesday— standard
+    3: 75.0,   # Thursday — slightly tighter
+    4: 78.0,   # Friday   — A-grade only
+}
+
+# Max trades per day by day-of-week
+DOW_MAX_TRADES: dict = {
+    0: 3,   # Monday   — 3 max
+    1: 6,   # Tuesday  — 6 max
+    2: 6,   # Wednesday— 6 max
+    3: 5,   # Thursday — 5 max
+    4: 3,   # Friday   — 3 max
+}
+
+# Weekly P&L management
+WEEKLY_PROFIT_TARGET_PCT: float = 2.0    # At 2% weekly profit → only A+ trades
+WEEKLY_PROFIT_LOCK_PCT:   float = 1.5    # At 1.5% weekly → 50% size, A/A+ only
+WEEKLY_LOSS_STOP_PCT:     float = 2.5    # -2.5% weekly loss → halt new entries
+WEEKLY_DATA_FILE:         str   = "data/weekly_pnl.json"
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config() -> list:

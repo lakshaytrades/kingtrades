@@ -97,6 +97,9 @@ class TradingBot:
         self._capital_file = Path("data/capital.json")
         self._capital_file.parent.mkdir(exist_ok=True)
         self._last_reconcile_time: Optional[datetime] = None  # position reconciliation
+        self._weekly_pnl_file = Path(config.WEEKLY_DATA_FILE)
+        self._weekly_pnl_file.parent.mkdir(exist_ok=True)
+        self._weekly_mode: str = "NORMAL"   # NORMAL / PROTECT / LOCKED
 
     # --------------------------------------------------------
     # STARTUP
@@ -362,10 +365,19 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Morning brief failed: {e}")
 
+        # Log day-of-week mode
+        now_ist  = get_current_ist_time()
+        dow      = now_ist.weekday()
+        dow_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][dow]
+        dow_mult = config.DOW_SIZE_MULTIPLIERS.get(dow, 1.0)
+        dow_min  = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
+        dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
             f"Balance: {available} | Nifty: {nifty_open} | "
-            f"Watchlist: {len(watchlist)} stocks"
+            f"Watchlist: {len(watchlist)} stocks\n"
+            f"  DOW mode: {dow_name} | Size: {dow_mult:.0%} | "
+            f"Min score: {dow_min:.0f} | Max trades: {dow_max}"
         )
         self._day_initialized = True
         self.market_open_today = True
@@ -504,6 +516,12 @@ class TradingBot:
             # 1b. Reconcile positions every 10 min (detect server-side SL hits)
             self._reconcile_positions()
 
+            # 1c. Update weekly P&L mode (4-day profit optimizer)
+            self._update_weekly_mode()
+            if self._weekly_mode == "LOCKED":
+                logger.debug(f"[{format_ist_timestamp()}] Weekly target hit — locked to A+ only")
+                return
+
             # 2. Check Nifty circuit
             nifty_q = self.fetcher.get_nifty_quote()
             if nifty_q:
@@ -551,6 +569,21 @@ class TradingBot:
                 symbols=watchlist,
                 max_signals=min(max_new, 3)  # Max 3 new signals per cycle
             )
+
+            # 4b. Apply day-of-week minimum score filter
+            dow = now_ist.weekday()
+            dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
+            dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
+            if self.risk_manager.state.daily_trades >= dow_max_trades:
+                logger.debug(
+                    f"[{format_ist_timestamp()}] DOW max trades "
+                    f"({dow_max_trades}) reached for {['Mon','Tue','Wed','Thu','Fri'][dow]}"
+                )
+                return
+            signals = [s for s in signals if s.signal_score >= dow_min]
+            if self._weekly_mode == "PROTECT":
+                # Weekly profit at 1.5% — only A/A+ trades, filter C/B
+                signals = [s for s in signals if s.quality_grade in ("A+", "A")]
 
             # 5. Execute signals
             for signal in signals:
@@ -646,6 +679,133 @@ class TradingBot:
 
             except Exception as e:
                 logger.error(f"Position update error {pos.symbol}: {e}")
+
+    # --------------------------------------------------------
+    # 4-DAY WEEKLY PROFIT OPTIMIZER
+    # --------------------------------------------------------
+
+    def _load_weekly_pnl(self) -> dict:
+        """Load this week's accumulated P&L from disk."""
+        try:
+            if self._weekly_pnl_file.exists():
+                return json.loads(self._weekly_pnl_file.read_text())
+        except Exception:
+            pass
+        return {"week": "", "net_pnl": 0.0, "days_traded": 0, "profitable_days": 0}
+
+    def _save_weekly_pnl(self, data: dict) -> None:
+        try:
+            self._weekly_pnl_file.write_text(json.dumps(data, indent=2))
+        except Exception as e:
+            logger.debug(f"Weekly PnL save: {e}")
+
+    def _update_weekly_pnl(self) -> None:
+        """Called at EOD — add today's P&L to the weekly tracker."""
+        if not self.risk_manager:
+            return
+        now  = get_current_ist_time()
+        week = now.strftime("%Y-W%W")   # e.g. "2026-W15"
+        data = self._load_weekly_pnl()
+        if data.get("week") != week:
+            data = {"week": week, "net_pnl": 0.0, "days_traded": 0, "profitable_days": 0}
+
+        today_pnl = self.risk_manager.state.daily_pnl
+        data["net_pnl"]        = round(data["net_pnl"] + today_pnl, 2)
+        data["days_traded"]    += 1
+        data["profitable_days"] += 1 if today_pnl > 0 else 0
+        data["capital"]         = config.MAX_DAILY_CAPITAL
+        data["weekly_pct"]      = round(data["net_pnl"] / config.MAX_DAILY_CAPITAL * 100, 2)
+        self._save_weekly_pnl(data)
+
+        day_name = ["Mon", "Tue", "Wed", "Thu", "Fri"][now.weekday()]
+        logger.info(
+            f"[{format_ist_timestamp()}] Weekly tracker [{week}] "
+            f"Day {data['days_traded']}/5 ({day_name}): "
+            f"Today ₹{today_pnl:+,.0f} | "
+            f"Week ₹{data['net_pnl']:+,.0f} ({data['weekly_pct']:+.2f}%) | "
+            f"Profitable days: {data['profitable_days']}"
+        )
+        # Send weekly summary on Friday EOD
+        if now.weekday() == 4 and self.alerter:
+            try:
+                self.alerter.send_text(
+                    f"📊 <b>Weekly Summary</b>\n"
+                    f"Week: {week}\n"
+                    f"Net P&L: ₹{data['net_pnl']:+,.0f} ({data['weekly_pct']:+.2f}%)\n"
+                    f"Profitable days: {data['profitable_days']}/5\n"
+                    f"Target: 4/5 days 🎯"
+                )
+            except Exception:
+                pass
+
+    def _update_weekly_mode(self) -> None:
+        """
+        Check weekly P&L and set trading mode:
+          NORMAL  — below profit lock target, trade normally
+          PROTECT — hit 1.5% weekly → A/A+ only, 50% size via DOW mult
+          LOCKED  — hit 2.0% weekly target → no new entries, protect gains
+        """
+        try:
+            data = self._load_weekly_pnl()
+            now  = get_current_ist_time()
+            week = now.strftime("%Y-W%W")
+            if data.get("week") != week:
+                self._weekly_mode = "NORMAL"
+                return
+            pct = data.get("weekly_pct", 0.0)
+            # Add today's unrealised P&L
+            if self.risk_manager:
+                today_pnl  = self.risk_manager.state.daily_pnl
+                total_pct  = pct + (today_pnl / max(config.MAX_DAILY_CAPITAL, 1) * 100)
+            else:
+                total_pct = pct
+
+            if total_pct >= config.WEEKLY_PROFIT_TARGET_PCT:
+                if self._weekly_mode != "LOCKED":
+                    self._weekly_mode = "LOCKED"
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 🔒 Weekly profit target "
+                        f"{config.WEEKLY_PROFIT_TARGET_PCT}% reached "
+                        f"({total_pct:.2f}%) — LOCKED (no new entries)"
+                    )
+                    if self.alerter:
+                        self.alerter.send_text(
+                            f"🎯 <b>Weekly Profit Target Hit!</b>\n"
+                            f"Week P&L: {total_pct:.2f}% ≥ {config.WEEKLY_PROFIT_TARGET_PCT}%\n"
+                            f"Mode: LOCKED — protecting gains, no new entries.\n"
+                            f"Existing positions monitored until 3:20 PM."
+                        )
+            elif total_pct >= config.WEEKLY_PROFIT_LOCK_PCT:
+                if self._weekly_mode not in ("PROTECT", "LOCKED"):
+                    self._weekly_mode = "PROTECT"
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 🛡 Weekly profit at "
+                        f"{total_pct:.2f}% — PROTECT mode (A/A+ only)"
+                    )
+                    if self.alerter:
+                        self.alerter.send_text(
+                            f"🛡 <b>Weekly Protect Mode</b>\n"
+                            f"Week P&L: {total_pct:.2f}% — protecting gains.\n"
+                            f"Only A/A+ grade trades allowed."
+                        )
+            elif total_pct <= -config.WEEKLY_LOSS_STOP_PCT:
+                if self._weekly_mode != "LOCKED":
+                    self._weekly_mode = "LOCKED"
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] 🛑 Weekly loss limit "
+                        f"−{config.WEEKLY_LOSS_STOP_PCT}% hit "
+                        f"({total_pct:.2f}%) — LOCKED (no new entries)"
+                    )
+                    if self.alerter:
+                        self.alerter.send_text(
+                            f"🛑 <b>Weekly Loss Limit Hit!</b>\n"
+                            f"Week P&L: {total_pct:.2f}% ≤ −{config.WEEKLY_LOSS_STOP_PCT}%\n"
+                            f"Stopped new entries for the week. Rest and review."
+                        )
+            else:
+                self._weekly_mode = "NORMAL"
+        except Exception as e:
+            logger.debug(f"Weekly mode check: {e}")
 
     # --------------------------------------------------------
     # POSITION RECONCILIATION (every 10 min during market hours)
@@ -794,6 +954,9 @@ class TradingBot:
                             f"WR={report.get('win_rate',0):.1f}%")
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
+
+        # Update weekly P&L tracker (4-day profit mode)
+        self._update_weekly_pnl()
 
         # Save compounded capital for tomorrow
         self._save_compounded_capital()

@@ -401,7 +401,14 @@ class RiskManager:
         sess_mult, session = self._get_session_multiplier()
         quantity = max(1, int(quantity * sess_mult))
 
-        # 4. Institutional multiplier (FII/DII + Option Chain)
+        # 4a. Day-of-week multiplier (4-day profit optimizer)
+        now_ist    = get_current_ist_time()
+        dow        = now_ist.weekday()   # 0=Mon … 4=Fri
+        dow_mults  = getattr(_cfg, "DOW_SIZE_MULTIPLIERS", {})
+        dow_mult   = dow_mults.get(dow, 1.0)
+        quantity   = max(1, int(quantity * dow_mult))
+
+        # 4b. Institutional multiplier (FII/DII + Option Chain)
         inst_mult = getattr(self, "_inst_mult", 1.0)
         quantity  = max(1, int(quantity * inst_mult))
 
@@ -437,6 +444,7 @@ class RiskManager:
             "sl_distance": round(sl_distance, 2),
             "sess_mult":   round(sess_mult, 2),
             "session":     session,
+            "dow_mult":    round(dow_mult, 2),
             "inst_mult":   round(inst_mult, 2),
             "heat_pct":    round(self.state.portfolio_heat, 2),
         }
