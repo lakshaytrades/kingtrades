@@ -128,39 +128,79 @@ def _extract_token(resp_json: dict, cookies: dict) -> Optional[str]:
     return None
 
 
-def _try_groww_cloud_oauth(client_id: str, client_secret: str) -> Optional[str]:
+def _groww_cloud_token_refresh(totp_secret: str, current_token: str) -> Optional[str]:
     """
-    Try Groww Cloud OAuth2 client credentials flow.
-    Used when GROWW_CLIENT_ID + GROWW_CLIENT_SECRET are set.
+    Groww Cloud API token refresh using TOTP.
+    Keys reset daily at 6 AM IST. This runs at 6:05 AM to get a fresh token.
+
+    The Groww Cloud API uses the TOTP secret to generate a 6-digit code,
+    which is submitted to get a fresh JWT access token.
     """
-    if not client_id or not client_secret:
-        return None
-    logger.info(f"[{format_ist_timestamp()}] Trying Groww Cloud OAuth2...")
+    totp = pyotp.TOTP(totp_secret)
+
+    # Wait for a fresh TOTP window
+    remaining = 30 - (int(time.time()) % 30)
+    if remaining < 8:
+        logger.info(f"[{format_ist_timestamp()}] Waiting {remaining + 1}s for fresh TOTP window...")
+        time.sleep(remaining + 1)
+    totp_code = totp.now()
+    logger.info(f"[{format_ist_timestamp()}] Groww Cloud TOTP code ready ({30 - (int(time.time()) % 30)}s remaining)")
+
     session = requests.Session()
     session.headers.update(_HEADERS)
-    for url, body in [
-        ("https://api.groww.in/v1/oauth/token",
-         {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}),
-        ("https://groww.in/v1/api/oauth/token",
-         {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}),
-        ("https://groww.in/v1/api/partner/token",
-         {"clientId": client_id, "clientSecret": client_secret}),
-    ]:
+
+    # Groww Cloud API token refresh endpoints
+    attempts = [
+        {
+            "url":  "https://api.groww.in/v1/login/totp",
+            "body": {"totp": totp_code},
+            "auth": f"Bearer {current_token}",
+        },
+        {
+            "url":  "https://api.groww.in/v1/login",
+            "body": {"totp": totp_code},
+            "auth": f"Bearer {current_token}",
+        },
+        {
+            "url":  "https://api.groww.in/v1/auth/token",
+            "body": {"totp": totp_code},
+            "auth": f"Bearer {current_token}",
+        },
+        {
+            "url":  "https://api.groww.in/v1/login/token/generate",
+            "body": {"totpCode": totp_code},
+            "auth": f"Bearer {current_token}",
+        },
+        {
+            "url":  "https://groww.in/v1/api/login/totp/token",
+            "body": {"totp": totp_code},
+            "auth": f"Bearer {current_token}",
+        },
+    ]
+
+    for attempt in attempts:
         try:
-            r = session.post(url, json=body, timeout=15)
+            headers = dict(_HEADERS)
+            headers["Authorization"] = attempt["auth"]
+            r = session.post(
+                attempt["url"],
+                json=attempt["body"],
+                headers=headers,
+                timeout=20,
+            )
             logger.warning(
-                f"  [oauth] HTTP {r.status_code} | "
-                f"body_preview={r.text[:300]}"
+                f"  [cloud-refresh] {attempt['url'].split('/')[-1]} "
+                f"HTTP {r.status_code} | body={r.text[:300]}"
             )
             if r.status_code in (200, 201):
                 d = r.json()
-                tok = (d.get("access_token") or d.get("token") or
-                       d.get("authToken") or (d.get("data") or {}).get("token"))
-                if tok and len(tok) > 20:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww Cloud OAuth token obtained")
+                tok = _extract_token(d, dict(r.cookies))
+                if tok:
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww Cloud token refreshed via {attempt['url'].split('/')[-1]}")
                     return tok
         except Exception as e:
-            logger.warning(f"  [oauth] {url.split('/')[-1]}: {e}")
+            logger.warning(f"  [cloud-refresh] {attempt['url'].split('/')[-1]}: {e}")
+
     return None
 
 
@@ -384,13 +424,15 @@ class GrowwAuthManager:
             return token
 
         # All attempts failed
-        # Try Groww Cloud OAuth2 with client credentials before giving up
-        cloud_token = _try_groww_cloud_oauth(self.client_id, self.client_secret)
-        if cloud_token:
-            self._token           = cloud_token
-            self._token_timestamp = get_current_ist_time()
-            _save_token_cache(cloud_token, self._token_timestamp)
-            return cloud_token
+        # Try Groww Cloud API token refresh (correct flow for Cloud API keys)
+        if self.totp_secret and self._token:
+            logger.info(f"[{format_ist_timestamp()}] Trying Groww Cloud token refresh...")
+            cloud_token = _groww_cloud_token_refresh(self.totp_secret, self._token)
+            if cloud_token:
+                self._token           = cloud_token
+                self._token_timestamp = get_current_ist_time()
+                _save_token_cache(cloud_token, self._token_timestamp)
+                return cloud_token
 
         logger.warning(
             f"[{format_ist_timestamp()}] ⚠️  All TOTP attempts failed.\n"
@@ -474,8 +516,13 @@ def initialize_auth() -> bool:
     now_ist = get_current_ist_time()
     has_creds = all([manager.email, manager.password, manager.totp_secret])
 
-    if has_creds and now_ist.hour < 10:
-        logger.info(f"[{format_ist_timestamp()}] Morning startup — running TOTP login...")
+    # Refresh if: it's between 6:00-9:00 AM IST (after Groww key reset, before market open)
+    # OR if the cached token is older than 20 hours (approaching 24h expiry)
+    token_age_h = manager.token_age_hours
+    needs_refresh = (6 <= now_ist.hour < 9) or (token_age_h > 20)
+
+    if has_creds and needs_refresh:
+        logger.info(f"[{format_ist_timestamp()}] Running TOTP login (age={token_age_h:.1f}h)...")
         try:
             manager.refresh_token_if_needed()
         except Exception as e:
