@@ -128,6 +128,42 @@ def _extract_token(resp_json: dict, cookies: dict) -> Optional[str]:
     return None
 
 
+def _try_groww_cloud_oauth(client_id: str, client_secret: str) -> Optional[str]:
+    """
+    Try Groww Cloud OAuth2 client credentials flow.
+    Used when GROWW_CLIENT_ID + GROWW_CLIENT_SECRET are set.
+    """
+    if not client_id or not client_secret:
+        return None
+    logger.info(f"[{format_ist_timestamp()}] Trying Groww Cloud OAuth2...")
+    session = requests.Session()
+    session.headers.update(_HEADERS)
+    for url, body in [
+        ("https://api.groww.in/v1/oauth/token",
+         {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}),
+        ("https://groww.in/v1/api/oauth/token",
+         {"grant_type": "client_credentials", "client_id": client_id, "client_secret": client_secret}),
+        ("https://groww.in/v1/api/partner/token",
+         {"clientId": client_id, "clientSecret": client_secret}),
+    ]:
+        try:
+            r = session.post(url, json=body, timeout=15)
+            logger.warning(
+                f"  [oauth] HTTP {r.status_code} | "
+                f"body_preview={r.text[:300]}"
+            )
+            if r.status_code in (200, 201):
+                d = r.json()
+                tok = (d.get("access_token") or d.get("token") or
+                       d.get("authToken") or (d.get("data") or {}).get("token"))
+                if tok and len(tok) > 20:
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Groww Cloud OAuth token obtained")
+                    return tok
+        except Exception as e:
+            logger.warning(f"  [oauth] {url.split('/')[-1]}: {e}")
+    return None
+
+
 def _log_response(label: str, resp: requests.Response) -> dict:
     """Log HTTP response prominently so it shows in Render logs."""
     try:
@@ -348,6 +384,14 @@ class GrowwAuthManager:
             return token
 
         # All attempts failed
+        # Try Groww Cloud OAuth2 with client credentials before giving up
+        cloud_token = _try_groww_cloud_oauth(self.client_id, self.client_secret)
+        if cloud_token:
+            self._token           = cloud_token
+            self._token_timestamp = get_current_ist_time()
+            _save_token_cache(cloud_token, self._token_timestamp)
+            return cloud_token
+
         logger.warning(
             f"[{format_ist_timestamp()}] ⚠️  All TOTP attempts failed.\n"
             "  Possible causes:\n"
