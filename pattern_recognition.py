@@ -230,7 +230,9 @@ class PatternRecognizer:
 
         # Detect all patterns
         patterns = []
+        # Standard detectors (df, ind) signature
         detectors = [
+            # ── Candlestick reversals ──────────────────────────────────────
             self.detect_bullish_engulfing,
             self.detect_bearish_engulfing,
             self.detect_hammer,
@@ -244,19 +246,29 @@ class PatternRecognizer:
             self.detect_bearish_harami,
             self.detect_piercing_line,
             self.detect_dark_cloud_cover,
+            # ── Chart patterns ────────────────────────────────────────────
             self.detect_breakout,
             self.detect_breakdown,
             self.detect_flag_pattern,
             self.detect_pennant_pattern,
+            self.detect_bb_squeeze_breakout,
+            self.detect_orb_breakout,
+            # ── Indicator crossovers ──────────────────────────────────────
             self.detect_vwap_bounce,
             self.detect_vwap_breakdown,
             self.detect_volume_surge_breakout,
             self.detect_rsi_divergence,
             self.detect_macd_crossover,
-            self.detect_bb_squeeze_breakout,
             self.detect_ema_crossover,
             self.detect_supertrend_signal,
-            self.detect_orb_breakout,
+            # ── Elite 18-year patterns (Smart Money / NSE-specific) ───────
+            self.detect_fair_value_gap,
+            self.detect_order_block,
+            self.detect_heikin_ashi_trend,
+            self.detect_inside_bar,
+            self.detect_double_bottom_top,
+            self.detect_market_structure_break,
+            self.detect_ema_stack,
         ]
 
         for detector in detectors:
@@ -704,6 +716,399 @@ class PatternRecognizer:
         return None
 
     # --------------------------------------------------------
+    # ELITE PATTERNS  (18-year NSE professional stack)
+    # --------------------------------------------------------
+
+    def detect_fair_value_gap(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Fair Value Gap (FVG) / Imbalance — ICT / Smart Money concept.
+        Gap = candle 3's low > candle 1's high (bullish) or
+              candle 3's high < candle 1's low (bearish).
+        Price will often return to fill the imbalance before continuing.
+        High-probability entry when price re-enters the gap with volume.
+        """
+        if len(df) < 4:
+            return None
+        c1, c2, c3 = df.iloc[-4], df.iloc[-3], df.iloc[-2]
+        curr        = df.iloc[-1]
+
+        # Bullish FVG: candle 3 low > candle 1 high (upside imbalance)
+        if c3["low"] > c1["high"]:
+            gap_size = c3["low"] - c1["high"]
+            atr = ind.atr if ind.atr > 0 else 1
+            if gap_size < 0.3 * atr:       # Too small — noise
+                return None
+            # Best entry: price pulling back INTO the gap from above
+            in_gap = c1["high"] <= curr["close"] <= c3["low"]
+            confidence = 75 if in_gap else 60
+            if ind.ema9 > ind.ema21 and ind.supertrend_dir == 1:
+                confidence = min(confidence + 10, 90)
+            return PatternResult("Bullish FVG", "LONG", confidence,
+                                 f"Bullish Fair Value Gap: ₹{c1['high']:.2f}–₹{c3['low']:.2f} "
+                                 f"({'price in gap' if in_gap else 'approaching gap'})")
+
+        # Bearish FVG: candle 3 high < candle 1 low (downside imbalance)
+        if c3["high"] < c1["low"]:
+            gap_size = c1["low"] - c3["high"]
+            atr = ind.atr if ind.atr > 0 else 1
+            if gap_size < 0.3 * atr:
+                return None
+            in_gap = c3["high"] <= curr["close"] <= c1["low"]
+            confidence = 75 if in_gap else 60
+            if ind.ema9 < ind.ema21 and ind.supertrend_dir == -1:
+                confidence = min(confidence + 10, 90)
+            return PatternResult("Bearish FVG", "SHORT", confidence,
+                                 f"Bearish Fair Value Gap: ₹{c3['high']:.2f}–₹{c1['low']:.2f} "
+                                 f"({'price in gap' if in_gap else 'approaching gap'})")
+        return None
+
+    def detect_order_block(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Order Block (OB) — Institutional accumulation/distribution zones.
+        Bullish OB: the last bearish candle BEFORE a strong bullish impulse.
+        Bearish OB: the last bullish candle BEFORE a strong bearish impulse.
+        These zones act as high-probability support/resistance areas.
+        18yr rule: "Institutions leave their footprint in order blocks."
+        """
+        if len(df) < 10:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+
+        # Scan for bullish OB: last bearish candle before 3+ candle bull move
+        for i in range(-6, -2):
+            ob_candle = df.iloc[i]
+            if ob_candle["close"] >= ob_candle["open"]:
+                continue   # Not bearish
+            # Check if followed by 3 consecutive bullish candles
+            subsequent = df.iloc[i+1:i+4]
+            if len(subsequent) < 3:
+                continue
+            if not all(subsequent["close"] > subsequent["open"]):
+                continue
+            # Strong impulse: total move > 1.5 ATR
+            impulse = subsequent["close"].iloc[-1] - ob_candle["low"]
+            if impulse < 1.5 * atr:
+                continue
+            # Price currently returning to OB zone
+            ob_high = ob_candle["high"]
+            ob_low  = ob_candle["low"]
+            curr_close = df.iloc[-1]["close"]
+            if ob_low * 0.997 <= curr_close <= ob_high * 1.003:
+                confidence = 80 + min((ind.volume_ratio - 1) * 5, 10)
+                return PatternResult("Bullish Order Block", "LONG", min(confidence, 92),
+                                     f"Institutional OB zone ₹{ob_low:.2f}–₹{ob_high:.2f} "
+                                     f"— price returning to buy zone")
+
+        # Scan for bearish OB: last bullish candle before 3+ candle bear move
+        for i in range(-6, -2):
+            ob_candle = df.iloc[i]
+            if ob_candle["close"] <= ob_candle["open"]:
+                continue
+            subsequent = df.iloc[i+1:i+4]
+            if len(subsequent) < 3:
+                continue
+            if not all(subsequent["close"] < subsequent["open"]):
+                continue
+            impulse = ob_candle["high"] - subsequent["close"].iloc[-1]
+            if impulse < 1.5 * atr:
+                continue
+            ob_high = ob_candle["high"]
+            ob_low  = ob_candle["low"]
+            curr_close = df.iloc[-1]["close"]
+            if ob_low * 0.997 <= curr_close <= ob_high * 1.003:
+                confidence = 80 + min((ind.volume_ratio - 1) * 5, 10)
+                return PatternResult("Bearish Order Block", "SHORT", min(confidence, 92),
+                                     f"Institutional OB zone ₹{ob_low:.2f}–₹{ob_high:.2f} "
+                                     f"— price returning to sell zone")
+        return None
+
+    def detect_heikin_ashi_trend(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Heikin Ashi trend signal — smoothed candles remove noise.
+        Rules:
+          Strong bull: 3+ consecutive HA bullish candles with no lower shadows
+          Strong bear: 3+ consecutive HA bearish candles with no upper shadows
+        18yr rule: "HA candles tell you the trend clearly — no guessing."
+        """
+        if len(df) < 5:
+            return None
+
+        # Calculate last 5 HA candles
+        ha = pd.DataFrame(index=df.index[-5:])
+        raw = df.iloc[-5:].copy()
+        ha["close"] = (raw["open"] + raw["high"] + raw["low"] + raw["close"]) / 4
+        ha_open = pd.Series(dtype=float, index=raw.index)
+        ha_open.iloc[0] = (raw["open"].iloc[0] + raw["close"].iloc[0]) / 2
+        for j in range(1, len(raw)):
+            ha_open.iloc[j] = (ha_open.iloc[j-1] + ha["close"].iloc[j-1]) / 2
+        ha["open"]  = ha_open
+        ha["high"]  = pd.concat([raw["high"], ha["open"], ha["close"]], axis=1).max(axis=1)
+        ha["low"]   = pd.concat([raw["low"],  ha["open"], ha["close"]], axis=1).min(axis=1)
+        ha["bullish"] = ha["close"] > ha["open"]
+        ha["lower_shadow"] = ha[["open", "close"]].min(axis=1) - ha["low"]
+
+        last3 = ha.iloc[-3:]
+        if last3["bullish"].all():
+            no_lower = (last3["lower_shadow"] < (ha["close"] - ha["open"]).abs().mean() * 0.1).all()
+            confidence = 78 if no_lower else 68
+            if ind.supertrend_dir == 1 and ind.ema9 > ind.ema21:
+                confidence = min(confidence + 8, 90)
+            return PatternResult("Heikin Ashi Bull Trend", "LONG", confidence,
+                                 f"3+ consecutive HA bull candles "
+                                 f"{'(no lower shadows — strong trend)' if no_lower else ''}")
+
+        if not last3["bullish"].any():
+            upper_shadow = ha["high"] - ha[["open", "close"]].max(axis=1)
+            no_upper = (upper_shadow.iloc[-3:] < (ha["close"] - ha["open"]).abs().mean() * 0.1).all()
+            confidence = 78 if no_upper else 68
+            if ind.supertrend_dir == -1 and ind.ema9 < ind.ema21:
+                confidence = min(confidence + 8, 90)
+            return PatternResult("Heikin Ashi Bear Trend", "SHORT", confidence,
+                                 f"3+ consecutive HA bear candles "
+                                 f"{'(no upper shadows — strong trend)' if no_upper else ''}")
+        return None
+
+    def detect_inside_bar(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Inside Bar — entire candle within previous candle's range.
+        Signals consolidation before breakout continuation.
+        Trade direction = direction of the preceding trend.
+        18yr rule: "Inside bars are the market pausing to reload."
+        """
+        if len(df) < 5:
+            return None
+        mother = df.iloc[-2]   # Previous candle
+        inside = df.iloc[-1]   # Current candle
+
+        if not (inside["high"] <= mother["high"] and inside["low"] >= mother["low"]):
+            return None
+
+        # Body of mother candle should be meaningful (at least 0.5x ATR)
+        mother_body = abs(mother["close"] - mother["open"])
+        atr = ind.atr if ind.atr > 0 else 1
+        if mother_body < 0.5 * atr:
+            return None   # Doji mother — not a clean setup
+
+        # Direction = preceding 5-bar trend
+        trend_move = df["close"].iloc[-6] - df["close"].iloc[-10] if len(df) >= 10 else 0
+        direction = "LONG" if trend_move > 0 else "SHORT"
+
+        compression = (mother["high"] - mother["low"]) / max(inside["high"] - inside["low"], 0.01)
+        confidence = min(62 + compression * 3, 80)
+
+        return PatternResult(
+            f"Inside Bar ({'Bull' if direction == 'LONG' else 'Bear'} Continuation)",
+            direction, confidence,
+            f"Inside bar after {'bull' if direction == 'LONG' else 'bear'} trend — "
+            f"compression {compression:.1f}x. Breakout likely."
+        )
+
+    def detect_double_bottom_top(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Double Bottom (W-pattern) — bullish reversal at support.
+        Double Top (M-pattern) — bearish reversal at resistance.
+        Both bottoms/tops within 0.5% of each other = valid.
+        18yr rule: "Double tops/bottoms are the most reliable reversal patterns in NSE."
+        """
+        if len(df) < 30:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+
+        # Double Bottom: two lows at similar level, second followed by break above midpoint
+        lows = df["low"].iloc[-30:]
+        sorted_low_idx = lows.nsmallest(3).index
+        if len(sorted_low_idx) < 2:
+            return None
+
+        low1_idx = sorted_low_idx[0]
+        low2_idx = sorted_low_idx[1]
+        low1 = lows[low1_idx]
+        low2 = lows[low2_idx]
+
+        # Two bottoms within 0.5% and separated by at least 5 candles
+        if abs(low1 - low2) / max(low1, 0.01) > 0.005:
+            pass  # Too far apart
+        elif abs(df.index.get_loc(low1_idx) - df.index.get_loc(low2_idx)) >= 5:
+            # Find midpoint (the "neckline")
+            between = df["high"].iloc[
+                min(df.index.get_loc(low1_idx), df.index.get_loc(low2_idx)):
+                max(df.index.get_loc(low1_idx), df.index.get_loc(low2_idx)) + 1
+            ]
+            neckline = between.max()
+            curr_close = df.iloc[-1]["close"]
+            if curr_close > neckline * 0.999:
+                confidence = 78 + (ind.volume_ratio - 1) * 5
+                confidence = min(confidence + (5 if ind.rsi < 50 else 0), 90)
+                return PatternResult("Double Bottom", "LONG", confidence,
+                                     f"W-pattern: two bottoms near ₹{min(low1,low2):.2f}, "
+                                     f"breakout above neckline ₹{neckline:.2f}")
+
+        # Double Top
+        highs = df["high"].iloc[-30:]
+        sorted_high_idx = highs.nlargest(3).index
+        if len(sorted_high_idx) < 2:
+            return None
+
+        high1_idx = sorted_high_idx[0]
+        high2_idx = sorted_high_idx[1]
+        high1 = highs[high1_idx]
+        high2 = highs[high2_idx]
+
+        if abs(high1 - high2) / max(high1, 0.01) <= 0.005:
+            if abs(df.index.get_loc(high1_idx) - df.index.get_loc(high2_idx)) >= 5:
+                between = df["low"].iloc[
+                    min(df.index.get_loc(high1_idx), df.index.get_loc(high2_idx)):
+                    max(df.index.get_loc(high1_idx), df.index.get_loc(high2_idx)) + 1
+                ]
+                neckline = between.min()
+                curr_close = df.iloc[-1]["close"]
+                if curr_close < neckline * 1.001:
+                    confidence = 78 + (ind.volume_ratio - 1) * 5
+                    confidence = min(confidence + (5 if ind.rsi > 50 else 0), 90)
+                    return PatternResult("Double Top", "SHORT", confidence,
+                                        f"M-pattern: two tops near ₹{max(high1,high2):.2f}, "
+                                        f"break below neckline ₹{neckline:.2f}")
+        return None
+
+    def detect_market_structure_break(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Break of Structure (BOS) / Change of Character (ChoCH).
+        BOS = trend continuation: price breaks the last significant swing high/low.
+        ChoCH = trend reversal: downtrend breaks a previous lower-high (bearish→bullish).
+        18yr rule: "Structure breaks tell you WHO is in control — institutions or retail."
+        """
+        if len(df) < 20:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+
+        # Find last swing high and swing low using simple peak/valley detection
+        highs = df["high"].values
+        lows  = df["low"].values
+        closes = df["close"].values
+
+        # Swing high: local max in a 5-bar window
+        swing_highs = []
+        swing_lows  = []
+        for j in range(2, len(df) - 2):
+            if highs[j] > highs[j-1] and highs[j] > highs[j-2] and \
+               highs[j] > highs[j+1] and highs[j] > highs[j+2]:
+                swing_highs.append((j, highs[j]))
+            if lows[j] < lows[j-1] and lows[j] < lows[j-2] and \
+               lows[j] < lows[j+1] and lows[j] < lows[j+2]:
+                swing_lows.append((j, lows[j]))
+
+        curr_close = closes[-1]
+
+        if len(swing_highs) >= 2:
+            prev_swing_high = swing_highs[-2][1]  # Second-to-last swing high
+            last_swing_high = swing_highs[-1][1]  # Most recent swing high
+            # BOS Long: current price breaks ABOVE the last swing high
+            if curr_close > last_swing_high * 1.001 and ind.volume_ratio >= 1.5:
+                confidence = 76 + min((ind.volume_ratio - 1.5) * 8, 12)
+                # Bonus if this creates HH (Higher High) = trend continuation
+                if last_swing_high > prev_swing_high:
+                    confidence = min(confidence + 7, 92)
+                    return PatternResult("BOS — Higher High (Trend Continues)", "LONG",
+                                        confidence,
+                                        f"Break of Structure: new HH above ₹{last_swing_high:.2f} "
+                                        f"with {ind.volume_ratio:.1f}x volume")
+                else:
+                    return PatternResult("ChoCH — Bullish Reversal", "LONG",
+                                        confidence,
+                                        f"Change of Character: broke above ₹{last_swing_high:.2f} "
+                                        f"— downtrend reversing")
+
+        if len(swing_lows) >= 2:
+            prev_swing_low = swing_lows[-2][1]
+            last_swing_low = swing_lows[-1][1]
+            if curr_close < last_swing_low * 0.999 and ind.volume_ratio >= 1.5:
+                confidence = 76 + min((ind.volume_ratio - 1.5) * 8, 12)
+                if last_swing_low < prev_swing_low:
+                    confidence = min(confidence + 7, 92)
+                    return PatternResult("BOS — Lower Low (Trend Continues)", "SHORT",
+                                        confidence,
+                                        f"Break of Structure: new LL below ₹{last_swing_low:.2f} "
+                                        f"with {ind.volume_ratio:.1f}x volume")
+                else:
+                    return PatternResult("ChoCH — Bearish Reversal", "SHORT",
+                                        confidence,
+                                        f"Change of Character: broke below ₹{last_swing_low:.2f} "
+                                        f"— uptrend reversing")
+        return None
+
+    def detect_ema_stack(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        EMA Stack — full alignment of 9 > 21 > 50 > 200 (bullish) or reverse (bearish).
+        Price above/below all EMAs = maximum trend conviction.
+        18yr rule: "When all 4 EMAs are stacked, ride it — don't fight it."
+        """
+        if ind.ema9 == 0 or ind.ema200 == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+
+        # Full bullish stack
+        if (ind.ema9 > ind.ema21 > ind.ema50 > ind.ema200 and
+                curr_close > ind.ema9):
+            # Measure momentum: price distance above EMA200 as % of ATR
+            atr = ind.atr if ind.atr > 0 else 1
+            dist_from_200 = (curr_close - ind.ema200) / atr
+            confidence = 72 + min(dist_from_200 * 2, 15)
+            # Only trade if price pulled back to EMA9 or EMA21 recently
+            near_ema = min(abs(curr_close - ind.ema9), abs(curr_close - ind.ema21)) < 2 * atr
+            if near_ema:
+                confidence = min(confidence + 8, 92)
+            return PatternResult("Full EMA Stack Bullish", "LONG", confidence,
+                                 f"EMA9({ind.ema9:.0f}) > EMA21({ind.ema21:.0f}) > "
+                                 f"EMA50({ind.ema50:.0f}) > EMA200({ind.ema200:.0f}) — "
+                                 f"maximum bullish trend alignment")
+
+        # Full bearish stack
+        if (ind.ema9 < ind.ema21 < ind.ema50 < ind.ema200 and
+                curr_close < ind.ema9):
+            atr = ind.atr if ind.atr > 0 else 1
+            dist_from_200 = (ind.ema200 - curr_close) / atr
+            confidence = 72 + min(dist_from_200 * 2, 15)
+            near_ema = min(abs(curr_close - ind.ema9), abs(curr_close - ind.ema21)) < 2 * atr
+            if near_ema:
+                confidence = min(confidence + 8, 92)
+            return PatternResult("Full EMA Stack Bearish", "SHORT", confidence,
+                                 f"EMA9({ind.ema9:.0f}) < EMA21({ind.ema21:.0f}) < "
+                                 f"EMA50({ind.ema50:.0f}) < EMA200({ind.ema200:.0f}) — "
+                                 f"maximum bearish trend alignment")
+        return None
+
+    def detect_relative_strength_vs_nifty(
+        self, df: pd.DataFrame, ind: IndicatorSet,
+        nifty_df: Optional[pd.DataFrame] = None
+    ) -> Optional[PatternResult]:
+        """
+        Relative Strength vs Nifty50 — NSE-specific elite filter.
+        Long only stocks stronger than Nifty. Short only stocks weaker.
+        Measured as: stock % change vs Nifty % change over last 5 candles.
+        18yr rule: "Never go long a weak stock in a strong market.
+                    The best trades are in stocks LEADING Nifty."
+        """
+        if nifty_df is None or len(df) < 6 or len(nifty_df) < 6:
+            return None
+
+        # 5-bar return for stock and Nifty
+        stock_ret  = (df["close"].iloc[-1] - df["close"].iloc[-6]) / max(df["close"].iloc[-6], 0.01) * 100
+        nifty_ret  = (nifty_df["close"].iloc[-1] - nifty_df["close"].iloc[-6]) / max(nifty_df["close"].iloc[-6], 0.01) * 100
+        rs_delta   = stock_ret - nifty_ret
+
+        if rs_delta > 1.0:   # Stock outperforming Nifty by >1% over 5 bars
+            confidence = min(62 + rs_delta * 5, 85)
+            return PatternResult("RS+ vs Nifty", "LONG", confidence,
+                                 f"Stock +{stock_ret:.1f}% vs Nifty +{nifty_ret:.1f}% "
+                                 f"(RS delta: +{rs_delta:.1f}%) — leading the market")
+        if rs_delta < -1.0:  # Stock underperforming Nifty by >1%
+            confidence = min(62 + abs(rs_delta) * 5, 85)
+            return PatternResult("RS- vs Nifty", "SHORT", confidence,
+                                 f"Stock {stock_ret:.1f}% vs Nifty {nifty_ret:.1f}% "
+                                 f"(RS delta: {rs_delta:.1f}%) — lagging the market")
+        return None
+
+    # --------------------------------------------------------
     # COMPOSITE SCORE
     # --------------------------------------------------------
 
@@ -717,12 +1122,24 @@ class PatternRecognizer:
         long_score = 0.0
         short_score = 0.0
 
+        # Elite patterns get higher weight (these are the money-makers)
+        ELITE_PATTERNS = {
+            "Bullish FVG", "Bearish FVG",
+            "Bullish Order Block", "Bearish Order Block",
+            "BOS — Higher High (Trend Continues)", "BOS — Lower Low (Trend Continues)",
+            "ChoCH — Bullish Reversal", "ChoCH — Bearish Reversal",
+            "Full EMA Stack Bullish", "Full EMA Stack Bearish",
+            "Double Bottom", "Double Top",
+            "Heikin Ashi Bull Trend", "Heikin Ashi Bear Trend",
+        }
+
         # Pattern scores
         for p in patterns:
+            weight = 0.8 if p.name in ELITE_PATTERNS else 0.6  # Elite patterns weighted more
             if p.direction == "LONG":
-                long_score += p.confidence * 0.6
+                long_score += p.confidence * weight
             elif p.direction == "SHORT":
-                short_score += p.confidence * 0.6
+                short_score += p.confidence * weight
 
         # Indicator confluence
         # RSI
