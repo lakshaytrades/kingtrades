@@ -62,6 +62,7 @@ class TradingBot:
         self.market_open_today = False
         self.eod_done = False
         self._token_refreshed_today = False
+        self._token_refreshed_date = ""   # "YYYY-MM-DD" — prevents double-refresh
         self._day_initialized = False
         self._scan_interval = 60  # seconds between full watchlist scans
 
@@ -395,30 +396,39 @@ class TradingBot:
             while self.running:
                 now_ist = get_current_ist_time()
 
-                # TOTP token refresh: primary at 8:45 AM, retry at 9:00 and 9:10 if failed
-                if is_token_refresh_time() and not self._token_refreshed_today:
-                    self._do_token_refresh()
-                elif (not self._token_refreshed_today
-                        and now_ist.hour == 9
-                        and now_ist.minute in (0, 10)
+                # ── TOTP token refresh at 5:50 AM IST (10 min BEFORE 6 AM expiry) ──
+                # Groww invalidates all JWTs at exactly 6:00 AM IST daily.
+                # We use the still-valid current JWT to get the next one at 5:50 AM.
+                today_str = now_ist.strftime("%Y-%m-%d")
+                if is_token_refresh_time() and self._token_refreshed_date != today_str:
+                    self._do_token_refresh(today_str)
+                # Retry at 5:53 and 5:57 if primary failed (still before 6 AM expiry)
+                elif (self._token_refreshed_date != today_str
+                        and now_ist.hour == 5
+                        and now_ist.minute in (53, 57)
                         and self._token_refresh_attempts < 3):
                     logger.warning(
-                        f"[{format_ist_timestamp()}] Token refresh retry #{self._token_refresh_attempts + 1}..."
+                        f"[{format_ist_timestamp()}] Token refresh retry "
+                        f"#{self._token_refresh_attempts + 1}/3 (still before 6 AM)..."
                     )
-                    self._do_token_refresh()
+                    self._do_token_refresh(today_str)
 
-                # Reset for new day
-                if now_ist.hour == 9 and now_ist.minute < 10:
-                    if now_ist.strftime("%Y-%m-%d") != getattr(self, "_last_trade_date", ""):
-                        self._day_initialized = False
-                        self.eod_done = False
-                        self._token_refreshed_today = False
-                        self._token_refresh_attempts = 0
-                        self._premarket_scan_done = False
-                        self._watchlist_cache = []
-                        self._watchlist_cache_time = None
-                        self._last_heartbeat_min = -1
-                        self._last_trade_date = now_ist.strftime("%Y-%m-%d")
+                # ── Reset for new calendar date ────────────────────────────────
+                # Token refresh flag resets at midnight (new calendar day),
+                # not at 9 AM — so 5:50 AM refresh is seen as "today's refresh"
+                if today_str != getattr(self, "_last_trade_date", ""):
+                    self._day_initialized = False
+                    self.eod_done = False
+                    self._token_refreshed_today = False   # legacy compat
+                    self._token_refresh_attempts = 0
+                    self._premarket_scan_done = False
+                    self._watchlist_cache = []
+                    self._watchlist_cache_time = None
+                    self._last_heartbeat_min = -1
+                    self._last_trade_date = today_str
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 📅 New trading day: {today_str}"
+                    )
 
                 # Overnight analysis at 8:00 AM IST (before market)
                 if (now_ist.hour == 8 and now_ist.minute < 5
@@ -1048,21 +1058,37 @@ class TradingBot:
     # TOKEN REFRESH
     # --------------------------------------------------------
 
-    def _do_token_refresh(self):
-        """Refresh Groww token at 8:45 AM IST via TOTP."""
+    def _do_token_refresh(self, today_str: str = ""):
+        """
+        Refresh Groww token at 5:50 AM IST — BEFORE the 6:00 AM expiry.
+        Propagates fresh token to fetcher and executor immediately.
+        """
         from auth_groww import get_auth_manager
         mgr = get_auth_manager()
         success = mgr.refresh_token_if_needed()
-        if success and self.fetcher:
-            self.fetcher._refresh_api_if_needed()
-            if self.executor:
-                self.executor._init_api()
         self._token_refresh_attempts += 1
         if success:
-            self._token_refreshed_today = True
-            # Re-apply EOD trained params after token refresh (9:00 AM)
-            self._apply_eod_trained_params()
-        logger.info(f"[{format_ist_timestamp()}] Token refresh {'✅ succeeded' if success else '❌ failed'}")
+            self._token_refreshed_today = True       # legacy compat
+            self._token_refreshed_date = today_str   # date-based guard
+            # Push fresh token into fetcher and executor
+            if self.fetcher:
+                try:
+                    self.fetcher._refresh_api_if_needed()
+                except Exception:
+                    try:
+                        self.fetcher._init_api()
+                    except Exception:
+                        pass
+            if self.executor:
+                try:
+                    self.executor._init_api()
+                except Exception:
+                    pass
+        logger.info(
+            f"[{format_ist_timestamp()}] Token refresh at 5:50 AM IST: "
+            f"{'✅ succeeded' if success else '❌ FAILED'} "
+            f"(attempt {self._token_refresh_attempts}/3)"
+        )
 
     # --------------------------------------------------------
     # TELEGRAM COMMAND LISTENER

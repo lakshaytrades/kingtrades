@@ -28,7 +28,7 @@ MARKET_CLOSE_IST = time(15, 30)
 MARKET_SQUAREOFF_IST = time(15, 20)   # Force square-off before this
 MARKET_SQUAREOFF_WARN = time(15, 15)  # Warn at this time
 PRE_MARKET_START_IST = time(9, 0)
-TOKEN_REFRESH_TIME_IST = time(6, 5)   # Groww Cloud keys reset at 6 AM IST — refresh at 6:05 AM
+TOKEN_REFRESH_TIME_IST = time(5, 50)  # Groww tokens expire at 6:00 AM IST — refresh 10 min BEFORE
 
 # Trading days: Monday(0) to Friday(4)
 TRADING_DAYS = {0, 1, 2, 3, 4}

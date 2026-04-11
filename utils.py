@@ -24,7 +24,7 @@ MARKET_CLOSE = time(15, 30)
 MARKET_SQUAREOFF = time(15, 20)
 MARKET_SQUAREOFF_WARN = time(15, 15)
 PRE_MARKET_START = time(9, 0)
-TOKEN_REFRESH_TIME = time(8, 45)
+TOKEN_REFRESH_TIME = time(5, 50)   # Groww tokens expire at 6:00 AM IST — refresh 10 min BEFORE
 
 logger = logging.getLogger(__name__)
 
@@ -212,11 +212,17 @@ def get_next_market_open_ist() -> datetime:
 
 
 def is_token_refresh_time() -> bool:
-    """Check if it's time for daily Groww token refresh (8:45 AM IST)."""
+    """
+    Check if it's time for daily Groww token refresh.
+
+    Groww invalidates ALL tokens at 6:00 AM IST every day.
+    We refresh at 5:50 AM — 10 minutes BEFORE expiry — so the current
+    valid token is used to generate the next one successfully.
+    Window: 5:50–5:55 AM IST (5-minute window, any day).
+    """
     now_ist = get_current_ist_time()
     current = now_ist.time()
-    # True from 8:45 to 8:50 AM IST (5-minute window)
-    return TOKEN_REFRESH_TIME <= current < time(8, 50) and now_ist.weekday() < 5
+    return time(5, 50) <= current < time(5, 55)
 
 
 # ============================================================
