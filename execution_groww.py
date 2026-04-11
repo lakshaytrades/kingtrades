@@ -127,6 +127,29 @@ class GrowwExecutor:
         Returns:
             OrderResult with order_id on success
         """
+        # ── F&O ELIGIBILITY CHECK (SELL/SHORT orders only) ──────────────
+        # NSE only allows intraday short-selling on F&O segment stocks.
+        # Attempting to short an equity-only stock → Groww REJECTS the order.
+        # Rejection after position tracking = phantom position risk.
+        if signal.direction in ("SHORT", "SELL"):
+            try:
+                from nse_fo_list import is_fo_eligible
+                if not is_fo_eligible(signal.symbol):
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⛔ SHORT BLOCKED: {signal.symbol} "
+                        "is NOT F&O eligible — intraday short-selling not allowed "
+                        "on equity-only stocks. Order would be rejected by Groww."
+                    )
+                    return OrderResult(
+                        False,
+                        message=(
+                            f"{signal.symbol} not F&O eligible — "
+                            "cannot short equity-only stock on NSE"
+                        ),
+                    )
+            except Exception as e:
+                logger.debug(f"F&O check error (allowing trade): {e}")
+
         # Pre-trade risk check
         can_trade = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
         if not can_trade["allowed"]:
@@ -432,9 +455,34 @@ class GrowwExecutor:
                     return float(fill_price)
 
                 if status in ("CANCELLED", "REJECTED", "EXPIRED"):
-                    logger.warning(
-                        f"[{format_ist_timestamp()}] Order {order_id} {status}"
+                    # Extract rejection reason from response for diagnosis
+                    reject_reason = (
+                        status_resp.get("message") or
+                        status_resp.get("reason") or
+                        status_resp.get("errorMessage") or
+                        (status_resp.get("data") or {}).get("message") or
+                        "No reason provided"
                     )
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] Order {order_id} {status}: "
+                        f"{reject_reason}"
+                    )
+                    # Specific actionable messages for common rejections
+                    if "circuit" in str(reject_reason).lower():
+                        logger.error(
+                            f"[{format_ist_timestamp()}] ⛔ CIRCUIT BREAKER: "
+                            f"{order_id} rejected — stock may be hitting circuit limit"
+                        )
+                    elif "margin" in str(reject_reason).lower():
+                        logger.error(
+                            f"[{format_ist_timestamp()}] ⛔ MARGIN INSUFFICIENT: "
+                            f"{order_id} rejected — reduce position size"
+                        )
+                    elif "short" in str(reject_reason).lower() or "sell" in str(reject_reason).lower():
+                        logger.error(
+                            f"[{format_ist_timestamp()}] ⛔ SHORT REJECTED: "
+                            f"{order_id} — stock may not be F&O eligible"
+                        )
                     return None
 
                 # PENDING / OPEN / TRIGGER_PENDING — keep waiting

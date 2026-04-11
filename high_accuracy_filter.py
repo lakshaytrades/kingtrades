@@ -7,14 +7,19 @@ The 70%+ win rate comes from taking ONLY THE BEST 20% of signals.
 Patience is your edge. Waiting IS the strategy."
 
 This filter sits BETWEEN signal_generator and execution.
-A signal must PASS ALL 5 gates to become a trade.
+A signal must PASS ALL 10 gates to become a trade.
 
-THE 5 CONFLUENCE GATES:
-  Gate 1: POWER HOURS ONLY    — Trade only in high-probability time windows
-  Gate 2: REGIME ALIGNMENT    — Market regime must be MOMENTUM (not RANGING)
-  Gate 3: MULTI-TF ALIGNMENT  — At least 2 of 3 timeframes must agree
-  Gate 4: VOLUME SURGE        — Current volume must be ≥ 1.8x 20-period SMA
-  Gate 5: PATTERN QUALITY     — Pattern confidence score ≥ 72/100
+THE 10 CONFLUENCE GATES:
+  Gate 1:  POWER HOURS ONLY    — Trade only in high-probability time windows
+  Gate 2:  REGIME ALIGNMENT    — Market regime must be MOMENTUM (not RANGING)
+  Gate 3:  MULTI-TF ALIGNMENT  — At least 2 of 3 timeframes must agree
+  Gate 4:  VOLUME SURGE        — Current volume must be ≥ 1.8x 20-period SMA
+  Gate 5:  PATTERN QUALITY     — Pattern confidence score ≥ 72/100
+  Gate 6:  LIQUIDITY           — Min daily volume ≥ 5 lakh shares (no illiquid stocks)
+  Gate 7:  CIRCUIT BREAKER     — Stock not near 5/10/20% NSE circuit bands
+  Gate 8:  GAP RISK            — No extreme gap open; wait window respected
+  Gate 9:  CORP ACTIONS        — No ex-dividend/bonus/split within 2 days
+  Gate 10: F&O SHORT ELIGIBLE  — SELL signals only on F&O-eligible stocks
 
 BONUS GATES (increase score further):
   + Heikin Ashi confirmation  (trend candle in signal direction)
@@ -105,21 +110,28 @@ class HighAccuracyFilter:
 
     def evaluate(
         self,
-        signal_score:      float,
-        direction:         str,             # "BUY" or "SELL"
-        regime:            str,
-        mtf_alignment:     Dict,            # from MultiTimeframeAnalyzer
-        volume_ratio:      float,
-        pattern_names:     List[str],
-        pattern_scores:    List[float],
-        df_5m:             Optional[pd.DataFrame],
-        rsi:               float,
-        above_vwap:        bool,
-        nifty_change_pct:  float,
-        stock_change_pct:  float,
-        news_clear:        bool,
-        orb_direction:     str = "",        # "UP", "DOWN", or ""
+        signal_score:        float,
+        direction:           str,             # "BUY" or "SELL"
+        regime:              str,
+        mtf_alignment:       Dict,            # from MultiTimeframeAnalyzer
+        volume_ratio:        float,
+        pattern_names:       List[str],
+        pattern_scores:      List[float],
+        df_5m:               Optional[pd.DataFrame],
+        rsi:                 float,
+        above_vwap:          bool,
+        nifty_change_pct:    float,
+        stock_change_pct:    float,
+        news_clear:          bool,
+        orb_direction:       str = "",        # "UP", "DOWN", or ""
         learner=None,
+        # ── NEW: Gates 6-10 parameters ──────────────────────────
+        symbol:              str   = "",      # Gate 6-10: symbol for checks
+        daily_volume:        float = 0.0,     # Gate 6: today's volume (shares)
+        prev_close:          float = 0.0,     # Gate 7: yesterday's close (circuit)
+        ltp:                 float = 0.0,     # Gate 7: current price (circuit calc)
+        minutes_since_open:  float = 0.0,     # Gate 8: for gap timing
+        gap_pct:             float = 0.0,     # Gate 8: gap % (set by gap_analyzer)
     ) -> FilterResult:
 
         result = FilterResult()
@@ -201,8 +213,59 @@ class HighAccuracyFilter:
             self._log_rejection(result, signal_score, direction)
             return result
 
+        # ── GATE 6: LIQUIDITY ─────────────────────────────
+        if daily_volume > 0:
+            liq_ok, liq_reason = self._check_liquidity(daily_volume)
+            if not liq_ok:
+                result.gates_failed.append(f"LIQUIDITY({daily_volume/1e5:.1f}L)")
+                result.rejection_reason = liq_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append(f"LIQUIDITY({daily_volume/1e5:.0f}L)")
+
+        # ── GATE 7: CIRCUIT BREAKER PROXIMITY ────────────
+        if prev_close > 0 and ltp > 0:
+            circ_ok, circ_reason = self._check_circuit_proximity(prev_close, ltp)
+            if not circ_ok:
+                result.gates_failed.append("CIRCUIT_BREAKER")
+                result.rejection_reason = circ_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append("CIRCUIT_OK")
+
+        # ── GATE 8: GAP RISK ──────────────────────────────
+        abs_gap = abs(gap_pct)
+        if abs_gap > 0:
+            gap_ok, gap_reason = self._check_gap_risk(gap_pct, minutes_since_open)
+            if not gap_ok:
+                result.gates_failed.append(f"GAP_RISK({gap_pct:+.1f}%)")
+                result.rejection_reason = gap_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            if abs_gap >= 2.0:
+                result.gates_passed.append(f"GAP_CLEARED({gap_pct:+.1f}%)")
+
+        # ── GATE 9: CORPORATE ACTIONS ─────────────────────
+        if symbol:
+            corp_ok, corp_reason = self._check_corp_actions(symbol)
+            if not corp_ok:
+                result.gates_failed.append("CORP_ACTION")
+                result.rejection_reason = corp_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+
+        # ── GATE 10: F&O ELIGIBILITY (SELL/SHORT only) ───
+        if direction == "SELL" and symbol:
+            fo_ok, fo_reason = self._check_fo_eligibility(symbol)
+            if not fo_ok:
+                result.gates_failed.append("FO_INELIGIBLE")
+                result.rejection_reason = fo_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append("FO_ELIGIBLE")
+
         # ─────────────────────────────────────────────────
-        # ALL 5 GATES PASSED — now calculate bonus score
+        # ALL 10 GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
         result.passed   = True
         bonus_score     = 0.0
@@ -458,6 +521,131 @@ class HighAccuracyFilter:
         except Exception as e:
             logger.debug(f"HA check failed: {e}")
             return True, "HA_UNAVAILABLE"
+
+    def _check_liquidity(self, daily_volume: float) -> Tuple[bool, str]:
+        """
+        Gate 6: Minimum daily volume check.
+        18yr rule: Illiquid stocks have wide spreads — you pay to enter AND exit.
+        At 5 lakh shares/day, spread impact is manageable for our position sizes.
+        """
+        from config import MIN_DAILY_VOLUME
+        min_vol = MIN_DAILY_VOLUME
+
+        if daily_volume < min_vol:
+            return False, (
+                f"Volume too low: {daily_volume/1e5:.1f}L shares/day "
+                f"< {min_vol/1e5:.0f}L minimum. "
+                "Low liquidity = wide spread = guaranteed slippage loss."
+            )
+        return True, ""
+
+    def _check_circuit_proximity(
+        self, prev_close: float, ltp: float
+    ) -> Tuple[bool, str]:
+        """
+        Gate 7: Don't trade near NSE circuit breaker bands.
+        NSE applies 5%, 10%, 20% upper/lower circuits from previous close.
+        Near the circuit → stock may freeze → trapped position.
+        """
+        from config import CIRCUIT_BANDS, CIRCUIT_BUFFER_PCT
+
+        price_change_pct = ((ltp - prev_close) / prev_close) * 100
+
+        for band_pct in CIRCUIT_BANDS:
+            # Check upper circuit proximity
+            upper_circuit_pct = band_pct
+            if price_change_pct >= (upper_circuit_pct - CIRCUIT_BUFFER_PCT):
+                return False, (
+                    f"Near upper {band_pct:.0f}% circuit "
+                    f"(price +{price_change_pct:.1f}% vs prev close). "
+                    "Trading near circuit = risk of freeze — avoid."
+                )
+            # Check lower circuit proximity
+            lower_circuit_pct = -band_pct
+            if price_change_pct <= (lower_circuit_pct + CIRCUIT_BUFFER_PCT):
+                return False, (
+                    f"Near lower {band_pct:.0f}% circuit "
+                    f"(price {price_change_pct:.1f}% vs prev close). "
+                    "Trading near circuit = risk of freeze — avoid."
+                )
+
+        return True, ""
+
+    def _check_gap_risk(
+        self, gap_pct: float, minutes_since_open: float
+    ) -> Tuple[bool, str]:
+        """
+        Gate 8: Pre-market gap price discovery window.
+        18yr rule: >2% gap = unpredictable first 5-15 min. Wait it out.
+        Extreme gaps >5% = avoid whole session.
+        """
+        from config import MAX_GAP_PCT, LARGE_GAP_PCT, EXTREME_GAP_PCT
+        abs_gap = abs(gap_pct)
+
+        if abs_gap >= EXTREME_GAP_PCT:
+            return False, (
+                f"EXTREME gap {gap_pct:+.1f}% — avoid entire session. "
+                "Price discovery takes full day on 5%+ gaps."
+            )
+
+        wait_min = 0
+        if abs_gap >= LARGE_GAP_PCT:
+            wait_min = 15
+        elif abs_gap >= MAX_GAP_PCT:
+            wait_min = 5
+
+        if wait_min > 0 and minutes_since_open < wait_min:
+            remaining = wait_min - minutes_since_open
+            return False, (
+                f"Gap {gap_pct:+.1f}% — price discovery window. "
+                f"Wait {remaining:.0f} more min (total {wait_min}min after open)."
+            )
+
+        return True, ""
+
+    def _check_corp_actions(self, symbol: str) -> Tuple[bool, str]:
+        """
+        Gate 9: Corporate actions proximity check.
+        Ex-dividend, bonus, split create artificial price moves.
+        Skip stocks within 2 days of any ex-date.
+        """
+        try:
+            from corporate_actions import is_safe_from_corp_actions
+            safe, reason = is_safe_from_corp_actions(symbol)
+            if not safe:
+                return False, (
+                    f"{symbol} has upcoming corporate action: {reason}. "
+                    "Price adjustment distorts all technical signals."
+                )
+            return True, ""
+        except ImportError:
+            # Module not yet available — allow trade (no false positives)
+            return True, ""
+        except Exception as e:
+            logger.debug(f"Corp action check error for {symbol}: {e}")
+            return True, ""   # Fail open — don't block on data errors
+
+    def _check_fo_eligibility(self, symbol: str) -> Tuple[bool, str]:
+        """
+        Gate 10: F&O eligibility for SELL (SHORT) signals.
+        Intraday shorting on NSE is ONLY allowed for F&O segment stocks.
+        Short-selling a non-F&O equity stock → Groww REJECTS the order
+        → phantom position risk + wasted order slot.
+        """
+        try:
+            from nse_fo_list import is_fo_eligible
+            if not is_fo_eligible(symbol):
+                return False, (
+                    f"{symbol} is NOT F&O eligible — cannot short intraday. "
+                    "NSE equity-only stocks: BUY-only. "
+                    "Signal converted to SKIP (not a BUY opportunity)."
+                )
+            return True, ""
+        except ImportError:
+            return True, ""   # Module unavailable — allow (no false blocks)
+        except Exception as e:
+            logger.debug(f"F&O eligibility check error for {symbol}: {e}")
+            return True, ""   # Fail open
 
     def _rsi_bonus(self, rsi: float, direction: str) -> float:
         """

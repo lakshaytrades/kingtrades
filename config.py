@@ -345,6 +345,34 @@ WEEKLY_LOSS_STOP_PCT:     float = 2.5    # -2.5% weekly loss → halt new entrie
 WEEKLY_DATA_FILE:         str   = "data/weekly_pnl.json"
 
 # ============================================================
+# NSE F&O / GAP / LIQUIDITY / CIRCUIT BREAKER  (11/10 gates)
+# ============================================================
+
+# Minimum daily traded volume (shares) required for entry
+# Stocks below this are too illiquid — wide spreads, poor fills
+MIN_DAILY_VOLUME: int = 500_000       # 5 lakh shares/day minimum
+
+# Gap filter — skip gapped stocks during price discovery window
+# Applied only to first N minutes after market open
+MAX_GAP_PCT: float = 2.0              # MEDIUM gap threshold (%)
+LARGE_GAP_PCT: float = 3.5            # LARGE gap threshold (%)
+EXTREME_GAP_PCT: float = 5.0          # EXTREME gap — avoid session (%)
+
+# Circuit breaker proximity — don't trade near circuit limits
+# NSE circuit bands: 5%, 10%, 20% from previous close
+CIRCUIT_BUFFER_PCT: float = 0.5       # Avoid within 0.5% of any circuit band
+CIRCUIT_BANDS: list = [5.0, 10.0, 20.0]   # NSE circuit levels
+
+# Corporate actions buffer — skip stocks within N days of ex-date
+CORP_ACTION_BUFFER_DAYS: int = 2      # Avoid 2 days before/on ex-date
+
+# F&O eligibility — cache refresh
+FO_LIST_CACHE_HOURS: int = 24         # Refresh F&O list once per day
+
+# API health check at session start
+API_HEALTH_CHECK_ENABLED: bool = True
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config() -> list:

@@ -85,6 +85,7 @@ class TradingBot:
         self.cont_learner = None
         self.oc_analyzer = None   # Option Chain analyzer
         self.fii_tracker = None   # FII/DII flow tracker
+        self.gap_analyzer = None  # Pre-market gap analyzer
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -285,12 +286,80 @@ class TradingBot:
     # MARKET DAY INITIALIZATION
     # --------------------------------------------------------
 
+    def _api_health_check(self) -> bool:
+        """
+        Verify Groww API is responding before starting the trading session.
+        Prevents silent failures where orders appear to place but don't execute.
+
+        Returns True if API is healthy, False if there's a connectivity issue.
+        """
+        if not config.API_HEALTH_CHECK_ENABLED:
+            return True
+
+        try:
+            logger.info(f"[{format_ist_timestamp()}] Running API health check...")
+
+            # 1. Check auth token is valid
+            from auth_groww import get_auth_manager
+            manager = get_auth_manager()
+            token = manager.get_valid_token()
+            if not token:
+                logger.error(
+                    f"[{format_ist_timestamp()}] ❌ API health: No valid auth token. "
+                    "Run python update_token.py --test to diagnose."
+                )
+                if self.alerter:
+                    self.alerter.send_text(
+                        "🚨 API HEALTH FAIL: No valid Groww token at market open!\n"
+                        "Bot will NOT trade today. Fix: check GROWW_TOTP_SECRET in .env"
+                    )
+                return False
+
+            # 2. Test a quote fetch (proves API is connected and token works)
+            from data_fetch_groww import get_data_fetcher
+            fetcher = get_data_fetcher()
+            test_quote = fetcher.get_quote("RELIANCE")
+            if not test_quote or not test_quote.get("ltp"):
+                logger.warning(
+                    f"[{format_ist_timestamp()}] ⚠️ API health: Quote fetch returned "
+                    f"empty for RELIANCE. Market may not be open yet or API is slow."
+                )
+                # Non-fatal — market may be just opening
+                return True
+
+            ltp = test_quote.get("ltp", 0)
+            logger.info(
+                f"[{format_ist_timestamp()}] ✅ API health OK — "
+                f"RELIANCE LTP: ₹{ltp:.2f} | Token valid"
+            )
+            return True
+
+        except Exception as e:
+            logger.error(
+                f"[{format_ist_timestamp()}] ❌ API health check failed: {e}"
+            )
+            if self.alerter:
+                self.alerter.send_text(
+                    f"🚨 API HEALTH FAIL at market open: {e}\n"
+                    "Check Groww connectivity and token."
+                )
+            return False
+
     def initialize_market_day(self):
         """Called once at market open each day (9:15 AM IST)."""
         if self._day_initialized:
             return
 
         logger.info(f"[{format_ist_timestamp()}] 🔔 MARKET OPEN — Initializing trading day...")
+
+        # ── API health check — verify connectivity before any trading ──
+        api_ok = self._api_health_check()
+        if not api_ok:
+            logger.warning(
+                f"[{format_ist_timestamp()}] ⚠️ API health check failed — "
+                "bot will continue but trading may be impaired. Monitor closely."
+            )
+            # Not fatal — allow the day to proceed but alert was sent
 
         # Get live balance from Groww; fall back to auto-compounded capital
         balance_info = self.fetcher.get_account_balance()
@@ -319,6 +388,43 @@ class TradingBot:
                     s for s in watchlist
                     if self.watchlist_mgr.get_sector_for_symbol(s) not in avoid_sectors
                 ]
+
+        # ── Pre-load gap analysis for all watchlist symbols ────────────
+        # Gap data is used in Gate 8 of high_accuracy_filter.
+        # Load once at open — gaps don't change during the session.
+        try:
+            from gap_analyzer import get_gap_analyzer
+            gap_analyzer = get_gap_analyzer()
+            gap_analyzer.clear()   # Fresh data for new day
+            gap_analyzer.load_gaps_for_watchlist(self.fetcher, watchlist)
+            self.gap_analyzer = gap_analyzer
+
+            # Send gapped stocks summary to Telegram
+            gap_summary = gap_analyzer.get_gapped_stocks_summary()
+            if "No significant gaps" not in gap_summary:
+                logger.info(f"[{format_ist_timestamp()}] {gap_summary}")
+                if self.alerter:
+                    import asyncio
+                    asyncio.run(self.alerter.send_text(gap_summary))
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
+            self.gap_analyzer = None
+
+        # ── Pre-load corporate actions for today ──────────────────────
+        try:
+            from corporate_actions import get_corp_filter
+            corp_filter = get_corp_filter()
+            today_events = corp_filter.get_upcoming_events_today()
+            if today_events:
+                event_text = "⚠️ Corporate actions TODAY:\n" + "\n".join(
+                    f"  {e['symbol']}: {e['purpose']}" for e in today_events[:10]
+                )
+                logger.info(f"[{format_ist_timestamp()}] {event_text}")
+                if self.alerter:
+                    import asyncio
+                    asyncio.run(self.alerter.send_text(event_text))
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Corp actions load failed: {e}")
 
         # Morning brief (AI thesis + global cues + events + OC + FII/DII)
         try:
