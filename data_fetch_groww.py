@@ -152,55 +152,96 @@ class GrowwDataFetcher:
     def get_account_balance(self) -> Dict:
         """
         Fetch live account balance from Groww.
-        Returns full breakdown: available, used margin, collateral, total.
+        Tries every known field-name variant + nested structures.
+        Logs raw response at DEBUG so field names can be identified if 0 persists.
         """
+        _empty = {"available": 0, "used_margin": 0, "total": 0, "collateral": 0, "opening": 0}
         if not self._api:
-            return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
+            return _empty
         try:
             if hasattr(self._api, 'get_balance'):
                 res = self._api.get_balance()
+            elif hasattr(self._api, 'get_funds'):
+                res = self._api.get_funds()
+            elif hasattr(self._api, 'get_margins'):
+                res = self._api.get_margins()
             else:
-                return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
+                logger.warning("Groww API has no get_balance/get_funds/get_margins method")
+                return _empty
 
-            # Groww SDK may return different field names — handle all variants
-            available = float(
-                res.get("available_cash") or
-                res.get("available_margin") or
-                res.get("available") or 0
+            # Log raw response at INFO so field names are visible in logs
+            logger.info(f"[balance_raw] {res}")
+
+            # Convert object → dict if SDK returns a response object
+            if not isinstance(res, dict):
+                try:
+                    res = vars(res)
+                except TypeError:
+                    try:
+                        res = dict(res)
+                    except Exception:
+                        res = {}
+
+            # Unwrap common envelope keys: data / payload / result
+            for envelope in ("data", "payload", "result", "response"):
+                if envelope in res and isinstance(res[envelope], dict):
+                    res = res[envelope]
+                    break
+
+            logger.info(f"[balance_fields] {list(res.keys())}")
+
+            def _get(*keys) -> float:
+                """Try multiple key names; return first non-zero float found."""
+                for k in keys:
+                    v = res.get(k)
+                    if v is not None:
+                        try:
+                            f = float(v)
+                            if f != 0:
+                                return f
+                        except (TypeError, ValueError):
+                            pass
+                # Second pass: accept 0 if explicitly set
+                for k in keys:
+                    v = res.get(k)
+                    if v is not None:
+                        try:
+                            return float(v)
+                        except (TypeError, ValueError):
+                            pass
+                return 0.0
+
+            available = _get(
+                "available_cash", "available_margin", "available",
+                "available_amount", "available_limit", "cash",
+                "net_available", "free_cash", "liquid_cash",
             )
-            used_margin = float(
-                res.get("used_margin") or
-                res.get("utilised_margin") or
-                res.get("margin_used") or 0
+            used_margin = _get(
+                "used_margin", "utilised_margin", "margin_used",
+                "used_amount", "blocked_amount", "used",
             )
-            collateral = float(
-                res.get("collateral") or
-                res.get("collateral_margin") or 0
+            collateral = _get(
+                "collateral", "collateral_margin", "collateral_amount",
             )
-            total = float(
-                res.get("net") or
-                res.get("net_value") or
-                res.get("total") or
-                res.get("opening_balance") or
-                (available + used_margin)
-            )
-            opening = float(
-                res.get("opening_balance") or
-                res.get("start_of_day_limit") or
-                total
-            )
+            total = _get(
+                "net", "net_value", "total", "net_amount",
+                "opening_balance", "total_balance",
+            ) or (available + used_margin)
+            opening = _get(
+                "opening_balance", "start_of_day_limit", "sod_balance",
+            ) or total
 
             return {
-                "available":    available,
-                "used_margin":  used_margin,
-                "collateral":   collateral,
-                "total":        total,
-                "opening":      opening,
-                "_raw":         res,   # full response for debugging
+                "available":   available,
+                "used_margin": used_margin,
+                "collateral":  collateral,
+                "total":       total,
+                "opening":     opening,
+                "_raw":        res,
             }
         except Exception as e:
-            logger.error(f"Balance check failed: {e}")
-            return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
+            logger.error(f"get_account_balance failed: {e}")
+            return _empty
 
     def get_positions(self) -> List[Dict]:
         """Fetch MIS leverage positions."""

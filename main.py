@@ -1349,6 +1349,15 @@ class TradingBot:
                     f"  Live Trading   : {'✅ ON' if config.LIVE_TRADING_ENABLED else '🔒 OFF'}",
                 ]
 
+                # Debug: show raw Groww response fields if balance is 0
+                if available == 0:
+                    raw = bal.get("_raw", {})
+                    if raw:
+                        raw_preview = str(raw)[:300]
+                        lines += ["", f"<b>🔍 Debug (raw fields):</b>", f"<code>{raw_preview}</code>"]
+                    else:
+                        lines += ["", "⚠️ Groww returned empty balance response"]
+
                 self.alerter.send_html("\n".join(lines))
 
             except Exception as e:
