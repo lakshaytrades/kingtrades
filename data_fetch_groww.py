@@ -51,25 +51,24 @@ class GrowwDataFetcher:
             logger.error(f"[{format_ist_timestamp()}] Init failed: {e}")
 
     def _reinit_with_fresh_token(self) -> bool:
-        """Force TOTP re-login and rebuild the API client with fresh token."""
-        logger.warning(f"[{format_ist_timestamp()}] Auth error — forcing TOTP re-login...")
+        """Force a fresh TOTP access_token and rebuild the API client."""
+        logger.warning(f"[{format_ist_timestamp()}] Auth error — forcing token refresh...")
         try:
             manager = get_auth_manager()
-            # Force a fresh TOTP login (not just cached token)
-            old_token = manager.token
-            new_token = manager.login_and_get_token()
-            if new_token and new_token != old_token:
+            # force_refresh() always calls the SDK (ignores cache age)
+            ok = manager.force_refresh()
+            new_token = manager.token
+            if ok and new_token:
                 from growwapi import GrowwAPI
                 self._api = GrowwAPI(new_token)
-                logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with FRESH token")
+                logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with new access_token")
                 return True
-            elif new_token == old_token:
-                logger.error(
-                    f"[{format_ist_timestamp()}] ❌ TOTP login returned same expired token — "
-                    "update GROWW_AUTH_TOKEN in Render env with a fresh token from groww.in"
-                )
+            logger.error(
+                f"[{format_ist_timestamp()}] ❌ Token refresh failed — "
+                "check GROWW_AUTH_TOKEN and GROWW_TOTP_SECRET in Render env vars"
+            )
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Token refresh failed: {e}")
+            logger.error(f"[{format_ist_timestamp()}] Token refresh error: {e}")
         return False
 
     @retry_with_backoff(max_retries=4, delays=[2, 4, 8, 16])

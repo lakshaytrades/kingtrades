@@ -265,7 +265,7 @@ class Watchdog:
         else:
             log.warning("Pre-flight: no token cache found — main.py will use env token")
 
-        if token_age_h > 20:
+        if token_age_h > 12:
             log.warning(
                 f"Pre-flight: token is {token_age_h:.1f}h old — "
                 "running pre-emptive token refresh before starting main.py..."
