@@ -150,19 +150,57 @@ class GrowwDataFetcher:
     # --------------------------------------------------------
 
     def get_account_balance(self) -> Dict:
-        """Updated to use get_balance() to fix 'no attribute get_funds'."""
-        if not self._api: return {"available": 0}
+        """
+        Fetch live account balance from Groww.
+        Returns full breakdown: available, used margin, collateral, total.
+        """
+        if not self._api:
+            return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
         try:
-            # Check for the correct method name in current SDK
             if hasattr(self._api, 'get_balance'):
                 res = self._api.get_balance()
             else:
-                return {"available": 0}
-            
-            return {"available": float(res.get("available_cash", 0))}
+                return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
+
+            # Groww SDK may return different field names — handle all variants
+            available = float(
+                res.get("available_cash") or
+                res.get("available_margin") or
+                res.get("available") or 0
+            )
+            used_margin = float(
+                res.get("used_margin") or
+                res.get("utilised_margin") or
+                res.get("margin_used") or 0
+            )
+            collateral = float(
+                res.get("collateral") or
+                res.get("collateral_margin") or 0
+            )
+            total = float(
+                res.get("net") or
+                res.get("net_value") or
+                res.get("total") or
+                res.get("opening_balance") or
+                (available + used_margin)
+            )
+            opening = float(
+                res.get("opening_balance") or
+                res.get("start_of_day_limit") or
+                total
+            )
+
+            return {
+                "available":    available,
+                "used_margin":  used_margin,
+                "collateral":   collateral,
+                "total":        total,
+                "opening":      opening,
+                "_raw":         res,   # full response for debugging
+            }
         except Exception as e:
             logger.error(f"Balance check failed: {e}")
-            return {"available": 0}
+            return {"available": 0, "used_margin": 0, "total": 0, "collateral": 0}
 
     def get_positions(self) -> List[Dict]:
         """Fetch MIS leverage positions."""
