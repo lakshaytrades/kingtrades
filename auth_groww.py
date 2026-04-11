@@ -100,10 +100,10 @@ def _load_token_cache() -> Tuple[Optional[str], Optional[str], Optional[datetime
 
         age_h = (datetime.now(IST) - ts).total_seconds() / 3600
 
-        if age_h < 12 and access_token and len(access_token) > 20:
+        if age_h < 20 and access_token and len(access_token) > 20:
             logger.info(
                 f"[{format_ist_timestamp()}] Cache hit: access_token age {age_h:.1f}h "
-                f"(valid for {12 - age_h:.1f}h more)"
+                f"(valid for {20 - age_h:.1f}h more)"
             )
             return api_key or None, access_token, ts
 
@@ -359,20 +359,27 @@ class GrowwAuthManager:
 
     def _do_refresh_with_retry(self) -> Optional[str]:
         """
-        Try to get a fresh access_token up to 3 times.
-        Waits 30s between attempts (handles transient Groww API issues).
+        Get a fresh access_token using the permanent api_key + live TOTP code.
+        Matches exactly what developer.groww.in docs show:
+
+            totp_code    = pyotp.TOTP(totp_secret).now()
+            access_token = GrowwAPI.get_access_token(api_key=api_key, totp=totp_code)
+            groww        = GrowwAPI(access_token)
+
+        api_key is PERMANENT — it never changes, never expires.
+        access_token is DAILY — refreshed automatically at 5:50 AM IST.
+        Retries 3 times with 30s spacing on transient failures.
         """
         for attempt in range(1, 4):
             token = _refresh_access_token(self._api_key, self.totp_secret, attempt)
             if token:
                 self._token           = token
                 self._token_timestamp = get_current_ist_time()
-                # CRITICAL: update _api_key to the fresh token so tomorrow's
-                # 5:50 AM refresh uses the CURRENT valid JWT (not yesterday's expired one)
-                self._api_key = token
+                # Save api_key (permanent) + access_token (daily) separately.
+                # ⚠️  DO NOT update self._api_key here — it is permanent.
                 _save_token_cache(self._api_key, token, self._token_timestamp)
                 logger.info(
-                    f"[{format_ist_timestamp()}] ✅ Access token saved "
+                    f"[{format_ist_timestamp()}] ✅ Fresh access_token saved "
                     f"(attempt {attempt}/3) — valid until next 6:00 AM IST"
                 )
                 return token
@@ -399,31 +406,46 @@ class GrowwAuthManager:
 
     def get_valid_token(self) -> Optional[str]:
         """
-        Return the current access_token.
-        Auto-refreshes if it's >12h old (proactive refresh before expiry).
+        Return a valid access_token, refreshing if needed.
+
+        Because api_key is PERMANENT, we can call get_access_token() at any time
+        of day — not just at 5:50 AM. So we refresh whenever the token is stale
+        (>20h old) rather than only in a pre-expiry window.
+
         Called before every GrowwAPI() instantiation.
         """
         if self._token and self._token_timestamp:
             age_h = (get_current_ist_time() - self._token_timestamp).total_seconds() / 3600
-            if age_h < 12:
+            if age_h < 20:
                 return self._token
             logger.info(
-                f"[{format_ist_timestamp()}] Access token {age_h:.1f}h old — refreshing..."
+                f"[{format_ist_timestamp()}] access_token {age_h:.1f}h old — refreshing..."
             )
+        elif not self._token:
+            logger.info(f"[{format_ist_timestamp()}] No access_token yet — fetching now...")
 
-        return self._do_refresh_with_retry() or self._token   # fallback to old token if refresh fails
+        # Fallback: if refresh fails, return old token (may still work for a bit)
+        return self._do_refresh_with_retry() or self._token
 
     def refresh_token_if_needed(self) -> bool:
         """
-        Called automatically at 6:05 AM IST by the scheduler.
-        Always forces a fresh access_token — this is the daily refresh.
+        Force a fresh access_token via TOTP.
+        Called at 5:50 AM IST daily and on demand.
         """
-        logger.info(f"[{format_ist_timestamp()}] Daily TOTP refresh (6:05 AM IST)...")
+        logger.info(
+            f"[{format_ist_timestamp()}] TOTP refresh: "
+            f"pyotp.TOTP(secret).now() → GrowwAPI.get_access_token(api_key, totp)..."
+        )
         token = self._do_refresh_with_retry()
         if token:
-            logger.info(f"[{format_ist_timestamp()}] ✅ Daily refresh complete — ready for trading")
+            logger.info(f"[{format_ist_timestamp()}] ✅ access_token refreshed — bot ready")
             return True
-        logger.error(f"[{format_ist_timestamp()}] ❌ Daily refresh FAILED — check env vars")
+        logger.error(
+            f"[{format_ist_timestamp()}] ❌ Refresh failed.\n"
+            "  Verify in Render env vars:\n"
+            "  • GROWW_AUTH_TOKEN  = TOTP Token from developer.groww.in → API Keys\n"
+            "  • GROWW_TOTP_SECRET = TOTP Secret from developer.groww.in → API Keys"
+        )
         return False
 
     def force_refresh(self) -> bool:
