@@ -1276,13 +1276,14 @@ class TradingBot:
                 total       = bal.get("total",        available + used_margin)
                 opening     = bal.get("opening",      total)
 
-                # ── Bot state ─────────────────────────────────────────────
+                # ── Bot state (use correct RiskState attribute names) ─────
                 compounded  = self._load_compounded_capital()
                 rm          = self.risk_manager
-                daily_pnl   = rm.state.daily_pnl       if rm else 0
-                daily_loss  = rm.state.daily_loss_used  if rm else 0
-                open_count  = len(rm.state.positions)   if rm else 0
-                trades_done = rm.state.trades_today      if rm else 0
+                daily_pnl   = rm.state.daily_pnl      if rm else 0
+                open_count  = len(rm.state.positions)  if rm else 0
+                trades_done = rm.state.daily_trades    if rm else 0
+                loss_pct    = rm.state.daily_loss_pct  if rm else 0
+                daily_loss_limit = config.MAX_DAILY_CAPITAL * config.DAILY_LOSS_LIMIT_PCT / 100
 
                 # ── Open positions live value ─────────────────────────────
                 positions_pnl   = 0.0
@@ -1307,58 +1308,52 @@ class TradingBot:
                 # ── Margin utilisation % ─────────────────────────────────
                 util_pct = (used_margin / total * 100) if total > 0 else 0
 
-                # ── Build message ─────────────────────────────────────────
+                # ── Build HTML message ────────────────────────────────────
                 lines = [
-                    f"💰 <b>Groww Account Balance</b>",
+                    "💰 <b>Groww Account Balance</b>",
                     f"🕐 {now_str}",
-                    f"",
-                    f"<b>📊 Live Funds</b>",
-                    f"  Available Cash : ₹{available:>12,.2f}",
-                    f"  Margin Used    : ₹{used_margin:>12,.2f}  ({util_pct:.1f}%)",
+                    "",
+                    "<b>📊 Live Funds</b>",
+                    f"  Available Cash : ₹{available:,.2f}",
+                    f"  Margin Used    : ₹{used_margin:,.2f}  ({util_pct:.1f}%)",
                 ]
                 if collateral > 0:
-                    lines.append(f"  Collateral     : ₹{collateral:>12,.2f}")
+                    lines.append(f"  Collateral     : ₹{collateral:,.2f}")
                 lines += [
-                    f"  Opening Balance: ₹{opening:>12,.2f}",
-                    f"  Total Net Value: ₹{total:>12,.2f}",
-                    f"",
-                    f"<b>📈 Today's Trading</b>",
-                    f"  Realised P&L   : ₹{daily_pnl:>+12,.2f}",
+                    f"  Opening Balance: ₹{opening:,.2f}",
+                    f"  Total Net Value: ₹{total:,.2f}",
+                    "",
+                    "<b>📈 Today's Trading</b>",
+                    f"  Realised P&L   : ₹{daily_pnl:+,.2f}",
                 ]
-                if positions_pnl != 0 or open_count > 0:
-                    lines.append(
-                        f"  Unrealised P&L : ₹{positions_pnl:>+12,.2f}"
-                    )
-                    lines.append(
-                        f"  Total P&L      : ₹{daily_pnl + positions_pnl:>+12,.2f}"
-                    )
+                if open_count > 0:
+                    lines += [
+                        f"  Unrealised P&L : ₹{positions_pnl:+,.2f}",
+                        f"  Total P&L      : ₹{daily_pnl + positions_pnl:+,.2f}",
+                    ]
                 lines += [
                     f"  Trades Today   : {trades_done}",
                     f"  Open Positions : {open_count}",
+                    f"  Daily Loss     : {loss_pct:.2f}% of ₹{daily_loss_limit:,.0f} limit",
                 ]
                 if positions_lines:
-                    lines.append(f"")
-                    lines.append(f"<b>📌 Open Positions</b>")
+                    lines += ["", "<b>📌 Open Positions</b>"]
                     lines.extend(positions_lines)
 
                 lines += [
-                    f"",
-                    f"<b>⚙️ Bot Config</b>",
-                    f"  Bot Capital    : ₹{compounded:>12,.0f}",
-                    f"  Base Capital   : ₹{config.MAX_DAILY_CAPITAL:>12,.0f}",
-                    f"  Daily Loss Lim : ₹{config.MAX_DAILY_CAPITAL * config.DAILY_LOSS_LIMIT_PCT / 100:>12,.0f}",
+                    "",
+                    "<b>⚙️ Bot Config</b>",
+                    f"  Bot Capital    : ₹{compounded:,.0f}",
+                    f"  Base Capital   : ₹{config.MAX_DAILY_CAPITAL:,.0f}",
+                    f"  Daily Loss Lim : ₹{daily_loss_limit:,.0f}",
                     f"  Live Trading   : {'✅ ON' if config.LIVE_TRADING_ENABLED else '🔒 OFF'}",
                 ]
 
-                asyncio.create_task(
-                    self.alerter.send_text("\n".join(lines))
-                )
+                self.alerter.send_html("\n".join(lines))
 
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] /balance error: {e}")
-                asyncio.create_task(
-                    self.alerter.send_text(f"❌ Balance fetch error: {e}")
-                )
+                self.alerter.send_text(f"Balance fetch error: {e}")
 
         async def cmd_capital(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):

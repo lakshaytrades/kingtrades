@@ -324,6 +324,10 @@ class TelegramAlerter:
     def send_text(self, text: str) -> bool:
         return self._send(text)
 
+    def send_html(self, text: str) -> bool:
+        """Send message with HTML parse mode (supports <b>, <i>, <code> tags)."""
+        return self._send(text, parse_mode="HTML")
+
     # --------------------------------------------------------
     # SIGNAL ALERT  (core alert with chart)
     # --------------------------------------------------------
