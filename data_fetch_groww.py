@@ -37,7 +37,9 @@ class GrowwDataFetcher:
     def __init__(self):
         self._api = None
         self._cache: Dict[str, Tuple[pd.DataFrame, datetime]] = {}
-        self._cache_ttl_seconds = 30 
+        self._cache_ttl_seconds = 30
+        self._balance_cache: Dict = {}        # last successful balance response
+        self._balance_cache_time: Optional[datetime] = None
         self._init_api()
 
     def _init_api(self):
@@ -152,27 +154,40 @@ class GrowwDataFetcher:
     def get_account_balance(self) -> Dict:
         """
         Fetch live account balance from Groww.
-        Tries every known field-name variant + nested structures.
-        Logs raw response at DEBUG so field names can be identified if 0 persists.
+
+        Behaviour:
+        - Tries get_balance() / get_funds() / get_margins() in order
+        - Handles dict, object, and nested envelope (data/payload/result) responses
+        - On empty/None response: retries once with a fresh token
+        - If still empty (Groww API offline or market closed): returns last cached
+          balance with a '_from_cache' + '_cache_age_min' flag for the caller to display
+        - Every successful fetch is stored in self._balance_cache
         """
-        _empty = {"available": 0, "used_margin": 0, "total": 0, "collateral": 0, "opening": 0}
-        if not self._api:
-            return _empty
-        try:
-            if hasattr(self._api, 'get_balance'):
-                res = self._api.get_balance()
-            elif hasattr(self._api, 'get_funds'):
-                res = self._api.get_funds()
-            elif hasattr(self._api, 'get_margins'):
-                res = self._api.get_margins()
-            else:
-                logger.warning("Groww API has no get_balance/get_funds/get_margins method")
-                return _empty
+        _empty = {
+            "available": 0, "used_margin": 0, "total": 0,
+            "collateral": 0, "opening": 0,
+            "_from_cache": False, "_cache_age_min": 0,
+        }
 
-            # Log raw response at INFO so field names are visible in logs
-            logger.info(f"[balance_raw] {res}")
+        def _call_api() -> Optional[Dict]:
+            """Call Groww balance endpoint, return raw dict or None."""
+            if not self._api:
+                return None
+            for method_name in ("get_balance", "get_funds", "get_margins"):
+                if hasattr(self._api, method_name):
+                    try:
+                        raw = getattr(self._api, method_name)()
+                        logger.info(f"[balance_raw:{method_name}] {raw}")
+                        return raw
+                    except Exception as e:
+                        logger.debug(f"balance {method_name} error: {e}")
+            return None
 
-            # Convert object → dict if SDK returns a response object
+        def _parse(res) -> Optional[Dict]:
+            """Parse raw response → normalised balance dict. Returns None if empty."""
+            if res is None:
+                return None
+            # Convert SDK object → dict
             if not isinstance(res, dict):
                 try:
                     res = vars(res)
@@ -180,28 +195,19 @@ class GrowwDataFetcher:
                     try:
                         res = dict(res)
                     except Exception:
-                        res = {}
+                        return None
+            if not res:
+                return None
 
-            # Unwrap common envelope keys: data / payload / result
-            for envelope in ("data", "payload", "result", "response"):
-                if envelope in res and isinstance(res[envelope], dict):
-                    res = res[envelope]
+            # Unwrap envelope keys
+            for key in ("data", "payload", "result", "response"):
+                if key in res and isinstance(res[key], dict) and res[key]:
+                    res = res[key]
                     break
 
             logger.info(f"[balance_fields] {list(res.keys())}")
 
             def _get(*keys) -> float:
-                """Try multiple key names; return first non-zero float found."""
-                for k in keys:
-                    v = res.get(k)
-                    if v is not None:
-                        try:
-                            f = float(v)
-                            if f != 0:
-                                return f
-                        except (TypeError, ValueError):
-                            pass
-                # Second pass: accept 0 if explicitly set
                 for k in keys:
                     v = res.get(k)
                     if v is not None:
@@ -215,6 +221,7 @@ class GrowwDataFetcher:
                 "available_cash", "available_margin", "available",
                 "available_amount", "available_limit", "cash",
                 "net_available", "free_cash", "liquid_cash",
+                "trading_power",
             )
             used_margin = _get(
                 "used_margin", "utilised_margin", "margin_used",
@@ -231,6 +238,10 @@ class GrowwDataFetcher:
                 "opening_balance", "start_of_day_limit", "sod_balance",
             ) or total
 
+            # Treat as empty if everything is 0 (API returned zeroes, not real data)
+            if available == 0 and used_margin == 0 and total == 0:
+                return None
+
             return {
                 "available":   available,
                 "used_margin": used_margin,
@@ -238,10 +249,42 @@ class GrowwDataFetcher:
                 "total":       total,
                 "opening":     opening,
                 "_raw":        res,
+                "_from_cache": False,
+                "_cache_age_min": 0,
             }
-        except Exception as e:
-            logger.error(f"get_account_balance failed: {e}")
-            return _empty
+
+        # ── Attempt 1: use current API instance ───────────────────────────
+        result = _parse(_call_api())
+
+        # ── Attempt 2: reinit with fresh token and retry once ─────────────
+        if result is None:
+            logger.info("Balance empty — reinitialising API with fresh token and retrying...")
+            try:
+                self._reinit_with_fresh_token()
+                result = _parse(_call_api())
+            except Exception as e:
+                logger.debug(f"Balance retry error: {e}")
+
+        # ── Success: update cache ─────────────────────────────────────────
+        if result is not None:
+            self._balance_cache = result.copy()
+            self._balance_cache_time = get_current_ist_time()
+            return result
+
+        # ── Fallback: return last cached balance ──────────────────────────
+        if self._balance_cache:
+            age_min = 0
+            if self._balance_cache_time:
+                age_min = (get_current_ist_time() - self._balance_cache_time).total_seconds() / 60
+            cached = self._balance_cache.copy()
+            cached["_from_cache"]     = True
+            cached["_cache_age_min"]  = round(age_min, 0)
+            logger.info(f"Returning cached balance (age: {age_min:.0f} min)")
+            return cached
+
+        # ── Nothing available ─────────────────────────────────────────────
+        logger.warning("Groww balance API returned empty — market may be closed")
+        return _empty
 
     def get_positions(self) -> List[Dict]:
         """Fetch MIS leverage positions."""

@@ -1349,14 +1349,20 @@ class TradingBot:
                     f"  Live Trading   : {'✅ ON' if config.LIVE_TRADING_ENABLED else '🔒 OFF'}",
                 ]
 
-                # Debug: show raw Groww response fields if balance is 0
-                if available == 0:
-                    raw = bal.get("_raw", {})
-                    if raw:
-                        raw_preview = str(raw)[:300]
-                        lines += ["", f"<b>🔍 Debug (raw fields):</b>", f"<code>{raw_preview}</code>"]
-                    else:
-                        lines += ["", "⚠️ Groww returned empty balance response"]
+                # Show cache notice if data is from cache (market closed / API offline)
+                if bal.get("_from_cache"):
+                    age = bal.get("_cache_age_min", 0)
+                    lines += [
+                        "",
+                        f"⚠️ <i>Live balance unavailable — showing cached data from {age:.0f} min ago.</i>",
+                        "<i>Groww balance API is only active during market hours (9:15 AM–3:30 PM IST).</i>",
+                    ]
+                elif available == 0 and not bal.get("_from_cache"):
+                    lines += [
+                        "",
+                        "⚠️ <i>Groww returned ₹0 — balance API may be offline outside market hours.</i>",
+                        "<i>Balance will update automatically during trading hours.</i>",
+                    ]
 
                 self.alerter.send_html("\n".join(lines))
 
