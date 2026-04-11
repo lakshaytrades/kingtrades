@@ -715,6 +715,162 @@ class RiskManager:
         )
         return position
 
+    # --------------------------------------------------------
+    # SMART TRADE HEALTH MONITOR
+    # --------------------------------------------------------
+
+    def _position_age_minutes(self, pos: Position) -> float:
+        """Return how many minutes this position has been open."""
+        try:
+            now = get_current_ist_time()
+            entry_str = pos.entry_time[:19]   # trim trailing " IST" or zone suffix
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
+                try:
+                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=IST)
+                    return max(0.0, (now - entry_dt).total_seconds() / 60)
+                except ValueError:
+                    continue
+            # ISO fallback
+            entry_dt = datetime.fromisoformat(pos.entry_time)
+            if entry_dt.tzinfo is None:
+                entry_dt = entry_dt.replace(tzinfo=IST)
+            return max(0.0, (now - entry_dt).total_seconds() / 60)
+        except Exception:
+            return 0.0
+
+    def check_position_health(
+        self,
+        pos: Position,
+        ltp: float,
+        recent_candles: Optional[list] = None,
+    ) -> Dict:
+        """
+        Smart trade health monitor — exit BEFORE stop-loss if trade shows weakness.
+        18yr Rule: "A small profit is better than a break-even; a break-even is better
+        than a loss. Exit ugly trades early."
+
+        Rules (checked in priority order):
+          1. Peak reversal  — was +1x ATR positive, now ≤0             → EXIT_NOW
+          2. Early adverse  — moved 0.6× SL-distance against us        → EXIT_NOW
+          3. Stalled trade  — 20+ min with <0.3x ATR progress          → EXIT_NOW
+          4. Time gate      — 35+ min old, <30% toward T1              → EXIT_NOW
+          5. Break-even     — up 0.8x ATR → move SL to entry           → BREAK_EVEN
+          6. Candle reversal— 2 consecutive opposing candles (pre-T1)   → EXIT_NOW
+
+        Returns: {"action": "HOLD"|"EXIT_NOW"|"BREAK_EVEN", "reason": str,
+                  "new_sl": float (only for BREAK_EVEN)}
+        """
+        atr = pos.atr if pos.atr > 0 else pos.entry_price * 0.005
+
+        if pos.direction == "LONG":
+            move      = ltp - pos.entry_price           # +ve = profit
+            t1_dist   = pos.target_1 - pos.entry_price
+            peak_move = pos.max_price - pos.entry_price
+            sl_dist   = pos.entry_price - pos.stop_loss
+        else:
+            move      = pos.entry_price - ltp
+            t1_dist   = pos.entry_price - pos.target_1
+            peak_move = pos.entry_price - pos.min_price
+            sl_dist   = pos.stop_loss - pos.entry_price
+
+        sl_dist   = max(sl_dist, atr * 0.1)   # guard against zero
+        age_min   = self._position_age_minutes(pos)
+
+        # ── Rule 1: Peak reversal ─────────────────────────────────────────
+        # Was strongly positive, now flat or losing — momentum has reversed.
+        if peak_move >= atr and move <= 0 and not pos.t1_done:
+            return {
+                "action": "EXIT_NOW",
+                "reason": (
+                    f"Peak reversal: peaked +{peak_move:.2f} "
+                    f"({peak_move / atr:.1f}× ATR), now {move:+.2f} — exit before loss"
+                ),
+            }
+
+        # ── Rule 2: Early adverse move ────────────────────────────────────
+        # Moved 60% of SL distance against us without trailing active.
+        if move < -(0.6 * sl_dist) and not pos.trailing_active and not pos.t1_done:
+            return {
+                "action": "EXIT_NOW",
+                "reason": (
+                    f"Early exit: {abs(move):.2f} adverse "
+                    f"({abs(move) / atr:.1f}× ATR) before SL hit"
+                ),
+            }
+
+        # ── Rule 3: Stalled trade ─────────────────────────────────────────
+        # 20+ minutes open, barely moved — capital is better deployed elsewhere.
+        if age_min >= 20 and 0 <= move < (0.3 * atr) and not pos.t1_done:
+            return {
+                "action": "EXIT_NOW",
+                "reason": (
+                    f"Stalled {age_min:.0f}min: only {move:.2f} progress "
+                    f"({move / atr:.2f}× ATR) — releasing capital"
+                ),
+            }
+
+        # ── Rule 4: Time gate ─────────────────────────────────────────────
+        # 35 minutes in with less than 30% progress toward first target.
+        if age_min >= 35 and t1_dist > 0 and (move / t1_dist) < 0.30 and not pos.t1_done:
+            return {
+                "action": "EXIT_NOW",
+                "reason": (
+                    f"Time exit: {age_min:.0f}min, "
+                    f"only {move / t1_dist * 100:.0f}% toward T1 ₹{pos.target_1:.2f}"
+                ),
+            }
+
+        # ── Rule 5: Break-even protection ────────────────────────────────
+        # Up 0.8× ATR — lock in no-loss with break-even SL.
+        if move >= (0.8 * atr) and not pos.trailing_active:
+            be = pos.entry_price
+            current_sl = pos.stop_loss
+            if pos.direction == "LONG" and current_sl < be:
+                return {
+                    "action": "BREAK_EVEN",
+                    "new_sl": be,
+                    "reason": (
+                        f"Break-even: up {move:.2f} ({move / atr:.1f}× ATR) "
+                        f"→ SL moved to entry ₹{be:.2f}"
+                    ),
+                }
+            elif pos.direction == "SHORT" and current_sl > be:
+                return {
+                    "action": "BREAK_EVEN",
+                    "new_sl": be,
+                    "reason": (
+                        f"Break-even: up {move:.2f} ({move / atr:.1f}× ATR) "
+                        f"→ SL moved to entry ₹{be:.2f}"
+                    ),
+                }
+
+        # ── Rule 6: Two consecutive opposing candles ──────────────────────
+        # Momentum fading before T1 — close while still in marginal profit.
+        if recent_candles and len(recent_candles) >= 2 and not pos.t1_done:
+            try:
+                c1 = recent_candles[-2]
+                c2 = recent_candles[-1]
+                if pos.direction == "LONG":
+                    bear1 = float(c1["close"]) < float(c1["open"])
+                    bear2 = float(c2["close"]) < float(c2["open"])
+                    if bear1 and bear2 and move < atr:
+                        return {
+                            "action": "EXIT_NOW",
+                            "reason": "2 consecutive bearish candles — long momentum fading",
+                        }
+                else:
+                    bull1 = float(c1["close"]) > float(c1["open"])
+                    bull2 = float(c2["close"]) > float(c2["open"])
+                    if bull1 and bull2 and move < atr:
+                        return {
+                            "action": "EXIT_NOW",
+                            "reason": "2 consecutive bullish candles — short momentum fading",
+                        }
+            except Exception:
+                pass
+
+        return {"action": "HOLD", "reason": "Trade health OK"}
+
     def add_position(self, position: Position):
         """Register a new open position."""
         position = self.setup_partial_exits(position)

@@ -131,144 +131,76 @@ def _extract_token(resp_json: dict, cookies: dict) -> Optional[str]:
 def _groww_cloud_token_refresh(client_id: str, client_secret: str,
                                totp_secret: str, current_token: str) -> Optional[str]:
     """
-    Groww Cloud API token refresh using Client Credentials + TOTP.
+    Official Groww SDK token refresh — exactly as shown in developer.groww.in docs:
 
-    This is the CORRECT flow for the official Groww Cloud API:
-      CLIENT_ID + CLIENT_SECRET + TOTP code → fresh JWT access token
+        api_key  = YOUR_TOTP_TOKEN   (= GROWW_AUTH_TOKEN, the JWT from the portal)
+        totp     = pyotp.TOTP(YOUR_TOTP_SECRET).now()
+        access_token = GrowwAPI.get_access_token(api_key=api_key, totp=totp)
+        groww    = GrowwAPI(access_token)
 
-    Web login endpoints (groww.in/v1/api/...) are intentionally NOT tried.
-    They run behind Cloudflare which blocks non-Indian cloud server IPs.
-
-    Flow:
-    1. Try growwapi SDK's generate_session() — official SDK method
-    2. Try REST endpoints with client credentials (multiple path variants)
-    3. Return None → caller falls back to GROWW_AUTH_TOKEN from env
+    No client_id, no client_secret, no email, no password required.
+    current_token is the api_key (GROWW_AUTH_TOKEN from env/cache).
     """
-    # Generate fresh TOTP code with enough window remaining
-    totp     = pyotp.TOTP(totp_secret)
+    if not totp_secret or not current_token:
+        logger.info(f"[{format_ist_timestamp()}] No TOTP secret or current token — cannot refresh")
+        return None
+
+    # Wait for a fresh TOTP window (need ≥5s of life left)
     remaining = 30 - (int(time.time()) % 30)
-    if remaining < 8:
+    if remaining < 5:
         logger.info(f"[{format_ist_timestamp()}] Waiting {remaining + 1}s for fresh TOTP window...")
         time.sleep(remaining + 1)
-    totp_code = totp.now()
+
+    totp_code = pyotp.TOTP(totp_secret).now()
     logger.info(
         f"[{format_ist_timestamp()}] TOTP code ready "
         f"({30 - (int(time.time()) % 30)}s remaining in window)"
     )
 
-    # ── Attempt 1: growwapi SDK native session generation ─────────────────
-    # The SDK ships with generate_session() which wraps the correct endpoint.
-    # This is the most reliable path since it follows SDK version changes.
-    if client_id and client_secret:
+    # ── Official SDK method: GrowwAPI.get_access_token(api_key, totp) ─────
+    try:
+        from growwapi import GrowwAPI
+        logger.info(f"[{format_ist_timestamp()}] Calling GrowwAPI.get_access_token()...")
+        access_token = GrowwAPI.get_access_token(
+            api_key = current_token,   # the existing JWT from portal / GROWW_AUTH_TOKEN
+            totp    = totp_code,
+        )
+        if access_token and isinstance(access_token, str) and len(access_token) > 20:
+            logger.info(f"[{format_ist_timestamp()}] ✅ GrowwAPI.get_access_token() succeeded")
+            return access_token
+        # Sometimes returns dict
+        if isinstance(access_token, dict):
+            tok = _extract_token(access_token, {})
+            if tok:
+                logger.info(f"[{format_ist_timestamp()}] ✅ GrowwAPI.get_access_token() succeeded (dict)")
+                return tok
+        logger.info(
+            f"[{format_ist_timestamp()}] get_access_token() returned empty — "
+            f"type={type(access_token)} val={str(access_token)[:80]}"
+        )
+    except AttributeError:
+        # Older SDK version — try instance method instead
+        logger.info(f"[{format_ist_timestamp()}] Class method not found — trying instance method...")
         try:
             from growwapi import GrowwAPI
-            # Try each known SDK interface variant
-            sdk_attempts = [
-                # Zerodha-Kite style (most common Indian broker SDK pattern)
-                lambda: GrowwAPI(client_id).generate_session(
-                    request_token=totp_code, api_secret=client_secret
-                ),
-                # Direct access token generation
-                lambda: GrowwAPI(client_id).generate_access_token(
-                    totp=totp_code, client_secret=client_secret
-                ),
-                # Login style
-                lambda: GrowwAPI(client_id).login(
-                    totp=totp_code, api_secret=client_secret
-                ),
-            ]
-            for attempt_fn in sdk_attempts:
-                try:
-                    result = attempt_fn()
-                    if not result:
-                        continue
-                    if isinstance(result, str) and len(result) > 20:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ SDK generate_session succeeded")
+            tmp = GrowwAPI(current_token)
+            for method in ("get_access_token", "refresh_token", "generate_session"):
+                fn = getattr(tmp, method, None)
+                if fn:
+                    result = fn(totp=totp_code)
+                    if result and isinstance(result, str) and len(result) > 20:
+                        logger.info(f"[{format_ist_timestamp()}] ✅ SDK {method}() succeeded")
                         return result
-                    if isinstance(result, dict):
-                        tok = _extract_token(result, {})
-                        if tok:
-                            logger.info(f"[{format_ist_timestamp()}] ✅ SDK generate_session succeeded")
-                            return tok
-                except TypeError:
-                    pass  # Wrong signature for this SDK version
-                except Exception as e:
-                    logger.debug(f"SDK attempt: {e}")
-        except ImportError:
-            logger.debug("growwapi SDK not available for native session generation")
-        except Exception as e:
-            logger.debug(f"SDK session generation error: {e}")
+        except Exception as e2:
+            logger.debug(f"SDK instance method: {e2}")
+    except Exception as e:
+        logger.warning(f"[{format_ist_timestamp()}] GrowwAPI.get_access_token() error: {e}")
 
-    # ── Attempt 2: REST with client credentials ───────────────────────────
-    # Standard Indian broker OAuth flow: client_id + client_secret + TOTP
-    session_http = requests.Session()
-    session_http.headers.update({
-        **_HEADERS,
-        "X-Api-Key":    client_id,
-        "X-Api-Secret": client_secret,
-    })
-
-    rest_attempts = [
-        # Standard OAuth2 session endpoint
-        ("POST", "https://api.groww.in/v1/user/session", {
-            "api_key": client_id, "api_secret": client_secret,
-            "request_token": totp_code, "totp": totp_code,
-        }),
-        # Alternate key names
-        ("POST", "https://api.groww.in/v1/user/session", {
-            "client_id": client_id, "client_secret": client_secret,
-            "totp_code": totp_code,
-        }),
-        # Token refresh with existing bearer
-        ("POST", "https://api.groww.in/v1/auth/access-token", {
-            "totp": totp_code,
-        }),
-        # Direct TOTP token endpoint
-        ("POST", "https://api.groww.in/v1/auth/totp/token", {
-            "api_key": client_id, "totp": totp_code,
-        }),
-    ]
-
-    for method, url, body in rest_attempts:
-        try:
-            headers = dict(session_http.headers)
-            if current_token:
-                headers["Authorization"] = f"Bearer {current_token}"
-            r = session_http.request(method, url, json=body, headers=headers, timeout=20)
-            label = url.split("/")[-1]
-            if r.status_code in (200, 201):
-                try:
-                    d = r.json()
-                    tok = _extract_token(d, dict(r.cookies))
-                    if tok:
-                        logger.info(
-                            f"[{format_ist_timestamp()}] ✅ Cloud token refreshed "
-                            f"via {label} (HTTP {r.status_code})"
-                        )
-                        return tok
-                    logger.info(f"  [cloud] {label} HTTP 200 but no token in response — body_keys={list(d.keys())}")
-                except Exception:
-                    pass
-            elif r.status_code == 401:
-                logger.info(f"  [cloud] {label} HTTP 401 — client credentials rejected")
-            elif r.status_code == 403:
-                logger.info(f"  [cloud] {label} HTTP 403 — IP not whitelisted in Groww Cloud")
-            elif r.status_code == 404:
-                logger.debug(f"  [cloud] {label} HTTP 404 — endpoint not found")
-            else:
-                logger.info(f"  [cloud] {label} HTTP {r.status_code}")
-        except Exception as e:
-            logger.debug(f"  [cloud] REST attempt {url.split('/')[-1]}: {e}")
-
-    # ── All attempts failed ───────────────────────────────────────────────
     logger.warning(
-        f"[{format_ist_timestamp()}] Cloud token refresh failed.\n"
-        "  ACTION REQUIRED — Update token manually:\n"
-        "  1. Go to: developer.groww.in → API Keys\n"
-        "  2. Click 'Generate Token' and enter your TOTP code\n"
-        "  3. Copy the JWT token\n"
-        "  4. In Render: Environment → GROWW_AUTH_TOKEN → paste new token → Save\n"
-        "  Telegram alert will be sent."
+        f"[{format_ist_timestamp()}] SDK token refresh failed.\n"
+        "  ACTION: Update GROWW_AUTH_TOKEN manually:\n"
+        "  1. developer.groww.in → API Keys → Generate Token (enter TOTP code)\n"
+        "  2. Render → kingtrades-bot → Environment → GROWW_AUTH_TOKEN → paste → Save"
     )
     return None
 

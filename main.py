@@ -629,6 +629,49 @@ class TradingBot:
                 if not quote:
                     continue
                 ltp = quote.get("ltp", 0)
+
+                # ── Smart Trade Health Monitor (runs BEFORE trailing stop) ──
+                # Fetch last 3 candles for candle-reversal rule (cheap — uses cache)
+                recent_candles = None
+                try:
+                    df_today = self.fetcher.get_today_candles(pos.symbol, interval="5m")
+                    if df_today is not None and len(df_today) >= 2:
+                        recent_candles = df_today.tail(3).to_dict("records")
+                except Exception:
+                    pass
+
+                health = self.risk_manager.check_position_health(pos, ltp, recent_candles)
+
+                if health["action"] == "EXIT_NOW":
+                    logger.info(
+                        f"[{format_ist_timestamp()}] HEALTH EXIT: {pos.symbol} | "
+                        f"{health['reason']}"
+                    )
+                    result = self.executor.place_exit_order(
+                        symbol=pos.symbol,
+                        quantity=pos.quantity,
+                        direction=pos.direction,
+                        reason=health["reason"],
+                        use_market_order=True,
+                    )
+                    if result.success:
+                        pnl = pos.pnl
+                        self.alerter.send_exit_alert(
+                            pos.symbol, pos.direction, pos.entry_price,
+                            ltp, pos.quantity, pnl, health["reason"]
+                        )
+                    continue   # skip trailing-stop logic for this position
+
+                elif health["action"] == "BREAK_EVEN":
+                    new_sl = health["new_sl"]
+                    logger.info(
+                        f"[{format_ist_timestamp()}] BREAK-EVEN: {pos.symbol} | "
+                        f"{health['reason']}"
+                    )
+                    pos.stop_loss = new_sl
+                    self.executor.modify_stop_loss(pos.symbol, new_sl)
+                    # Fall through — let trailing stop logic run normally
+
                 action = self.risk_manager.update_trailing_stop(pos, ltp)
 
                 if action["action"] == "EXIT":
