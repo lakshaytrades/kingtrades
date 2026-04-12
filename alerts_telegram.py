@@ -468,13 +468,13 @@ class TelegramAlerter:
             )
 
         state     = getattr(risk_manager, "state", None)
-        positions = getattr(risk_manager, "positions", {})
+        positions = state.positions      if state else {}   # positions live on state, not risk_manager
         daily_pnl = state.daily_pnl     if state else 0
         capital   = state.daily_capital if state else 0
         n_trades  = state.daily_trades  if state else 0
         wins      = state.winning_trades if state else 0
         wr_pct    = (wins / n_trades * 100) if n_trades > 0 else 0.0
-        paused    = getattr(risk_manager, "_paused", False)
+        paused    = state.trading_paused if state else False
 
         pnl_emoji = E["profit"] if daily_pnl >= 0 else E["loss"]
         pnl_str   = f"+₹{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-₹{abs(daily_pnl):,.0f}"

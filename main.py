@@ -404,8 +404,7 @@ class TradingBot:
             if "No significant gaps" not in gap_summary:
                 logger.info(f"[{format_ist_timestamp()}] {gap_summary}")
                 if self.alerter:
-                    import asyncio
-                    asyncio.run(self.alerter.send_text(gap_summary))
+                    self.alerter.send_text(gap_summary)
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
             self.gap_analyzer = None
@@ -421,8 +420,7 @@ class TradingBot:
                 )
                 logger.info(f"[{format_ist_timestamp()}] {event_text}")
                 if self.alerter:
-                    import asyncio
-                    asyncio.run(self.alerter.send_text(event_text))
+                    self.alerter.send_text(event_text)
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Corp actions load failed: {e}")
 
@@ -467,8 +465,7 @@ class TradingBot:
                 brief = self.overnight.format_morning_brief()
                 if self.calendar:
                     brief += "\n" + self.calendar.format_upcoming_events()
-                import asyncio
-                asyncio.run(self.alerter.send_text(brief))
+                self.alerter.send_text(brief)
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Morning brief failed: {e}")
 

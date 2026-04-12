@@ -205,10 +205,9 @@ class GapAnalyzer:
 
         for symbol in watchlist:
             try:
-                # Get last 3 daily candles (yesterday close + today open)
-                df = data_fetcher.get_historical_candles(
-                    symbol=symbol, timeframe="1d", limit=3
-                )
+                # Get last 3 daily candles: yesterday close + today open
+                # get_candles() signature: (symbol, interval, days, from_dt, to_dt)
+                df = data_fetcher.get_candles(symbol=symbol, interval="1d", days=3)
                 if df is None or len(df) < 2:
                     continue
 
