@@ -290,6 +290,17 @@ class SignalGenerator:
                 news_clear       = news_clear,
                 orb_direction    = self._orb_direction,
                 learner          = self._learner,
+                # ── Gates 6-10 parameters ─────────────────────────────
+                symbol           = symbol,
+                daily_volume     = float(stock_quote.get("volume", 0) or
+                                         stock_quote.get("vol", 0) or
+                                         stock_quote.get("traded_volume", 0) or 0),
+                ltp              = ltp_now,
+                prev_close       = float(stock_quote.get("prev_close", 0) or
+                                         stock_quote.get("previous_close", 0) or
+                                         stock_quote.get("close", 0) or 0),
+                gap_pct          = self._get_gap_pct(symbol),
+                minutes_since_open = self._minutes_since_open(),
             )
 
             if not filter_result.passed:
@@ -316,7 +327,7 @@ class SignalGenerator:
 
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ SIGNAL: {direction} {symbol} "
-                f"| Score: {ai_score:.0f} | Entry: ₹{signal.entry_price:.2f}"
+                f"| Score: {filter_result.final_score:.0f} | Entry: ₹{signal.entry_price:.2f}"
             )
             return signal
 
@@ -537,6 +548,25 @@ class SignalGenerator:
             return round(stock_chg - nifty_chg, 2)
         except Exception:
             return 0.0
+
+    # --------------------------------------------------------
+    # GAP & TIME HELPERS (used by Gates 6-10)
+    # --------------------------------------------------------
+
+    def _get_gap_pct(self, symbol: str) -> float:
+        """Get today's opening gap % for symbol (0.0 if not available)."""
+        try:
+            from gap_analyzer import get_gap_analyzer
+            return get_gap_analyzer().get_gap_pct(symbol)
+        except Exception:
+            return 0.0
+
+    def _minutes_since_open(self) -> float:
+        """Minutes elapsed since 9:15 AM IST market open (0.0 before open)."""
+        from datetime import datetime as _dt
+        now_ist = get_current_ist_time()
+        market_open = _dt(now_ist.year, now_ist.month, now_ist.day, 9, 15, 0, tzinfo=IST)
+        return max(0.0, (now_ist - market_open).total_seconds() / 60)
 
     # --------------------------------------------------------
     # AI COMPOSITE SCORE
