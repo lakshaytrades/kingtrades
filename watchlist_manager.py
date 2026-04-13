@@ -78,16 +78,19 @@ class WatchlistManager:
         self.name = name
         self.symbols = symbols if symbols is not None else []
         self.last_updated = None
-        # Any other setup code goes here
+
+        # Scan state — initialised here so get_watchlist() never hits AttributeError
+        self._watchlist: List[str] = []
+        self._scored_stocks: List[Dict] = []
+        self._sector_leaders: Dict = {}
+        self._last_scan_time: Optional[float] = None
+        self._scan_ttl: int = 15 * 60  # Rescan every 15 min
 
     # -------------------------------------------------------------------------
     # MAIN WATCHLIST GETTER
     # -------------------------------------------------------------------------
 
     def get_watchlist(self, data_fetcher=None, learner=None) -> List[str]:
-        # Your logic for get_watchlist goes here
-        pass
-        
         """
         Return today's active watchlist.
         Order: user-defined > momentum-scanned > default.

@@ -96,11 +96,15 @@ class GrowwDataFetcher:
             }
         except Exception as e:
             err = str(e).lower()
-            if "authentication" in err or "expired" in err or "invalid" in err or "401" in err or "403" in err:
+            if "authentication" in err or "expired" in err or "401" in err or "403" in err:
                 logger.warning(f"[{format_ist_timestamp()}] Auth error on get_quote — refreshing token...")
                 if self._reinit_with_fresh_token():
                     raise  # Retry with new token via @retry_with_backoff
                 return None
+            # 400 Bad Request = wrong symbol/segment — no point retrying
+            if "bad request" in err or "400" in err or "invalid symbol" in err or "not found" in err:
+                logger.debug(f"get_quote({symbol}): bad request — unsupported symbol, skipping")
+                return None  # Return None (not raise) so retry decorator is NOT triggered
             logger.error(f"get_quote({symbol}) failed: {e}")
             raise
 
@@ -314,12 +318,35 @@ class GrowwDataFetcher:
         return self.get_candles(symbol, interval=interval, from_dt=get_market_open_datetime_ist())
 
     def get_nifty_quote(self) -> Optional[Dict]:
-        # 'NIFTY 50' often requires 'INDEX' segment, but 'NSE'/'CASH' is safer to try first
-        for sym in ["NIFTY 50", "NIFTY", "NSE_NIFTY"]:
+        """Fetch Nifty 50 index quote. Tries INDEX segment first, falls back to CASH."""
+        if not self._api:
+            return None
+        # Try INDEX segment (correct for index symbols)
+        for sym in ["NIFTY 50", "NIFTY"]:
+            try:
+                raw = self._api.get_quote(trading_symbol=sym, exchange="NSE", segment="INDEX")
+                if raw and raw.get("ltp"):
+                    return {
+                        "symbol": sym,
+                        "ltp": float(raw.get("ltp") or 0),
+                        "open": float(raw.get("open") or 0),
+                        "high": float(raw.get("high") or 0),
+                        "low": float(raw.get("low") or 0),
+                        "close": float(raw.get("close") or 0),
+                        "volume": int(raw.get("volume") or 0),
+                        "change_pct": float(raw.get("change_percent") or 0),
+                        "timestamp": format_ist_timestamp(),
+                    }
+            except Exception as e:
+                logger.debug(f"Nifty quote ({sym}/INDEX) failed: {e}")
+        # Fallback: try CASH segment (some SDK versions use this)
+        for sym in ["NIFTY 50", "NIFTY"]:
             try:
                 q = self.get_quote(sym)
-                if q: return q
-            except: continue
+                if q:
+                    return q
+            except Exception:
+                continue
         return None
 
 _fetcher = None
