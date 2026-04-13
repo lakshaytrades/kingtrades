@@ -123,7 +123,9 @@ class GrowwDataFetcher:
         if raw is None:
             raw = self._fetch_candles_http(symbol, interval_str, from_ms, to_ms)
         if raw is None:
-            raise RuntimeError(f"All candle sources failed for {symbol}")
+            raw = self._fetch_candles_yfinance(symbol, interval_str, from_ms, to_ms)
+        if raw is None:
+            raise RuntimeError(f"All candle sources failed for {symbol} — check Groww API access")
         return self._parse_candles(raw, symbol, interval)
 
     def _call_candles_sdk(self, symbol: str, interval_str: str, from_ms: int, to_ms: int):
@@ -232,8 +234,60 @@ class GrowwDataFetcher:
             except Exception as e:
                 logger.debug(f"HTTP candles {url.split('/')[-1]}: {e}")
 
-        logger.error(f"get_candles({symbol}): all HTTP endpoints failed — check Groww API docs")
+        logger.debug(f"get_candles({symbol}): all Groww HTTP endpoints failed — trying yfinance")
         return None
+
+    def _fetch_candles_yfinance(self, symbol: str, interval_str: str, from_ms: int, to_ms: int):
+        """
+        yfinance fallback for NSE historical OHLCV.
+        NSE symbols need .NS suffix (e.g. RELIANCE → RELIANCE.NS).
+        yf interval map: 1minute→1m, 5minute→5m, 15minute→15m, 30minute→30m, 60minute→60m, 1day→1d
+        """
+        try:
+            import yfinance as yf
+            from datetime import datetime as _dt
+
+            yf_sym = f"{symbol}.NS"
+            yf_interval_map = {
+                "1minute": "1m", "5minute": "5m", "15minute": "15m",
+                "30minute": "30m", "60minute": "60m", "1day": "1d",
+            }
+            yf_interval = yf_interval_map.get(interval_str, "5m")
+
+            start_dt = _dt.fromtimestamp(from_ms / 1000, tz=IST)
+            end_dt   = _dt.fromtimestamp(to_ms   / 1000, tz=IST)
+
+            df = yf.download(
+                yf_sym, start=start_dt, end=end_dt,
+                interval=yf_interval, progress=False, auto_adjust=True,
+            )
+            if df is None or df.empty:
+                logger.debug(f"yfinance: no data for {yf_sym}")
+                return None
+
+            # Convert to standard list-of-lists [ts_ms, o, h, l, c, vol]
+            result = []
+            for ts, row in df.iterrows():
+                ts_ms = int(ts.timestamp() * 1000)
+                result.append([
+                    ts_ms,
+                    float(row["Open"]),
+                    float(row["High"]),
+                    float(row["Low"]),
+                    float(row["Close"]),
+                    int(row["Volume"]),
+                ])
+            if result:
+                logger.info(f"[{format_ist_timestamp()}] yfinance candles: {symbol} "
+                            f"{len(result)} bars ({yf_interval})")
+            return result or None
+
+        except ImportError:
+            logger.debug("yfinance not installed — skipping")
+            return None
+        except Exception as e:
+            logger.debug(f"yfinance candles {symbol}: {e}")
+            return None
 
     def _parse_candles(self, raw, symbol, interval):
         if not raw: return None

@@ -1390,6 +1390,18 @@ class TradingBot:
         max_retries = 15
         retry_delay = 20  # seconds; old instance usually dies within 30s
 
+        # Kill any stale polling session from previous deployment before starting
+        try:
+            import requests as _req
+            _req.get(
+                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+                "/deleteWebhook?drop_pending_updates=true",
+                timeout=10,
+            )
+            logger.info(f"[{format_ist_timestamp()}] Telegram: cleared stale webhook/session")
+        except Exception as _e:
+            logger.debug(f"deleteWebhook cleanup: {_e}")
+
         for attempt in range(max_retries):
             app = None
             try:
