@@ -235,8 +235,8 @@ class TradingBot:
         )
 
         # Apply adaptive thresholds to signal generator (from self-learning)
-        if self.signal_gen and hasattr(self.signal_gen, 'min_signal_score'):
-            self.signal_gen.min_signal_score = adaptive_cfg.min_signal_score
+        if self.signal_gen:
+            self.signal_gen.min_score = adaptive_cfg.min_signal_score
 
         # Apply EOD-trained parameters (from yesterday's walk-forward optimization)
         self._apply_eod_trained_params()
@@ -1510,7 +1510,6 @@ class TradingBot:
             # Apply trained min_score to signal generator
             if "min_score" in params and self.signal_gen:
                 self.signal_gen.min_score = float(params["min_score"])
-                self.signal_gen.min_signal_score = float(params["min_score"])
 
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ EOD params applied (trained {date_str}): "

@@ -145,7 +145,7 @@ class TechnicalIndicators:
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Indicator compute error: {e}")
 
-        return df.fillna(method="ffill").fillna(0)
+        return df.ffill().fillna(0)
 
     def _calculate_vwap(self, df: pd.DataFrame) -> pd.Series:
         """

@@ -285,7 +285,7 @@ class GrowwExecutor:
             from data_fetch_groww import get_data_fetcher
             fetcher = get_data_fetcher()
             quote = fetcher.get_quote(symbol)
-            exit_price = quote["ltp"] if quote else 0
+            exit_price = quote.get("ltp", 0) if quote else 0
             trade = self.risk_manager.close_position(symbol, exit_price, reason)
             if trade:
                 self._update_db_exit(symbol, exit_price, reason)
@@ -301,7 +301,7 @@ class GrowwExecutor:
             from data_fetch_groww import get_data_fetcher
             fetcher = get_data_fetcher()
             quote = fetcher.get_quote(symbol)
-            exit_price = round_to_tick_size(quote["ltp"]) if quote else 0
+            exit_price = round_to_tick_size(quote.get("ltp", 0)) if quote else 0
 
             params = {
                 "symbol": symbol,
