@@ -115,18 +115,125 @@ class GrowwDataFetcher:
         to_dt = to_dt or now_ist
         from_dt = from_dt or (to_dt - timedelta(days=days))
 
-        try:
-            # FIX: Added required 'exchange' and 'segment'
-            raw_candles = self._api.get_historical_data(
-                symbol=symbol, exchange="NSE", segment="CASH",
-                interval=INTERVAL_MAP.get(interval, "5minute"),
-                from_timestamp=int(from_dt.timestamp() * 1000),
-                to_timestamp=int(to_dt.timestamp() * 1000),
-            )
-            return self._parse_candles(raw_candles, symbol, interval)
-        except Exception as e:
-            logger.error(f"get_candles({symbol}) failed: {e}")
-            raise
+        from_ms = int(from_dt.timestamp() * 1000)
+        to_ms   = int(to_dt.timestamp() * 1000)
+        interval_str = INTERVAL_MAP.get(interval, "5minute")
+
+        raw = self._call_candles_sdk(symbol, interval_str, from_ms, to_ms)
+        if raw is None:
+            raw = self._fetch_candles_http(symbol, interval_str, from_ms, to_ms)
+        if raw is None:
+            raise RuntimeError(f"All candle sources failed for {symbol}")
+        return self._parse_candles(raw, symbol, interval)
+
+    def _call_candles_sdk(self, symbol: str, interval_str: str, from_ms: int, to_ms: int):
+        """
+        Try every known GrowwAPI method name for historical OHLCV data.
+        Different SDK versions ship different method names — we try them all.
+        Returns raw list-of-lists or None.
+        """
+        if not self._api:
+            return None
+
+        # Candidate method names across SDK versions
+        candidates = [
+            "get_historical_data",
+            "get_historical_candle_data",
+            "get_candle_data",
+            "get_ohlcv",
+            "historical_data",
+            "candles",
+        ]
+        kwargs_sets = [
+            # v1 SDK style
+            dict(symbol=symbol, exchange="NSE", segment="CASH",
+                 interval=interval_str, from_timestamp=from_ms, to_timestamp=to_ms),
+            # v2 SDK style (different key names)
+            dict(trading_symbol=symbol, exchange="NSE", segment="CASH",
+                 interval=interval_str, from_timestamp=from_ms, to_timestamp=to_ms),
+            # Positional fallback
+            None,
+        ]
+
+        for method_name in candidates:
+            fn = getattr(self._api, method_name, None)
+            if fn is None:
+                continue
+            for kwargs in kwargs_sets:
+                try:
+                    if kwargs is None:
+                        raw = fn(symbol, "NSE", "CASH", interval_str, from_ms, to_ms)
+                    else:
+                        raw = fn(**kwargs)
+                    if raw:
+                        logger.debug(f"Candle SDK hit: {method_name}")
+                        return raw
+                except TypeError:
+                    continue  # wrong kwargs — try next set
+                except Exception as e:
+                    logger.debug(f"SDK candles {method_name}: {e}")
+                    break  # method exists but failed — don't try other kwarg sets
+
+        logger.debug(f"No SDK candle method worked for {symbol} — trying HTTP")
+        return None
+
+    def _fetch_candles_http(self, symbol: str, interval_str: str, from_ms: int, to_ms: int):
+        """
+        Direct REST fallback when SDK has no historical-data method.
+        Tries known Groww API endpoint patterns.
+        Returns raw list-of-lists or None.
+        """
+        import requests as req
+        token = get_groww_token()
+        if not token:
+            return None
+
+        headers = {
+            "Authorization": f"Bearer {token}",
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+            "X-Api-Version": "1",
+        }
+
+        # Known Groww historical-data endpoint patterns
+        endpoints = [
+            ("GET", "https://api.groww.in/v1/historical-data", {
+                "trading_symbol": symbol, "exchange": "NSE", "segment": "CASH",
+                "interval": interval_str, "from": from_ms, "to": to_ms,
+            }),
+            ("GET", "https://api.groww.in/v2/historical-data", {
+                "trading_symbol": symbol, "exchange": "NSE", "segment": "CASH",
+                "interval": interval_str, "from_timestamp": from_ms, "to_timestamp": to_ms,
+            }),
+            ("GET", "https://api.groww.in/v1/charting_service/chart/historical", {
+                "exchange": "NSE", "tradingsymbol": symbol,
+                "timeperiod": interval_str, "starttime": from_ms, "endtime": to_ms,
+            }),
+        ]
+
+        for method, url, params in endpoints:
+            try:
+                resp = req.request(method, url, params=params, headers=headers, timeout=20)
+                if resp.status_code == 200:
+                    body = resp.json()
+                    # Handle envelope formats
+                    candles = (body.get("candles") or body.get("data") or
+                               body.get("ohlcv") or body.get("result") or body)
+                    if isinstance(candles, list) and len(candles) > 0:
+                        logger.debug(f"Candle HTTP hit: {url.split('/')[-1]} for {symbol}")
+                        return candles
+                elif resp.status_code == 400:
+                    logger.debug(f"HTTP candles 400 from {url.split('/')[-1]} — wrong params")
+                    continue
+                elif resp.status_code in (401, 403):
+                    logger.warning(f"HTTP candles auth error — refreshing token")
+                    self._reinit_with_fresh_token()
+                    break
+            except Exception as e:
+                logger.debug(f"HTTP candles {url.split('/')[-1]}: {e}")
+
+        logger.error(f"get_candles({symbol}): all HTTP endpoints failed — check Groww API docs")
+        return None
 
     def _parse_candles(self, raw, symbol, interval):
         if not raw: return None
