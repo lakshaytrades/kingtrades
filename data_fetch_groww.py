@@ -105,6 +105,11 @@ class GrowwDataFetcher:
             if "bad request" in err or "400" in err or "invalid symbol" in err or "not found" in err:
                 logger.debug(f"get_quote({symbol}): bad request — unsupported symbol, skipping")
                 return None  # Return None (not raise) so retry decorator is NOT triggered
+            # Rate limit — wait 3s before the decorator retries (not 0s)
+            if "rate limit" in err or "too many" in err or "429" in err:
+                logger.debug(f"get_quote({symbol}): rate limited — pausing 3s")
+                time.sleep(3)
+                raise  # Let retry decorator handle it after the pause
             logger.error(f"get_quote({symbol}) failed: {e}")
             raise
 
@@ -293,7 +298,12 @@ class GrowwDataFetcher:
             logger.debug("yfinance not installed — skipping")
             return None
         except Exception as e:
-            logger.debug(f"yfinance candles {symbol}: {e}")
+            err = str(e).lower()
+            if "ratelimit" in err or "rate limit" in err or "too many" in err or "429" in err:
+                logger.warning(f"[{format_ist_timestamp()}] yfinance rate limited for {symbol} — "
+                               "will retry on next scan cycle")
+            else:
+                logger.debug(f"yfinance candles {symbol}: {e}")
             return None
 
     def _parse_candles(self, raw, symbol, interval):

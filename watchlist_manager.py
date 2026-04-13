@@ -52,7 +52,7 @@ LIQUID_UNIVERSE = [
     "JUBLFOOD","WESTLIFE","DEVYANI","SAPPHIRE",
     "BALKRISIND","APOLLOTYRE","MRF","CEATLTD",
     "TRENT","SHOPERSTOP","ABFRL","MANYAVAR",
-    "SRF","DEEPAKNTR","AAPL","TATACHEM","GNFC",
+    "SRF","DEEPAKNTR","TATACHEM","GNFC",
     "BANKBARODA","UNIONBANK","PNB","CANBK","FEDERALBNK",
 ]
 
@@ -126,7 +126,8 @@ class WatchlistManager:
         logger.info(f"[{format_ist_timestamp()}] Running momentum scan on {len(LIQUID_UNIVERSE)} stocks...")
         scores = []
 
-        for symbol in LIQUID_UNIVERSE:
+        import time as _time
+        for i, symbol in enumerate(LIQUID_UNIVERSE):
             # Skip blacklisted symbols
             if learner and learner.is_symbol_blacklisted(symbol):
                 continue
@@ -136,6 +137,9 @@ class WatchlistManager:
                     scores.append(score)
             except Exception as e:
                 logger.debug(f"Score failed {symbol}: {e}")
+            # Throttle: 10 requests/s max to stay within Groww rate limits
+            if i % 10 == 9:
+                _time.sleep(1.0)
 
         if not scores:
             logger.warning(f"[{format_ist_timestamp()}] Momentum scan returned no results")
