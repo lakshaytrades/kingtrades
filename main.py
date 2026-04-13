@@ -1422,6 +1422,14 @@ class TradingBot:
                 app.add_handler(CommandHandler("balance",    cmd_balance))
                 app.add_handler(CommandHandler("capital",    cmd_capital))
 
+                # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
+                async def _tg_error_handler(update, context):
+                    if isinstance(context.error, tg_error.Conflict):
+                        logger.debug("Telegram Conflict absorbed by error handler — still running")
+                    else:
+                        logger.warning(f"[{format_ist_timestamp()}] TG error: {context.error}")
+                app.add_error_handler(_tg_error_handler)
+
                 await app.initialize()
                 await app.start()
                 await app.updater.start_polling(

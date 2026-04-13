@@ -197,17 +197,23 @@ class OptionChainAnalyzer:
                     f"(failure {self._session_failures}/{self._MAX_SESSION_FAILURES})"
                 )
                 if resp.status_code == 403:
-                    logger.warning(
-                        f"[{format_ist_timestamp()}] NSE is blocking this server's IP "
-                        f"(common with non-Indian cloud servers). "
-                        f"Option chain analysis disabled — bot continues without it."
-                    )
-                if self._session_failures >= self._MAX_SESSION_FAILURES:
+                    # 403 = Render's IP is blocked by NSE. This is permanent — no point retrying.
                     self._permanently_down = True
                     logger.warning(
-                        f"[{format_ist_timestamp()}] NSE option chain permanently disabled "
-                        f"for this session (IP blocked). All other features unaffected."
+                        f"[{format_ist_timestamp()}] NSE blocked this server's IP (403). "
+                        f"Option chain disabled for session — bot continues without it."
                     )
+                else:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] NSE session status: {resp.status_code} "
+                        f"(failure {self._session_failures}/{self._MAX_SESSION_FAILURES})"
+                    )
+                    if self._session_failures >= self._MAX_SESSION_FAILURES:
+                        self._permanently_down = True
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] NSE option chain permanently disabled "
+                            f"for this session. All other features unaffected."
+                        )
         except Exception as e:
             self._session_failures += 1
             logger.warning(f"[{format_ist_timestamp()}] NSE session init failed: {e}")
@@ -215,16 +221,15 @@ class OptionChainAnalyzer:
             if self._session_failures >= self._MAX_SESSION_FAILURES:
                 self._permanently_down = True
 
-    def _refresh_session_if_needed(self):
+    def _refresh_session_if_needed(self) -> bool:
+        """Returns True if session is ready, False if unavailable (no exception = no retry spam)."""
         if self._permanently_down:
-            raise Exception("NSE option chain unavailable (IP blocked)")
+            return False
         if not self._session_ok:
-            # Only retry every 30 minutes
             if time.time() - self._last_init_time > self._SESSION_RETRY_COOLDOWN:
-                self._session_failures = 0  # Reset counter for retry
+                self._session_failures = 0
                 self._init_session()
-            if not self._session_ok:
-                raise Exception("NSE session not available")
+        return self._session_ok
 
     # ──────────────────────────────────────────────────────
     # DATA FETCH
@@ -233,9 +238,8 @@ class OptionChainAnalyzer:
     @retry_with_backoff(max_retries=3, delays=[2, 5, 10])
     def _fetch_raw(self, symbol: str) -> Optional[Dict]:
         """Fetch raw option chain JSON from NSE."""
-        if self._permanently_down:
-            return None  # Don't raise → no retries, no log spam
-        self._refresh_session_if_needed()
+        if not self._refresh_session_if_needed():
+            return None  # Session unavailable — no exception = no retry loop
         is_index = symbol.upper() in INDEX_SYMBOLS
         url      = NSE_INDEX_OC if is_index else NSE_EQUITY_OC
         try:
