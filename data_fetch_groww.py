@@ -265,18 +265,25 @@ class GrowwDataFetcher:
                 logger.debug(f"yfinance: no data for {yf_sym}")
                 return None
 
+            # Flatten MultiIndex columns (newer yfinance returns (field, ticker) tuples)
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = df.columns.get_level_values(0)
+
             # Convert to standard list-of-lists [ts_ms, o, h, l, c, vol]
             result = []
             for ts, row in df.iterrows():
-                ts_ms = int(ts.timestamp() * 1000)
-                result.append([
-                    ts_ms,
-                    float(row["Open"]),
-                    float(row["High"]),
-                    float(row["Low"]),
-                    float(row["Close"]),
-                    int(row["Volume"]),
-                ])
+                try:
+                    ts_ms = int(ts.timestamp() * 1000)
+                    result.append([
+                        ts_ms,
+                        float(row["Open"].iloc[0])   if hasattr(row["Open"],   "iloc") else float(row["Open"]),
+                        float(row["High"].iloc[0])   if hasattr(row["High"],   "iloc") else float(row["High"]),
+                        float(row["Low"].iloc[0])    if hasattr(row["Low"],    "iloc") else float(row["Low"]),
+                        float(row["Close"].iloc[0])  if hasattr(row["Close"],  "iloc") else float(row["Close"]),
+                        int(  row["Volume"].iloc[0]) if hasattr(row["Volume"], "iloc") else int(row["Volume"]),
+                    ])
+                except Exception:
+                    continue
             if result:
                 logger.info(f"[{format_ist_timestamp()}] yfinance candles: {symbol} "
                             f"{len(result)} bars ({yf_interval})")

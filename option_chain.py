@@ -233,6 +233,8 @@ class OptionChainAnalyzer:
     @retry_with_backoff(max_retries=3, delays=[2, 5, 10])
     def _fetch_raw(self, symbol: str) -> Optional[Dict]:
         """Fetch raw option chain JSON from NSE."""
+        if self._permanently_down:
+            return None  # Don't raise → no retries, no log spam
         self._refresh_session_if_needed()
         is_index = symbol.upper() in INDEX_SYMBOLS
         url      = NSE_INDEX_OC if is_index else NSE_EQUITY_OC
@@ -253,7 +255,10 @@ class OptionChainAnalyzer:
             data = resp.json()
             return data.get("records", data)
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] OC fetch {symbol}: {e}")
+            if self._permanently_down:
+                logger.debug(f"OC fetch {symbol}: {e}")
+            else:
+                logger.warning(f"[{format_ist_timestamp()}] OC fetch {symbol}: {e}")
             raise
 
     # ──────────────────────────────────────────────────────
@@ -283,7 +288,11 @@ class OptionChainAnalyzer:
                 logger.info(f"[{format_ist_timestamp()}] {result.summary()}")
             return result
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] OC analyze {symbol}: {e}")
+            # Silence repetitive errors when NSE is permanently blocked (UK server IP)
+            if self._permanently_down:
+                logger.debug(f"OC analyze {symbol}: {e}")
+            else:
+                logger.warning(f"[{format_ist_timestamp()}] OC analyze {symbol}: {e}")
             return None
 
     def _parse_chain(self, symbol: str, raw: Dict) -> Optional[OptionChainResult]:
