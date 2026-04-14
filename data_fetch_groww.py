@@ -438,14 +438,20 @@ class GrowwDataFetcher:
         # ── Attempt 1: use current API instance ───────────────────────────
         result = _parse(_call_api())
 
-        # ── Attempt 2: reinit with fresh token and retry once ─────────────
+        # ── Attempt 2: reinit with fresh token ONLY during market hours ──────
+        # Outside market hours (holidays, pre/post market) the balance API is
+        # offline by design — empty response is NOT an auth error, don't refresh.
         if result is None:
-            logger.info("Balance empty — reinitialising API with fresh token and retrying...")
-            try:
-                self._reinit_with_fresh_token()
-                result = _parse(_call_api())
-            except Exception as e:
-                logger.debug(f"Balance retry error: {e}")
+            from utils import is_market_open_ist
+            if is_market_open_ist():
+                logger.info("Balance empty during market hours — reinitialising with fresh token...")
+                try:
+                    self._reinit_with_fresh_token()
+                    result = _parse(_call_api())
+                except Exception as e:
+                    logger.debug(f"Balance retry error: {e}")
+            else:
+                logger.debug("Balance empty outside market hours — using cache (API offline by design)")
 
         # ── Success: update cache ─────────────────────────────────────────
         if result is not None:

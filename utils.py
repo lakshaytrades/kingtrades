@@ -109,23 +109,49 @@ def format_ist_time_only(dt: Optional[datetime] = None) -> str:
 # MARKET HOURS CHECKS
 # ============================================================
 
+# NSE trading holidays 2026 (BSE/NSE official calendar)
+NSE_HOLIDAYS_2026 = {
+    date(2026, 1, 26),   # Republic Day
+    date(2026, 2, 19),   # Chhatrapati Shivaji Maharaj Jayanti
+    date(2026, 3, 14),   # Holi (Dhuleti)
+    date(2026, 3, 31),   # Id-Ul-Fitr (Ramzan Eid)
+    date(2026, 4, 2),    # Shri Ram Navami
+    date(2026, 4, 3),    # Good Friday
+    date(2026, 4, 14),   # Dr. Baba Saheb Ambedkar Jayanti
+    date(2026, 5, 1),    # Maharashtra Day
+    date(2026, 6, 28),   # Eid ul Adha
+    date(2026, 8, 15),   # Independence Day
+    date(2026, 8, 27),   # Ganesh Chaturthi
+    date(2026, 9, 16),   # Milad-un-Nabi
+    date(2026, 10, 2),   # Mahatma Gandhi Jayanti
+    date(2026, 10, 22),  # Dussehra (Vijaya Dashami)
+    date(2026, 11, 11),  # Diwali Laxmi Puja (Muhurat Trading only)
+    date(2026, 11, 12),  # Diwali Balipratipada
+    date(2026, 11, 25),  # Guru Nanak Jayanti
+    date(2026, 12, 25),  # Christmas
+}
+
+
+def is_nse_holiday(d: date = None) -> bool:
+    """Return True if the given date (default: today IST) is an NSE trading holiday."""
+    if d is None:
+        d = get_current_ist_date()
+    return d in NSE_HOLIDAYS_2026
+
+
 def is_market_open_ist() -> bool:
     """
     Check if NSE market is currently open.
-    Uses current IST time — safe to call from any server timezone.
-
-    Returns:
-        True if between 9:15 AM and 3:30 PM IST on a weekday
+    Returns True if 9:15–3:30 PM IST on a weekday that is not an NSE holiday.
     """
     now_ist = get_current_ist_time()
-    current_time = now_ist.time()
-    current_weekday = now_ist.weekday()
 
-    # Check weekday (Mon=0 to Fri=4)
-    if current_weekday >= 5:
+    if now_ist.weekday() >= 5:          # Sat/Sun
+        return False
+    if is_nse_holiday(now_ist.date()):  # NSE holiday
         return False
 
-    return MARKET_OPEN <= current_time < MARKET_CLOSE
+    return MARKET_OPEN <= now_ist.time() < MARKET_CLOSE
 
 
 def is_pre_market_ist() -> bool:
@@ -150,9 +176,11 @@ def should_force_squareoff_ist() -> bool:
 
 
 def is_market_day_ist() -> bool:
-    """Check if today is a trading day (weekday) in IST."""
+    """Check if today is a trading day (weekday + not an NSE holiday) in IST."""
     now_ist = get_current_ist_time()
-    return now_ist.weekday() < 5
+    if now_ist.weekday() >= 5:
+        return False
+    return not is_nse_holiday(now_ist.date())
 
 
 def minutes_until_market_open() -> float:
