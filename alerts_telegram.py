@@ -374,7 +374,7 @@ class TelegramAlerter:
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{E['brain']} *AI Rationale:*\n_{rationale}_\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['clock']} `{signal.signal_time or format_ist_timestamp()} IST`"
+            f"{E['clock']} `{signal.signal_time or format_ist_timestamp()}`"
         )
 
         chart = None
@@ -398,7 +398,7 @@ class TelegramAlerter:
             f"{emoji} *ORDER FILLED — {symbol}*\n"
             f"Direction: `{direction}` | Qty: `{qty}` | Price: `₹{price:.2f}`\n"
             f"Order ID: `{order_id}`\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -418,7 +418,7 @@ class TelegramAlerter:
             f"Entry: `₹{entry:.2f}` → Exit: `₹{exit_price:.2f}` (`{pct:+.2f}%`)\n"
             f"P&L: *{pnl_str}*\n"
             f"Reason: `{reason}`\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -433,7 +433,7 @@ class TelegramAlerter:
             f"Direction: `{direction}` | Entry: `₹{entry:.2f}` | SL: `₹{sl_price:.2f}`\n"
             f"Loss: `₹{abs(loss):,.0f}`\n"
             f"{E['warn']} Reviewing consecutive losses...\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -446,7 +446,7 @@ class TelegramAlerter:
             f"{E['kill']} *CIRCUIT BREAKER TRIGGERED*\n"
             f"Reason: `{reason}`\n"
             f"All new entries PAUSED. Existing positions being monitored.\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -455,7 +455,7 @@ class TelegramAlerter:
             f"{E['kill']} *KILL SWITCH ACTIVATED*\n"
             f"Emergency stop received. ALL positions being squared off.\n"
             f"New trading HALTED for the day.\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -467,7 +467,7 @@ class TelegramAlerter:
         if risk_manager is None:
             return self._send(
                 f"{E['chart']} *Bot Status*\n"
-                f"`{format_ist_timestamp()} IST`\nNo risk data available."
+                f"`{format_ist_timestamp()}`\nNo risk data available."
             )
 
         state     = getattr(risk_manager, "state", None)
@@ -483,7 +483,7 @@ class TelegramAlerter:
         pnl_str   = f"+₹{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-₹{abs(daily_pnl):,.0f}"
 
         lines = [
-            f"{E['chart']} *Bot Status — {format_ist_timestamp()} IST*",
+            f"{E['chart']} *Bot Status — {format_ist_timestamp()}*",
             f"Daily P&L: {pnl_emoji} *{pnl_str}*",
             f"Capital: `₹{capital:,.0f}` | Trades: `{n_trades}` | Win Rate: `{wr_pct:.1f}%`",
             f"Open Positions: `{len(positions)}` | State: `{'PAUSED' if paused else 'ACTIVE'}`",
@@ -510,14 +510,14 @@ class TelegramAlerter:
         text = (
             f"{E['pause']} *Trading PAUSED*\n"
             f"{'Reason: ' + reason if reason else 'Manual pause.'}\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     def send_resume(self) -> bool:
         return self._send(
             f"{E['resume']} *Trading RESUMED*\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
 
     # --------------------------------------------------------
@@ -529,7 +529,7 @@ class TelegramAlerter:
         text = (
             f"{E['warn']} *SQUARE-OFF WARNING — 3:20 PM IST*\n"
             f"`{n}` open position(s) will be force-closed at market price.\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -580,7 +580,7 @@ class TelegramAlerter:
         thesis     = textwrap.shorten(ai_thesis or "Scanning for momentum setups...", 350, placeholder="...")
 
         text = (
-            f"{E['rocket']} *MORNING BRIEF — {format_ist_timestamp()} IST*\n"
+            f"{E['rocket']} *MORNING BRIEF — {format_ist_timestamp()}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{bias_emoji} Day Bias: *{bias}* (score: `{bias_score:+d}`)\n"
             f"VIX: `{vix:.1f}` | Gift Nifty: `{gap_pct:+.2f}%` | "
@@ -667,7 +667,7 @@ class TelegramAlerter:
         target_hit = (daily_pnl >= capital * 0.05 / 22) if capital > 0 else False
 
         text = (
-            f"{pnl_emoji} *END-OF-DAY REPORT — {format_ist_timestamp()} IST*\n"
+            f"{pnl_emoji} *END-OF-DAY REPORT — {format_ist_timestamp()}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"Net P&L: *{pnl_str}*\n"
             f"Trades: `{n_trades}` | Wins: `{wins}` | Losses: `{losses}`\n"
@@ -677,7 +677,7 @@ class TelegramAlerter:
             f"{E['loss']} Worst Trade: {worst_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{'Daily target achieved!' if target_hit else 'Below daily target slice (5%/mo)'}\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
 
         chart = _build_equity_curve(all_trades, capital) if all_trades else None
@@ -693,7 +693,7 @@ class TelegramAlerter:
         text = (
             f"{emoji} *Groww Token Refresh {status.split()[0].capitalize()}*\n"
             f"Method: `{method}` | Status: `{status}`\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -706,7 +706,7 @@ class TelegramAlerter:
         text = (
             f"{E['pin']} *Watchlist Updated*\n"
             f"Scanning `{len(symbols)}` stocks:\n{wl}\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -727,7 +727,7 @@ class TelegramAlerter:
                 f"*Trade Review:*\n"
                 f"_{textwrap.shorten(trade_review, 400, placeholder='...')}_\n"
             )
-        text += f"{E['clock']} `{format_ist_timestamp()} IST`"
+        text += f"{E['clock']} `{format_ist_timestamp()}`"
         return self._send(text)
 
     # --------------------------------------------------------
@@ -744,6 +744,6 @@ class TelegramAlerter:
         text = (
             f"{level_emoji} *{title}*\n"
             f"{body}\n"
-            f"{E['clock']} `{format_ist_timestamp()} IST`"
+            f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)

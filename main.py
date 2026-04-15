@@ -1706,11 +1706,11 @@ class TradingBot:
             if state.circuit_breaker_active:
                 status = "🔴 CIRCUIT BREAK"
             pos_symbols = ", ".join(state.positions.keys()) if state.positions else "none"
-            self.alerter.send_text(
+            self.alerter.send_html(
                 f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
                 f"Status: {status}\n"
                 f"Positions: {n_pos} ({pos_symbols})\n"
-                f"Day P&L: ₹{pnl:+,.0f}\n"
+                f"Day P&amp;L: ₹{pnl:+,.0f}\n"
                 f"Available: ₹{cap:,.0f}"
             )
         except Exception as e:

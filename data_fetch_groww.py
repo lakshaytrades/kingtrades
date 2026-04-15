@@ -531,6 +531,29 @@ class GrowwDataFetcher:
                     return q
             except Exception:
                 continue
+        # Final fallback: yfinance ^NSEI (always works)
+        try:
+            import yfinance as yf
+            ticker = yf.Ticker("^NSEI")
+            info   = ticker.fast_info
+            ltp    = float(getattr(info, "last_price", 0) or 0)
+            if ltp > 0:
+                prev_close = float(getattr(info, "previous_close", ltp) or ltp)
+                change_pct = round((ltp - prev_close) / prev_close * 100, 2) if prev_close else 0
+                logger.debug(f"Nifty from yfinance: ₹{ltp:,.0f}")
+                return {
+                    "symbol": "NIFTY",
+                    "ltp": ltp,
+                    "open": ltp,
+                    "high": ltp,
+                    "low": ltp,
+                    "close": prev_close,
+                    "volume": 0,
+                    "change_pct": change_pct,
+                    "timestamp": format_ist_timestamp(),
+                }
+        except Exception as e:
+            logger.debug(f"Nifty yfinance fallback failed: {e}")
         return None
 
 _fetcher = None
