@@ -103,49 +103,60 @@ class GrowwExecutor:
 
     def _call_place_order(self, order_params: dict) -> Optional[dict]:
         """
-        Try multiple Groww SDK method names for placing orders.
-        The installed SDK version may expose a different method name than
-        the one we'd expect. Falls back through a priority list until one works.
+        Call Groww place_order with the given params.
+        Falls back through a priority list of method name variants in case the
+        installed SDK version differs. On any successful call (even None response)
+        returns the response; only logs an error if NO method name matches at all.
         """
         if not self._api:
             return None
 
-        # Build alternate params with different key names the SDK might expect
+        # Build alternate params in case SDK uses different key names
         alt_params = dict(order_params)
-        alt_params["type"] = alt_params.pop("order_type", order_params.get("order_type", "LIMIT"))
-        alt_params["ttype"] = alt_params.get("transaction_type", "BUY")
+        # Some SDK versions use "symbol" instead of "trading_symbol"
+        if "trading_symbol" in alt_params:
+            alt_params["symbol"] = alt_params.pop("trading_symbol")
+        # Some SDK versions omit "segment"
+        alt_params_noseg = {k: v for k, v in order_params.items() if k != "segment"}
 
+        tried = []
         for method_name in self._ORDER_METHOD_NAMES:
             if not hasattr(self._api, method_name):
                 continue
             fn = getattr(self._api, method_name)
+            tried.append(method_name)
 
-            # Try primary params first
-            for params in (order_params, alt_params):
+            for label, params in (
+                ("primary", order_params),
+                ("alt",     alt_params),
+                ("noseg",   alt_params_noseg),
+            ):
                 try:
                     resp = fn(**params)
-                    if resp is not None:
-                        logger.info(
-                            f"[{format_ist_timestamp()}] ✅ Order method '{method_name}' worked"
-                        )
-                        return resp
+                    logger.info(
+                        f"[{format_ist_timestamp()}] place_order called via "
+                        f"'{method_name}' ({label} params) → {resp}"
+                    )
+                    # Return whatever the SDK gives (None = order rejected at API level)
+                    return resp
                 except TypeError as te:
                     logger.debug(
-                        f"[{format_ist_timestamp()}] '{method_name}' TypeError "
-                        f"({'primary' if params is order_params else 'alt'} params): {te}"
+                        f"[{format_ist_timestamp()}] '{method_name}' ({label}) "
+                        f"TypeError: {te} — trying next param set"
                     )
                 except Exception as e:
                     logger.warning(
-                        f"[{format_ist_timestamp()}] '{method_name}' error: {e}"
+                        f"[{format_ist_timestamp()}] '{method_name}' ({label}) error: {e}"
                     )
-                    break  # Non-TypeError error: method found but rejected params/auth
+                    break  # Non-TypeError: method exists but call rejected → next method
 
-        # Log all API methods so we can add the right name next deploy
-        all_methods = [m for m in dir(self._api) if not m.startswith("_")]
-        logger.error(
-            f"[{format_ist_timestamp()}] ❌ No working order method found. "
-            f"Available API methods: {all_methods}"
-        )
+        if not tried:
+            # Log all API methods so we know what to add next time
+            all_methods = [m for m in dir(self._api) if not m.startswith("_")]
+            logger.error(
+                f"[{format_ist_timestamp()}] ❌ No order method found in SDK. "
+                f"Available API methods: {all_methods}"
+            )
         return None
 
     def _init_db(self):
@@ -302,8 +313,9 @@ class GrowwExecutor:
 
         try:
             order_params = {
-                "symbol": signal.symbol,
+                "trading_symbol": signal.symbol,  # Groww SDK uses trading_symbol, not symbol
                 "exchange": "NSE",
+                "segment": "CASH",               # Required by Groww SDK for equities
                 "transaction_type": transaction_type,
                 "quantity": quantity,
                 "product": "MIS",          # Intraday only — never delivery
@@ -394,8 +406,9 @@ class GrowwExecutor:
             exit_price = round_to_tick_size(quote.get("ltp", 0)) if quote else 0
 
             params = {
-                "symbol": symbol,
+                "trading_symbol": symbol,  # Groww SDK uses trading_symbol, not symbol
                 "exchange": "NSE",
+                "segment": "CASH",         # Required by Groww SDK for equities
                 "transaction_type": exit_type,
                 "quantity": quantity,
                 "product": "MIS",

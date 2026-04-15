@@ -304,8 +304,7 @@ class ContinuousLearner:
         alerter = self._modules.get("alerter")
         if alerter:
             try:
-                import asyncio
-                asyncio.run(alerter.send_text(learner.get_learning_summary()))
+                alerter.send_text(learner.get_learning_summary())
             except Exception:
                 pass
 
@@ -364,8 +363,7 @@ class ContinuousLearner:
                 + f"\n\n📌 Tomorrow: {analysis.get('tomorrow_focus','')}"
             )
             try:
-                import asyncio
-                asyncio.run(alerter.send_text(lesson_text))
+                alerter.send_text(lesson_text)
             except Exception:
                 pass
 
@@ -439,8 +437,7 @@ class ContinuousLearner:
         alerter = self._modules.get("alerter")
         if alerter:
             try:
-                import asyncio
-                asyncio.run(alerter.send_text(f"📊 Weekly Review\n{review[:1000]}"))
+                alerter.send_text(f"📊 Weekly Review\n{review[:1000]}")
             except Exception:
                 pass
 
@@ -530,8 +527,7 @@ class ContinuousLearner:
                 brief += "\n⚠️ REDUCE POSITION SIZES 50% near these events!"
 
         try:
-            import asyncio
-            asyncio.run(alerter.send_text(brief))
+            alerter.send_text(brief)
         except Exception as e:
             logger.warning(f"Morning brief send failed: {e}")
 
@@ -575,11 +571,10 @@ class ContinuousLearner:
 
                 if alerter:
                     try:
-                        import asyncio
-                        asyncio.run(alerter.send_text(
+                        alerter.send_html(
                             f"🔑 <b>Groww Token Refreshed</b> — {format_ist_timestamp()}\n"
                             f"Ready for today's trading session."
-                        ))
+                        )
                     except Exception:
                         pass
 
@@ -597,11 +592,10 @@ class ContinuousLearner:
                 )
                 if alerter:
                     try:
-                        import asyncio
-                        asyncio.run(alerter.send_text(
+                        alerter.send_html(
                             f"⚠️ <b>Token Refresh Failed</b> — {format_ist_timestamp()}\n"
                             f"Will retry. Check GROWW_TOTP_SECRET in Render env."
-                        ))
+                        )
                     except Exception:
                         pass
 

@@ -41,6 +41,20 @@ from typing import Dict, List, Optional, Tuple
 import numpy as np
 import pandas as pd
 
+
+class _NumpyEncoder(json.JSONEncoder):
+    """JSON encoder that handles numpy scalars and booleans."""
+    def default(self, obj):
+        if isinstance(obj, np.integer):
+            return int(obj)
+        if isinstance(obj, np.floating):
+            return float(obj)
+        if isinstance(obj, np.bool_):
+            return bool(obj)
+        if isinstance(obj, np.ndarray):
+            return obj.tolist()
+        return super().default(obj)
+
 from utils import (
     format_ist_timestamp, get_current_ist_time,
     filter_market_hours, setup_logging
@@ -232,12 +246,23 @@ class BacktestEngine:
         pnl_arr = np.array(net_pnls)
 
         # ── Sharpe (annualised using trade-level returns) ──
-        sharpe = (np.mean(pnl_arr) / (np.std(pnl_arr) + 1e-9)) * np.sqrt(252)
+        # Guard: need ≥2 trades with meaningful variance; 1e-9 epsilon causes
+        # billions when std≈0 (single trade or all trades identical P&L).
+        _std = float(np.std(pnl_arr))
+        if len(pnl_arr) < 2 or _std < 1e-6:
+            sharpe = 0.0
+        else:
+            sharpe = (float(np.mean(pnl_arr)) / _std) * float(np.sqrt(252))
+            sharpe = max(-30.0, min(sharpe, 30.0))  # Hard cap ±30
 
         # ── Sortino (penalise only downside deviation) ──────
         downside = pnl_arr[pnl_arr < 0]
-        sortino_denom = np.std(downside) if len(downside) > 1 else 1e-9
-        sortino = (np.mean(pnl_arr) / sortino_denom) * np.sqrt(252)
+        _sort_std = float(np.std(downside)) if len(downside) > 1 else 0.0
+        if _sort_std < 1e-6:
+            sortino = 0.0
+        else:
+            sortino = (float(np.mean(pnl_arr)) / _sort_std) * float(np.sqrt(252))
+            sortino = max(-30.0, min(sortino, 30.0))
 
         # ── Max drawdown ────────────────────────────────────
         eq_arr   = np.array(equity)
@@ -310,7 +335,7 @@ class BacktestEngine:
                     "avg_pnl":   round(np.mean(pts), 2),
                 }
 
-        passes_targets = (
+        passes_targets = bool(
             win_rate       >= config.TARGET_WIN_RATE and
             sharpe         >= config.TARGET_SHARPE and
             max_dd         <= config.MAX_DRAWDOWN_LIMIT and
@@ -472,7 +497,7 @@ class WalkForwardOptimizer:
     def _save_optimized_params(self, params: Dict, results: List):
         out = RESULTS_DIR / f"optimized_params_{get_current_ist_time().strftime('%Y%m%d')}.json"
         with open(out, "w") as f:
-            json.dump({"params": params, "results": [r["oos"] for r in results]}, f, indent=2)
+            json.dump({"params": params, "results": [r["oos"] for r in results]}, f, indent=2, cls=_NumpyEncoder)
         logger.info(f"[{format_ist_timestamp()}] Optimized params saved → {out}")
 
 
@@ -615,7 +640,7 @@ class EODSelfTrainer:
 
         # Safety gate: only adopt if Sharpe improved ≥ 5% over yesterday's
         improvement = (avg_sharpe - baseline_sharpe) / max(abs(baseline_sharpe), 0.1)
-        improved    = improvement >= 0.05 or baseline_sharpe == 0.0
+        improved    = bool(improvement >= 0.05 or baseline_sharpe == 0.0)
 
         # Adaptive min_score: tighten if win rate is high, loosen if low
         current_min = baseline.get("min_score", _cfg.MIN_SIGNAL_SCORE)
@@ -663,10 +688,10 @@ class EODSelfTrainer:
     def _save_params(self, params: Dict) -> None:
         """Save adaptive params to disk — read by main.py each morning."""
         try:
-            ADAPTIVE_PARAMS_FILE.write_text(json.dumps(params, indent=2))
+            ADAPTIVE_PARAMS_FILE.write_text(json.dumps(params, indent=2, cls=_NumpyEncoder))
             # Also archive daily copy
             archive = RESULTS_DIR / f"params_{params['date']}.json"
-            archive.write_text(json.dumps(params, indent=2))
+            archive.write_text(json.dumps(params, indent=2, cls=_NumpyEncoder))
         except Exception as e:
             logger.error(f"Failed to save adaptive params: {e}")
 
