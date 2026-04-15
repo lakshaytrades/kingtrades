@@ -74,11 +74,79 @@ class GrowwExecutor:
             token = get_groww_token()
             if token:
                 self._api = GrowwAPI(token)
-                logger.info(f"[{format_ist_timestamp()}] GrowwAPI executor initialized")
+                # Log available order-placement methods for diagnostics
+                order_methods = [m for m in dir(self._api)
+                                 if not m.startswith("_") and
+                                 any(k in m.lower() for k in ("order", "place", "trade", "buy", "sell"))]
+                logger.info(
+                    f"[{format_ist_timestamp()}] GrowwAPI executor initialized | "
+                    f"Order methods: {order_methods}"
+                )
         except ImportError:
             logger.error("growwapi not installed — order execution disabled")
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Executor API init error: {e}")
+
+    # --------------------------------------------------------
+    # ROBUST ORDER PLACEMENT (method-name discovery)
+    # --------------------------------------------------------
+
+    _ORDER_METHOD_NAMES = [
+        "place_order",
+        "place_equity_order",
+        "place_mis_order",
+        "create_order",
+        "new_order",
+        "order",
+        "place_new_order",
+    ]
+
+    def _call_place_order(self, order_params: dict) -> Optional[dict]:
+        """
+        Try multiple Groww SDK method names for placing orders.
+        The installed SDK version may expose a different method name than
+        the one we'd expect. Falls back through a priority list until one works.
+        """
+        if not self._api:
+            return None
+
+        # Build alternate params with different key names the SDK might expect
+        alt_params = dict(order_params)
+        alt_params["type"] = alt_params.pop("order_type", order_params.get("order_type", "LIMIT"))
+        alt_params["ttype"] = alt_params.get("transaction_type", "BUY")
+
+        for method_name in self._ORDER_METHOD_NAMES:
+            if not hasattr(self._api, method_name):
+                continue
+            fn = getattr(self._api, method_name)
+
+            # Try primary params first
+            for params in (order_params, alt_params):
+                try:
+                    resp = fn(**params)
+                    if resp is not None:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] ✅ Order method '{method_name}' worked"
+                        )
+                        return resp
+                except TypeError as te:
+                    logger.debug(
+                        f"[{format_ist_timestamp()}] '{method_name}' TypeError "
+                        f"({'primary' if params is order_params else 'alt'} params): {te}"
+                    )
+                except Exception as e:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] '{method_name}' error: {e}"
+                    )
+                    break  # Non-TypeError error: method found but rejected params/auth
+
+        # Log all API methods so we can add the right name next deploy
+        all_methods = [m for m in dir(self._api) if not m.startswith("_")]
+        logger.error(
+            f"[{format_ist_timestamp()}] ❌ No working order method found. "
+            f"Available API methods: {all_methods}"
+        )
+        return None
 
     def _init_db(self):
         """Initialize SEBI-compliant trade journal SQLite DB."""
@@ -150,6 +218,22 @@ class GrowwExecutor:
             except Exception as e:
                 logger.debug(f"F&O check error (allowing trade): {e}")
 
+        # ── Fetch live balance BEFORE risk check so capital is current ──────
+        from data_fetch_groww import get_data_fetcher
+        fetcher = get_data_fetcher()
+        balance = fetcher.get_account_balance()
+        available = balance.get("available", 0)
+        # update_balance() guards against 0 — keeps last known good capital
+        self.risk_manager.update_balance(available)
+
+        logger.info(
+            f"[{format_ist_timestamp()}] PRE-TRADE: {signal.symbol} | "
+            f"API balance: ₹{available:,.0f} | "
+            f"Risk capital: ₹{self.risk_manager.state.daily_capital:,.0f} | "
+            f"Score: {signal.signal_score:.0f} | "
+            f"Live: {self.live_enabled}"
+        )
+
         # Pre-trade risk check
         can_trade = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
         if not can_trade["allowed"]:
@@ -159,13 +243,6 @@ class GrowwExecutor:
             )
             return OrderResult(False, message=can_trade["reason"])
 
-        # Get updated balance
-        from data_fetch_groww import get_data_fetcher
-        fetcher = get_data_fetcher()
-        balance = fetcher.get_account_balance()
-        available = balance.get("available", 0)
-        self.risk_manager.update_balance(available)
-
         # Recalculate quantity with live balance, apply filter size multiplier
         sizing = self.risk_manager.calculate_position_size(
             symbol=signal.symbol,
@@ -173,8 +250,20 @@ class GrowwExecutor:
             stop_loss=signal.stop_loss,
         )
         quantity = sizing.get("quantity", 0)
+        logger.info(
+            f"[{format_ist_timestamp()}] SIZING: {signal.symbol} qty={quantity} | "
+            f"{sizing.get('reason', 'OK')} | "
+            f"capital=₹{sizing.get('capital_used', 0):,.0f} | "
+            f"session={sizing.get('session', '?')}"
+        )
         if quantity <= 0:
-            return OrderResult(False, message="Position size = 0 — insufficient capital")
+            return OrderResult(
+                False,
+                message=(
+                    f"Position size = 0 — {sizing.get('reason', 'insufficient capital')} "
+                    f"(capital=₹{self.risk_manager.state.daily_capital:,.0f})"
+                )
+            )
         # Apply grade-based size multiplier from HighAccuracyFilter
         size_mult = getattr(signal, "size_multiplier", 1.0)
         if size_mult != 1.0:
@@ -223,7 +312,8 @@ class GrowwExecutor:
                 "validity": "DAY",
             }
 
-            response = self._api.place_order(**order_params)
+            response = self._call_place_order(order_params)
+            logger.info(f"[{format_ist_timestamp()}] place_order response: {response}")
 
             if response and (response.get("order_id") or response.get("id")):
                 order_id = str(response.get("order_id") or response.get("id"))
@@ -315,7 +405,7 @@ class GrowwExecutor:
             if order_type == "LIMIT" and exit_price:
                 params["price"] = exit_price
 
-            response = self._api.place_order(**params)
+            response = self._call_place_order(params)
 
             if response and (response.get("order_id") or response.get("id")):
                 order_id = str(response.get("order_id") or response.get("id"))
@@ -330,7 +420,7 @@ class GrowwExecutor:
                 # Try market order fallback
                 params["order_type"] = "MARKET"
                 params.pop("price", None)
-                response2 = self._api.place_order(**params)
+                response2 = self._call_place_order(params)
                 if response2 and (response2.get("order_id") or response2.get("id")):
                     order_id = str(response2.get("order_id") or response2.get("id"))
                     self.risk_manager.close_position(symbol, exit_price, reason + " (MARKET fallback)")

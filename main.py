@@ -1701,17 +1701,26 @@ class TradingBot:
             state = self.risk_manager.state
             n_pos = len(state.positions)
             pnl = state.daily_pnl
+            # Prefer risk-manager capital (always valid — guarded against 0 override)
             cap = state.available_capital
+            # Also show live Groww balance
+            live_bal = 0.0
+            try:
+                bal_info = self.fetcher.get_account_balance() if self.fetcher else {}
+                live_bal = bal_info.get("available", 0) if bal_info else 0
+            except Exception:
+                pass
             status = "🟢 TRADING" if not state.trading_paused else "⏸ PAUSED"
             if state.circuit_breaker_active:
                 status = "🔴 CIRCUIT BREAK"
             pos_symbols = ", ".join(state.positions.keys()) if state.positions else "none"
+            bal_line = f"₹{live_bal:,.0f}" if live_bal > 0 else f"₹{cap:,.0f} (cached)"
             self.alerter.send_html(
                 f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
                 f"Status: {status}\n"
                 f"Positions: {n_pos} ({pos_symbols})\n"
                 f"Day P&amp;L: ₹{pnl:+,.0f}\n"
-                f"Available: ₹{cap:,.0f}"
+                f"Available: {bal_line}"
             )
         except Exception as e:
             logger.debug(f"Heartbeat error: {e}")

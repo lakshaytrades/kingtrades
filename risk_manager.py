@@ -197,7 +197,17 @@ class RiskManager:
         )
 
     def update_balance(self, balance: float):
-        """Update available balance (called before each trade)."""
+        """Update available balance (called before each trade).
+        Guards against 0 / negative: if balance API is offline or returns an
+        empty response, keep the last known valid capital so position sizing
+        and can_take_trade() continue using the initialised day capital.
+        """
+        if balance <= 0:
+            logger.debug(
+                f"[{format_ist_timestamp()}] update_balance: ignoring 0 — "
+                f"keeping ₹{self._available_balance:,.0f} (API may be offline)"
+            )
+            return
         self._available_balance = balance
         effective_capital = min(balance, self.max_daily_capital)
         self.state.available_capital = effective_capital
