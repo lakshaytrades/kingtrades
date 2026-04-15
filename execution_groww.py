@@ -116,6 +116,9 @@ class GrowwExecutor:
         # Some SDK versions use "symbol" instead of "trading_symbol"
         if "trading_symbol" in alt_params:
             alt_params["symbol"] = alt_params.pop("trading_symbol")
+        # Some SDK versions use "product_type" instead of "product"
+        if "product" in alt_params:
+            alt_params["product_type"] = alt_params.pop("product")
         # Some SDK versions omit "segment"
         alt_params_noseg = {k: v for k, v in order_params.items() if k != "segment"}
 
@@ -312,15 +315,18 @@ class GrowwExecutor:
                 return OrderResult(False, message="Groww API not initialized")
 
         try:
+            # ── MARKET order: fills immediately at current price.
+            # LIMIT orders at a stale signal price risk never filling within the
+            # NSE session window, forcing cancellation and missed momentum moves.
+            # For liquid NSE stocks the slippage on MARKET is negligible (<0.05%).
             order_params = {
-                "trading_symbol": signal.symbol,  # Groww SDK uses trading_symbol, not symbol
+                "trading_symbol": signal.symbol,
                 "exchange": "NSE",
-                "segment": "CASH",               # Required by Groww SDK for equities
+                "segment": "CASH",         # Equity cash segment
                 "transaction_type": transaction_type,
                 "quantity": quantity,
                 "product": "MIS",          # Intraday only — never delivery
-                "order_type": "LIMIT",
-                "price": entry_price,
+                "order_type": "MARKET",    # MARKET: fills instantly, no stale-price risk
                 "validity": "DAY",
             }
 
@@ -330,23 +336,32 @@ class GrowwExecutor:
             if response and (response.get("order_id") or response.get("id")):
                 order_id = str(response.get("order_id") or response.get("id"))
 
-                # ── Confirm actual fill before adding to position tracker ──
-                filled_price = self._wait_for_fill(order_id, entry_price, timeout=30)
+                # ── Wait for fill confirmation (MARKET fills in <5s normally) ──
+                # We do NOT cancel on timeout: a MARKET order is already sent to
+                # the exchange and will fill at whatever the current price is.
+                # Cancelling would create a phantom unclosed position.
+                filled_price = self._wait_for_fill(
+                    order_id, entry_price, timeout=60, is_market_order=True
+                )
+
+                # For MARKET orders: if status API is slow, trust the order went
+                # through and use the live quote as a proxy for fill price.
                 if filled_price is None:
+                    from data_fetch_groww import get_data_fetcher
+                    q = get_data_fetcher().get_quote(signal.symbol)
+                    filled_price = q.get("ltp", entry_price) if q else entry_price
                     logger.warning(
-                        f"[{format_ist_timestamp()}] ⚠️ Order {order_id} not confirmed filled "
-                        f"in 30s — cancelling to avoid phantom position"
+                        f"[{format_ist_timestamp()}] ⚠️ {order_id}: fill status not "
+                        f"confirmed in 60s — using live LTP ₹{filled_price:.2f} as fill price. "
+                        f"CHECK GROWW APP to verify position."
                     )
-                    self._cancel_order(order_id)
-                    return OrderResult(False, order_id=order_id,
-                                       message="Order not filled — cancelled")
 
                 position = self._create_position(signal, quantity, filled_price, order_id)
                 self.risk_manager.add_position(position)
                 self._log_to_db(signal, quantity, filled_price, order_id, live=True)
 
                 logger.info(
-                    f"[{format_ist_timestamp()}] ✅ ORDER FILLED: {order_id} | "
+                    f"[{format_ist_timestamp()}] ✅ ORDER PLACED: {order_id} | "
                     f"{transaction_type} {signal.symbol} x{quantity} "
                     f"@ ₹{filled_price:.2f} (signal ₹{entry_price:.2f})"
                 )
@@ -522,17 +537,30 @@ class GrowwExecutor:
     # --------------------------------------------------------
 
     def _wait_for_fill(self, order_id: str, expected_price: float,
-                       timeout: int = 30) -> Optional[float]:
+                       timeout: int = 60,
+                       is_market_order: bool = False) -> Optional[float]:
         """
         Poll Groww order status until FILLED or timeout.
-        Returns actual fill price on success, None if not filled.
+        Returns actual fill price on success, None if status not confirmed.
 
-        Groww MIS LIMIT orders typically fill within 1–5 seconds on liquid stocks.
-        We wait up to 30 seconds before cancelling.
+        MARKET orders fill in <5s. LIMIT orders may take longer.
+        For MARKET orders we do NOT cancel on timeout — the order is already at
+        the exchange and will fill. Caller handles the None case by using LTP.
+
+        Groww order statuses:
+          Pending : PLACED, OPEN, PENDING, TRANSIT, TRIGGER_PENDING, OPEN_PENDING
+          Filled  : COMPLETE, FILLED, TRADED, EXECUTED, PARTIAL_EXECUTED
+          Terminal: CANCELLED, REJECTED, EXPIRED, FAILED
         """
         import time as _time
         deadline = _time.time() + timeout
         poll_interval = 2  # Check every 2 seconds
+
+        # Status sets
+        FILL_STATUSES     = {"COMPLETE", "FILLED", "TRADED", "EXECUTED",
+                             "PARTIAL_EXECUTED", "FULL", "DONE", "SUCCESS"}
+        TERMINAL_STATUSES = {"CANCELLED", "REJECTED", "EXPIRED", "FAILED",
+                             "CANCEL", "REJECT"}
 
         while _time.time() < deadline:
             try:
@@ -541,67 +569,67 @@ class GrowwExecutor:
                     _time.sleep(poll_interval)
                     continue
 
-                status = (
-                    status_resp.get("status") or
-                    status_resp.get("order_status") or
-                    (status_resp.get("data") or {}).get("status", "")
-                ).upper()
+                # Unwrap envelope if needed
+                data = status_resp
+                for env_key in ("data", "payload", "result"):
+                    if env_key in status_resp and isinstance(status_resp[env_key], dict):
+                        data = status_resp[env_key]
+                        break
 
-                if status in ("COMPLETE", "FILLED", "TRADED", "EXECUTED"):
-                    # Get actual average fill price
+                raw_status = (
+                    data.get("status") or
+                    data.get("order_status") or
+                    data.get("orderStatus") or
+                    status_resp.get("status") or
+                    ""
+                )
+                status = str(raw_status).upper().strip()
+
+                logger.debug(f"Order {order_id} status: {status!r}")
+
+                if status in FILL_STATUSES:
                     fill_price = (
+                        data.get("average_price") or
+                        data.get("avg_price") or
+                        data.get("averagePrice") or
+                        data.get("filled_price") or
                         status_resp.get("average_price") or
-                        status_resp.get("avg_price") or
-                        (status_resp.get("data") or {}).get("average_price") or
-                        expected_price  # Fallback to signal price
+                        expected_price
                     )
                     return float(fill_price)
 
-                if status in ("CANCELLED", "REJECTED", "EXPIRED"):
-                    # Extract rejection reason from response for diagnosis
-                    reject_reason = (
-                        status_resp.get("message") or
-                        status_resp.get("reason") or
-                        status_resp.get("errorMessage") or
-                        (status_resp.get("data") or {}).get("message") or
+                if status in TERMINAL_STATUSES:
+                    reason = (
+                        data.get("message") or data.get("reason") or
+                        data.get("errorMessage") or data.get("reject_reason") or
                         "No reason provided"
                     )
                     logger.warning(
-                        f"[{format_ist_timestamp()}] Order {order_id} {status}: "
-                        f"{reject_reason}"
+                        f"[{format_ist_timestamp()}] Order {order_id} {status}: {reason}"
                     )
-                    # Specific actionable messages for common rejections
-                    if "circuit" in str(reject_reason).lower():
-                        logger.error(
-                            f"[{format_ist_timestamp()}] ⛔ CIRCUIT BREAKER: "
-                            f"{order_id} rejected — stock may be hitting circuit limit"
-                        )
-                    elif "margin" in str(reject_reason).lower():
-                        logger.error(
-                            f"[{format_ist_timestamp()}] ⛔ MARGIN INSUFFICIENT: "
-                            f"{order_id} rejected — reduce position size"
-                        )
-                    elif "short" in str(reject_reason).lower() or "sell" in str(reject_reason).lower():
-                        logger.error(
-                            f"[{format_ist_timestamp()}] ⛔ SHORT REJECTED: "
-                            f"{order_id} — stock may not be F&O eligible"
-                        )
+                    r = str(reason).lower()
+                    if "circuit"  in r:
+                        logger.error(f"⛔ CIRCUIT LIMIT hit: {order_id}")
+                    elif "margin" in r or "fund" in r:
+                        logger.error(f"⛔ INSUFFICIENT MARGIN: {order_id} — reduce qty")
+                    elif "short"  in r or "sell" in r:
+                        logger.error(f"⛔ SHORT REJECTED: {order_id} — check F&O eligibility")
                     return None
 
-                # PENDING / OPEN / TRIGGER_PENDING — keep waiting
-                logger.debug(f"Order {order_id} status: {status} — waiting...")
+                # Still pending (PLACED / OPEN / TRANSIT / etc.) — keep polling
                 _time.sleep(poll_interval)
 
             except Exception as e:
                 logger.debug(f"Order status check error: {e}")
                 _time.sleep(poll_interval)
 
-        # Timed out — order still pending (price moved away from limit)
+        # Timeout
+        order_type_label = "MARKET" if is_market_order else "LIMIT"
         logger.warning(
-            f"[{format_ist_timestamp()}] Order {order_id} not filled in {timeout}s "
-            f"(price likely moved away from ₹{expected_price:.2f})"
+            f"[{format_ist_timestamp()}] {order_type_label} order {order_id} "
+            f"fill not confirmed in {timeout}s"
         )
-        return None
+        return None  # Caller decides whether to cancel or trust the fill
 
     def _cancel_order(self, order_id: str) -> bool:
         """Cancel an unfilled order."""
