@@ -313,12 +313,19 @@ class TelegramAlerter:
 
             try:
                 loop = asyncio.get_running_loop()
+                if loop.is_closed():
+                    raise RuntimeError("event loop is closed")
                 # Schedule on the running event loop (PTB's loop). Task runs when
                 # the current handler yields/returns control to the event loop.
                 asyncio.ensure_future(_do(), loop=loop)
             except RuntimeError:
-                # No running loop (called from sync-only context)
-                asyncio.run(_do())
+                # No running loop, or loop is closed — use a thread-safe approach
+                import threading
+                def _run_in_thread():
+                    import asyncio as _asyncio
+                    _asyncio.run(_do())
+                t = threading.Thread(target=_run_in_thread, daemon=True)
+                t.start()
             return True
         except Exception as e:
             logger.error(f"Telegram send error: {e}")

@@ -137,9 +137,9 @@ class WatchlistManager:
                     scores.append(score)
             except Exception as e:
                 logger.debug(f"Score failed {symbol}: {e}")
-            # Throttle: 10 requests/s max to stay within Groww rate limits
-            if i % 10 == 9:
-                _time.sleep(1.0)
+            # Throttle: 5 requests per 2s to stay within Groww rate limits
+            if i % 5 == 4:
+                _time.sleep(2.0)
 
         if not scores:
             logger.warning(f"[{format_ist_timestamp()}] Momentum scan returned no results")

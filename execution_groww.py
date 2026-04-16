@@ -167,7 +167,7 @@ class GrowwExecutor:
         Path(TRADE_DB_PATH).parent.mkdir(parents=True, exist_ok=True)
         conn = sqlite3.connect(TRADE_DB_PATH)
         conn.execute("""
-            CREATE TABLE IF NOT EXISTS trades (
+            CREATE TABLE IF NOT EXISTS execution_trades (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 order_id TEXT,
                 symbol TEXT,
@@ -669,7 +669,7 @@ class GrowwExecutor:
         try:
             conn = sqlite3.connect(TRADE_DB_PATH)
             conn.execute("""
-                INSERT INTO trades
+                INSERT INTO execution_trades
                 (order_id, symbol, direction, quantity, entry_price,
                  stop_loss, target_1, target_2, product, signal_score,
                  patterns, entry_time, live_trade, created_at, atr)
@@ -699,7 +699,7 @@ class GrowwExecutor:
             pnl = pos_closed.get("pnl", 0)
             conn = sqlite3.connect(TRADE_DB_PATH)
             conn.execute("""
-                UPDATE trades SET exit_price=?, pnl=?, pnl_pct=?,
+                UPDATE execution_trades SET exit_price=?, pnl=?, pnl_pct=?,
                 exit_time=?, exit_reason=?
                 WHERE symbol=? AND exit_price IS NULL
                 ORDER BY id DESC LIMIT 1
