@@ -25,6 +25,10 @@ from signal_generator import TradeSignal
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
+
+class GrowwIPBlockedError(Exception):
+    """Raised when Groww rejects order placement due to unregistered server IP."""
+
 # SEBI-compliant trade journal DB
 TRADE_DB_PATH = "logs/trades/trade_journal.db"
 
@@ -148,6 +152,13 @@ class GrowwExecutor:
                         f"TypeError: {te} — trying next param set"
                     )
                 except Exception as e:
+                    err_str = str(e).lower()
+                    # IP whitelist errors affect ALL methods — bail immediately
+                    if any(kw in err_str for kw in (
+                        "ip", "inactive", "registered ip", "not whitelisted",
+                        "ip not", "ip address", "allowed ip",
+                    )):
+                        raise GrowwIPBlockedError(str(e))
                     logger.warning(
                         f"[{format_ist_timestamp()}] '{method_name}' ({label}) error: {e}"
                     )
@@ -373,6 +384,30 @@ class GrowwExecutor:
                 )
                 return OrderResult(False, message=f"API error: {response}")
 
+        except GrowwIPBlockedError as ip_err:
+            msg = (
+                "🚨 GROWW IP BLOCKED — Orders cannot be placed!\n\n"
+                "Your Render server IP is not whitelisted in Groww.\n\n"
+                "Fix:\n"
+                "1. Go to Groww → Profile → Developer API Settings\n"
+                "2. Add your Render server's outbound IP to the allowed list\n"
+                "3. Render IPs: check Dashboard → Service → Outbound IPs\n\n"
+                f"Raw error: {ip_err}"
+            )
+            logger.error(f"[{format_ist_timestamp()}] {msg}")
+            # Send Telegram alert so user can act immediately
+            try:
+                from alerts_telegram import TelegramAlerter
+                import os
+                alerter = TelegramAlerter(
+                    os.getenv("TELEGRAM_BOT_TOKEN", ""),
+                    os.getenv("TELEGRAM_CHAT_ID", ""),
+                )
+                alerter.send_text(msg)
+            except Exception:
+                pass
+            return OrderResult(False, message="IP not whitelisted on Groww")
+
         except Exception as e:
             logger.error(
                 f"[{format_ist_timestamp()}] place_entry_order exception: {e}"
@@ -455,6 +490,12 @@ class GrowwExecutor:
                     return OrderResult(True, order_id=order_id, raw=response2)
                 return OrderResult(False, message=f"Exit failed: {response}")
 
+        except GrowwIPBlockedError as ip_err:
+            logger.error(
+                f"[{format_ist_timestamp()}] EXIT BLOCKED — IP not whitelisted: {ip_err}. "
+                "Add Render outbound IP to Groww API Settings."
+            )
+            return OrderResult(False, message="IP not whitelisted — exit blocked")
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] place_exit_order error: {e}")
             return OrderResult(False, message=str(e))
