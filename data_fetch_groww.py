@@ -40,6 +40,8 @@ class GrowwDataFetcher:
         self._cache_ttl_seconds = 30
         self._balance_cache: Dict = {}        # last successful balance response
         self._balance_cache_time: Optional[datetime] = None
+        self._last_token_refresh_time: Optional[datetime] = None  # debounce refreshes
+        self._TOKEN_REFRESH_COOLDOWN_MIN = 15  # never refresh token more often than this
         self._init_api()
 
     def _init_api(self):
@@ -52,12 +54,25 @@ class GrowwDataFetcher:
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Init failed: {e}")
 
-    def _reinit_with_fresh_token(self) -> bool:
-        """Force a fresh TOTP access_token and rebuild the API client."""
-        logger.warning(f"[{format_ist_timestamp()}] Auth error — forcing token refresh...")
+    def _reinit_with_fresh_token(self, reason: str = "auth error") -> bool:
+        """
+        Force a fresh TOTP access_token and rebuild the API client.
+        Debounced: will not refresh more than once every TOKEN_REFRESH_COOLDOWN_MIN minutes
+        to prevent log-spam refresh loops when Groww API is returning empty responses.
+        """
+        now = get_current_ist_time()
+        if self._last_token_refresh_time is not None:
+            elapsed_min = (now - self._last_token_refresh_time).total_seconds() / 60
+            if elapsed_min < self._TOKEN_REFRESH_COOLDOWN_MIN:
+                logger.debug(
+                    f"Token refresh skipped ({elapsed_min:.0f}m < {self._TOKEN_REFRESH_COOLDOWN_MIN}m cooldown)"
+                )
+                return False
+
+        logger.warning(f"[{format_ist_timestamp()}] {reason} — forcing token refresh...")
+        self._last_token_refresh_time = now
         try:
             manager = get_auth_manager()
-            # force_refresh() always calls the SDK (ignores cache age)
             ok = manager.force_refresh()
             new_token = manager.token
             if ok and new_token:
@@ -98,7 +113,7 @@ class GrowwDataFetcher:
             err = str(e).lower()
             if "authentication" in err or "expired" in err or "401" in err or "403" in err:
                 logger.warning(f"[{format_ist_timestamp()}] Auth error on get_quote — refreshing token...")
-                if self._reinit_with_fresh_token():
+                if self._reinit_with_fresh_token("Auth error on get_quote"):
                     raise  # Retry with new token via @retry_with_backoff
                 return None
             # 400 Bad Request = wrong symbol/segment — no point retrying
@@ -438,18 +453,39 @@ class GrowwDataFetcher:
         # ── Attempt 1: use current API instance ───────────────────────────
         result = _parse(_call_api())
 
-        # ── Attempt 2: reinit with fresh token ONLY during market hours ──────
-        # Outside market hours (holidays, pre/post market) the balance API is
-        # offline by design — empty response is NOT an auth error, don't refresh.
+        # ── Attempt 2: token refresh ONLY if genuinely stale (debounced) ──────
+        # Empty balance ≠ auth error. The Groww balance API also returns empty
+        # when the server IP is not whitelisted, or when Groww's backend is slow.
+        # Refreshing the token on every empty response creates a noisy refresh
+        # loop that wastes TOTP attempts and obscures the real issue.
+        # We only refresh if:
+        #   (a) we're inside market hours (outside, empty is expected)
+        #   (b) the cooldown has elapsed (max once per 15 min)
         if result is None:
             from utils import is_market_open_ist
             if is_market_open_ist():
-                logger.info("Balance empty during market hours — reinitialising with fresh token...")
-                try:
-                    self._reinit_with_fresh_token()
-                    result = _parse(_call_api())
-                except Exception as e:
-                    logger.debug(f"Balance retry error: {e}")
+                now = get_current_ist_time()
+                last_refresh = self._last_token_refresh_time
+                elapsed_min = (
+                    (now - last_refresh).total_seconds() / 60
+                    if last_refresh else float("inf")
+                )
+                if elapsed_min >= self._TOKEN_REFRESH_COOLDOWN_MIN:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Balance empty during market hours — "
+                        "attempting token refresh (once per 15 min). "
+                        "If this persists, check Groww API Settings → add Render IP."
+                    )
+                    try:
+                        if self._reinit_with_fresh_token("Balance empty during market hours"):
+                            result = _parse(_call_api())
+                    except Exception as e:
+                        logger.debug(f"Balance retry error: {e}")
+                else:
+                    logger.debug(
+                        f"Balance empty — using cache (refresh cooldown: "
+                        f"{self._TOKEN_REFRESH_COOLDOWN_MIN - elapsed_min:.0f}m remaining)"
+                    )
             else:
                 logger.debug("Balance empty outside market hours — using cache (API offline by design)")
 
