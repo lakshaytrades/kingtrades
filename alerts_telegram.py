@@ -22,7 +22,6 @@ Usage:
   alerter.send_signal(signal, candles_df)
 """
 
-import asyncio
 import io
 import logging
 import os
@@ -32,6 +31,7 @@ from typing import Optional, Dict, List, Any
 from zoneinfo import ZoneInfo
 
 import pandas as pd
+import requests as _requests
 
 from utils import format_ist_timestamp, get_current_ist_time
 
@@ -271,13 +271,10 @@ class TelegramAlerter:
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram not configured (missing token/chat_id) — alerts disabled")
             return
-        try:
-            from telegram import Bot
-            self._bot   = Bot(token=self.bot_token)
-            self._ready = True
-            logger.info(f"[{format_ist_timestamp()}] Telegram alerter ready")
-        except Exception as e:
-            logger.error(f"Telegram init failed: {e}")
+        # Use direct HTTP instead of python-telegram-bot to avoid asyncio event-loop issues
+        self._api_base = f"https://api.telegram.org/bot{self.bot_token}"
+        self._ready = True
+        logger.info(f"[{format_ist_timestamp()}] Telegram alerter ready (direct HTTP)")
 
     def initialize(self) -> bool:
         return self._ready
@@ -291,41 +288,39 @@ class TelegramAlerter:
 
     def _send(self, text: str, image_buf: Optional[io.BytesIO] = None,
               parse_mode: str = "Markdown") -> bool:
+        """
+        Send message via direct Telegram Bot HTTP API.
+        No asyncio — pure requests, works from any thread/context.
+        """
         if not self._ready:
             logger.debug("Telegram not ready — alert suppressed")
             return False
         try:
-            async def _do():
-                if image_buf:
-                    image_buf.seek(0)
-                    await self._bot.send_photo(
-                        chat_id=self.chat_id,
-                        photo=image_buf,
-                        caption=text[:1024],
-                        parse_mode=parse_mode,
-                    )
-                else:
-                    await self._bot.send_message(
-                        chat_id=self.chat_id,
-                        text=text[:4096],
-                        parse_mode=parse_mode,
-                    )
-
-            try:
-                loop = asyncio.get_running_loop()
-                if loop.is_closed():
-                    raise RuntimeError("event loop is closed")
-                # Schedule on the running event loop (PTB's loop). Task runs when
-                # the current handler yields/returns control to the event loop.
-                asyncio.ensure_future(_do(), loop=loop)
-            except RuntimeError:
-                # No running loop, or loop is closed — use a thread-safe approach
-                import threading
-                def _run_in_thread():
-                    import asyncio as _asyncio
-                    _asyncio.run(_do())
-                t = threading.Thread(target=_run_in_thread, daemon=True)
-                t.start()
+            if image_buf:
+                image_buf.seek(0)
+                resp = _requests.post(
+                    f"{self._api_base}/sendPhoto",
+                    data={
+                        "chat_id":    self.chat_id,
+                        "caption":    text[:1024],
+                        "parse_mode": parse_mode,
+                    },
+                    files={"photo": ("chart.png", image_buf, "image/png")},
+                    timeout=15,
+                )
+            else:
+                resp = _requests.post(
+                    f"{self._api_base}/sendMessage",
+                    json={
+                        "chat_id":    self.chat_id,
+                        "text":       text[:4096],
+                        "parse_mode": parse_mode,
+                    },
+                    timeout=15,
+                )
+            if not resp.ok:
+                logger.warning(f"Telegram API {resp.status_code}: {resp.text[:200]}")
+                return False
             return True
         except Exception as e:
             logger.error(f"Telegram send error: {e}")

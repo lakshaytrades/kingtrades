@@ -49,16 +49,26 @@ from utils import format_ist_timestamp, get_current_ist_time, get_current_ist_da
 
 logger = logging.getLogger(__name__)
 
-# NSE headers (same session approach as option_chain.py)
+# NSE requires browser-like headers + a valid session cookie from the homepage.
+# Without the cookie NSE returns 403. The session must visit / first, then /api/*.
 NSE_HEADERS = {
     "User-Agent": (
         "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
         "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/122.0.0.0 Safari/537.36"
+        "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept": "application/json, text/plain, */*",
-    "Accept-Language": "en-US,en;q=0.9",
-    "Referer": "https://www.nseindia.com/",
+    "Accept":          "application/json, text/plain, */*",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Referer":         "https://www.nseindia.com/",
+    "Origin":          "https://www.nseindia.com",
+    "DNT":             "1",
+    "Connection":      "keep-alive",
+    "Sec-Fetch-Site":  "same-origin",
+    "Sec-Fetch-Mode":  "cors",
+    "Sec-Fetch-Dest":  "empty",
+    "Cache-Control":   "no-cache",
+    "Pragma":          "no-cache",
 }
 
 NSE_FII_DII_URL       = "https://www.nseindia.com/api/fiidiiTradeReact"
@@ -188,15 +198,33 @@ class FIIDIITracker:
             conn.commit()
 
     def _init_session(self):
-        """Establish NSE session cookie."""
+        """
+        Establish NSE session cookie by visiting homepage + market-data page.
+        NSE requires a valid nsit/nseappid cookie; without it all /api/* return 403.
+        """
         try:
-            resp = self._session.get(
+            self._session = requests.Session()
+            self._session.headers.update(NSE_HEADERS)
+            # Step 1: visit homepage to get initial cookies
+            r1 = self._session.get(
                 "https://www.nseindia.com/",
                 timeout=15, allow_redirects=True,
             )
-            if resp.status_code == 200:
-                self._session_ok = True
-                logger.info(f"[{format_ist_timestamp()}] FII/DII tracker NSE session ready")
+            if r1.status_code != 200:
+                logger.warning(f"[{format_ist_timestamp()}] NSE homepage {r1.status_code}")
+                return
+            time.sleep(1)  # brief pause — mimic browser behaviour
+            # Step 2: visit a market-data page to get additional cookies (nsit, nseappid)
+            self._session.get(
+                "https://www.nseindia.com/market-data/live-equity-market",
+                timeout=15, allow_redirects=True,
+            )
+            time.sleep(0.5)
+            self._session_ok = True
+            logger.info(
+                f"[{format_ist_timestamp()}] FII/DII tracker NSE session ready "
+                f"(cookies: {list(self._session.cookies.keys())})"
+            )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] NSE session failed: {e}")
 
@@ -241,27 +269,43 @@ class FIIDIITracker:
         return None
 
     def _fetch_from_nse(self) -> Optional[FIIDIIFlow]:
-        """Fetch provisional FII/DII data from NSE API."""
+        """
+        Fetch provisional FII/DII data from NSE API.
+        On 403: reinit session and retry with exponential backoff (max 2 retries).
+        NSE 403s are common — the session cookie expires every ~10 minutes.
+        """
         if not self._session_ok:
             self._init_session()
 
-        try:
-            resp = self._session.get(NSE_FII_DII_URL, timeout=20)
-            if resp.status_code == 403:
-                logger.warning(f"[{format_ist_timestamp()}] NSE FII 403 — refreshing session")
-                self._session_ok = False
-                self._init_session()
-                time.sleep(2)
+        for attempt, wait in enumerate([0, 3, 8]):
+            try:
+                if wait:
+                    time.sleep(wait)
+                    self._init_session()  # fresh cookies before each retry
+
                 resp = self._session.get(NSE_FII_DII_URL, timeout=20)
 
-            resp.raise_for_status()
-            data = resp.json()
+                if resp.status_code == 403:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] NSE FII 403 — "
+                        f"session expired (attempt {attempt + 1}/3)"
+                    )
+                    self._session_ok = False
+                    if attempt < 2:
+                        continue
+                    # All retries exhausted — fall through to DB fallback
+                    return None
 
-            return self._parse_nse_fii_dii(data)
+                resp.raise_for_status()
+                data = resp.json()
+                return self._parse_nse_fii_dii(data)
 
-        except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] NSE FII/DII fetch error: {e}")
-            return None
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] NSE FII/DII fetch error (attempt {attempt + 1}): {e}")
+                if attempt >= 2:
+                    return None
+
+        return None
 
     def _parse_nse_fii_dii(self, data) -> Optional[FIIDIIFlow]:
         """Parse NSE FII/DII API response."""

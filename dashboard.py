@@ -55,8 +55,8 @@ class PerformanceDashboard:
         positions = 0
 
         if risk_mgr:
-            positions = risk_mgr.positions_count
-            pnl       = risk_mgr.daily_pnl
+            positions = len(getattr(getattr(risk_mgr, "state", None), "positions", {}))
+            pnl       = getattr(getattr(risk_mgr, "state", None), "daily_pnl", 0)
 
         pnl_sign = "+" if pnl >= 0 else ""
         status   = "🟢 RUNNING" if risk_mgr and getattr(risk_mgr, "running", True) else "🔴 STOPPED"
