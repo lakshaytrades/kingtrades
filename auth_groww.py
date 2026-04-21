@@ -357,8 +357,19 @@ class GrowwAuthManager:
             self._api_key = cached_api_key
             logger.info(f"[{format_ist_timestamp()}] api_key restored from cache")
 
-        # If cache has a fresh access_token, use it (skip refresh until it's old)
-        if cached_access:
+        # ── If Cloud API mode: API Key IS the permanent trading token ────────
+        # The Groww Cloud API Key (from groww.in → Developer API Settings)
+        # is a long-lived JWT used directly — no TOTP exchange needed.
+        # API Secret is for key rotation via web UI, not for daily bot auth.
+        if self._api_secret and self._api_key:
+            # Always use the API Key from env directly (ignore old cached token)
+            self._token           = self._api_key
+            self._token_timestamp = get_current_ist_time()
+            logger.info(
+                f"[{format_ist_timestamp()}] Cloud API mode: "
+                "using API Key as permanent trading token (never expires)"
+            )
+        elif cached_access:
             self._token           = cached_access
             self._token_timestamp = cached_ts
             logger.info(f"[{format_ist_timestamp()}] Using cached access_token")
@@ -439,14 +450,21 @@ class GrowwAuthManager:
 
     def get_valid_token(self) -> Optional[str]:
         """
-        Return a valid access_token, refreshing if needed.
+        Return a valid token for GrowwAPI().
 
-        Because api_key is PERMANENT, we can call get_access_token() at any time
-        of day — not just at 5:50 AM. So we refresh whenever the token is stale
-        (>20h old) rather than only in a pre-expiry window.
+        Cloud API mode (GROWW_CLIENT_SECRET set):
+          Returns the API Key directly — it's permanent, no refresh ever needed.
+
+        TOTP mode (GROWW_TOTP_SECRET only):
+          Refreshes when token is >20h old.
 
         Called before every GrowwAPI() instantiation.
         """
+        # Cloud API mode — API Key is permanent, use directly forever
+        if self._api_secret and self._api_key:
+            return self._api_key
+
+        # TOTP mode — refresh when stale
         if self._token and self._token_timestamp:
             age_h = (get_current_ist_time() - self._token_timestamp).total_seconds() / 3600
             if age_h < 20:
@@ -551,23 +569,33 @@ def initialize_auth() -> bool:
     """
     Called at bot startup and by watchdog before each daily launch.
 
-    Refresh policy:
-    • Pre-expiry window (5:45–5:59 AM IST): ALWAYS refresh — this is the primary window
-    • Token stale (>10h): refresh even mid-day (handles bot restarts after 6 AM)
-    • Otherwise: use existing token as-is
+    Cloud API mode (GROWW_CLIENT_SECRET set):
+      API Key is permanent — no refresh ever. Just validate it's set.
+
+    TOTP mode (GROWW_TOTP_SECRET only):
+      Refresh at 5:45–5:59 AM IST or when token is >10h old.
     """
     manager = get_auth_manager()
+
+    # Cloud API mode — permanent key, nothing to refresh
+    if manager._api_secret and manager._api_key:
+        logger.info(
+            f"[{format_ist_timestamp()}] Auth init: Cloud API mode — "
+            "API Key is permanent, no refresh needed ✅"
+        )
+        return True
+
+    # TOTP mode — daily refresh logic
     now_ist = get_current_ist_time()
     h, m = now_ist.hour, now_ist.minute
 
-    token_age_h      = manager.token_age_hours
-    pre_expiry_window = (h == 5 and m >= 45) or (h == 5 and m < 60)  # 5:45–5:59 AM
-    token_stale       = token_age_h > 10   # refresh if >10h old (safe margin)
+    token_age_h       = manager.token_age_hours
+    pre_expiry_window = (h == 5 and 45 <= m <= 59)
+    token_stale       = token_age_h > 10
 
     if pre_expiry_window:
         logger.info(
-            f"[{format_ist_timestamp()}] Auth init: pre-expiry window "
-            f"(5:45–5:59 AM IST) — refreshing now..."
+            f"[{format_ist_timestamp()}] Auth init: pre-expiry window — refreshing..."
         )
         manager.refresh_token_if_needed()
     elif token_stale:
