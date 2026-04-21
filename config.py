@@ -149,6 +149,9 @@ MAX_TRADES_PER_STOCK: int = 2           # Max 2 trades per stock per day
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
+# Breakeven SL — move SL to entry when trade is 0.5% in profit
+BREAKEVEN_TRIGGER_PCT: float = 0.5   # % profit to trigger breakeven SL move
+
 NIFTY_CIRCUIT_PCT: float = 2.0        # Pause if Nifty moves >2%
 CONSECUTIVE_LOSS_LIMIT: int = 3       # Pause after 3 consecutive losses
 PAUSE_AFTER_LOSSES_MINUTES: int = 30  # Pause duration after consecutive losses

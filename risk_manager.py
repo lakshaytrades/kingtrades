@@ -56,6 +56,7 @@ class Position:
     runner_qty: int = 0              # Runner qty (20%) with tight trailing
     t1_done: bool = False
     t2_done: bool = False
+    breakeven_done: bool = False     # True once SL moved to entry (0.5% profit)
     size_multiplier: float = 1.0     # From HighAccuracyFilter
 
     def __post_init__(self):
@@ -560,6 +561,8 @@ class RiskManager:
         }
         trail_dist = grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER) * atr
 
+        be_trigger = getattr(__import__("config"), "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
+
         if position.direction == "LONG":
             position.max_price = max(position.max_price, current_price)
             profit = current_price - position.entry_price
@@ -571,6 +574,24 @@ class RiskManager:
                 return {
                     "action": "EXIT", "new_sl": active_sl, "exit_qty": remaining,
                     "reason": f"{'Trailing' if position.trailing_active else 'Original'} SL hit ₹{current_price:.2f}"
+                }
+
+            # ── Breakeven SL: move to entry when 0.5% in profit ─
+            if (not position.breakeven_done and not position.t1_done
+                    and current_price >= position.entry_price * (1 + be_trigger)
+                    and position.stop_loss < position.entry_price):
+                position.stop_loss = position.entry_price
+                position.breakeven_done = True
+                logger.info(
+                    f"[{format_ist_timestamp()}] {position.symbol}: "
+                    f"🛡 Breakeven SL — price up {be_trigger*100:.1f}%, "
+                    f"SL moved to entry ₹{position.entry_price:.2f} (zero risk)"
+                )
+                return {
+                    "action": "UPDATE_SL",
+                    "new_sl": position.entry_price,
+                    "exit_qty": 0,
+                    "reason": f"Breakeven: price +{be_trigger*100:.1f}% → SL=entry ₹{position.entry_price:.2f}"
                 }
 
             # ── T1: 50% exit at Target 1 ──────────────────────
@@ -645,6 +666,24 @@ class RiskManager:
                 return {
                     "action": "EXIT", "new_sl": active_sl, "exit_qty": position.quantity,
                     "reason": f"Short {'trailing' if position.trailing_active else 'original'} SL hit ₹{current_price:.2f}"
+                }
+
+            # ── Breakeven SL: move to entry when 0.5% in profit ─
+            if (not position.breakeven_done and not position.t1_done
+                    and current_price <= position.entry_price * (1 - be_trigger)
+                    and position.stop_loss > position.entry_price):
+                position.stop_loss = position.entry_price
+                position.breakeven_done = True
+                logger.info(
+                    f"[{format_ist_timestamp()}] {position.symbol}: "
+                    f"🛡 Breakeven SL (SHORT) — price down {be_trigger*100:.1f}%, "
+                    f"SL moved to entry ₹{position.entry_price:.2f} (zero risk)"
+                )
+                return {
+                    "action": "UPDATE_SL",
+                    "new_sl": position.entry_price,
+                    "exit_qty": 0,
+                    "reason": f"Short breakeven: price -{be_trigger*100:.1f}% → SL=entry ₹{position.entry_price:.2f}"
                 }
 
             # T1: 50%
