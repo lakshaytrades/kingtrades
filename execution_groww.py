@@ -29,6 +29,8 @@ IST = ZoneInfo("Asia/Kolkata")
 class GrowwIPBlockedError(Exception):
     """Raised when Groww rejects order placement due to unregistered server IP."""
 
+_ip_block_last_alerted: Optional[datetime] = None  # throttle spam alerts
+
 # SEBI-compliant trade journal DB
 TRADE_DB_PATH = "logs/trades/trade_journal.db"
 
@@ -387,25 +389,30 @@ class GrowwExecutor:
         except GrowwIPBlockedError as ip_err:
             msg = (
                 "🚨 GROWW IP BLOCKED — Orders cannot be placed!\n\n"
-                "Your Render server IP is not whitelisted in Groww.\n\n"
+                "Your VPS IP is not whitelisted in Groww.\n\n"
                 "Fix:\n"
                 "1. Go to Groww → Profile → Developer API Settings\n"
-                "2. Add your Render server's outbound IP to the allowed list\n"
-                "3. Render IPs: check Dashboard → Service → Outbound IPs\n\n"
+                "2. Add your VPS IP (187.127.154.164) to the allowed list\n"
+                "3. Save and wait 1-2 minutes for it to take effect\n\n"
                 f"Raw error: {ip_err}"
             )
             logger.error(f"[{format_ist_timestamp()}] {msg}")
-            # Send Telegram alert so user can act immediately
-            try:
-                from alerts_telegram import TelegramAlerter
-                import os
-                alerter = TelegramAlerter(
-                    os.getenv("TELEGRAM_BOT_TOKEN", ""),
-                    os.getenv("TELEGRAM_CHAT_ID", ""),
-                )
-                alerter.send_text(msg)
-            except Exception:
-                pass
+            # Send Telegram alert only once per hour to avoid spam
+            global _ip_block_last_alerted
+            now = get_current_ist_time()
+            if (_ip_block_last_alerted is None or
+                    (now - _ip_block_last_alerted).total_seconds() > 3600):
+                _ip_block_last_alerted = now
+                try:
+                    from alerts_telegram import TelegramAlerter
+                    import os
+                    alerter = TelegramAlerter(
+                        os.getenv("TELEGRAM_BOT_TOKEN", ""),
+                        os.getenv("TELEGRAM_CHAT_ID", ""),
+                    )
+                    alerter.send_text(msg)
+                except Exception:
+                    pass
             return OrderResult(False, message="IP not whitelisted on Groww")
 
         except Exception as e:
@@ -493,7 +500,7 @@ class GrowwExecutor:
         except GrowwIPBlockedError as ip_err:
             logger.error(
                 f"[{format_ist_timestamp()}] EXIT BLOCKED — IP not whitelisted: {ip_err}. "
-                "Add Render outbound IP to Groww API Settings."
+                "Add VPS IP (187.127.154.164) to Groww Developer API Settings."
             )
             return OrderResult(False, message="IP not whitelisted — exit blocked")
         except Exception as e:
