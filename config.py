@@ -134,17 +134,15 @@ PRIMARY_TIMEFRAME: str = "5m"
 CONFIRMATION_TIMEFRAME: str = "15m"
 TREND_TIMEFRAME: str = "1h"
 
-# ── HIGH-ACCURACY MODE (targets 70-80% win rate) ───────────
-# Raised from 65 → 72. Fewer trades, higher quality.
-# 18yr rule: "It's not the number of trades, it's the quality."
-MIN_SIGNAL_SCORE: float = 72.0          # Hard minimum — no trade below this
-HIGH_CONFIDENCE_SCORE: float = 82.0     # Full size above this
-PREMIUM_SCORE: float = 90.0             # 1.2x size — A+ grade setups only
-MIN_VOLUME_RATIO: float = 1.8           # Min volume surge for entry (was 1.5)
+# ── SIGNAL SCORING ─────────────────────────────────────────
+MIN_SIGNAL_SCORE: float = 62.0          # Hard minimum — no trade below this
+HIGH_CONFIDENCE_SCORE: float = 75.0     # Full size above this
+PREMIUM_SCORE: float = 85.0             # 1.2x size — A+ grade setups only
+MIN_VOLUME_RATIO: float = 1.5           # Min volume surge for entry
 REQUIRE_MTF_ALIGNMENT: bool = True      # Always require ≥2 TF alignment
 REQUIRE_POWER_HOUR: bool = True         # Only trade during power windows
 HEIKIN_ASHI_CONFIRM: bool = True        # Require HA confirmation
-MAX_TRADES_PER_DAY: int = 6             # Quality > quantity. Max 6 per day.
+MAX_TRADES_PER_DAY: int = 8             # Max 8 per day
 MAX_TRADES_PER_STOCK: int = 2           # Max 2 trades per stock per day
 
 # ============================================================
@@ -313,29 +311,29 @@ BENCHMARK_SYMBOL:           str   = "^NSEI"  # Nifty50 for benchmark comparison
 # Goal: Win 4 out of 5 days/week by adjusting aggressiveness per day.
 
 DOW_SIZE_MULTIPLIERS: dict = {
-    0: 0.65,   # Monday   — volatile open, gap traps, 65% size
+    0: 0.75,   # Monday   — volatile open, 75% size
     1: 1.00,   # Tuesday  — best trend day, full size
     2: 1.00,   # Wednesday— trend continuation, full size
-    3: 0.80,   # Thursday — F&O expiry effect, 80% size
-    4: 0.65,   # Friday   — profit booking / reversals, 65% size
+    3: 0.85,   # Thursday — F&O expiry effect, 85% size
+    4: 0.75,   # Friday   — profit booking, 75% size
 }
 
-# Minimum signal score by day (higher bar on volatile days)
+# Minimum signal score by day
 DOW_MIN_SCORE: dict = {
-    0: 78.0,   # Monday   — A-grade only
-    1: 72.0,   # Tuesday  — standard
-    2: 72.0,   # Wednesday— standard
-    3: 75.0,   # Thursday — slightly tighter
-    4: 78.0,   # Friday   — A-grade only
+    0: 67.0,   # Monday
+    1: 62.0,   # Tuesday
+    2: 62.0,   # Wednesday
+    3: 65.0,   # Thursday
+    4: 67.0,   # Friday
 }
 
 # Max trades per day by day-of-week
 DOW_MAX_TRADES: dict = {
-    0: 3,   # Monday   — 3 max
-    1: 6,   # Tuesday  — 6 max
-    2: 6,   # Wednesday— 6 max
-    3: 5,   # Thursday — 5 max
-    4: 3,   # Friday   — 3 max
+    0: 4,   # Monday
+    1: 8,   # Tuesday
+    2: 8,   # Wednesday
+    3: 6,   # Thursday
+    4: 4,   # Friday
 }
 
 # Weekly P&L management

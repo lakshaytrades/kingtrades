@@ -658,11 +658,18 @@ class TradingBot:
 
             # 4. Check if we can take new trades
             if self.risk_manager.state.circuit_breaker_active:
-                logger.debug(f"[{format_ist_timestamp()}] Circuit breaker — skipping new signals")
+                logger.warning(f"[{format_ist_timestamp()}] 🔴 Circuit breaker ACTIVE — no new trades")
+                if self.alerter and not getattr(self, "_cb_alerted_hour", None) == now_ist.hour:
+                    self._cb_alerted_hour = now_ist.hour
+                    self.alerter.send_html(
+                        "🔴 <b>Circuit Breaker Active</b>\n"
+                        "No new orders will be placed this session.\n"
+                        "Send /resume to override."
+                    )
                 return
 
             if self.risk_manager.state.trading_paused:
-                logger.debug(f"[{format_ist_timestamp()}] Trading paused — skipping signals")
+                logger.warning(f"[{format_ist_timestamp()}] ⏸ Trading PAUSED — no new trades")
                 return
 
             # Hourly heartbeat (on the hour, e.g. 9:00, 10:00, 11:00...)
@@ -675,7 +682,7 @@ class TradingBot:
             watchlist = self._get_watchlist_cached()
             max_new = config.MAX_POSITIONS - len(self.risk_manager.state.positions)
             if max_new <= 0:
-                logger.debug(f"[{format_ist_timestamp()}] Max positions reached — no new entries")
+                logger.info(f"[{format_ist_timestamp()}] Max positions ({config.MAX_POSITIONS}) reached — no new entries")
                 return
 
             signals = self.signal_gen.scan_watchlist(
@@ -688,15 +695,36 @@ class TradingBot:
             dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
             dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
             if self.risk_manager.state.daily_trades >= dow_max_trades:
-                logger.debug(
+                logger.info(
                     f"[{format_ist_timestamp()}] DOW max trades "
                     f"({dow_max_trades}) reached for {['Mon','Tue','Wed','Thu','Fri'][dow]}"
                 )
                 return
+            before_filter = len(signals)
             signals = [s for s in signals if s.signal_score >= dow_min]
             if self._weekly_mode == "PROTECT":
-                # Weekly profit at 1.5% — only A/A+ trades, filter C/B
                 signals = [s for s in signals if s.quality_grade in ("A+", "A")]
+
+            # Alert once per hour if scanned symbols but found nothing
+            if before_filter == 0 and self.alerter:
+                last_no_sig = getattr(self, "_no_signal_alerted_hour", -1)
+                if last_no_sig != now_ist.hour:
+                    self._no_signal_alerted_hour = now_ist.hour
+                    day_name = ["Mon","Tue","Wed","Thu","Fri"][dow]
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Scan complete — 0 signals on "
+                        f"{len(watchlist)} symbols (min_score={dow_min:.0f}, day={day_name})"
+                    )
+                    try:
+                        self.alerter.send_html(
+                            f"📊 <b>Market Scan — No Signals</b>\n"
+                            f"Scanned {len(watchlist)} stocks at "
+                            f"{now_ist.strftime('%H:%M')} IST\n"
+                            f"Min score required: {dow_min:.0f} | Day: {day_name}\n"
+                            f"<i>Bot is running — waiting for quality setups</i>"
+                        )
+                    except Exception:
+                        pass
 
             # 5. Execute signals
             for signal in signals:
