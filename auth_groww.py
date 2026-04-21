@@ -357,22 +357,18 @@ class GrowwAuthManager:
             self._api_key = cached_api_key
             logger.info(f"[{format_ist_timestamp()}] api_key restored from cache")
 
-        # ── If Cloud API mode: API Key IS the permanent trading token ────────
-        # The Groww Cloud API Key (from groww.in → Developer API Settings)
-        # is a long-lived JWT used directly — no TOTP exchange needed.
-        # API Secret is for key rotation via web UI, not for daily bot auth.
-        if self._api_secret and self._api_key:
-            # Always use the API Key from env directly (ignore old cached token)
-            self._token           = self._api_key
-            self._token_timestamp = get_current_ist_time()
-            logger.info(
-                f"[{format_ist_timestamp()}] Cloud API mode: "
-                "using API Key as permanent trading token (never expires)"
-            )
-        elif cached_access:
+        # ── Load access token: cache → env fallback ──────────────────────
+        # Groww resets ALL tokens at 6:00 AM IST daily.
+        # cached_access is valid if < 20h old AND not past today's 6 AM reset.
+        if cached_access and not self._is_past_6am_reset(cached_ts):
             self._token           = cached_access
             self._token_timestamp = cached_ts
             logger.info(f"[{format_ist_timestamp()}] Using cached access_token")
+        elif self._api_key and not self._is_past_6am_reset(None):
+            # Use env token as-is — it was generated today and hasn't expired yet
+            self._token           = self._api_key
+            self._token_timestamp = get_current_ist_time()
+            logger.info(f"[{format_ist_timestamp()}] Using GROWW_AUTH_TOKEN as today's access token")
 
         # ── Validate config ───────────────────────────────────────────────
         if not self._api_key:
@@ -382,23 +378,38 @@ class GrowwAuthManager:
                 "  2. Copy API Key\n"
                 "  3. Add to /opt/kingtrades/.env: GROWW_AUTH_TOKEN=<paste>"
             )
-        if not self._api_secret and not self.totp_secret:
-            logger.error(
-                f"[{format_ist_timestamp()}] ❌ Neither GROWW_CLIENT_SECRET nor "
-                "GROWW_TOTP_SECRET is set!\n"
-                "  Preferred: add GROWW_CLIENT_SECRET=<API Secret> to .env\n"
-                "  Fallback:  add GROWW_TOTP_SECRET=<base32 secret> to .env"
-            )
-        elif self._api_secret:
-            logger.info(
-                f"[{format_ist_timestamp()}] ✅ Auth manager ready "
-                "(API Key + API Secret — fully automatic)"
+        if not self.totp_secret:
+            logger.warning(
+                f"[{format_ist_timestamp()}] ⚠️ GROWW_TOTP_SECRET not set — "
+                "token cannot be auto-refreshed at 6 AM!\n"
+                "  Copy TOTP secret from groww.in → API keys → TOTP row\n"
+                "  Add to /opt/kingtrades/.env: GROWW_TOTP_SECRET=<base32>"
             )
         else:
             logger.info(
-                f"[{format_ist_timestamp()}] ✅ Auth manager ready "
-                "(API Key + TOTP — automatic TOTP refresh)"
+                f"[{format_ist_timestamp()}] ✅ Auth manager ready — "
+                "TOTP auto-refresh at 5:50 AM IST daily"
             )
+
+    # ──────────────────────────────────────────────────────────────────────
+    # Helpers
+    # ──────────────────────────────────────────────────────────────────────
+
+    def _is_past_6am_reset(self, token_ts: Optional[datetime]) -> bool:
+        """
+        Returns True if the Groww 6 AM IST daily reset has occurred since
+        the token was issued. A None token_ts means 'check if we are currently
+        past 6 AM IST today' (i.e. the token would have been reset already).
+        """
+        now = get_current_ist_time()
+        reset_today = now.replace(hour=6, minute=0, second=0, microsecond=0)
+        if token_ts is None:
+            # No timestamp — treat as: is it already past 6 AM today?
+            return now >= reset_today
+        if token_ts.tzinfo is None:
+            token_ts = token_ts.replace(tzinfo=IST)
+        # Token was issued before today's 6 AM and it's now past 6 AM → expired
+        return token_ts < reset_today and now >= reset_today
 
     # ──────────────────────────────────────────────────────────────────────
     # Token refresh with 3-attempt retry
@@ -450,32 +461,19 @@ class GrowwAuthManager:
 
     def get_valid_token(self) -> Optional[str]:
         """
-        Return a valid token for GrowwAPI().
-
-        Cloud API mode (GROWW_CLIENT_SECRET set):
-          Returns the API Key directly — it's permanent, no refresh ever needed.
-
-        TOTP mode (GROWW_TOTP_SECRET only):
-          Refreshes when token is >20h old.
-
-        Called before every GrowwAPI() instantiation.
+        Return a valid access_token for GrowwAPI().
+        Groww resets ALL tokens at 6:00 AM IST daily — refresh before then.
         """
-        # Cloud API mode — API Key is permanent, use directly forever
-        if self._api_secret and self._api_key:
-            return self._api_key
-
-        # TOTP mode — refresh when stale
         if self._token and self._token_timestamp:
-            age_h = (get_current_ist_time() - self._token_timestamp).total_seconds() / 3600
-            if age_h < 20:
+            # Token is still valid if the 6 AM IST reset hasn't happened since issue
+            if not self._is_past_6am_reset(self._token_timestamp):
                 return self._token
             logger.info(
-                f"[{format_ist_timestamp()}] access_token {age_h:.1f}h old — refreshing..."
+                f"[{format_ist_timestamp()}] Token expired at 6 AM IST reset — refreshing..."
             )
-        elif not self._token:
-            logger.info(f"[{format_ist_timestamp()}] No access_token yet — fetching now...")
+        else:
+            logger.info(f"[{format_ist_timestamp()}] No access_token — fetching now...")
 
-        # Fallback: if refresh fails, return old token (may still work for a bit)
         return self._do_refresh_with_retry() or self._token
 
     def refresh_token_if_needed(self) -> bool:
@@ -568,46 +566,23 @@ def get_groww_token() -> Optional[str]:
 def initialize_auth() -> bool:
     """
     Called at bot startup and by watchdog before each daily launch.
-
-    Cloud API mode (GROWW_CLIENT_SECRET set):
-      API Key is permanent — no refresh ever. Just validate it's set.
-
-    TOTP mode (GROWW_TOTP_SECRET only):
-      Refresh at 5:45–5:59 AM IST or when token is >10h old.
+    Groww resets ALL tokens at 6:00 AM IST — refresh window is 5:45–5:59 AM IST.
     """
     manager = get_auth_manager()
-
-    # Cloud API mode — permanent key, nothing to refresh
-    if manager._api_secret and manager._api_key:
-        logger.info(
-            f"[{format_ist_timestamp()}] Auth init: Cloud API mode — "
-            "API Key is permanent, no refresh needed ✅"
-        )
-        return True
-
-    # TOTP mode — daily refresh logic
     now_ist = get_current_ist_time()
-    h, m = now_ist.hour, now_ist.minute
+    h, m    = now_ist.hour, now_ist.minute
 
-    token_age_h       = manager.token_age_hours
     pre_expiry_window = (h == 5 and 45 <= m <= 59)
-    token_stale       = token_age_h > 10
+    token_expired     = manager._is_past_6am_reset(manager._token_timestamp)
 
     if pre_expiry_window:
-        logger.info(
-            f"[{format_ist_timestamp()}] Auth init: pre-expiry window — refreshing..."
-        )
+        logger.info(f"[{format_ist_timestamp()}] Auth init: 5:45 AM window — refreshing before 6 AM reset...")
         manager.refresh_token_if_needed()
-    elif token_stale:
-        logger.info(
-            f"[{format_ist_timestamp()}] Auth init: token {token_age_h:.1f}h old — refreshing..."
-        )
+    elif token_expired:
+        logger.info(f"[{format_ist_timestamp()}] Auth init: token expired at 6 AM reset — refreshing now...")
         manager.refresh_token_if_needed()
     else:
-        logger.info(
-            f"[{format_ist_timestamp()}] Auth init: token fresh "
-            f"({token_age_h:.1f}h old) — no refresh needed"
-        )
+        logger.info(f"[{format_ist_timestamp()}] Auth init: token valid until next 6 AM IST reset ✅")
 
     return bool(manager._token or manager._api_key)
 
