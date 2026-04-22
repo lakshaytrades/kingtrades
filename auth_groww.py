@@ -1,53 +1,44 @@
 """
 auth_groww.py — NSE Momentum Groww AI Bot
-Fully Automatic Token Refresh — Zero Manual Intervention
+Fully Automatic TOTP Login — Zero Manual Intervention After Setup
 
-─── HOW GROWW TOKENS WORK ───────────────────────────────────────────────────
-Groww Cloud API (groww.in → Developer → API Settings) issues:
+─── HOW IT WORKS ────────────────────────────────────────────────────────────
+  Groww resets ALL access tokens at 6:00 AM IST daily.
 
-  1. GROWW_AUTH_TOKEN   — Your permanent API Key (long JWT from groww.in).
-                          Never expires. Used as the api_key parameter.
+  Two permanent env vars (set ONCE in .env, never change):
+    GROWW_AUTH_TOKEN  = your current access token (copy from groww.in today)
+    GROWW_TOTP_SECRET = your TOTP base32 secret (copy from groww.in → TOTP row)
 
-  2. GROWW_CLIENT_SECRET — Your API Secret from the same page.
-                           Used to get a fresh access_token automatically
-                           (no TOTP, no manual step — pure machine auth).
+  What the bot does automatically:
+    1. At 5:50 AM IST — uses TOTP to generate a fresh token before 6 AM reset
+    2. On startup — if token already expired (past 6 AM), uses TOTP immediately
+    3. Caches token to disk — survives service restarts within same day
 
-  Legacy / fallback:
-  3. GROWW_TOTP_SECRET  — TOTP base32 secret (if you set up TOTP-based auth).
-                          Used only when Cloud API Secret auth fails.
+  TOTP flow (fully automatic):
+    totp_code    = pyotp.TOTP(GROWW_TOTP_SECRET).now()       ← 6-digit code
+    access_token = GrowwAPI.get_access_token(                 ← fresh token
+                       api_key=GROWW_AUTH_TOKEN,
+                       totp=totp_code
+                   )
 
-─── WHAT THE BOT DOES AUTOMATICALLY ────────────────────────────────────────
-  Preferred (Cloud API):
-    access_token = POST /v1/oauth/token {api_key, api_secret, grant_type}
-    → fresh token, fully automatic, no TOTP needed
-
-  Fallback (TOTP):
-    totp_code    = pyotp.TOTP(GROWW_TOTP_SECRET).now()
-    access_token = GrowwAPI.get_access_token(api_key=api_key, totp=totp_code)
-
-  Token is refreshed when >20h old (Groww tokens last ~24h).
-  Cache persists across bot restarts — no unnecessary re-auth.
-
-─── SETUP (ONE TIME ONLY) ───────────────────────────────────────────────────
-  In your .env on the VPS:
-    GROWW_AUTH_TOKEN    = API Key from groww.in → Developer → API Settings
-    GROWW_CLIENT_SECRET = API Secret from the same page
-
-  After this, the bot refreshes automatically forever.
+─── ONE-TIME SETUP ──────────────────────────────────────────────────────────
+  1. Go to groww.in → API keys
+  2. Copy the ACCESS TOKEN → set as GROWW_AUTH_TOKEN in .env
+  3. Copy the TOTP secret  → set as GROWW_TOTP_SECRET in .env
+  4. Restart bot → fully automatic forever after this
 """
 
 import json
 import logging
 import os
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import requests
-
 import pyotp
+import requests
 
 from utils import format_ist_timestamp, get_current_ist_time
 
@@ -56,16 +47,12 @@ IST = ZoneInfo("Asia/Kolkata")
 
 _TOKEN_CACHE_FILE = Path("data/.token_cache.json")
 
-# ────────────────────────────────────────────────────────────────────────────
-# Token cache — stores api_key and access_token SEPARATELY
-# ────────────────────────────────────────────────────────────────────────────
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Token cache
+# ─────────────────────────────────────────────────────────────────────────────
 
 def _save_token_cache(api_key: str, access_token: str, timestamp: datetime) -> None:
-    """
-    Save both the permanent api_key and today's access_token.
-    api_key is stored so the bot can survive a Render restart without re-reading env.
-    access_token is stored to avoid unnecessary re-auth on restarts within the same day.
-    """
     try:
         _TOKEN_CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
         _TOKEN_CACHE_FILE.write_text(json.dumps({
@@ -78,53 +65,47 @@ def _save_token_cache(api_key: str, access_token: str, timestamp: datetime) -> N
 
 
 def _load_token_cache() -> Tuple[Optional[str], Optional[str], Optional[datetime]]:
-    """
-    Returns (api_key, access_token, timestamp).
-    access_token is only returned if it's <12h old (Groww access tokens last ~24h but we
-    refresh at 6h to be safe). api_key is always returned if present.
-    """
     try:
         if not _TOKEN_CACHE_FILE.exists():
             return None, None, None
         data = json.loads(_TOKEN_CACHE_FILE.read_text())
-
-        api_key      = data.get("api_key", "")
-        access_token = data.get("access_token", "")
+        api_key      = data.get("api_key", "") or None
+        access_token = data.get("access_token", "") or None
         ts_str       = data.get("timestamp", "")
-
         if not ts_str:
-            return api_key or None, None, None
-
+            return api_key, None, None
         ts = datetime.fromisoformat(ts_str)
         if ts.tzinfo is None:
             ts = ts.replace(tzinfo=IST)
-
-        age_h = (datetime.now(IST) - ts).total_seconds() / 3600
-
-        if age_h < 20 and access_token and len(access_token) > 20:
-            logger.info(
-                f"[{format_ist_timestamp()}] Cache hit: access_token age {age_h:.1f}h "
-                f"(valid for {20 - age_h:.1f}h more)"
-            )
-            return api_key or None, access_token, ts
-
-        logger.info(
-            f"[{format_ist_timestamp()}] Cache: access_token {age_h:.1f}h old — "
-            "will refresh (api_key retained)"
-        )
-        return api_key or None, None, ts
-
+        return api_key, access_token, ts
     except Exception as e:
         logger.debug(f"Token cache read failed: {e}")
     return None, None, None
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Core refresh — uses permanent api_key, generates fresh access_token via TOTP
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# 6 AM IST reset check
+# ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_token_from_response(body: dict) -> Optional[str]:
-    """Pull the JWT from any known key in a Groww API response dict."""
+def _is_expired_by_6am_reset(token_ts: Optional[datetime]) -> bool:
+    """
+    Returns True if Groww's 6 AM IST daily reset has invalidated this token.
+    A token issued before today's 6 AM is expired if it's now past 6 AM.
+    """
+    if token_ts is None:
+        return True
+    now = get_current_ist_time()
+    if token_ts.tzinfo is None:
+        token_ts = token_ts.replace(tzinfo=IST)
+    reset_today = now.replace(hour=6, minute=0, second=0, microsecond=0)
+    return token_ts < reset_today and now >= reset_today
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Core: get fresh token via TOTP
+# ─────────────────────────────────────────────────────────────────────────────
+
+def _extract_token(body: dict) -> Optional[str]:
     for key in ("token", "authToken", "auth_token", "access_token",
                 "jwtToken", "jwt_token", "userToken", "user_token"):
         val = body.get(key) or (body.get("data") or {}).get(key)
@@ -133,372 +114,262 @@ def _extract_token_from_response(body: dict) -> Optional[str]:
     return None
 
 
-def _refresh_via_direct_http(api_key: str, totp_code: str,
-                             api_secret: str = "") -> Optional[str]:
+def _totp_refresh(api_key: str, totp_secret: str, attempt: int = 1) -> Optional[str]:
     """
-    Direct HTTPS call to api.groww.in.
-    Tries both new Cloud API (api_key + api_secret) and legacy TOTP approaches.
+    Get a fresh Groww access token using TOTP.
+
+    api_key     = GROWW_AUTH_TOKEN  (today's access token, still valid at 5:50 AM)
+    totp_secret = GROWW_TOTP_SECRET (permanent base32 secret — never changes)
+
+    Called at 5:50 AM IST before the 6 AM reset, and on startup if token expired.
     """
-    headers = {
-        "Authorization":  f"Bearer {api_key}",
-        "Content-Type":   "application/json",
-        "Accept":         "application/json",
-        "User-Agent":     "growwapi-python/1.0",
-        "X-Api-Version":  "1",
-    }
-    endpoints = []
-
-    # New Groww Cloud API — api_key + api_secret (no TOTP needed)
-    if api_secret:
-        endpoints += [
-            ("POST", "https://api.groww.in/v1/oauth/token",
-             {"api_key": api_key, "api_secret": api_secret,
-              "grant_type": "client_credentials"}),
-            ("POST", "https://api.groww.in/v1/user/generate_token",
-             {"api_key": api_key, "api_secret": api_secret}),
-            ("POST", "https://api.groww.in/v1/auth/token",
-             {"apiKey": api_key, "apiSecret": api_secret}),
-        ]
-
-    # Legacy TOTP-based endpoints
-    if totp_code:
-        endpoints += [
-            ("POST", "https://api.groww.in/v1/user/generate_token",
-             {"api_key": api_key, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/user/session/generate_token",
-             {"api_key": api_key, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/auth/access-token",
-             {"api_key": api_key, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/auth/token",
-             {"apiKey": api_key, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/user/token/refresh",
-             {"totp": totp_code}),
-        ]
-
-    for method, url, body in endpoints:
-        try:
-            resp = requests.request(
-                method, url, json=body, headers=headers, timeout=20
-            )
-            label = url.split("/")[-1]
-            if resp.status_code in (200, 201):
-                try:
-                    tok = _extract_token_from_response(resp.json())
-                    if tok:
-                        logger.info(
-                            f"[{format_ist_timestamp()}] ✅ Direct HTTP token via {label} "
-                            f"(HTTP {resp.status_code})"
-                        )
-                        return tok
-                    logger.debug(f"  [{label}] HTTP 200 but no token — keys: {list(resp.json().keys())}")
-                except Exception:
-                    pass
-            elif resp.status_code == 401:
-                logger.debug(f"  [{label}] HTTP 401 — api_key rejected")
-            elif resp.status_code == 404:
-                logger.debug(f"  [{label}] HTTP 404 — endpoint not found (trying next)")
-            else:
-                logger.debug(f"  [{label}] HTTP {resp.status_code}")
-        except requests.exceptions.ConnectionError:
-            logger.debug(f"  [{url.split('/')[2]}] Connection error — not reachable")
-        except Exception as e:
-            logger.debug(f"  Direct HTTP {url.split('/')[-1]}: {e}")
-    return None
-
-
-def _refresh_access_token(api_key: str, totp_secret: str,
-                          api_secret: str = "", attempt: int = 1) -> Optional[str]:
-    """
-    Refresh the Groww access token.
-
-    Try order:
-      1. Cloud API Secret (api_key + api_secret, no TOTP) — preferred
-      2. growwapi SDK class method (api_key + totp)
-      3. growwapi SDK instance method (older SDK versions)
-      4. Direct HTTPS to api.groww.in
-
-    api_key     = GROWW_AUTH_TOKEN (permanent API Key — never changes)
-    api_secret  = GROWW_CLIENT_SECRET (permanent API Secret — never changes)
-    totp_secret = GROWW_TOTP_SECRET (TOTP base32 secret — legacy fallback)
-    """
-    if not api_key:
+    if not api_key or not totp_secret:
         logger.error(
-            f"[{format_ist_timestamp()}] Cannot refresh: GROWW_AUTH_TOKEN not set.\n"
-            "  Set GROWW_AUTH_TOKEN in .env on VPS."
+            f"[{format_ist_timestamp()}] Cannot refresh — missing credentials:\n"
+            f"  GROWW_AUTH_TOKEN:  {'set' if api_key else '❌ MISSING'}\n"
+            f"  GROWW_TOTP_SECRET: {'set' if totp_secret else '❌ MISSING'}\n"
+            "  Copy both from groww.in → API keys page"
         )
         return None
 
-    # ── Path 1: Cloud API Secret — fully automatic, no TOTP ──────────────
-    if api_secret:
-        logger.info(
-            f"[{format_ist_timestamp()}] Token refresh attempt {attempt}/3 "
-            "via Cloud API Secret..."
-        )
-        tok = _refresh_via_direct_http(api_key, "", api_secret)
-        if tok:
-            return tok
-        logger.debug("Cloud API Secret auth failed — falling back to TOTP")
-
-    # ── Need TOTP for remaining paths ─────────────────────────────────────
-    if not totp_secret:
-        logger.warning(
-            f"[{format_ist_timestamp()}] Attempt {attempt}/3: Cloud API Secret "
-            "failed and GROWW_TOTP_SECRET not set — no fallback available."
-        )
-        return None
-
-    # Wait for a TOTP window with ≥ 5s of life left
+    # Wait for TOTP window with ≥ 5s remaining (avoids code expiring mid-call)
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 5:
         wait = remaining + 1
         logger.info(f"[{format_ist_timestamp()}] Waiting {wait}s for fresh TOTP window...")
         time.sleep(wait)
 
-    totp_code = pyotp.TOTP(totp_secret).now()
+    totp_code   = pyotp.TOTP(totp_secret).now()
     window_left = 30 - (int(time.time()) % 30)
     logger.info(
-        f"[{format_ist_timestamp()}] Token refresh attempt {attempt}/3 via TOTP | "
-        f"TOTP={totp_code} | window={window_left}s"
+        f"[{format_ist_timestamp()}] TOTP refresh attempt {attempt}/3 | "
+        f"code={totp_code} | window={window_left}s left"
     )
 
-    # ── Path 2: growwapi SDK class method ────────────────────────────────
+    # ── Method 1: growwapi SDK (official) ────────────────────────────────
     try:
         from growwapi import GrowwAPI
-        access_token = GrowwAPI.get_access_token(api_key=api_key, totp=totp_code)
-        if isinstance(access_token, str) and len(access_token) > 20:
+        result = GrowwAPI.get_access_token(api_key=api_key, totp=totp_code)
+        if isinstance(result, str) and len(result) > 20:
             logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.get_access_token()")
-            return access_token
-        if isinstance(access_token, dict):
-            tok = _extract_token_from_response(access_token)
+            return result
+        if isinstance(result, dict):
+            tok = _extract_token(result)
             if tok:
                 logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.get_access_token() [dict]")
                 return tok
-        logger.debug(f"SDK returned: {str(access_token)[:100]}")
-
+        logger.debug(f"SDK returned unexpected: {str(result)[:120]}")
     except AttributeError:
-        # Older SDK — try instance method
+        # Older SDK — instance method
         try:
             from growwapi import GrowwAPI
             tmp = GrowwAPI(api_key)
             for mname in ("get_access_token", "refresh_token", "generate_session"):
                 fn = getattr(tmp, mname, None)
-                if not fn:
-                    continue
-                try:
-                    result = fn(totp=totp_code)
-                    if result and isinstance(result, str) and len(result) > 20:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK instance.{mname}()")
-                        return result
-                except TypeError:
-                    pass
-        except Exception as e2:
-            logger.debug(f"SDK instance fallback: {e2}")
-
+                if fn:
+                    try:
+                        r = fn(totp=totp_code)
+                        if r and isinstance(r, str) and len(r) > 20:
+                            logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{mname}()")
+                            return r
+                    except TypeError:
+                        pass
+        except Exception as e:
+            logger.debug(f"SDK instance fallback: {e}")
     except ImportError:
-        logger.debug("growwapi SDK not installed — using direct HTTP")
-
+        logger.debug("growwapi not installed — trying direct HTTP")
     except Exception as e:
         logger.warning(f"[{format_ist_timestamp()}] SDK error: {e}")
 
-    # ── Path 3: Direct HTTPS to api.groww.in (TOTP) ───────────────────────
-    logger.info(f"[{format_ist_timestamp()}] Trying direct HTTPS to api.groww.in (TOTP)...")
-    tok = _refresh_via_direct_http(api_key, totp_code, api_secret)
-    if tok:
-        return tok
+    # ── Method 2: direct HTTPS (no SDK dependency) ───────────────────────
+    headers = {
+        "Authorization": f"Bearer {api_key}",
+        "Content-Type":  "application/json",
+        "Accept":        "application/json",
+        "User-Agent":    "growwapi-python/1.0",
+        "X-Api-Version": "1",
+    }
+    endpoints = [
+        ("POST", "https://api.groww.in/v1/user/generate_token",
+         {"api_key": api_key, "totp": totp_code}),
+        ("POST", "https://api.groww.in/v1/user/session/generate_token",
+         {"api_key": api_key, "totp": totp_code}),
+        ("POST", "https://api.groww.in/v1/auth/access-token",
+         {"api_key": api_key, "totp": totp_code}),
+        ("POST", "https://api.groww.in/v1/auth/token",
+         {"apiKey": api_key, "totp": totp_code}),
+        ("POST", "https://api.groww.in/v1/user/token/refresh",
+         {"totp": totp_code}),
+    ]
+    for method, url, body in endpoints:
+        label = url.split("/")[-1]
+        try:
+            resp = requests.request(method, url, json=body, headers=headers, timeout=20)
+            if resp.status_code in (200, 201):
+                tok = _extract_token(resp.json())
+                if tok:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] ✅ Token via direct HTTP [{label}]"
+                    )
+                    return tok
+                logger.debug(f"  [{label}] HTTP 200 but no token — keys: {list(resp.json().keys())}")
+            elif resp.status_code == 401:
+                logger.debug(f"  [{label}] 401 — api_key rejected (may be expired)")
+            elif resp.status_code == 404:
+                logger.debug(f"  [{label}] 404 — endpoint not found")
+            else:
+                logger.debug(f"  [{label}] HTTP {resp.status_code}")
+        except requests.exceptions.ConnectionError:
+            logger.debug(f"  [{label}] Connection error")
+        except Exception as e:
+            logger.debug(f"  [{label}] {e}")
 
     logger.warning(
-        f"[{format_ist_timestamp()}] Attempt {attempt}/3 failed.\n"
-        "  Verify GROWW_AUTH_TOKEN, GROWW_CLIENT_SECRET (and GROWW_TOTP_SECRET "
-        "if using TOTP) in /opt/kingtrades/.env on the VPS."
+        f"[{format_ist_timestamp()}] Attempt {attempt}/3 failed — "
+        "all TOTP methods exhausted"
     )
     return None
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Auth Manager
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 class GrowwAuthManager:
     """
-    Fully automatic Groww authentication manager.
+    Fully automatic Groww authentication.
 
-    Permanent env vars (set ONCE in .env on VPS, never touch again):
-      GROWW_AUTH_TOKEN    = API Key from groww.in → Developer → API Settings
-      GROWW_CLIENT_SECRET = API Secret from the same page  ← preferred auth
-      GROWW_TOTP_SECRET   = TOTP base32 secret             ← legacy fallback
+    Set ONCE in /opt/kingtrades/.env:
+      GROWW_AUTH_TOKEN  = today's access token from groww.in → API keys
+      GROWW_TOTP_SECRET = TOTP base32 secret from groww.in → TOTP row
 
-    The manager:
-      - Loads credentials from env (permanent — never overwritten)
-      - Gets a fresh access_token automatically (Cloud API Secret, then TOTP)
-      - Auto-retries 3x with 30s backoff on transient failures
-      - Caches access_token on disk (survives bot restarts within the same day)
-      - Notifies via Telegram if credentials are missing
+    Bot auto-refreshes at 5:50 AM IST before Groww's 6 AM daily reset.
+    If started after 6 AM (token already expired), refreshes immediately.
     """
 
     def __init__(self):
-        # ── Permanent credentials (set ONCE, env vars never change) ───────
-        self._api_key      = os.getenv("GROWW_AUTH_TOKEN", "")     # permanent API Key
-        self._api_secret   = os.getenv("GROWW_CLIENT_SECRET", "")  # permanent API Secret
-        self.totp_secret   = os.getenv("GROWW_TOTP_SECRET", "")    # TOTP base32 (legacy)
+        self._api_key    = os.getenv("GROWW_AUTH_TOKEN", "")
+        self.totp_secret = os.getenv("GROWW_TOTP_SECRET", "")
+        self.email       = os.getenv("GROWW_EMAIL", "")
+        self.password    = os.getenv("GROWW_PASSWORD", "")
 
-        # Kept for possible future use / web login fallback
-        self.email    = os.getenv("GROWW_EMAIL", "")
-        self.password = os.getenv("GROWW_PASSWORD", "")
-
-        # ── Runtime state ─────────────────────────────────────────────────
-        self._token:           Optional[str]      = None   # daily access token
+        self._token:           Optional[str]      = None
         self._token_timestamp: Optional[datetime] = None
 
-        # ── Load cache first ──────────────────────────────────────────────
-        cached_api_key, cached_access, cached_ts = _load_token_cache()
+        # ── Try cache first ───────────────────────────────────────────────
+        cached_key, cached_tok, cached_ts = _load_token_cache()
 
-        # If cache has a valid api_key and env has none, use cache's api_key
-        if not self._api_key and cached_api_key:
-            self._api_key = cached_api_key
+        if not self._api_key and cached_key:
+            self._api_key = cached_key
             logger.info(f"[{format_ist_timestamp()}] api_key restored from cache")
 
-        # ── Load access token: cache → env fallback ──────────────────────
-        # Groww resets ALL tokens at 6:00 AM IST daily.
-        # cached_access is valid if < 20h old AND not past today's 6 AM reset.
-        if cached_access and not self._is_past_6am_reset(cached_ts):
-            self._token           = cached_access
+        if cached_tok and not _is_expired_by_6am_reset(cached_ts):
+            self._token           = cached_tok
             self._token_timestamp = cached_ts
-            logger.info(f"[{format_ist_timestamp()}] Using cached access_token")
-        elif self._api_key and not self._is_past_6am_reset(None):
-            # Use env token as-is — it was generated today and hasn't expired yet
+            logger.info(f"[{format_ist_timestamp()}] Using cached access_token (still valid)")
+        elif self._api_key and not _is_expired_by_6am_reset(None):
+            # Token from env is still valid today (before 6 AM reset)
             self._token           = self._api_key
             self._token_timestamp = get_current_ist_time()
-            logger.info(f"[{format_ist_timestamp()}] Using GROWW_AUTH_TOKEN as today's access token")
+            logger.info(f"[{format_ist_timestamp()}] Using today's GROWW_AUTH_TOKEN")
+        else:
+            logger.info(
+                f"[{format_ist_timestamp()}] Token expired (past 6 AM reset) — "
+                "will refresh via TOTP on first use"
+            )
 
-        # ── Validate config ───────────────────────────────────────────────
+        # ── Validate ──────────────────────────────────────────────────────
         if not self._api_key:
             logger.error(
                 f"[{format_ist_timestamp()}] ❌ GROWW_AUTH_TOKEN not set!\n"
-                "  1. Go to groww.in → Profile → Developer API Settings\n"
-                "  2. Copy API Key\n"
+                "  1. Go to groww.in → API keys\n"
+                "  2. Copy ACCESS TOKEN\n"
                 "  3. Add to /opt/kingtrades/.env: GROWW_AUTH_TOKEN=<paste>"
             )
         if not self.totp_secret:
-            logger.warning(
-                f"[{format_ist_timestamp()}] ⚠️ GROWW_TOTP_SECRET not set — "
-                "token cannot be auto-refreshed at 6 AM!\n"
-                "  Copy TOTP secret from groww.in → API keys → TOTP row\n"
-                "  Add to /opt/kingtrades/.env: GROWW_TOTP_SECRET=<base32>"
+            logger.error(
+                f"[{format_ist_timestamp()}] ❌ GROWW_TOTP_SECRET not set!\n"
+                "  1. Go to groww.in → API keys\n"
+                "  2. Copy TOTP secret (base32 string from TOTP row)\n"
+                "  3. Add to /opt/kingtrades/.env: GROWW_TOTP_SECRET=<paste>"
             )
-        else:
+        if self._api_key and self.totp_secret:
             logger.info(
-                f"[{format_ist_timestamp()}] ✅ Auth manager ready — "
+                f"[{format_ist_timestamp()}] ✅ Auth ready — "
                 "TOTP auto-refresh at 5:50 AM IST daily"
             )
 
-    # ──────────────────────────────────────────────────────────────────────
-    # Helpers
-    # ──────────────────────────────────────────────────────────────────────
-
-    def _is_past_6am_reset(self, token_ts: Optional[datetime]) -> bool:
-        """
-        Returns True if the Groww 6 AM IST daily reset has occurred since
-        the token was issued. A None token_ts means 'check if we are currently
-        past 6 AM IST today' (i.e. the token would have been reset already).
-        """
-        now = get_current_ist_time()
-        reset_today = now.replace(hour=6, minute=0, second=0, microsecond=0)
-        if token_ts is None:
-            # No timestamp — treat as: is it already past 6 AM today?
-            return now >= reset_today
-        if token_ts.tzinfo is None:
-            token_ts = token_ts.replace(tzinfo=IST)
-        # Token was issued before today's 6 AM and it's now past 6 AM → expired
-        return token_ts < reset_today and now >= reset_today
-
-    # ──────────────────────────────────────────────────────────────────────
-    # Token refresh with 3-attempt retry
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
+    # TOTP refresh with retry
+    # ─────────────────────────────────────────────────────────────────────
 
     def _do_refresh_with_retry(self) -> Optional[str]:
-        """
-        Get a fresh access_token.
-        Tries Cloud API Secret first (fully automatic), then TOTP as fallback.
-        Retries 3 times with 30s spacing on transient failures.
-        """
+        """Refresh via TOTP, retrying 3 times with 30s between attempts."""
         for attempt in range(1, 4):
-            token = _refresh_access_token(
-                self._api_key, self.totp_secret, self._api_secret, attempt
-            )
+            token = _totp_refresh(self._api_key, self.totp_secret, attempt)
             if token:
                 self._token           = token
                 self._token_timestamp = get_current_ist_time()
-                # Save api_key (permanent) + access_token (daily) separately.
-                # ⚠️  DO NOT update self._api_key here — it is permanent.
                 _save_token_cache(self._api_key, token, self._token_timestamp)
                 logger.info(
-                    f"[{format_ist_timestamp()}] ✅ Fresh access_token saved "
-                    f"(attempt {attempt}/3) — valid until next 6:00 AM IST"
+                    f"[{format_ist_timestamp()}] ✅ Fresh token saved (attempt {attempt}/3) "
+                    "— valid until 6:00 AM IST tomorrow"
                 )
                 return token
-
             if attempt < 3:
                 logger.warning(
-                    f"[{format_ist_timestamp()}] Attempt {attempt}/3 failed — "
-                    "retrying in 30s..."
+                    f"[{format_ist_timestamp()}] Attempt {attempt}/3 failed — retrying in 30s..."
                 )
                 time.sleep(30)
 
-        # All 3 attempts failed
         logger.error(
-            f"[{format_ist_timestamp()}] ❌ All 3 refresh attempts failed.\n"
-            "  Bot will continue with existing token until it expires.\n"
-            "  Check /opt/kingtrades/.env on VPS:\n"
-            "    GROWW_AUTH_TOKEN    = API Key from groww.in → Developer → API Settings\n"
-            "    GROWW_CLIENT_SECRET = API Secret from same page"
+            f"[{format_ist_timestamp()}] ❌ All 3 TOTP refresh attempts failed.\n"
+            "  Check /opt/kingtrades/.env:\n"
+            "    GROWW_AUTH_TOKEN  = today's access token from groww.in\n"
+            "    GROWW_TOTP_SECRET = TOTP secret from groww.in (permanent)"
         )
         self._send_refresh_failed_alert()
         return None
 
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
     # Public API
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def get_valid_token(self) -> Optional[str]:
-        """
-        Return a valid access_token for GrowwAPI().
-        Groww resets ALL tokens at 6:00 AM IST daily — refresh before then.
-        """
-        if self._token and self._token_timestamp:
-            # Token is still valid if the 6 AM IST reset hasn't happened since issue
-            if not self._is_past_6am_reset(self._token_timestamp):
-                return self._token
+        """Return a valid access token, refreshing via TOTP if expired."""
+        # Check if 6 AM reset has expired the token
+        if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
+            return self._token
+
+        if self._token:
             logger.info(
-                f"[{format_ist_timestamp()}] Token expired at 6 AM IST reset — refreshing..."
+                f"[{format_ist_timestamp()}] Token expired at 6 AM IST reset — "
+                "refreshing via TOTP now..."
             )
         else:
-            logger.info(f"[{format_ist_timestamp()}] No access_token — fetching now...")
+            logger.info(f"[{format_ist_timestamp()}] No token — fetching via TOTP...")
 
         return self._do_refresh_with_retry() or self._token
 
     def refresh_token_if_needed(self) -> bool:
-        """Force a fresh access_token. Called at 5:50 AM IST daily and on demand."""
-        logger.info(f"[{format_ist_timestamp()}] Token refresh triggered...")
+        """Force TOTP refresh. Called at 5:50 AM IST and on demand."""
+        logger.info(f"[{format_ist_timestamp()}] TOTP refresh triggered...")
         token = self._do_refresh_with_retry()
         if token:
-            logger.info(f"[{format_ist_timestamp()}] ✅ access_token refreshed — bot ready")
+            logger.info(f"[{format_ist_timestamp()}] ✅ Token refreshed — ready for trading")
             return True
         logger.error(
             f"[{format_ist_timestamp()}] ❌ Refresh failed.\n"
-            "  Verify in /opt/kingtrades/.env on VPS:\n"
-            "  • GROWW_AUTH_TOKEN    = API Key from groww.in → Developer API Settings\n"
-            "  • GROWW_CLIENT_SECRET = API Secret from same page"
+            "  GROWW_AUTH_TOKEN and GROWW_TOTP_SECRET must both be set in .env"
         )
         return False
 
     def force_refresh(self) -> bool:
-        """Force an immediate refresh (called by /refresh Telegram command or watchdog)."""
-        logger.info(f"[{format_ist_timestamp()}] Forced token refresh requested...")
-        token = self._do_refresh_with_retry()
-        return bool(token)
+        """Immediate refresh — called by /refresh Telegram command."""
+        logger.info(f"[{format_ist_timestamp()}] Force refresh requested...")
+        return bool(self._do_refresh_with_retry())
 
     def login_and_get_token(self) -> Optional[str]:
-        """Compatibility shim — calls get_valid_token()."""
         return self.get_valid_token()
 
     @property
@@ -511,12 +382,14 @@ class GrowwAuthManager:
             return float("inf")
         return (get_current_ist_time() - self._token_timestamp).total_seconds() / 3600
 
-    # ──────────────────────────────────────────────────────────────────────
+    def _is_past_6am_reset(self, ts: Optional[datetime]) -> bool:
+        return _is_expired_by_6am_reset(ts)
+
+    # ─────────────────────────────────────────────────────────────────────
     # Telegram alerts
-    # ──────────────────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────────────────
 
     def _send_refresh_failed_alert(self) -> None:
-        """Telegram alert when all 3 refresh attempts fail."""
         try:
             import config, requests as req
             if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
@@ -528,14 +401,16 @@ class GrowwAuthManager:
                     "parse_mode": "HTML",
                     "text": (
                         "🔴 <b>Groww Token Refresh Failed</b>\n\n"
-                        "All 3 refresh attempts failed.\n\n"
-                        "<b>Check /opt/kingtrades/.env on VPS:</b>\n"
-                        "• <code>GROWW_AUTH_TOKEN</code> — API Key from "
-                        "groww.in → Developer API Settings\n"
-                        "• <code>GROWW_CLIENT_SECRET</code> — API Secret "
-                        "from same page\n\n"
-                        "Bot is running on old token — may fail soon.\n"
-                        "<i>Fix .env, then: systemctl restart kingtrades</i>"
+                        "TOTP auto-refresh failed 3 times.\n\n"
+                        "<b>Action required — on your VPS:</b>\n"
+                        "1. Open groww.in → API keys\n"
+                        "2. Generate new access token\n"
+                        "3. Run:\n"
+                        "<code>python3 &lt;&lt; 'EOF'\n"
+                        "with open('/opt/kingtrades/.env') as f: lines=f.readlines()\n"
+                        "# paste new token command\n"
+                        "EOF</code>\n\n"
+                        "Or send /refresh once TOTP secret is correct."
                     ),
                 },
                 timeout=10,
@@ -544,9 +419,9 @@ class GrowwAuthManager:
             pass
 
 
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 # Singleton
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
 
 _auth_manager: Optional[GrowwAuthManager] = None
 
@@ -559,47 +434,54 @@ def get_auth_manager() -> GrowwAuthManager:
 
 
 def get_groww_token() -> Optional[str]:
-    """Get current valid access_token (auto-refreshes if needed)."""
+    """Get valid access token (auto-refreshes via TOTP if expired)."""
     return get_auth_manager().get_valid_token()
 
 
 def initialize_auth() -> bool:
     """
-    Called at bot startup and by watchdog before each daily launch.
-    Groww resets ALL tokens at 6:00 AM IST — refresh window is 5:45–5:59 AM IST.
+    Called at bot startup. Refreshes token if expired or in 5:45-5:59 AM window.
     """
     manager = get_auth_manager()
     now_ist = get_current_ist_time()
     h, m    = now_ist.hour, now_ist.minute
 
-    pre_expiry_window = (h == 5 and 45 <= m <= 59)
-    token_expired     = manager._is_past_6am_reset(manager._token_timestamp)
+    pre_expiry = (h == 5 and 45 <= m <= 59)
+    expired    = _is_expired_by_6am_reset(manager._token_timestamp)
 
-    if pre_expiry_window:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: 5:45 AM window — refreshing before 6 AM reset...")
+    if pre_expiry:
+        logger.info(
+            f"[{format_ist_timestamp()}] Auth init: 5:45 AM window — "
+            "refreshing before 6 AM reset..."
+        )
         manager.refresh_token_if_needed()
-    elif token_expired:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token expired at 6 AM reset — refreshing now...")
+    elif expired:
+        logger.info(
+            f"[{format_ist_timestamp()}] Auth init: token expired — "
+            "refreshing via TOTP now..."
+        )
         manager.refresh_token_if_needed()
     else:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token valid until next 6 AM IST reset ✅")
+        logger.info(
+            f"[{format_ist_timestamp()}] Auth init: token valid ✅ "
+            "(refreshes at 5:50 AM IST)"
+        )
 
     return bool(manager._token or manager._api_key)
 
 
-# ────────────────────────────────────────────────────────────────────────────
-# Standalone test — run: python auth_groww.py
-# ────────────────────────────────────────────────────────────────────────────
+# ─────────────────────────────────────────────────────────────────────────────
+# Standalone test
+# ─────────────────────────────────────────────────────────────────────────────
 
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(message)s")
-    print("Testing Groww auth...")
+    print("Testing Groww TOTP auth...")
     manager = GrowwAuthManager()
     print(f"api_key set:    {bool(manager._api_key)}")
-    print(f"api_secret set: {bool(manager._api_secret)}")
     print(f"totp_secret set:{bool(manager.totp_secret)}")
     token = manager.get_valid_token()
     if token:
-        print(f"✅ Access token obtained: {token[:30]}...{token[-10:]}")
+        print(f"✅ Token: {token[:40]}...{token[-10:]}")
     else:
-        print("❌ Failed to get token — check GROWW_AUTH_TOKEN and GROWW_CLIENT_SECRET in .env")
+        print("❌ Failed — check GROWW_AUTH_TOKEN and GROWW_TOTP_SECRET in .env")
