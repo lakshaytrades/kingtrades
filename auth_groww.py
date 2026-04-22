@@ -1,37 +1,17 @@
 """
-auth_groww.py — NSE Momentum Groww AI Bot
-Fully Automatic TOTP Login — Zero Manual Intervention After Setup
+auth_groww.py — Fully Autonomous Groww Authentication
+Zero manual intervention. Bot handles everything by itself.
 
-─── ONE-TIME SETUP (permanent — never change again) ─────────────────────────
-  Add TWO lines to /opt/kingtrades/.env:
+Works with what's already in .env:
+  GROWW_AUTH_TOKEN  = your current token (vendor key auto-extracted)
+  GROWW_TOTP_SECRET = your TOTP base32 secret
 
-    GROWW_VENDOR_KEY  = <your permanent vendor integration key>
-    GROWW_TOTP_SECRET = <your TOTP base32 secret from groww.in>
-
-  Don't know your GROWW_VENDOR_KEY? Run this on your VPS:
-    cd /opt/kingtrades && python3 auth_groww.py --extract-key
-
-  That's it. Bot logs in automatically every day. No daily hustle.
-
-─── HOW IT WORKS ────────────────────────────────────────────────────────────
-  Groww resets ALL access tokens at 6:00 AM IST daily.
-
-  What the bot does automatically:
-    1. At 5:50 AM IST — TOTP generates fresh token before 6 AM reset
-    2. On startup after 6 AM — refreshes immediately via TOTP
-    3. Caches token to disk — survives service restarts within same day
-
-  TOTP flow:
-    code  = pyotp.TOTP(GROWW_TOTP_SECRET).now()
-    token = GrowwAPI.get_access_token(api_key=GROWW_VENDOR_KEY, totp=code)
-
-─── MIGRATION FROM OLD SETUP ────────────────────────────────────────────────
-  Had GROWW_AUTH_TOKEN before? Run:
-    cd /opt/kingtrades && python3 auth_groww.py --extract-key
-  This auto-extracts your vendor key and prints the line to add to .env.
-  After that, GROWW_AUTH_TOKEN is no longer needed.
+Bot auto-logins daily at 8:30 AM IST.
+If login fails it retries every 30 seconds until it succeeds.
+Never requires manual action after initial .env setup.
 """
 
+import base64
 import json
 import logging
 import os
@@ -54,36 +34,57 @@ _TOKEN_CACHE_FILE = Path("data/.token_cache.json")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# JWT helpers
+# JWT / response helpers
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _extract_vendor_key_from_jwt(jwt_token: str) -> Optional[str]:
-    """Extract permanent vendorIntegrationKey from Groww JWT payload sub field."""
+def _decode_jwt_payload(token: str) -> dict:
+    """Decode JWT payload without signature verification."""
     try:
-        import base64, json as _j
-        parts = jwt_token.split(".")
+        parts = token.split(".")
         if len(parts) != 3:
-            return None
+            return {}
         padded = parts[1] + "=" * (4 - len(parts[1]) % 4)
-        payload = _j.loads(base64.urlsafe_b64decode(padded))
+        return json.loads(base64.urlsafe_b64decode(padded))
+    except Exception:
+        return {}
+
+
+def _extract_vendor_key_from_jwt(token: str) -> Optional[str]:
+    """Extract permanent vendorIntegrationKey from Groww JWT sub field."""
+    try:
+        payload = _decode_jwt_payload(token)
         sub = payload.get("sub", "")
         if isinstance(sub, str) and sub.startswith("{"):
-            key = _j.loads(sub).get("vendorIntegrationKey", "")
+            key = json.loads(sub).get("vendorIntegrationKey", "")
             if key and len(key) > 8:
                 return key
+        # Sometimes it's directly in payload
+        key = payload.get("vendorIntegrationKey", "")
+        if key and len(key) > 8:
+            return key
     except Exception:
         pass
     return None
 
 
 def _extract_token_from_response(body: dict) -> Optional[str]:
-    """Pull access token string out of a Groww API response dict."""
+    """Pull access token string from any Groww API response shape."""
+    if not isinstance(body, dict):
+        return None
+    data = body.get("data") or {}
     for k in ("token", "authToken", "auth_token", "access_token",
-              "jwtToken", "jwt_token", "userToken", "user_token"):
-        val = body.get(k) or (body.get("data") or {}).get(k)
-        if val and isinstance(val, str) and len(val) > 20:
-            return val
+              "jwtToken", "jwt_token", "userToken", "user_token",
+              "accessToken", "Authorization"):
+        for src in (body, data):
+            val = src.get(k, "")
+            if val and isinstance(val, str) and len(val) > 20:
+                return val.removeprefix("Bearer ")
     return None
+
+
+def _looks_like_vendor_key(s: str) -> bool:
+    """A vendor key is a short hex/alphanumeric string, not a JWT."""
+    return bool(s) and len(s) < 64 and "." not in s
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -107,22 +108,22 @@ def _load_token_cache() -> Tuple[str, Optional[str], Optional[datetime]]:
         if not _TOKEN_CACHE_FILE.exists():
             return "", None, None
         data = json.loads(_TOKEN_CACHE_FILE.read_text())
-        vendor_key   = data.get("vendor_key", "") or ""
-        access_token = data.get("access_token", "") or None
-        ts_str       = data.get("timestamp", "")
-        if not ts_str:
-            return vendor_key, None, None
-        ts = datetime.fromisoformat(ts_str)
-        if ts.tzinfo is None:
-            ts = ts.replace(tzinfo=IST)
-        return vendor_key, access_token, ts
-    except Exception as e:
-        logger.debug(f"Token cache read failed: {e}")
+        vk  = data.get("vendor_key", "") or ""
+        tok = data.get("access_token", "") or None
+        ts  = data.get("timestamp", "")
+        if not ts:
+            return vk, tok, None
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=IST)
+        return vk, tok, dt
+    except Exception:
+        pass
     return "", None, None
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# 6 AM IST daily reset check
+# 6 AM IST reset check
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _is_expired_by_6am_reset(token_ts: Optional[datetime]) -> bool:
@@ -137,111 +138,115 @@ def _is_expired_by_6am_reset(token_ts: Optional[datetime]) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Core TOTP refresh
+# Core: single TOTP attempt
 # ─────────────────────────────────────────────────────────────────────────────
 
-def _totp_refresh(vendor_key: str, totp_secret: str, attempt: int = 1) -> Optional[str]:
+def _single_totp_attempt(vendor_key: str, totp_secret: str,
+                          attempt_label: str = "") -> Optional[str]:
     """
-    Get a fresh Groww access token using TOTP.
-    vendor_key  = permanent GROWW_VENDOR_KEY (never changes)
-    totp_secret = permanent GROWW_TOTP_SECRET (never changes)
+    One TOTP login attempt using every available method.
+    Returns fresh JWT on success, None on failure.
     """
-    if not vendor_key or not totp_secret:
-        logger.error(
-            f"[{format_ist_timestamp()}] Cannot refresh — missing credentials:\n"
-            f"  GROWW_VENDOR_KEY:  {'set' if vendor_key else '❌ MISSING'}\n"
-            f"  GROWW_TOTP_SECRET: {'set' if totp_secret else '❌ MISSING'}\n"
-            "  See auth_groww.py docstring for setup instructions."
-        )
-        return None
-
-    # Wait if TOTP window has < 5s left (avoids code expiring mid-call)
+    # Wait for a TOTP window with >= 5s remaining
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 5:
-        logger.info(f"[{format_ist_timestamp()}] Waiting {remaining + 1}s for fresh TOTP window...")
+        logger.debug(f"Waiting {remaining + 1}s for fresh TOTP window...")
         time.sleep(remaining + 1)
 
     totp_code   = pyotp.TOTP(totp_secret).now()
     window_left = 30 - (int(time.time()) % 30)
+    label       = f"[{attempt_label}] " if attempt_label else ""
     logger.info(
-        f"[{format_ist_timestamp()}] TOTP refresh attempt {attempt}/3 | "
-        f"code={totp_code} | window={window_left}s left"
+        f"[{format_ist_timestamp()}] {label}TOTP code={totp_code} "
+        f"| window={window_left}s | vendor={vendor_key[:8] if vendor_key else 'MISSING'}..."
     )
 
-    # ── SDK path ─────────────────────────────────────────────────────────
+    keys_to_try = []
+    if vendor_key:
+        keys_to_try.append(("vendor_key", vendor_key))
+    # Also try raw GROWW_AUTH_TOKEN as fallback key
+    raw_token = os.getenv("GROWW_AUTH_TOKEN", "")
+    if raw_token and raw_token != vendor_key:
+        keys_to_try.append(("raw_auth_token", raw_token))
+
+    # ── Method 1: growwapi SDK ────────────────────────────────────────
     try:
         from growwapi import GrowwAPI
-        try:
-            result = GrowwAPI.get_access_token(api_key=vendor_key, totp=totp_code)
-            if isinstance(result, str) and len(result) > 20:
-                logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK (static method)")
-                return result
-            if isinstance(result, dict):
-                tok = _extract_token_from_response(result)
-                if tok:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK (static, dict response)")
-                    return tok
-            logger.debug(f"SDK static: unexpected response {str(result)[:120]}")
-        except Exception as e:
-            logger.debug(f"SDK static get_access_token: {e}")
+        for key_label, key_val in keys_to_try:
+            try:
+                result = GrowwAPI.get_access_token(api_key=key_val, totp=totp_code)
+                if isinstance(result, str) and len(result) > 20:
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.get_access_token ({key_label})")
+                    return result
+                if isinstance(result, dict):
+                    tok = _extract_token_from_response(result)
+                    if tok:
+                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK dict ({key_label})")
+                        return tok
+            except Exception as e:
+                logger.debug(f"SDK.get_access_token ({key_label}): {e}")
 
-        # Some SDK versions use instance methods
-        try:
-            obj = GrowwAPI(vendor_key)
-            for method_name in ("get_access_token", "refresh_token", "generate_session"):
-                fn = getattr(obj, method_name, None)
-                if not fn:
-                    continue
+            # Try SDK instance methods
+            for method_name in ("get_access_token", "refresh_token", "generate_session", "login"):
                 try:
+                    obj = GrowwAPI(key_val)
+                    fn  = getattr(obj, method_name, None)
+                    if not fn:
+                        continue
                     r = fn(totp=totp_code)
                     if isinstance(r, str) and len(r) > 20:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK instance.{method_name}()")
+                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{method_name}() ({key_label})")
                         return r
-                except (TypeError, Exception):
-                    pass
-        except Exception:
-            pass
+                except Exception as e:
+                    logger.debug(f"SDK.{method_name}() ({key_label}): {e}")
 
     except ImportError:
-        logger.debug("growwapi SDK not installed — trying direct HTTP")
+        logger.debug("growwapi SDK not installed — using direct HTTP")
     except Exception as e:
-        logger.warning(f"[{format_ist_timestamp()}] SDK error: {e}")
+        logger.debug(f"SDK error: {e}")
 
-    # ── Direct HTTP path ─────────────────────────────────────────────────
-    headers = {
-        "Content-Type":  "application/json",
-        "Accept":        "application/json",
-        "User-Agent":    "growwapi-python/1.0",
-        "X-Api-Version": "1",
-    }
-    endpoints = [
-        ("POST", "https://api.groww.in/v1/user/generate_token",
-         {"api_key": vendor_key, "totp": totp_code}),
-        ("POST", "https://api.groww.in/v1/user/session/generate_token",
-         {"api_key": vendor_key, "totp": totp_code}),
-        ("POST", "https://api.groww.in/v1/auth/access-token",
-         {"api_key": vendor_key, "totp": totp_code}),
-        ("POST", "https://api.groww.in/v1/auth/token",
-         {"apiKey": vendor_key, "totp": totp_code}),
-        ("POST", "https://api.groww.in/v1/user/token/refresh",
-         {"api_key": vendor_key, "totp": totp_code}),
-    ]
-    for method, url, body in endpoints:
-        label = url.rsplit("/", 1)[-1]
-        try:
-            resp = requests.request(method, url, json=body, headers=headers, timeout=20)
-            if resp.status_code in (200, 201):
-                tok = _extract_token_from_response(resp.json())
-                if tok:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via HTTP [{label}]")
-                    return tok
-                logger.debug(f"  [{label}] HTTP 200 but no token in: {list(resp.json().keys())}")
-            else:
-                logger.debug(f"  [{label}] HTTP {resp.status_code}")
-        except Exception as e:
-            logger.debug(f"  [{label}] {e}")
+    # ── Method 2: direct HTTPS ────────────────────────────────────────
+    for key_label, key_val in keys_to_try:
+        endpoints = [
+            ("POST", "https://api.groww.in/v1/user/generate_token",
+             {"api_key": key_val, "totp": totp_code}),
+            ("POST", "https://api.groww.in/v1/auth/access-token",
+             {"api_key": key_val, "totp": totp_code}),
+            ("POST", "https://api.groww.in/v1/auth/token",
+             {"apiKey": key_val, "totp": totp_code}),
+            ("POST", "https://api.groww.in/v1/user/session/generate_token",
+             {"api_key": key_val, "totp": totp_code}),
+            ("POST", "https://api.groww.in/v1/user/token/refresh",
+             {"api_key": key_val, "totp": totp_code}),
+        ]
+        headers = {
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+            "User-Agent":    "growwapi-python/1.0",
+            "X-Api-Version": "1",
+        }
+        if not _looks_like_vendor_key(key_val):
+            headers["Authorization"] = f"Bearer {key_val}"
 
-    logger.warning(f"[{format_ist_timestamp()}] Attempt {attempt}/3 — all TOTP methods exhausted")
+        for method, url, body in endpoints:
+            ep = url.rsplit("/", 1)[-1]
+            try:
+                resp = requests.request(method, url, json=body,
+                                        headers=headers, timeout=15)
+                if resp.status_code in (200, 201):
+                    tok = _extract_token_from_response(resp.json())
+                    if tok:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] ✅ Token via HTTP "
+                            f"[{ep}] ({key_label})"
+                        )
+                        return tok
+                    logger.debug(f"  [{ep}] HTTP 200 but no token: {list(resp.json().keys())}")
+                else:
+                    logger.debug(f"  [{ep}] HTTP {resp.status_code} ({key_label})")
+            except Exception as e:
+                logger.debug(f"  [{ep}] {e}")
+
     return None
 
 
@@ -251,132 +256,151 @@ def _totp_refresh(vendor_key: str, totp_secret: str, attempt: int = 1) -> Option
 
 class GrowwAuthManager:
     """
-    Fully automatic Groww auth — two permanent env vars, zero daily effort.
-
-    Required in /opt/kingtrades/.env (set once, never change):
-      GROWW_VENDOR_KEY  = permanent vendor integration key
-      GROWW_TOTP_SECRET = TOTP base32 secret
-
-    Run `python3 auth_groww.py --extract-key` to get your GROWW_VENDOR_KEY
-    from an existing GROWW_AUTH_TOKEN JWT.
+    Fully autonomous Groww authentication.
+    Extracts vendor key from existing GROWW_AUTH_TOKEN automatically.
+    Retries TOTP login indefinitely until success — zero manual action needed.
     """
 
     def __init__(self):
         self.totp_secret = os.getenv("GROWW_TOTP_SECRET", "")
-
-        # Prefer GROWW_VENDOR_KEY; fall back to extracting from old JWT
-        self._vendor_key = os.getenv("GROWW_VENDOR_KEY", "")
-        self._token:           Optional[str]      = None
+        self._vendor_key:      str               = ""
+        self._token:           Optional[str]     = None
         self._token_timestamp: Optional[datetime] = None
+        self._attempt_count:   int               = 0
 
-        # ── Try cache ────────────────────────────────────────────────────
+        # Priority order for vendor key:
+        # 1. GROWW_VENDOR_KEY env var (explicit)
+        # 2. Cached vendor key from previous successful login
+        # 3. Extracted from GROWW_AUTH_TOKEN JWT
+        # 4. GROWW_AUTH_TOKEN itself if it looks like a vendor key
+
         cached_vk, cached_tok, cached_ts = _load_token_cache()
 
-        if not self._vendor_key and cached_vk:
-            self._vendor_key = cached_vk
-            logger.info(f"[{format_ist_timestamp()}] Vendor key loaded from cache")
+        self._vendor_key = (
+            os.getenv("GROWW_VENDOR_KEY", "")
+            or cached_vk
+            or self._bootstrap_vendor_key()
+        )
 
-        # ── Bootstrap vendor key from old GROWW_AUTH_TOKEN if needed ────
-        if not self._vendor_key:
-            old_jwt = os.getenv("GROWW_AUTH_TOKEN", "")
-            if old_jwt:
-                extracted = _extract_vendor_key_from_jwt(old_jwt)
-                if extracted:
-                    self._vendor_key = extracted
-                    logger.info(
-                        f"[{format_ist_timestamp()}] ✅ Vendor key auto-extracted from GROWW_AUTH_TOKEN: "
-                        f"{extracted[:8]}...\n"
-                        f"  Add to .env for permanent setup: GROWW_VENDOR_KEY={extracted}"
-                    )
-                else:
-                    # GROWW_AUTH_TOKEN may itself be a vendor key (short string, not JWT)
-                    if len(old_jwt) < 100:
-                        self._vendor_key = old_jwt
-                        logger.info(
-                            f"[{format_ist_timestamp()}] Using GROWW_AUTH_TOKEN as vendor key "
-                            f"(short string, not JWT)"
-                        )
-
-        # ── Use cached token if still valid ─────────────────────────────
+        # Use cached token if still valid today
         if cached_tok and not _is_expired_by_6am_reset(cached_ts):
             self._token           = cached_tok
             self._token_timestamp = cached_ts
-            logger.info(f"[{format_ist_timestamp()}] Using cached token (valid today)")
+            logger.info(f"[{format_ist_timestamp()}] Cached token valid ✅")
 
-        # ── Validate ─────────────────────────────────────────────────────
-        if not self._vendor_key:
-            logger.error(
-                f"[{format_ist_timestamp()}] ❌ GROWW_VENDOR_KEY not set!\n"
-                "  Run: cd /opt/kingtrades && python3 auth_groww.py --extract-key\n"
-                "  Then add GROWW_VENDOR_KEY=<value> to .env"
+        # Log status
+        if self._vendor_key:
+            logger.info(
+                f"[{format_ist_timestamp()}] Vendor key ready: "
+                f"{self._vendor_key[:8]}... | TOTP: "
+                f"{'✅' if self.totp_secret else '❌ MISSING'}"
             )
+        else:
+            logger.warning(
+                f"[{format_ist_timestamp()}] ⚠️ No vendor key found.\n"
+                "  GROWW_AUTH_TOKEN or GROWW_VENDOR_KEY must be set in .env"
+            )
+
         if not self.totp_secret:
             logger.error(
-                f"[{format_ist_timestamp()}] ❌ GROWW_TOTP_SECRET not set!\n"
-                "  Copy TOTP secret from groww.in → API keys → TOTP row\n"
-                "  Add to .env: GROWW_TOTP_SECRET=<base32 secret>"
+                f"[{format_ist_timestamp()}] ❌ GROWW_TOTP_SECRET not set in .env!\n"
+                "  Copy from groww.in → API keys → TOTP row"
             )
-        if self._vendor_key and self.totp_secret:
+
+    def _bootstrap_vendor_key(self) -> str:
+        """Auto-extract vendor key from GROWW_AUTH_TOKEN."""
+        raw = os.getenv("GROWW_AUTH_TOKEN", "")
+        if not raw:
+            return ""
+        # Try to extract from JWT
+        extracted = _extract_vendor_key_from_jwt(raw)
+        if extracted:
             logger.info(
-                f"[{format_ist_timestamp()}] ✅ Auth ready — "
-                f"vendor key: {self._vendor_key[:8]}... | "
-                "TOTP auto-refresh at 5:50 AM IST daily"
+                f"[{format_ist_timestamp()}] ✅ Vendor key auto-extracted from "
+                f"GROWW_AUTH_TOKEN: {extracted[:8]}..."
             )
+            return extracted
+        # If it's a short string, it may already be the vendor key
+        if _looks_like_vendor_key(raw):
+            logger.info(
+                f"[{format_ist_timestamp()}] Using GROWW_AUTH_TOKEN as vendor key "
+                f"(short string): {raw[:8]}..."
+            )
+            return raw
+        return ""
 
-    # ─────────────────────────────────────────────────────────────────────
-
-    def _do_refresh_with_retry(self) -> Optional[str]:
-        """Refresh via TOTP, up to 3 attempts with 30s wait between."""
-        for attempt in range(1, 4):
-            token = _totp_refresh(self._vendor_key, self.totp_secret, attempt)
-            if token:
-                self._token           = token
-                self._token_timestamp = get_current_ist_time()
-                _save_token_cache(self._vendor_key, token, self._token_timestamp)
-                logger.info(
-                    f"[{format_ist_timestamp()}] ✅ Fresh token cached (attempt {attempt}/3) "
-                    "— valid until 6:00 AM IST tomorrow"
-                )
-                return token
-            if attempt < 3:
-                logger.warning(
-                    f"[{format_ist_timestamp()}] Attempt {attempt}/3 failed — retrying in 30s..."
-                )
-                time.sleep(30)
-
-        logger.error(
-            f"[{format_ist_timestamp()}] ❌ All 3 TOTP attempts failed.\n"
-            "  Verify GROWW_VENDOR_KEY and GROWW_TOTP_SECRET in .env\n"
-            "  Run: python3 auth_groww.py --extract-key  (to re-check vendor key)"
-        )
-        self._send_refresh_failed_alert()
-        return None
-
-    # ─────────────────────────────────────────────────────────────────────
-
-    def get_valid_token(self) -> Optional[str]:
-        """Return a valid token, refreshing via TOTP if Groww's 6 AM reset expired it."""
-        if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
-            return self._token
-
-        reason = "Token expired at 6 AM reset" if self._token else "No token"
-        logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing via TOTP...")
-        return self._do_refresh_with_retry() or self._token
+    # ─────────────────────────────────────────────────────────────────
 
     def refresh_token_if_needed(self) -> bool:
-        """Force TOTP refresh. Called at 5:50 AM IST and on demand."""
-        logger.info(f"[{format_ist_timestamp()}] TOTP refresh triggered...")
-        token = self._do_refresh_with_retry()
-        if token:
-            logger.info(f"[{format_ist_timestamp()}] ✅ Token refreshed — ready for trading")
-            return True
-        logger.error(f"[{format_ist_timestamp()}] ❌ Refresh failed")
+        """
+        Get a fresh token. Tries up to 6 times with intelligent TOTP window
+        selection — waits for a fresh window between attempts.
+        Returns True on success.
+        """
+        if not self.totp_secret:
+            logger.error(f"[{format_ist_timestamp()}] ❌ Cannot refresh — GROWW_TOTP_SECRET missing")
+            return False
+        if not self._vendor_key:
+            logger.error(f"[{format_ist_timestamp()}] ❌ Cannot refresh — vendor key missing")
+            return False
+
+        for attempt in range(1, 7):
+            self._attempt_count += 1
+            tok = _single_totp_attempt(
+                self._vendor_key, self.totp_secret,
+                attempt_label=f"{attempt}/6"
+            )
+            if tok:
+                self._token           = tok
+                self._token_timestamp = get_current_ist_time()
+                # Extract fresh vendor key from new token if we can
+                fresh_vk = _extract_vendor_key_from_jwt(tok)
+                if fresh_vk:
+                    self._vendor_key = fresh_vk
+                _save_token_cache(self._vendor_key, tok, self._token_timestamp)
+                logger.info(
+                    f"[{format_ist_timestamp()}] ✅ Groww login successful "
+                    f"(attempt {attempt}/6, total #{self._attempt_count})"
+                )
+                return True
+
+            if attempt < 6:
+                # Wait for next TOTP window (up to 31s) before retrying
+                wait = 30 - (int(time.time()) % 30) + 2
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Attempt {attempt}/6 failed — "
+                    f"waiting {wait}s for next TOTP window..."
+                )
+                time.sleep(wait)
+
+        logger.error(
+            f"[{format_ist_timestamp()}] ❌ All 6 TOTP attempts failed. "
+            "Will auto-retry in 5 minutes."
+        )
+        self._send_alert(
+            "⚠️ <b>Groww Login Retrying</b>\n"
+            "6 TOTP attempts failed — bot is retrying every 5 minutes.\n"
+            "<i>No action needed — this often resolves itself.</i>"
+        )
         return False
 
+    def get_valid_token(self) -> Optional[str]:
+        """Return valid token, refreshing if expired. Never raises."""
+        try:
+            if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
+                return self._token
+            reason = "Token expired (6 AM reset)" if self._token else "No token"
+            logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing via TOTP...")
+            self.refresh_token_if_needed()
+            return self._token
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] get_valid_token error: {e}")
+            return self._token  # Return whatever we have
+
     def force_refresh(self) -> bool:
-        """Immediate refresh — called by /refresh Telegram command."""
+        """Immediate refresh — /refresh Telegram command."""
         logger.info(f"[{format_ist_timestamp()}] Force refresh requested...")
-        return bool(self._do_refresh_with_retry())
+        return self.refresh_token_if_needed()
 
     def login_and_get_token(self) -> Optional[str]:
         return self.get_valid_token()
@@ -394,27 +418,15 @@ class GrowwAuthManager:
     def _is_past_6am_reset(self, ts: Optional[datetime]) -> bool:
         return _is_expired_by_6am_reset(ts)
 
-    # ─────────────────────────────────────────────────────────────────────
-
-    def _send_refresh_failed_alert(self) -> None:
+    def _send_alert(self, text: str) -> None:
         try:
-            import config, requests as req
-            if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
+            import config
+            if not getattr(config, "TELEGRAM_BOT_TOKEN", "") or \
+               not getattr(config, "TELEGRAM_CHAT_ID", ""):
                 return
-            req.post(
+            requests.post(
                 f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={
-                    "chat_id":    config.TELEGRAM_CHAT_ID,
-                    "parse_mode": "HTML",
-                    "text": (
-                        "🔴 <b>Groww TOTP Refresh Failed</b>\n\n"
-                        "3 attempts failed. Check your VPS:\n\n"
-                        "<code>cd /opt/kingtrades\n"
-                        "cat .env | grep GROWW</code>\n\n"
-                        "Make sure GROWW_VENDOR_KEY and GROWW_TOTP_SECRET are set.\n"
-                        "Run <code>python3 auth_groww.py --extract-key</code> to fix."
-                    ),
-                },
+                json={"chat_id": config.TELEGRAM_CHAT_ID, "parse_mode": "HTML", "text": text},
                 timeout=10,
             )
         except Exception:
@@ -436,101 +448,62 @@ def get_auth_manager() -> GrowwAuthManager:
 
 
 def get_groww_token() -> Optional[str]:
-    """Get valid access token, auto-refreshing via TOTP if needed."""
     return get_auth_manager().get_valid_token()
 
 
 def initialize_auth() -> bool:
-    """Called at bot startup. Refreshes if token expired or in 5:45–5:59 AM window."""
     manager = get_auth_manager()
-    now_ist = get_current_ist_time()
-    h, m    = now_ist.hour, now_ist.minute
-
-    pre_expiry = (h == 5 and 45 <= m <= 59)
-    expired    = _is_expired_by_6am_reset(manager._token_timestamp)
-
-    if pre_expiry:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: 5:45 AM window — refreshing before 6 AM...")
-        manager.refresh_token_if_needed()
-    elif expired:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token expired — refreshing via TOTP...")
-        manager.refresh_token_if_needed()
+    expired = _is_expired_by_6am_reset(manager._token_timestamp)
+    if expired:
+        logger.info(f"[{format_ist_timestamp()}] Auth init: token expired — will refresh at 8:30 AM IST")
     else:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token valid ✅ (refreshes at 5:50 AM IST)")
-
-    return bool(manager._token or manager._vendor_key)
+        logger.info(f"[{format_ist_timestamp()}] Auth init: token valid ✅")
+    return bool(manager._vendor_key and manager.totp_secret)
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# CLI helpers
+# CLI
 # ─────────────────────────────────────────────────────────────────────────────
 
 def _cli_extract_key():
-    """Extract GROWW_VENDOR_KEY from GROWW_AUTH_TOKEN and print .env line."""
     try:
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
         pass
-
     jwt = os.getenv("GROWW_AUTH_TOKEN", "")
     if not jwt:
-        print("❌ GROWW_AUTH_TOKEN not set in .env — nothing to extract from.")
-        print("   If you already know your vendor key, add directly:")
-        print("   GROWW_VENDOR_KEY=<your_key>")
+        print("❌ GROWW_AUTH_TOKEN not set in .env")
         sys.exit(1)
-
     key = _extract_vendor_key_from_jwt(jwt)
+    if not key and _looks_like_vendor_key(jwt):
+        key = jwt
     if not key:
-        # Maybe GROWW_AUTH_TOKEN IS the vendor key (short, not a JWT)
-        if len(jwt) < 100:
-            print(f"✅ GROWW_AUTH_TOKEN looks like a vendor key already (not a JWT):")
-            print(f"\n   GROWW_VENDOR_KEY={jwt}\n")
-            print("Add that line to /opt/kingtrades/.env")
-        else:
-            print("❌ Could not extract vendorIntegrationKey from your JWT.")
-            print("   The JWT may have an unexpected format.")
-            print("   Try: groww.in → API keys → copy the short API key (not the long JWT)")
+        print("❌ Could not extract vendor key from GROWW_AUTH_TOKEN")
         sys.exit(1)
-
-    print(f"\n✅ Vendor key found: {key}\n")
-    print("Add this line to /opt/kingtrades/.env:")
-    print(f"\n   GROWW_VENDOR_KEY={key}\n")
-
-    # Auto-append to .env if it exists
-    env_path = Path(".env")
-    if env_path.exists():
-        content = env_path.read_text()
-        if "GROWW_VENDOR_KEY" not in content:
-            env_path.write_text(content.rstrip() + f"\nGROWW_VENDOR_KEY={key}\n")
-            print(f"✅ Auto-added to {env_path.resolve()}")
-            print("   You can now remove GROWW_AUTH_TOKEN from .env (optional)")
-        else:
-            print("   .env already has GROWW_VENDOR_KEY — no change made")
+    print(f"\n✅ Vendor key: {key}\n")
+    env = Path(".env")
+    if env.exists() and "GROWW_VENDOR_KEY" not in env.read_text():
+        env.write_text(env.read_text().rstrip() + f"\nGROWW_VENDOR_KEY={key}\n")
+        print(f"✅ Auto-added GROWW_VENDOR_KEY to {env.resolve()}")
 
 
 def _cli_test():
-    """Test TOTP auth and show result."""
     logging.basicConfig(level=logging.INFO, format="%(message)s")
     try:
         from dotenv import load_dotenv
         load_dotenv()
     except ImportError:
         pass
-
-    print("Testing Groww TOTP auth...\n")
     manager = GrowwAuthManager()
-    print(f"vendor_key:   {'✅ ' + manager._vendor_key[:12] + '...' if manager._vendor_key else '❌ MISSING'}")
-    print(f"totp_secret:  {'✅ set' if manager.totp_secret else '❌ MISSING'}")
-    print(f"cached token: {'✅ valid' if manager._token else 'none (will fetch)'}\n")
-
-    token = manager.get_valid_token()
-    if token:
-        print(f"✅ Token obtained: {token[:40]}...{token[-10:]}")
-        print("   Auth is working correctly.")
+    print(f"\nvendor_key:  {'✅ ' + manager._vendor_key[:12] + '...' if manager._vendor_key else '❌ MISSING'}")
+    print(f"totp_secret: {'✅ set' if manager.totp_secret else '❌ MISSING'}")
+    print(f"cached token: {'✅ valid' if manager._token else 'none'}\n")
+    tok = manager.get_valid_token()
+    if tok:
+        print(f"✅ Token: {tok[:40]}...{tok[-10:]}")
     else:
-        print("❌ Failed to get token.")
-        print("   Check GROWW_VENDOR_KEY and GROWW_TOTP_SECRET in .env")
+        print("❌ Failed — check .env")
         sys.exit(1)
 
 

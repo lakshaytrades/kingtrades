@@ -500,12 +500,18 @@ class TradingBot:
 
                 today_str = now_ist.strftime("%Y-%m-%d")
 
-                # ── 8:30 AM IST: TOTP login + pre-market scan ─────────────────
+                # ── 8:30 AM IST onwards: TOTP login — auto-retry every 5 min ──
                 # Groww resets all tokens at 6:00 AM IST daily.
-                # We login fresh at 8:30 AM with TOTP — token stays valid all day.
-                if (now_ist.hour == 8 and now_ist.minute >= 30
+                # Bot logs in at 8:30 AM. If it fails, retries every 5 min
+                # automatically until success — no manual action needed.
+                now_mins = now_ist.hour * 60 + now_ist.minute
+                if (now_mins >= 8 * 60 + 30
                         and self._token_refreshed_date != today_str):
-                    self._do_morning_login_and_scan(today_str)
+                    last_try = getattr(self, "_last_login_try_ts", None)
+                    secs_since = (now_ist - last_try).total_seconds() if last_try else 999
+                    if secs_since >= 300:  # retry every 5 minutes
+                        self._last_login_try_ts = now_ist
+                        self._do_morning_login_and_scan(today_str)
 
                 # ── Reset for new calendar date ────────────────────────────────
                 # Token refresh flag resets at midnight (new calendar day),
@@ -518,8 +524,10 @@ class TradingBot:
                     self._premarket_scan_done = False
                     self._watchlist_cache = []
                     self._watchlist_cache_time = None
-                    self._last_heartbeat_min = -1
-                    self._last_trade_date = today_str
+                    self._last_heartbeat_min  = -1
+                    self._last_login_try_ts   = None
+                    self._login_attempt_count = 0
+                    self._last_trade_date     = today_str
                     logger.info(
                         f"[{format_ist_timestamp()}] 📅 New trading day: {today_str}"
                     )
@@ -601,13 +609,17 @@ class TradingBot:
     def _trading_cycle(self):
         """
         One full scan cycle:
-        1. Update all open positions (trailing stops, SL hits)
-        2. Check Nifty circuit breaker
-        3. Calendar & VIX blackout check
-        4. Scan watchlist for new signals
-        5. Execute valid signals
+        1. Auto-heal any crashed modules
+        2. Update all open positions (trailing stops, SL hits)
+        3. Check Nifty circuit breaker
+        4. Calendar & VIX blackout check
+        5. Scan watchlist for new signals
+        6. Execute valid signals
         """
         try:
+            # 0. Self-heal — reinit anything that crashed
+            self._auto_heal()
+
             # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
@@ -1171,61 +1183,124 @@ class TradingBot:
             self._overnight_run_today = True  # Don't retry
 
     # --------------------------------------------------------
+    # SELF-HEALING: reinit API clients after fresh token
+    # --------------------------------------------------------
+
+    def _reinit_api_clients(self):
+        """Push fresh token into fetcher and executor. Auto-reinits if crashed."""
+        for name, obj, init_fn in [
+            ("fetcher",  self.fetcher,  "_init_api"),
+            ("executor", self.executor, "_init_api"),
+        ]:
+            if not obj:
+                continue
+            for method in ("_refresh_api_if_needed", init_fn):
+                fn = getattr(obj, method, None)
+                if fn:
+                    try:
+                        fn()
+                        break
+                    except Exception as e:
+                        logger.debug(f"{name}.{method}(): {e}")
+
+    def _auto_heal(self):
+        """
+        Called at the start of each trading cycle.
+        Reinitializes any module that has crashed or gone None.
+        Silently fixes issues without stopping the bot.
+        """
+        try:
+            # Reinit fetcher if dead
+            if not self.fetcher:
+                from data_fetch_groww import GrowwDataFetcher
+                self.fetcher = GrowwDataFetcher()
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Fetcher reinitialized")
+
+            # Reinit executor if dead
+            if not self.executor:
+                from execution_groww import GrowwExecutor
+                self.executor = GrowwExecutor(
+                    self.risk_manager,
+                    live_enabled=config.LIVE_TRADING_ENABLED
+                )
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Executor reinitialized")
+
+            # Reinit signal generator if dead
+            if not self.signal_gen:
+                from signal_generator import SignalGenerator
+                self.signal_gen = SignalGenerator(
+                    data_fetcher=self.fetcher,
+                    news_filter=self.news_filter,
+                    min_signal_score=config.MIN_SIGNAL_SCORE,
+                    high_confidence_score=config.HIGH_CONFIDENCE_SCORE,
+                )
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Signal generator reinitialized")
+
+            # Reinit alerter if dead
+            if not self.alerter:
+                from alerts_telegram import TelegramAlerter
+                self.alerter = TelegramAlerter(
+                    bot_token=config.TELEGRAM_BOT_TOKEN,
+                    chat_id=config.TELEGRAM_CHAT_ID,
+                )
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Alerter reinitialized")
+
+            # Check if token expired mid-day (edge case: restart between 6-8:30 AM)
+            from auth_groww import get_auth_manager
+            mgr = get_auth_manager()
+            if not mgr.get_valid_token():
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Token missing mid-session — refreshing...")
+                mgr.refresh_token_if_needed()
+                self._reinit_api_clients()
+
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Auto-heal error: {e}")
+
+    # --------------------------------------------------------
     # MORNING LOGIN + PRE-MARKET SCAN (8:30 AM IST)
     # --------------------------------------------------------
 
     def _do_morning_login_and_scan(self, today_str: str = ""):
         """
         8:30 AM IST: TOTP login + full pre-market stock scan.
-
-        Groww resets ALL tokens at 6:00 AM IST daily. We login fresh at
-        8:30 AM using only TOTP (GROWW_VENDOR_KEY + GROWW_TOTP_SECRET).
-        No manual token update ever needed.
-
-        After login: scan all watchlist stocks and send Telegram brief
-        so you know exactly what the bot is watching before 9:15 AM open.
+        Auto-called every 5 minutes until login succeeds.
+        No manual action ever needed.
         """
-        logger.info(f"[{format_ist_timestamp()}] ☀️ 8:30 AM — Morning TOTP login + pre-market scan")
+        now_ist  = get_current_ist_time()
+        now_mins = now_ist.hour * 60 + now_ist.minute
+        attempt  = getattr(self, "_login_attempt_count", 0) + 1
+        setattr(self, "_login_attempt_count", attempt)
 
-        # 1. TOTP login — get fresh token after the 6 AM reset
-        from auth_groww import get_auth_manager
-        mgr = get_auth_manager()
-        success = mgr.refresh_token_if_needed()
+        logger.info(
+            f"[{format_ist_timestamp()}] ☀️ Morning TOTP login attempt #{attempt}..."
+        )
+
+        # 1. TOTP login
+        try:
+            from auth_groww import get_auth_manager
+            mgr     = get_auth_manager()
+            success = mgr.refresh_token_if_needed()
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Auth error: {e}")
+            success = False
+
+        if not success:
+            # Keep retrying — do NOT mark as done so the loop retries in 5 min
+            logger.warning(
+                f"[{format_ist_timestamp()}] Login attempt #{attempt} failed — "
+                "auto-retry in 5 minutes..."
+            )
+            return  # _token_refreshed_date NOT set → loop will retry
+
+        # Login succeeded
+        self._token_refreshed_date  = today_str
+        self._token_refreshed_today = True
         self._token_refresh_attempts += 1
-        self._token_refreshed_date = today_str
-        self._token_refreshed_today = True  # legacy compat
+        setattr(self, "_login_attempt_count", 0)
 
-        if success:
-            # Push fresh token into fetcher and executor immediately
-            if self.fetcher:
-                try:
-                    self.fetcher._refresh_api_if_needed()
-                except Exception:
-                    try:
-                        self.fetcher._init_api()
-                    except Exception:
-                        pass
-            if self.executor:
-                try:
-                    self.executor._init_api()
-                except Exception:
-                    pass
-            logger.info(f"[{format_ist_timestamp()}] ✅ Morning TOTP login successful")
-        else:
-            logger.error(f"[{format_ist_timestamp()}] ❌ Morning TOTP login FAILED!")
-            if self.alerter:
-                try:
-                    self.alerter.send_html(
-                        "🔴 <b>Morning Login FAILED</b>\n\n"
-                        "TOTP refresh failed at 8:30 AM IST.\n"
-                        "Check GROWW_VENDOR_KEY and GROWW_TOTP_SECRET in .env\n\n"
-                        "<code>cd /opt/kingtrades\n"
-                        "python3 auth_groww.py --extract-key</code>\n\n"
-                        "⚠️ Bot may not trade today without a valid token!"
-                    )
-                except Exception:
-                    pass
-            return  # Don't scan if login failed
+        # Push fresh token into fetcher and executor
+        self._reinit_api_clients()
+        logger.info(f"[{format_ist_timestamp()}] ✅ Morning TOTP login successful")
 
         # 2. Run overnight analysis if not yet done (usually runs at 8:00 AM)
         if not self._overnight_run_today:
