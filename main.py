@@ -10,9 +10,8 @@ Central Orchestrator with IST Market Hours + Auto-Shutdown + AI Learning
 Full lifecycle:
   [24/7 Background]   continuous_learner.py — downloads data, learns, adapts
   [08:00 AM IST]      Overnight analysis (global markets, Gift Nifty, VIX)
-  [08:30 AM IST]      Morning brief → Telegram
-  [08:45 AM IST]      TOTP login to Groww → token refresh
-  [09:00 AM IST]      Pre-market watchlist scan + AI stock assessment
+  [08:30 AM IST]      TOTP login to Groww + full pre-market stock scan
+  [08:30 AM IST]      Morning brief → Telegram (watchlist, top picks, events)
   [09:15 AM IST]      Market open → trading begins
   [09:15–10:00 IST]   OPENING DRIVE — most aggressive momentum window
   [10:00–11:00 IST]   Morning session — normal trading
@@ -43,7 +42,7 @@ from utils import (
     format_ist_timestamp, get_current_ist_time, is_market_open_ist,
     is_pre_market_ist, should_force_squareoff_ist, is_squareoff_time_ist,
     minutes_until_market_open, minutes_until_market_close,
-    is_token_refresh_time, setup_logging, is_market_day_ist
+    setup_logging, is_market_day_ist
 )
 import config
 
@@ -499,22 +498,14 @@ class TradingBot:
             while self.running:
                 now_ist = get_current_ist_time()
 
-                # ── TOTP token refresh at 5:50 AM IST (10 min BEFORE 6 AM expiry) ──
-                # Groww invalidates all JWTs at exactly 6:00 AM IST daily.
-                # We use the still-valid current JWT to get the next one at 5:50 AM.
                 today_str = now_ist.strftime("%Y-%m-%d")
-                if is_token_refresh_time() and self._token_refreshed_date != today_str:
-                    self._do_token_refresh(today_str)
-                # Retry at 5:53 and 5:57 if primary failed (still before 6 AM expiry)
-                elif (self._token_refreshed_date != today_str
-                        and now_ist.hour == 5
-                        and now_ist.minute in (53, 57)
-                        and self._token_refresh_attempts < 3):
-                    logger.warning(
-                        f"[{format_ist_timestamp()}] Token refresh retry "
-                        f"#{self._token_refresh_attempts + 1}/3 (still before 6 AM)..."
-                    )
-                    self._do_token_refresh(today_str)
+
+                # ── 8:30 AM IST: TOTP login + pre-market scan ─────────────────
+                # Groww resets all tokens at 6:00 AM IST daily.
+                # We login fresh at 8:30 AM with TOTP — token stays valid all day.
+                if (now_ist.hour == 8 and now_ist.minute >= 30
+                        and self._token_refreshed_date != today_str):
+                    self._do_morning_login_and_scan(today_str)
 
                 # ── Reset for new calendar date ────────────────────────────────
                 # Token refresh flag resets at midnight (new calendar day),
@@ -537,12 +528,6 @@ class TradingBot:
                 if (now_ist.hour == 8 and now_ist.minute < 5
                         and not self._overnight_run_today):
                     self._run_overnight_analysis()
-
-                # Pre-market top-picks scan at 9:05 AM IST
-                if (now_ist.hour == 9 and now_ist.minute >= 5
-                        and now_ist.minute < 15 and not self._premarket_scan_done):
-                    self._send_premarket_scan()
-                    self._premarket_scan_done = True
 
                 # Pre-market: build watchlist + holiday check
                 if is_pre_market_ist() and not self._day_initialized:
@@ -1186,22 +1171,32 @@ class TradingBot:
             self._overnight_run_today = True  # Don't retry
 
     # --------------------------------------------------------
-    # TOKEN REFRESH
+    # MORNING LOGIN + PRE-MARKET SCAN (8:30 AM IST)
     # --------------------------------------------------------
 
-    def _do_token_refresh(self, today_str: str = ""):
+    def _do_morning_login_and_scan(self, today_str: str = ""):
         """
-        Refresh Groww token at 5:50 AM IST — BEFORE the 6:00 AM expiry.
-        Propagates fresh token to fetcher and executor immediately.
+        8:30 AM IST: TOTP login + full pre-market stock scan.
+
+        Groww resets ALL tokens at 6:00 AM IST daily. We login fresh at
+        8:30 AM using only TOTP (GROWW_VENDOR_KEY + GROWW_TOTP_SECRET).
+        No manual token update ever needed.
+
+        After login: scan all watchlist stocks and send Telegram brief
+        so you know exactly what the bot is watching before 9:15 AM open.
         """
+        logger.info(f"[{format_ist_timestamp()}] ☀️ 8:30 AM — Morning TOTP login + pre-market scan")
+
+        # 1. TOTP login — get fresh token after the 6 AM reset
         from auth_groww import get_auth_manager
         mgr = get_auth_manager()
         success = mgr.refresh_token_if_needed()
         self._token_refresh_attempts += 1
+        self._token_refreshed_date = today_str
+        self._token_refreshed_today = True  # legacy compat
+
         if success:
-            self._token_refreshed_today = True       # legacy compat
-            self._token_refreshed_date = today_str   # date-based guard
-            # Push fresh token into fetcher and executor
+            # Push fresh token into fetcher and executor immediately
             if self.fetcher:
                 try:
                     self.fetcher._refresh_api_if_needed()
@@ -1215,11 +1210,96 @@ class TradingBot:
                     self.executor._init_api()
                 except Exception:
                     pass
-        logger.info(
-            f"[{format_ist_timestamp()}] Token refresh at 5:50 AM IST: "
-            f"{'✅ succeeded' if success else '❌ FAILED'} "
-            f"(attempt {self._token_refresh_attempts}/3)"
-        )
+            logger.info(f"[{format_ist_timestamp()}] ✅ Morning TOTP login successful")
+        else:
+            logger.error(f"[{format_ist_timestamp()}] ❌ Morning TOTP login FAILED!")
+            if self.alerter:
+                try:
+                    self.alerter.send_html(
+                        "🔴 <b>Morning Login FAILED</b>\n\n"
+                        "TOTP refresh failed at 8:30 AM IST.\n"
+                        "Check GROWW_VENDOR_KEY and GROWW_TOTP_SECRET in .env\n\n"
+                        "<code>cd /opt/kingtrades\n"
+                        "python3 auth_groww.py --extract-key</code>\n\n"
+                        "⚠️ Bot may not trade today without a valid token!"
+                    )
+                except Exception:
+                    pass
+            return  # Don't scan if login failed
+
+        # 2. Run overnight analysis if not yet done (usually runs at 8:00 AM)
+        if not self._overnight_run_today:
+            self._run_overnight_analysis()
+
+        # 3. Full pre-market scan + Telegram morning brief
+        try:
+            watchlist = self.watchlist_mgr.get_watchlist(
+                data_fetcher=self.fetcher, learner=self.learner
+            )
+            logger.info(
+                f"[{format_ist_timestamp()}] Pre-market scan: {len(watchlist)} stocks..."
+            )
+
+            # Scan top 50 for momentum picks (pre-open prices / yesterday close)
+            picks = []
+            for sym in watchlist[:50]:
+                try:
+                    df = self.fetcher.get_candles(sym, interval="5m", days=2)
+                    if df is None or len(df) < 20:
+                        continue
+                    q = self.fetcher.get_quote(sym)
+                    if not q:
+                        continue
+                    chg  = float(q.get("change_pct", 0))
+                    vol  = int(q.get("volume", 0))
+                    ltp  = float(q.get("ltp", 0))
+                    score = abs(chg) * 10 + (1 if vol > 500000 else 0)
+                    if abs(chg) >= 0.2:
+                        picks.append((sym, chg, ltp, vol, score))
+                except Exception:
+                    continue
+
+            picks.sort(key=lambda x: x[4], reverse=True)
+            top5 = picks[:5]
+
+            # Build Telegram morning brief
+            now_ist  = get_current_ist_time()
+            dow      = now_ist.weekday()
+            dow_name = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday"][dow]
+            dow_min  = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
+            dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
+
+            lines = [
+                f"☀️ <b>KingTrades — Morning Scan Ready</b>",
+                f"📅 {now_ist.strftime('%d %b %Y')} | {dow_name}",
+                f"🔑 Groww login: ✅ TOTP",
+                f"📊 Watchlist: {len(watchlist)} stocks scanned",
+                f"",
+                f"<b>⚙️ Today's Settings</b>",
+                f"Min signal score: {dow_min:.0f}",
+                f"Max trades: {dow_max}",
+                f"",
+            ]
+
+            if top5:
+                lines.append("<b>🎯 Pre-Market Movers</b>")
+                for i, (sym, chg, ltp, vol, _) in enumerate(top5, 1):
+                    arrow = "📈" if chg > 0 else "📉"
+                    lines.append(f"{i}. {arrow} <b>{sym}</b> ₹{ltp:.1f} ({chg:+.2f}%)")
+                lines.append("")
+
+            lines.append("⏰ Market opens 9:15 AM IST — watching for breakout signals")
+
+            if self.alerter:
+                self.alerter.send_html("\n".join(lines))
+
+            self._premarket_scan_done = True
+            logger.info(
+                f"[{format_ist_timestamp()}] ✅ Pre-market scan done. "
+                "Top picks: " + (", ".join(p[0] for p in top5) if top5 else "none yet")
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Pre-market scan error: {e}")
 
     # --------------------------------------------------------
     # TELEGRAM COMMAND LISTENER
