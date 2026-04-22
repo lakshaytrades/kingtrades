@@ -344,6 +344,17 @@ class GrowwAuthManager:
             logger.error(f"[{format_ist_timestamp()}] ❌ Cannot refresh — vendor key missing")
             return False
 
+        # Groww API maintenance window: 2:00 AM – 7:00 AM IST (servers offline)
+        # Never attempt login during this window — it always fails.
+        # Health check at 7:00 AM and morning login at 8:30 AM handle this.
+        now_ist = get_current_ist_time()
+        if 2 <= now_ist.hour < 7:
+            logger.info(
+                f"[{format_ist_timestamp()}] Skipping TOTP — Groww maintenance window "
+                f"(2–7 AM IST). Will login at 7 AM health check."
+            )
+            return False
+
         for attempt in range(1, 7):
             self._attempt_count += 1
             tok = _single_totp_attempt(
@@ -389,13 +400,24 @@ class GrowwAuthManager:
         try:
             if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
                 return self._token
+
+            # During Groww maintenance window (2–7 AM IST), don't attempt refresh.
+            # Modules can initialize without a token — they'll get one at 7 AM.
+            now_ist = get_current_ist_time()
+            if 2 <= now_ist.hour < 7:
+                logger.debug(
+                    f"[{format_ist_timestamp()}] No token during maintenance window — "
+                    "modules will get fresh token at 7 AM health check."
+                )
+                return self._token  # May be None — callers handle this gracefully
+
             reason = "Token expired (6 AM reset)" if self._token else "No token"
             logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing via TOTP...")
             self.refresh_token_if_needed()
             return self._token
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] get_valid_token error: {e}")
-            return self._token  # Return whatever we have
+            return self._token
 
     def force_refresh(self) -> bool:
         """Immediate refresh — /refresh Telegram command."""
