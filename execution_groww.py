@@ -323,9 +323,30 @@ class GrowwExecutor:
 
         # LIVE ORDER
         if not self._api:
+            logger.warning(f"[{format_ist_timestamp()}] API not initialized — attempting re-init...")
             self._init_api()
             if not self._api:
-                return OrderResult(False, message="Groww API not initialized")
+                # This was the silent killer: auth not ready = zero orders placed
+                msg = (
+                    f"❌ Groww API not initialized for {signal.symbol}. "
+                    "Token not yet obtained — will retry next cycle after 8:30 AM login."
+                )
+                logger.error(f"[{format_ist_timestamp()}] {msg}")
+                try:
+                    import requests as _req, config as _cfg
+                    if _cfg.TELEGRAM_BOT_TOKEN and _cfg.TELEGRAM_CHAT_ID:
+                        _req.post(
+                            f"https://api.telegram.org/bot{_cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": _cfg.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
+                                  "text": f"⚠️ <b>Order Skipped — API Not Ready</b>\n"
+                                          f"Symbol: {signal.symbol}\n"
+                                          f"Reason: Groww token not obtained yet.\n"
+                                          f"Bot will retry login in 5 minutes."},
+                            timeout=5,
+                        )
+                except Exception:
+                    pass
+                return OrderResult(False, message=msg)
 
         try:
             # ── MARKET order: fills immediately at current price.

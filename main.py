@@ -1360,23 +1360,27 @@ class TradingBot:
                 "📈 Trading starts at 9:15 AM IST",
             ]
 
-        try:
-            if self.alerter:
-                self.alerter.send_html("\n".join(lines))
-            else:
-                import requests as _req, config as _cfg
-                if _cfg.TELEGRAM_BOT_TOKEN and _cfg.TELEGRAM_CHAT_ID:
-                    _req.post(
-                        f"https://api.telegram.org/bot{_cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
-                        json={"chat_id": _cfg.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
-                              "text": "\n".join(lines)},
-                        timeout=10,
-                    )
-        except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Health check alert failed: {e}")
-
+        # Only send Telegram if there's a problem — never wake user for green status
+        has_problem = bool(critical) or (issues and not login_ok)
+        if has_problem:
+            try:
+                if self.alerter:
+                    self.alerter.send_html("\n".join(lines))
+                else:
+                    import requests as _req, config as _cfg
+                    if _cfg.TELEGRAM_BOT_TOKEN and _cfg.TELEGRAM_CHAT_ID:
+                        _req.post(
+                            f"https://api.telegram.org/bot{_cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
+                            json={"chat_id": _cfg.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
+                                  "text": "\n".join(lines)},
+                            timeout=10,
+                        )
+            except Exception as e:
+                logger.error(f"[{format_ist_timestamp()}] Health check alert failed: {e}")
+        # If all OK — log silently, no Telegram, no wake-up needed
         logger.info(
-            f"[{format_ist_timestamp()}] Health check done — "
+            f"[{format_ist_timestamp()}] ✅ Health check done — "
+            f"{'PROBLEMS FOUND — alerted' if has_problem else 'all systems go (silent)'} | "
             f"fixed={len(fixed)} issues={len(issues)} critical={len(critical)}"
         )
 
