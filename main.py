@@ -499,15 +499,24 @@ class TradingBot:
                 now_ist = get_current_ist_time()
 
                 today_str = now_ist.strftime("%Y-%m-%d")
+                now_mins  = now_ist.hour * 60 + now_ist.minute
+
+                # ── 7:00 AM IST: Pre-market health check + auto-fix ───────────
+                # Runs before you wake up. Clears stale cache, validates
+                # credentials, tests TOTP login. Sends Telegram confirmation
+                # or specific fix instructions by 7:05 AM.
+                if (now_ist.hour == 7 and now_ist.minute < 10
+                        and getattr(self, "_health_check_date", "") != today_str):
+                    self._health_check_date = today_str
+                    self._run_premarket_health_check(today_str)
 
                 # ── 8:30 AM IST onwards: TOTP login — auto-retry every 5 min ──
                 # Groww resets all tokens at 6:00 AM IST daily.
                 # Bot logs in at 8:30 AM. If it fails, retries every 5 min
                 # automatically until success — no manual action needed.
-                now_mins = now_ist.hour * 60 + now_ist.minute
                 if (now_mins >= 8 * 60 + 30
                         and self._token_refreshed_date != today_str):
-                    last_try = getattr(self, "_last_login_try_ts", None)
+                    last_try   = getattr(self, "_last_login_try_ts", None)
                     secs_since = (now_ist - last_try).total_seconds() if last_try else 999
                     if secs_since >= 300:  # retry every 5 minutes
                         self._last_login_try_ts = now_ist
@@ -1181,6 +1190,195 @@ class TradingBot:
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Overnight analysis failed: {e}")
             self._overnight_run_today = True  # Don't retry
+
+    # --------------------------------------------------------
+    # 7:00 AM PRE-MARKET HEALTH CHECK + AUTO-FIX
+    # --------------------------------------------------------
+
+    def _run_premarket_health_check(self, today_str: str = ""):
+        """
+        Runs at 7:00 AM IST — 2 hours before market open, 1.5 before login.
+
+        Checks everything, auto-fixes what it can, sends Telegram report.
+        If unfixable, sends specific instructions so you can act by 9:15 AM.
+        """
+        logger.info(f"[{format_ist_timestamp()}] 🔍 7:00 AM health check running...")
+        issues   = []
+        fixed    = []
+        critical = []
+
+        # ── 1. Check TOTP secret ─────────────────────────────────────────
+        totp_secret = os.getenv("GROWW_TOTP_SECRET", "")
+        if not totp_secret:
+            critical.append(
+                "❌ GROWW_TOTP_SECRET missing from .env\n"
+                "  Fix: add GROWW_TOTP_SECRET=<base32 secret from groww.in>"
+            )
+        else:
+            try:
+                import pyotp
+                code = pyotp.TOTP(totp_secret).now()
+                if not code or len(code) != 6:
+                    critical.append(f"❌ TOTP secret invalid — generated '{code}' (expected 6 digits)")
+                else:
+                    logger.info(f"[{format_ist_timestamp()}] ✅ TOTP secret valid (test code: {code})")
+            except Exception as e:
+                critical.append(f"❌ TOTP secret error: {e}")
+
+        # ── 2. Check + auto-fix vendor key ───────────────────────────────
+        from auth_groww import (
+            get_auth_manager, _extract_vendor_key_from_jwt,
+            _is_expired_by_6am_reset, _TOKEN_CACHE_FILE
+        )
+        mgr = get_auth_manager()
+
+        if not mgr._vendor_key:
+            # Try to recover from GROWW_AUTH_TOKEN
+            raw = os.getenv("GROWW_AUTH_TOKEN", "")
+            if raw:
+                vk = _extract_vendor_key_from_jwt(raw)
+                if vk:
+                    mgr._vendor_key = vk
+                    fixed.append(f"✅ Vendor key auto-recovered from GROWW_AUTH_TOKEN: {vk[:8]}...")
+                elif len(raw) < 64 and "." not in raw:
+                    mgr._vendor_key = raw
+                    fixed.append(f"✅ Using GROWW_AUTH_TOKEN as vendor key: {raw[:8]}...")
+                else:
+                    critical.append(
+                        "❌ Cannot extract vendor key from GROWW_AUTH_TOKEN\n"
+                        "  Fix: add GROWW_VENDOR_KEY=<key> to .env\n"
+                        "  Get it: python3 auth_groww.py --extract-key"
+                    )
+            else:
+                critical.append(
+                    "❌ Neither GROWW_VENDOR_KEY nor GROWW_AUTH_TOKEN is set\n"
+                    "  Fix: add GROWW_AUTH_TOKEN=<your token from groww.in> to .env"
+                )
+
+        # ── 3. Clear stale token cache (expired tokens cause silent failures) ─
+        try:
+            if _TOKEN_CACHE_FILE.exists():
+                import json as _j
+                data = _j.loads(_TOKEN_CACHE_FILE.read_text())
+                ts_str = data.get("timestamp", "")
+                if ts_str:
+                    from datetime import datetime
+                    from zoneinfo import ZoneInfo
+                    ts = datetime.fromisoformat(ts_str)
+                    if ts.tzinfo is None:
+                        ts = ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
+                    if _is_expired_by_6am_reset(ts):
+                        _TOKEN_CACHE_FILE.unlink()
+                        mgr._token           = None
+                        mgr._token_timestamp = None
+                        fixed.append("✅ Stale token cache cleared (expired at 6 AM reset)")
+        except Exception as e:
+            issues.append(f"⚠️ Cache check: {e}")
+
+        # ── 4. Live TOTP login test ───────────────────────────────────────
+        login_ok = False
+        if mgr._vendor_key and totp_secret:
+            logger.info(f"[{format_ist_timestamp()}] Testing live TOTP login...")
+            try:
+                login_ok = mgr.refresh_token_if_needed()
+                if login_ok:
+                    fixed.append("✅ Live TOTP login test PASSED — token valid for today")
+                    # Push fresh token into clients immediately
+                    self._reinit_api_clients()
+                    # Mark token as refreshed so 8:30 AM block is skipped
+                    self._token_refreshed_date  = today_str
+                    self._token_refreshed_today = True
+                else:
+                    issues.append(
+                        "⚠️ Live login test failed — will retry at 8:30 AM\n"
+                        "  (May be a temporary Groww server issue)"
+                    )
+            except Exception as e:
+                issues.append(f"⚠️ Login test exception: {e}")
+
+        # ── 5. Check internet connectivity ───────────────────────────────
+        try:
+            import requests as _req
+            r = _req.get("https://api.groww.in", timeout=5)
+            logger.info(f"[{format_ist_timestamp()}] ✅ Groww API reachable (HTTP {r.status_code})")
+        except Exception:
+            issues.append("⚠️ Cannot reach api.groww.in — check VPS internet connection")
+
+        # ── 6. Check service memory / uptime ─────────────────────────────
+        try:
+            import resource
+            mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
+            if mem_mb > 800:
+                issues.append(f"⚠️ High memory usage: {mem_mb:.0f} MB — consider restarting")
+        except Exception:
+            pass
+
+        # ── Build Telegram report ─────────────────────────────────────────
+        now_str = get_current_ist_time().strftime("%d %b %Y")
+        if critical:
+            lines = [
+                f"🚨 <b>Pre-Market Check — ACTION NEEDED</b>",
+                f"📅 {now_str} | 7:00 AM IST",
+                "",
+                "<b>Critical issues (fix before 9:15 AM):</b>",
+            ]
+            for c in critical:
+                lines.append(c)
+            if issues:
+                lines += ["", "<b>Warnings:</b>"]
+                for w in issues:
+                    lines.append(w)
+            lines += [
+                "",
+                "⏰ Market opens 9:15 AM IST",
+                "Bot will keep retrying — fix critical items ASAP.",
+            ]
+        elif issues and not login_ok:
+            lines = [
+                f"⚠️ <b>Pre-Market Check — Minor Issues</b>",
+                f"📅 {now_str} | 7:00 AM IST",
+                "",
+            ]
+            if fixed:
+                lines += ["<b>Auto-fixed:</b>"] + fixed + [""]
+            lines += ["<b>Warnings (bot will retry):</b>"] + issues
+            lines += ["", "Bot retries login at 8:30 AM — likely fine."]
+        else:
+            lines = [
+                f"✅ <b>Pre-Market Check — All Systems Go</b>",
+                f"📅 {now_str} | 7:00 AM IST",
+                "",
+            ]
+            if fixed:
+                lines += ["<b>Auto-fixed:</b>"] + fixed + [""]
+            lines += [
+                "🔑 Groww login: ✅ Ready",
+                "🔢 TOTP secret: ✅ Valid",
+                "🌐 API reachable: ✅",
+                "",
+                "⏰ Pre-market scan at 8:30 AM IST",
+                "📈 Trading starts at 9:15 AM IST",
+            ]
+
+        try:
+            if self.alerter:
+                self.alerter.send_html("\n".join(lines))
+            else:
+                import requests as _req, config as _cfg
+                if _cfg.TELEGRAM_BOT_TOKEN and _cfg.TELEGRAM_CHAT_ID:
+                    _req.post(
+                        f"https://api.telegram.org/bot{_cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
+                        json={"chat_id": _cfg.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
+                              "text": "\n".join(lines)},
+                        timeout=10,
+                    )
+        except Exception as e:
+            logger.error(f"[{format_ist_timestamp()}] Health check alert failed: {e}")
+
+        logger.info(
+            f"[{format_ist_timestamp()}] Health check done — "
+            f"fixed={len(fixed)} issues={len(issues)} critical={len(critical)}"
+        )
 
     # --------------------------------------------------------
     # SELF-HEALING: reinit API clients after fresh token
