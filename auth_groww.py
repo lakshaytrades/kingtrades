@@ -294,31 +294,51 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         logger.info(f"SDK outer error: {e}")
 
     # ── Method 3: HTTP email + password + TOTP ─────────────────────────
+    # groww.in (web app domain) NOT api.groww.in (Trade API domain)
     if email and password:
-        base_h = {"Content-Type": "application/json", "Accept": "application/json",
-                  "User-Agent": "Mozilla/5.0 GrowwApp/9.0"}
-        for url, body in [
+        base_h = {
+            "Content-Type": "application/json",
+            "Accept":       "application/json",
+            "User-Agent":   "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 Chrome/109.0.0.0 Mobile Safari/537.36",
+            "x-app-version": "9.0",
+            "Origin":       "https://groww.in",
+            "Referer":      "https://groww.in/",
+        }
+        # Groww web app endpoints (groww.in, not api.groww.in)
+        web_attempts = [
+            # Single-step with TOTP inline (most common for TOTP-enabled accounts)
+            ("https://groww.in/v1/api/login_password_otp",
+             {"loginId": email, "password": password, "otp": totp_code}),
+            ("https://groww.in/v1/api/login_password",
+             {"loginId": email, "password": password, "otp": totp_code}),
+            ("https://groww.in/v1/api/user/login",
+             {"email": email, "password": password, "otp": totp_code, "totp": totp_code}),
+            # Trade API with correct field names
             ("https://api.groww.in/v1/user/login",
+             {"loginId": email, "password": password, "otp": totp_code}),
+            ("https://api.groww.in/v1/auth/token",
              {"email": email, "password": password, "totp": totp_code}),
-            ("https://api.groww.in/v1/user/generate_session",
-             {"email": email, "password": password, "totp": totp_code}),
-            ("https://api.groww.in/v1/auth/login",
-             {"email": email, "password": password, "totp": totp_code}),
-        ]:
+        ]
+        session = requests.Session()
+        session.headers.update(base_h)
+        for url, body in web_attempts:
             try:
-                resp = requests.post(url, json=body, headers=base_h, timeout=15)
-                ep = url.rsplit("/", 1)[-1]
-                logger.info(f"  [email/{ep}] HTTP {resp.status_code}: {resp.text[:120]}")
+                resp = session.post(url, json=body, timeout=15)
+                ep = url.split("/")[-1] or url.split("/")[-2]
+                logger.info(f"  [web/{ep}] HTTP {resp.status_code}: {resp.text[:150]}")
                 if resp.status_code in (200, 201):
-                    tok = _extract_token_from_response(resp.json())
-                    if tok:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via email+pwd [{ep}]")
-                        return tok
+                    try:
+                        j = resp.json()
+                        tok = _extract_token_from_response(j)
+                        if tok:
+                            logger.info(f"[{format_ist_timestamp()}] ✅ Token via web email+pwd [{ep}]")
+                            return tok
+                    except Exception:
+                        pass
             except Exception as e:
-                logger.info(f"  email+pwd [{url.rsplit('/',1)[-1]}]: {e}")
+                logger.info(f"  web/{ep}: {e}")
 
     return None
-
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Auth Manager
@@ -462,12 +482,28 @@ class GrowwAuthManager:
         today = get_current_ist_time().strftime("%Y-%m-%d")
         if getattr(self, "_retry_alert_date", "") != today:
             self._retry_alert_date = today
-            self._send_alert(
-                "⚠️ <b>Groww Login Failed — Retrying</b>\n\n"
-                "TOTP codes are correct but Groww API is rejecting the login.\n"
-                "Bot will keep retrying every 5 min until 4 PM IST.\n\n"
-                "<i>This alert will not repeat today.</i>"
-            )
+            has_client_id = bool(os.getenv("GROWW_CLIENT_ID", ""))
+            if not has_client_id:
+                self._send_alert(
+                    "❌ <b>Groww Login Failing — Action Needed</b>\n\n"
+                    "The Groww API is rejecting authentication.\n"
+                    "<b>Root cause:</b> Missing Cloud API Key\n\n"
+                    "<b>Fix (30 seconds):</b>\n"
+                    "1. Open groww.in → Profile → Trade API → Cloud API Keys\n"
+                    "2. Copy your API Key\n"
+                    "3. SSH to VPS and run:\n"
+                    "<code>echo 'GROWW_CLIENT_ID=paste_key_here' >> /opt/kingtrades/.env\n"
+                    "systemctl restart kingtrades</code>\n\n"
+                    "<i>Bot retrying every 5 min until 4 PM IST</i>"
+                )
+            else:
+                self._send_alert(
+                    "⚠️ <b>Groww Login Failed — Retrying</b>\n\n"
+                    "TOTP codes are correct but Groww API rejects them.\n"
+                    "Possible cause: TOTP secret linked to account login, not API key.\n"
+                    "Check groww.in → Trade API → your Cloud API Key TOTP\n\n"
+                    "<i>Bot retrying every 5 min until 4 PM IST</i>"
+                )
         return False
 
     def get_valid_token(self) -> Optional[str]:
