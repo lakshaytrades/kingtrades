@@ -510,11 +510,11 @@ class TradingBot:
                     self._health_check_date = today_str
                     self._run_premarket_health_check(today_str)
 
-                # ── 8:30 AM IST onwards: TOTP login — auto-retry every 5 min ──
-                # Groww resets all tokens at 6:00 AM IST daily.
-                # Bot logs in at 8:30 AM. If it fails, retries every 5 min
-                # automatically until success — no manual action needed.
-                if (now_mins >= 8 * 60 + 30
+                # ── 8:30 AM–4:00 PM IST: TOTP login — retry every 5 min ─────
+                # Groww resets tokens at 6:00 AM IST daily.
+                # Login at 8:30 AM; retry every 5 min if it fails.
+                # Stop at 4:00 PM — no point logging in after market close.
+                if (8 * 60 + 30 <= now_mins <= 16 * 60
                         and self._token_refreshed_date != today_str):
                     last_try   = getattr(self, "_last_login_try_ts", None)
                     secs_since = (now_ist - last_try).total_seconds() if last_try else 999
