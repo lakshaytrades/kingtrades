@@ -145,8 +145,10 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                           attempt_label: str = "") -> Optional[str]:
     """
     One TOTP login attempt — tries every known Groww auth method.
-    Priority: SDK → email+password+TOTP → direct HTTP endpoints.
+    Errors are logged at INFO level so they're visible in journalctl.
     """
+    import hashlib
+
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 5:
         logger.debug(f"Waiting {remaining + 1}s for fresh TOTP window...")
@@ -155,19 +157,14 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
     totp_code   = pyotp.TOTP(totp_secret).now()
     window_left = 30 - (int(time.time()) % 30)
     label       = f"[{attempt_label}] " if attempt_label else ""
-    logger.info(
-        f"[{format_ist_timestamp()}] {label}TOTP code={totp_code} "
-        f"| window={window_left}s | vendor={vendor_key[:8] if vendor_key else 'MISSING'}..."
-    )
 
-    raw_token = os.getenv("GROWW_AUTH_TOKEN", "")
-    email     = os.getenv("GROWW_EMAIL", "")
-    password  = os.getenv("GROWW_PASSWORD", "")
-    client_id = os.getenv("GROWW_CLIENT_ID", "")
+    raw_token     = os.getenv("GROWW_AUTH_TOKEN", "")
+    email         = os.getenv("GROWW_EMAIL", "")
+    password      = os.getenv("GROWW_PASSWORD", "")
+    client_id     = os.getenv("GROWW_CLIENT_ID", "")
+    client_secret = os.getenv("GROWW_CLIENT_SECRET", "")
 
-    # Priority: Cloud API Key (GROWW_CLIENT_ID) → vendor key → raw JWT
-    # GROWW_CLIENT_ID is the Cloud API Key from Groww's developer portal.
-    # It is NOT the vendorIntegrationKey embedded in the JWT sub field.
+    # Priority: GROWW_CLIENT_ID (Cloud API Key) → vendor key → raw JWT token
     keys_to_try = []
     if client_id:
         keys_to_try.append(("client_id", client_id))
@@ -176,14 +173,62 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
     if raw_token and raw_token not in (vendor_key, client_id):
         keys_to_try.append(("raw_auth_token", raw_token))
 
-    # ── Method 1: growwapi SDK (api_key + TOTP) ───────────────────────
+    logger.info(
+        f"[{format_ist_timestamp()}] {label}TOTP={totp_code} window={window_left}s "
+        f"| keys={[k for k,_ in keys_to_try]} email={'✅' if email else '❌'}"
+    )
+
+    # ── Method 1: Correct Groww Trade API endpoint ─────────────────────
+    # POST https://api.groww.in/v1/token/api/access
+    # Authorization: Bearer <api_key>
+    # Body (TOTP): {"totp": "123456"}
+    # Body (secret): {"key_type": "approval", "checksum": sha256(secret+ts), "timestamp": ts}
+    ts = int(time.time())
+    for key_label, key_val in keys_to_try:
+        base_hdrs = {
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+            "Authorization": f"Bearer {key_val}",
+            "User-Agent":    "growwapi-python/1.5.0",
+        }
+        bodies_to_try = [
+            {"totp": totp_code},
+            {"totp": str(totp_code)},
+            {"otp": totp_code},
+        ]
+        # Secret-based checksum (if we have client_secret)
+        if client_secret:
+            checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
+            bodies_to_try.append({
+                "key_type": "approval",
+                "checksum": checksum,
+                "timestamp": ts,
+            })
+        for body in bodies_to_try:
+            try:
+                resp = requests.post(
+                    "https://api.groww.in/v1/token/api/access",
+                    json=body, headers=base_hdrs, timeout=15,
+                )
+                logger.info(
+                    f"  [token/api/access] ({key_label}) HTTP {resp.status_code}: "
+                    f"{resp.text[:120]}"
+                )
+                if resp.status_code in (200, 201):
+                    tok = _extract_token_from_response(resp.json())
+                    if tok:
+                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via /v1/token/api/access ({key_label})")
+                        return tok
+            except Exception as e:
+                logger.info(f"  [token/api/access] ({key_label}): {e}")
+
+    # ── Method 2: growwapi SDK ─────────────────────────────────────────
     try:
         import io
         import sys as _sys
         from growwapi import GrowwAPI
 
         def _quiet_groww(key_val):
-            """Instantiate GrowwAPI without printing 'Ready to Groww!' noise."""
             buf = io.StringIO()
             old = _sys.stdout
             _sys.stdout = buf
@@ -195,17 +240,16 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         for key_label, key_val in keys_to_try:
             try:
                 result = GrowwAPI.get_access_token(api_key=key_val, totp=totp_code)
+                logger.info(f"  SDK.get_access_token({key_label}): {str(result)[:100]}")
                 if isinstance(result, str) and len(result) > 20:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.get_access_token ({key_label})")
+                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK ({key_label})")
                     return result
                 if isinstance(result, dict):
                     tok = _extract_token_from_response(result)
                     if tok:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK dict ({key_label})")
                         return tok
-                logger.debug(f"SDK.get_access_token ({key_label}): returned {str(result)[:80]}")
             except Exception as e:
-                logger.debug(f"SDK.get_access_token ({key_label}): {e}")
+                logger.info(f"  SDK.get_access_token({key_label}): {e}")
 
             for method_name in ("get_access_token", "refresh_token", "generate_session"):
                 try:
@@ -218,116 +262,60 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                         logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{method_name}() ({key_label})")
                         return r
                 except Exception as e:
-                    logger.debug(f"SDK.{method_name}() ({key_label}): {e}")
+                    logger.info(f"  SDK.{method_name}({key_label}): {e}")
 
-        # ── Method 2: SDK login with email + password + TOTP ─────────
-        # This is the most reliable method — works even when stored token is expired.
-        # Groww SDK's login() mirrors the web login flow.
         if email and password:
-            for key_label, key_val in [("client_id", client_id), ("vendor_key", vendor_key), ("empty", "")]:
+            for key_label, key_val in [("client_id", client_id), ("vendor_key", vendor_key)]:
+                if not key_val:
+                    continue
                 try:
-                    obj = _quiet_groww(key_val) if key_val else GrowwAPI.__new__(GrowwAPI)
-                    for login_method in ("login", "authenticate", "create_session",
-                                        "login_with_totp", "user_login"):
-                        fn = getattr(obj, login_method, None)
+                    obj = _quiet_groww(key_val)
+                    for mname in ("login", "authenticate", "login_with_totp"):
+                        fn = getattr(obj, mname, None)
                         if not fn:
                             continue
                         try:
                             r = fn(email=email, password=password, totp=totp_code)
                             if isinstance(r, str) and len(r) > 20:
-                                logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{login_method}(email,pwd,totp)")
+                                logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{mname}()")
                                 return r
                             if isinstance(r, dict):
                                 tok = _extract_token_from_response(r)
                                 if tok:
-                                    logger.info(f"[{format_ist_timestamp()}] ✅ Token via SDK.{login_method}() dict")
                                     return tok
-                        except TypeError:
-                            # Try without keyword args
-                            try:
-                                r = fn(email, password, totp_code)
-                                if isinstance(r, str) and len(r) > 20:
-                                    return r
-                            except Exception:
-                                pass
                         except Exception as e:
-                            logger.debug(f"SDK.{login_method}(email,pwd,totp): {e}")
+                            logger.info(f"  SDK.{mname}({key_label}): {e}")
                 except Exception as e:
-                    logger.debug(f"SDK email+pwd+totp ({key_label}): {e}")
+                    logger.info(f"  SDK email+pwd ({key_label}): {e}")
 
     except ImportError:
-        logger.debug("growwapi SDK not installed — using direct HTTP")
+        logger.info("growwapi SDK not installed — skipping SDK methods")
     except Exception as e:
-        logger.debug(f"SDK error: {e}")
+        logger.info(f"SDK outer error: {e}")
 
-    # ── Method 3: direct HTTP — email + password + TOTP (web auth flow) ─
-    # This replicates Groww's web login. Works even with expired stored token.
+    # ── Method 3: HTTP email + password + TOTP ─────────────────────────
     if email and password:
-        auth_flows = [
-            # Single-step: email + password + totp together
-            [("POST", "https://api.groww.in/v1/user/generate_session",
-              {"email": email, "password": password, "totp": totp_code})],
-            [("POST", "https://api.groww.in/v1/user/login",
-              {"email": email, "password": password, "totp": totp_code})],
-            [("POST", "https://api.groww.in/v1/auth/login",
-              {"email": email, "password": password, "totp": totp_code})],
-            # Two-step: login then verify
-            [("POST", "https://api.groww.in/v1/user/login",
-              {"email": email, "password": password}),
-             ("POST", "https://api.groww.in/v1/user/login/verify_totp",
-              {"totp": totp_code})],
-        ]
-        base_headers = {"Content-Type": "application/json", "Accept": "application/json",
-                        "User-Agent": "Mozilla/5.0 GrowwApp/1.0"}
-        for flow in auth_flows:
+        base_h = {"Content-Type": "application/json", "Accept": "application/json",
+                  "User-Agent": "Mozilla/5.0 GrowwApp/9.0"}
+        for url, body in [
+            ("https://api.groww.in/v1/user/login",
+             {"email": email, "password": password, "totp": totp_code}),
+            ("https://api.groww.in/v1/user/generate_session",
+             {"email": email, "password": password, "totp": totp_code}),
+            ("https://api.groww.in/v1/auth/login",
+             {"email": email, "password": password, "totp": totp_code}),
+        ]:
             try:
-                session_token = None
-                for method, url, body in flow:
-                    hdrs = dict(base_headers)
-                    if session_token:
-                        hdrs["Authorization"] = f"Bearer {session_token}"
-                    resp = requests.request(method, url, json=body, headers=hdrs, timeout=15)
-                    logger.debug(f"  [{url.rsplit('/',1)[-1]}] HTTP {resp.status_code}: {str(resp.text)[:100]}")
-                    if resp.status_code in (200, 201):
-                        tok = _extract_token_from_response(resp.json())
-                        if tok:
-                            logger.info(f"[{format_ist_timestamp()}] ✅ Token via HTTP email+pwd flow [{url.rsplit('/',1)[-1]}]")
-                            return tok
-                        # If no final token yet, store for next step
-                        session_token = _extract_token_from_response(resp.json()) or session_token
-            except Exception as e:
-                logger.debug(f"Email+pwd HTTP flow error: {e}")
-
-    # ── Method 4: direct HTTP — api_key + TOTP ───────────────────────
-    for key_label, key_val in keys_to_try:
-        endpoints = [
-            ("POST", "https://api.groww.in/v1/user/generate_token",
-             {"api_key": key_val, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/auth/access-token",
-             {"api_key": key_val, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/auth/token",
-             {"apiKey": key_val, "totp": totp_code}),
-            ("POST", "https://api.groww.in/v1/user/session/generate_token",
-             {"api_key": key_val, "totp": totp_code}),
-        ]
-        hdrs = {"Content-Type": "application/json", "Accept": "application/json",
-                "User-Agent": "growwapi-python/1.0", "X-Api-Version": "1"}
-        if not _looks_like_vendor_key(key_val):
-            hdrs["Authorization"] = f"Bearer {key_val}"
-        for method, url, body in endpoints:
-            ep = url.rsplit("/", 1)[-1]
-            try:
-                resp = requests.request(method, url, json=body, headers=hdrs, timeout=15)
+                resp = requests.post(url, json=body, headers=base_h, timeout=15)
+                ep = url.rsplit("/", 1)[-1]
+                logger.info(f"  [email/{ep}] HTTP {resp.status_code}: {resp.text[:120]}")
                 if resp.status_code in (200, 201):
                     tok = _extract_token_from_response(resp.json())
                     if tok:
-                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via HTTP [{ep}] ({key_label})")
+                        logger.info(f"[{format_ist_timestamp()}] ✅ Token via email+pwd [{ep}]")
                         return tok
-                    logger.debug(f"  [{ep}] 200 but no token: {str(resp.json())[:100]}")
-                else:
-                    logger.debug(f"  [{ep}] HTTP {resp.status_code} ({key_label}): {resp.text[:80]}")
             except Exception as e:
-                logger.debug(f"  [{ep}] {e}")
+                logger.info(f"  email+pwd [{url.rsplit('/',1)[-1]}]: {e}")
 
     return None
 
