@@ -138,6 +138,46 @@ def _is_expired_by_6am_reset(token_ts: Optional[datetime]) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# SDK diagnostic (runs once per process)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_sdk_inspected = False
+
+
+def _inspect_sdk_once():
+    """Log actual SDK source and constructor params — runs once, critical for debug."""
+    global _sdk_inspected
+    if _sdk_inspected:
+        return
+    _sdk_inspected = True
+    try:
+        import inspect
+        import io, sys as _sys
+        buf = io.StringIO(); old = _sys.stdout; _sys.stdout = buf
+        try:
+            from growwapi import GrowwAPI
+        finally:
+            _sys.stdout = old
+
+        logger.info(f"[SDK] GrowwAPI attributes: {[m for m in dir(GrowwAPI) if not m.startswith('_')]}")
+        for name in ("get_access_token", "__init__", "login"):
+            fn = getattr(GrowwAPI, name, None)
+            if fn:
+                try:
+                    sig = str(inspect.signature(fn))
+                    logger.info(f"[SDK] GrowwAPI.{name} signature: {sig}")
+                except Exception:
+                    pass
+                try:
+                    src = inspect.getsource(fn)
+                    logger.info(f"[SDK] GrowwAPI.{name} source:\n{src[:1000]}")
+                except Exception as e:
+                    logger.info(f"[SDK] cannot read {name} source: {e}")
+    except Exception as e:
+        logger.info(f"[SDK] inspect failed: {e}")
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Core: single TOTP attempt
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -148,6 +188,7 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
     Errors are logged at INFO level so they're visible in journalctl.
     """
     import hashlib
+    _inspect_sdk_once()
 
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 5:
