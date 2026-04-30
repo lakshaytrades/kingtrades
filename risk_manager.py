@@ -183,7 +183,8 @@ class RiskManager:
     def initialize_day(self, available_balance: float, nifty_open: float = 0):
         """Call this at market open (9:15 AM IST) each day."""
         now_ist = get_current_ist_time()
-        cap = min(available_balance, self.max_daily_capital)
+        # Use actual live balance — no artificial cap
+        cap = available_balance if available_balance > 0 else self.max_daily_capital
         self.state = RiskState(
             date=now_ist.strftime("%Y-%m-%d"),
             daily_capital=cap,
@@ -193,16 +194,13 @@ class RiskManager:
         self._available_balance = available_balance
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
-            f"Capital: {format_currency(cap)} | "
+            f"Balance: {format_currency(cap)} × 5x leverage = "
+            f"{format_currency(cap * 5)} buying power | "
             f"Nifty open: {nifty_open:.2f}"
         )
 
     def update_balance(self, balance: float):
-        """Update available balance (called before each trade).
-        Guards against 0 / negative: if balance API is offline or returns an
-        empty response, keep the last known valid capital so position sizing
-        and can_take_trade() continue using the initialised day capital.
-        """
+        """Update to live Groww balance before each trade — no cap, uses real funds."""
         if balance <= 0:
             logger.debug(
                 f"[{format_ist_timestamp()}] update_balance: ignoring 0 — "
@@ -210,10 +208,9 @@ class RiskManager:
             )
             return
         self._available_balance = balance
-        effective_capital = min(balance, self.max_daily_capital)
-        self.state.available_capital = effective_capital
-        if effective_capital != self.state.daily_capital:
-            self.state.daily_capital = effective_capital
+        # Use actual balance — bot adapts to whatever funds are in the account
+        self.state.available_capital = balance
+        self.state.daily_capital     = balance
 
     def set_institutional_multiplier(
         self, fii_mult: float = 1.0, oc_mult: float = 1.0
@@ -397,13 +394,16 @@ class RiskManager:
         if sl_distance <= 0:
             return {"quantity": 0, "reason": "Invalid SL distance"}
 
-        # 1. Risk-based sizing
+        LEVERAGE = 5.0  # Groww MIS intraday leverage
+        buying_power = capital * LEVERAGE  # effective capital for position sizing
+
+        # 1. Risk-based sizing (risk on actual capital, not leveraged)
         risk_amount = capital * (self.max_risk_pct / 100)
         risk_qty    = int(risk_amount / sl_distance)
 
-        # 2. Dynamic Kelly
+        # 2. Dynamic Kelly (on buying power)
         kelly_frac  = self._dynamic_kelly_fraction()
-        kelly_qty   = int((capital * kelly_frac) / entry_price)
+        kelly_qty   = int((buying_power * kelly_frac) / entry_price)
 
         # More conservative of the two
         quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
@@ -435,29 +435,33 @@ class RiskManager:
                 ),
             }
 
-        # 6. Capital cap: max 15% per position
-        max_by_capital = int((capital * 0.15) / entry_price)
+        # 6. Capital cap: max 15% of buying power (leveraged) per position
+        max_by_capital = int((buying_power * 0.15) / entry_price)
         quantity = min(quantity, max_by_capital)
         quantity = max(quantity, 1)
 
-        capital_used = entry_price * quantity
-        actual_risk  = sl_distance * quantity
+        capital_used     = entry_price * quantity
+        actual_risk      = sl_distance * quantity
+        margin_required  = capital_used / LEVERAGE  # actual cash margin needed
 
         return {
-            "quantity":    quantity,
-            "risk_amount": round(actual_risk, 2),
-            "capital_used":round(capital_used, 2),
-            "capital_pct": round(capital_used / capital * 100, 1),
-            "risk_pct":    round(actual_risk  / capital * 100, 2),
-            "risk_qty":    risk_qty,
-            "kelly_qty":   kelly_qty,
-            "kelly_frac":  round(kelly_frac, 3),
-            "sl_distance": round(sl_distance, 2),
-            "sess_mult":   round(sess_mult, 2),
-            "session":     session,
-            "dow_mult":    round(dow_mult, 2),
-            "inst_mult":   round(inst_mult, 2),
-            "heat_pct":    round(self.state.portfolio_heat, 2),
+            "quantity":       quantity,
+            "risk_amount":    round(actual_risk, 2),
+            "capital_used":   round(capital_used, 2),
+            "margin_required":round(margin_required, 2),
+            "capital_pct":    round(capital_used / buying_power * 100, 1),
+            "risk_pct":       round(actual_risk  / capital * 100, 2),
+            "leverage":       LEVERAGE,
+            "buying_power":   round(buying_power, 2),
+            "risk_qty":       risk_qty,
+            "kelly_qty":      kelly_qty,
+            "kelly_frac":     round(kelly_frac, 3),
+            "sl_distance":    round(sl_distance, 2),
+            "sess_mult":      round(sess_mult, 2),
+            "session":        session,
+            "dow_mult":       round(dow_mult, 2),
+            "inst_mult":      round(inst_mult, 2),
+            "heat_pct":       round(self.state.portfolio_heat, 2),
         }
 
     # --------------------------------------------------------

@@ -49,6 +49,20 @@ class OrderResult:
         return f"{status} OrderResult(id={self.order_id}, msg={self.message})"
 
 
+def _tg(text: str) -> None:
+    """Fire-and-forget Telegram message for trade briefs."""
+    try:
+        import requests as _r, config as _c
+        if _c.TELEGRAM_BOT_TOKEN and _c.TELEGRAM_CHAT_ID:
+            _r.post(
+                f"https://api.telegram.org/bot{_c.TELEGRAM_BOT_TOKEN}/sendMessage",
+                json={"chat_id": _c.TELEGRAM_CHAT_ID, "parse_mode": "HTML", "text": text},
+                timeout=6,
+            )
+    except Exception:
+        pass
+
+
 class GrowwExecutor:
     """
     Live order execution engine for Groww.
@@ -399,6 +413,23 @@ class GrowwExecutor:
                     f"{transaction_type} {signal.symbol} x{quantity} "
                     f"@ ₹{filled_price:.2f} (signal ₹{entry_price:.2f})"
                 )
+                # ── Telegram trade brief ──────────────────────────────────────
+                cap   = self.risk_manager.state.daily_capital
+                _tg(
+                    f"{'📈' if transaction_type == 'BUY' else '📉'} "
+                    f"<b>TRADE ENTRY — {signal.symbol}</b>\n"
+                    f"Direction: <b>{'BUY (LONG)' if transaction_type == 'BUY' else 'SELL (SHORT)'}</b>\n"
+                    f"Qty: <b>{quantity} shares @ ₹{filled_price:.2f}</b>\n"
+                    f"Capital deployed: ₹{quantity * filled_price:,.0f} (5× MIS)\n"
+                    f"Margin used: ₹{quantity * filled_price / 5:,.0f} "
+                    f"(balance ₹{cap:,.0f})\n"
+                    f"SL: ₹{signal.stop_loss:.2f}  │  "
+                    f"Target: ₹{signal.take_profit:.2f}\n"
+                    f"Risk: ₹{abs(filled_price - signal.stop_loss) * quantity:,.0f} "
+                    f"({abs(filled_price - signal.stop_loss) / filled_price * 100:.2f}%)\n"
+                    f"Score: {signal.signal_score:.0f}  │  "
+                    f"Order: <code>{order_id}</code>"
+                )
                 return OrderResult(True, order_id=order_id,
                                    message=f"Filled: {order_id}", raw=response)
             else:
@@ -505,6 +536,18 @@ class GrowwExecutor:
                     self._update_db_exit(symbol, exit_price, reason)
                 logger.info(
                     f"[{format_ist_timestamp()}] ✅ EXIT ORDER: {symbol} x{quantity} | {reason}"
+                )
+                # ── Telegram exit brief ───────────────────────────────────────
+                pnl    = trade.pnl     if trade else 0.0
+                entry  = trade.entry_price if trade else 0.0
+                emoji  = "✅" if pnl >= 0 else "🔴"
+                _tg(
+                    f"{emoji} <b>TRADE EXIT — {symbol}</b>\n"
+                    f"Reason: {reason}\n"
+                    f"Entry: ₹{entry:.2f}  │  Exit: ₹{exit_price:.2f}\n"
+                    f"Qty: {quantity}  │  "
+                    f"<b>P&L: {'+'if pnl>=0 else ''}₹{pnl:,.0f}</b>\n"
+                    f"Order: <code>{order_id}</code>"
                 )
                 return OrderResult(True, order_id=order_id, raw=response)
             else:
