@@ -256,8 +256,8 @@ class OvernightAnalyzer:
                     data = yf.download(ticker, period="2d", interval="1d",
                                        progress=False, auto_adjust=True)
                     if len(data) >= 2:
-                        prev  = float(data["Close"].iloc[-2])
-                        last  = float(data["Close"].iloc[-1])
+                        prev  = float(data["Close"].iloc[-2].item() if hasattr(data["Close"].iloc[-2], 'item') else data["Close"].iloc[-2])
+                        last  = float(data["Close"].iloc[-1].item() if hasattr(data["Close"].iloc[-1], 'item') else data["Close"].iloc[-1])
                         chg   = (last - prev) / prev * 100
                         result[f"{name}_close"]  = round(last, 2)
                         result[f"{name}_change"] = round(chg, 2)
@@ -280,7 +280,7 @@ class OvernightAnalyzer:
             nifty = yf.download("^NSEI", period="5d", interval="1d",
                                  progress=False, auto_adjust=True)
             if len(nifty) >= 1:
-                prev_close = float(nifty["Close"].iloc[-1])
+                prev_close = float(nifty["Close"].iloc[-1].item() if hasattr(nifty["Close"].iloc[-1], 'item') else nifty["Close"].iloc[-1])
                 result["prev_close"] = round(prev_close, 2)
                 result["gift_nifty"] = round(prev_close, 2)  # Placeholder until Gift Nifty API
 
@@ -314,8 +314,8 @@ class OvernightAnalyzer:
                     data = yf.download(ticker, period="2d", interval="1d",
                                        progress=False, auto_adjust=True)
                     if len(data) >= 2:
-                        prev = float(data["Close"].iloc[-2])
-                        last = float(data["Close"].iloc[-1])
+                        prev = float(data["Close"].iloc[-2].item() if hasattr(data["Close"].iloc[-2], 'item') else data["Close"].iloc[-2])
+                        last = float(data["Close"].iloc[-1].item() if hasattr(data["Close"].iloc[-1], 'item') else data["Close"].iloc[-1])
                         result[f"{name}_price"]  = round(last, 2)
                         result[f"{name}_change"] = round((last - prev) / prev * 100, 2)
                 except Exception:
@@ -332,8 +332,8 @@ class OvernightAnalyzer:
             data = yf.download("INR=X", period="2d", interval="1d",
                                progress=False, auto_adjust=True)
             if len(data) >= 2:
-                prev = float(data["Close"].iloc[-2])
-                last = float(data["Close"].iloc[-1])
+                prev = float(data["Close"].iloc[-2].item() if hasattr(data["Close"].iloc[-2], 'item') else data["Close"].iloc[-2])
+                last = float(data["Close"].iloc[-1].item() if hasattr(data["Close"].iloc[-1], 'item') else data["Close"].iloc[-1])
                 result["usdinr"]        = round(last, 4)
                 result["usdinr_change"] = round((last - prev) / prev * 100, 3)
         except Exception as e:
@@ -348,12 +348,12 @@ class OvernightAnalyzer:
             data = yf.download("^INDIAVIX", period="2d", interval="1d",
                                progress=False, auto_adjust=True)
             if len(data) >= 2:
-                prev = float(data["Close"].iloc[-2])
-                last = float(data["Close"].iloc[-1])
+                prev = float(data["Close"].iloc[-2].item() if hasattr(data["Close"].iloc[-2], 'item') else data["Close"].iloc[-2])
+                last = float(data["Close"].iloc[-1].item() if hasattr(data["Close"].iloc[-1], 'item') else data["Close"].iloc[-1])
                 result["vix"]        = round(last, 2)
                 result["vix_change"] = round(last - prev, 2)
             elif len(data) == 1:
-                result["vix"] = round(float(data["Close"].iloc[-1]), 2)
+                result["vix"] = round(float(data["Close"].iloc[-1].item() if hasattr(data["Close"].iloc[-1], 'item') else data["Close"].iloc[-1]), 2)
         except Exception as e:
             logger.debug(f"VIX fetch failed: {e}")
         return result

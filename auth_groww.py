@@ -587,15 +587,13 @@ class GrowwAuthManager:
             if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
                 return self._token
 
-            # During Groww maintenance window (2–7 AM IST), don't attempt refresh.
-            # Modules can initialize without a token — they'll get one at 7 AM.
             now_ist = get_current_ist_time()
-            if 2 <= now_ist.hour < 7:
-                logger.debug(
-                    f"[{format_ist_timestamp()}] No token during maintenance window — "
-                    "modules will get fresh token at 7 AM health check."
-                )
-                return self._token  # May be None — callers handle this gracefully
+
+            # Only attempt TOTP refresh during trading hours (7 AM – 5 PM IST).
+            # Outside this window modules start without a token — main.py handles
+            # the 8:30 AM login. Prevents 6 wasted TOTP attempts at midnight.
+            if not (7 <= now_ist.hour < 17):
+                return self._token  # None is fine — callers handle gracefully
 
             reason = "Token expired (6 AM reset)" if self._token else "No token"
             logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing via TOTP...")
