@@ -66,7 +66,8 @@ class AIBrain:
 
     def __init__(self):
         self._client = None
-        self._model  = "gemini-2.0-flash"
+        # Use env var if set, fall back to gemini-1.5-flash (higher free quota)
+        self._model  = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
         self._enabled = bool(os.getenv("GEMINI_API_KEY"))
         if not self._enabled:
             logger.warning(
@@ -83,24 +84,42 @@ class AIBrain:
         except Exception as e:
             logger.error(f"AI Brain init failed: {e}")
 
-    def _ask(self, prompt: str, max_tokens: int = 1024) -> str:
-        """Send a prompt to Gemini and get response."""
+    def _ask(self, prompt: str, max_tokens: int = 512) -> str:
+        """Send a prompt to Gemini. Falls back to cheaper model on quota errors."""
         if not self._client:
-            return "[AI Brain offline — set GEMINI_API_KEY]"
-        try:
-            response = self._client.models.generate_content(
-                model=self._model,
-                contents=prompt,
-                config=genai_types.GenerateContentConfig(
-                    system_instruction=TRADING_WISDOM,
-                    max_output_tokens=max_tokens,
-                    temperature=0.7,
+            return ""
+        # Models to try in order (cheapest/highest-quota first)
+        models_to_try = [self._model]
+        if self._model != "gemini-1.5-flash":
+            models_to_try.append("gemini-1.5-flash")
+        if "gemini-2.0" in self._model:
+            models_to_try.append("gemini-1.0-pro")
+
+        for model in models_to_try:
+            try:
+                response = self._client.models.generate_content(
+                    model=model,
+                    contents=prompt,
+                    config=genai_types.GenerateContentConfig(
+                        system_instruction=TRADING_WISDOM,
+                        max_output_tokens=max_tokens,
+                        temperature=0.7,
+                    )
                 )
-            )
-            return response.text
-        except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] AI Brain query failed: {e}")
-            return f"[AI query failed: {e}]"
+                if model != self._model:
+                    logger.info(f"AI fell back to {model} (quota on {self._model})")
+                    self._model = model  # use the working model going forward
+                return response.text or ""
+            except Exception as e:
+                err = str(e)
+                if "429" in err or "RESOURCE_EXHAUSTED" in err or "quota" in err.lower():
+                    logger.warning(f"[{format_ist_timestamp()}] Gemini {model} quota — trying next model")
+                    continue
+                logger.error(f"[{format_ist_timestamp()}] AI Brain query failed: {e}")
+                return ""
+        # All models exhausted — continue without AI (trading is not blocked)
+        logger.warning(f"[{format_ist_timestamp()}] All Gemini models quota-exhausted — running without AI today")
+        return ""
 
     # --------------------------------------------------------
     # DAILY MARKET THESIS (runs at 8:30 AM IST)
