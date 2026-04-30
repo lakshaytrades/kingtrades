@@ -145,34 +145,50 @@ _sdk_inspected = False
 
 
 def _inspect_sdk_once():
-    """Log actual SDK source and constructor params — runs once, critical for debug."""
+    """Read the actual growwapi package .py files from disk — definitive source of truth."""
     global _sdk_inspected
     if _sdk_inspected:
         return
     _sdk_inspected = True
     try:
+        import importlib.util
+        import pathlib
+        import re
         import inspect
         import io, sys as _sys
+
         buf = io.StringIO(); old = _sys.stdout; _sys.stdout = buf
         try:
             from growwapi import GrowwAPI
         finally:
             _sys.stdout = old
 
-        logger.info(f"[SDK] GrowwAPI attributes: {[m for m in dir(GrowwAPI) if not m.startswith('_')]}")
-        for name in ("get_access_token", "__init__", "login"):
+        # Log all methods
+        methods = [m for m in dir(GrowwAPI) if not m.startswith("__")]
+        logger.info(f"[SDK] methods: {methods}")
+
+        # Log signatures
+        for name in methods:
             fn = getattr(GrowwAPI, name, None)
-            if fn:
+            if callable(fn):
                 try:
                     sig = str(inspect.signature(fn))
-                    logger.info(f"[SDK] GrowwAPI.{name} signature: {sig}")
+                    logger.info(f"[SDK] {name}{sig}")
                 except Exception:
                     pass
+
+        # Read all .py source files from the package (definitive)
+        spec = importlib.util.find_spec("growwapi")
+        if spec and spec.origin:
+            pkg_dir = pathlib.Path(spec.origin).parent
+            logger.info(f"[SDK] package dir: {pkg_dir}")
+            for py_file in sorted(pkg_dir.rglob("*.py")):
                 try:
-                    src = inspect.getsource(fn)
-                    logger.info(f"[SDK] GrowwAPI.{name} source:\n{src[:1000]}")
+                    content = py_file.read_text(errors="replace")
+                    logger.info(f"[SDK FILE] {py_file.name} ({len(content)} bytes):\n{content}")
                 except Exception as e:
-                    logger.info(f"[SDK] cannot read {name} source: {e}")
+                    logger.info(f"[SDK FILE] {py_file.name}: read error {e}")
+
     except Exception as e:
         logger.info(f"[SDK] inspect failed: {e}")
 
@@ -334,50 +350,68 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
     except Exception as e:
         logger.info(f"SDK outer error: {e}")
 
-    # ── Method 3: HTTP email + password + TOTP ─────────────────────────
-    # groww.in (web app domain) NOT api.groww.in (Trade API domain)
+    # ── Method 3: HTTP web login — email + password + TOTP ────────────
+    # Tries groww.in web app endpoints (these accept account credentials).
+    # The Trade API (api.groww.in) only accepts Cloud API Key — different system.
     if email and password:
-        base_h = {
-            "Content-Type": "application/json",
-            "Accept":       "application/json",
-            "User-Agent":   "Mozilla/5.0 (Linux; Android 12; Pixel 5) AppleWebKit/537.36 Chrome/109.0.0.0 Mobile Safari/537.36",
-            "x-app-version": "9.0",
-            "Origin":       "https://groww.in",
-            "Referer":      "https://groww.in/",
+        mobile_hdrs = {
+            "Content-Type":  "application/json",
+            "Accept":        "application/json",
+            "User-Agent":    "okhttp/4.9.0",   # Groww Android app UA
+            "x-app-version": "9.5.0",
+            "x-platform":    "android",
+            "Origin":        "https://groww.in",
+            "Referer":       "https://groww.in/login",
         }
-        # Groww web app endpoints (groww.in, not api.groww.in)
+        web_hdrs = dict(mobile_hdrs)
+        web_hdrs["User-Agent"] = (
+            "Mozilla/5.0 (Linux; Android 13; SM-G991B) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/112.0.0.0 Mobile Safari/537.36"
+        )
+
+        # Each item: (url, body_dict, header_variant)
+        # Trying all known Groww login endpoint patterns
         web_attempts = [
-            # Single-step with TOTP inline (most common for TOTP-enabled accounts)
+            # Groww web API — most common patterns (with TOTP/OTP inline)
             ("https://groww.in/v1/api/login_password_otp",
-             {"loginId": email, "password": password, "otp": totp_code}),
-            ("https://groww.in/v1/api/login_password",
-             {"loginId": email, "password": password, "otp": totp_code}),
+             {"loginId": email, "password": password, "otp": str(totp_code)}, web_hdrs),
+            ("https://groww.in/v1/api/login_password_otp",
+             {"loginId": email, "password": password, "otp": str(totp_code)}, mobile_hdrs),
+            ("https://groww.in/v1/api/login",
+             {"loginId": email, "password": password, "otp": str(totp_code)}, web_hdrs),
+            ("https://groww.in/v1/api/login",
+             {"email": email, "password": password, "totp": str(totp_code)}, web_hdrs),
             ("https://groww.in/v1/api/user/login",
-             {"email": email, "password": password, "otp": totp_code, "totp": totp_code}),
-            # Trade API with correct field names
+             {"loginId": email, "password": password, "otp": str(totp_code)}, web_hdrs),
+            # Trade API login variants
             ("https://api.groww.in/v1/user/login",
-             {"loginId": email, "password": password, "otp": totp_code}),
-            ("https://api.groww.in/v1/auth/token",
-             {"email": email, "password": password, "totp": totp_code}),
+             {"loginId": email, "password": password, "otp": str(totp_code)}, web_hdrs),
+            ("https://api.groww.in/v1/accounts/login",
+             {"email": email, "password": password, "totp": str(totp_code)}, web_hdrs),
+            ("https://api.groww.in/v1/auth/login",
+             {"loginId": email, "password": password, "otp": str(totp_code)}, web_hdrs),
         ]
+
         session = requests.Session()
-        session.headers.update(base_h)
-        for url, body in web_attempts:
+        for url, body, hdrs in web_attempts:
+            ep = url.rsplit("/", 1)[-1]
             try:
-                resp = session.post(url, json=body, timeout=15)
-                ep = url.split("/")[-1] or url.split("/")[-2]
-                logger.info(f"  [web/{ep}] HTTP {resp.status_code}: {resp.text[:150]}")
+                resp = session.post(url, json=body, headers=hdrs, timeout=15)
+                logger.info(f"  [web/{ep}] HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code in (200, 201):
                     try:
                         j = resp.json()
                         tok = _extract_token_from_response(j)
                         if tok:
-                            logger.info(f"[{format_ist_timestamp()}] ✅ Token via web email+pwd [{ep}]")
+                            logger.info(f"[{format_ist_timestamp()}] ✅ Token via web [{ep}]")
                             return tok
-                    except Exception:
-                        pass
+                        # Maybe response has nested structure — log keys
+                        logger.info(f"  [web/{ep}] 200 but no token. keys={list(j.keys()) if isinstance(j,dict) else type(j)}")
+                    except Exception as je:
+                        logger.info(f"  [web/{ep}] JSON parse: {je}")
             except Exception as e:
-                logger.info(f"  web/{ep}: {e}")
+                logger.info(f"  [web/{ep}]: {e}")
 
     return None
 
