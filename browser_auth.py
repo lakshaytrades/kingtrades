@@ -199,67 +199,95 @@ def login_via_browser(
 
             page.wait_for_load_state("networkidle", timeout=10000)
             page.screenshot(path="data/login_debug_after_pwd.png")
-            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot saved — data/login_debug_after_pwd.png")
 
-            # ── Step 4a: Enter MPIN — Groww uses 4 separate digit boxes ──────
-            # After email+password, Groww shows 4 individual PIN digit inputs.
-            # We type each digit into each box using keyboard press.
-            mpin = os.getenv("GROWW_PIN", "")
-            if not mpin:
+            # Dump ALL inputs on page so we know exact selectors to use
+            all_inputs = page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('input')).map(el => ({
+                    tag: el.tagName,
+                    type: el.type,
+                    name: el.name,
+                    id: el.id,
+                    placeholder: el.placeholder,
+                    maxlength: el.maxLength,
+                    className: el.className.substring(0, 80),
+                    visible: el.offsetParent !== null
+                }));
+            }""")
+            logger.info(f"[{format_ist_timestamp()}] Browser: inputs found on page after password:")
+            for inp in all_inputs:
+                logger.info(f"  INPUT: type={inp.get('type')} name={inp.get('name')} "
+                            f"id={inp.get('id')} placeholder='{inp.get('placeholder')}' "
+                            f"maxlength={inp.get('maxlength')} visible={inp.get('visible')} "
+                            f"class={inp.get('className')[:40]}")
+
+            # ── Step 4a: Enter PIN ────────────────────────────────────────────
+            pin = os.getenv("GROWW_PIN", "")
+            if not pin:
                 logger.warning(f"[{format_ist_timestamp()}] Browser: GROWW_PIN not set in .env")
 
-            mpin_entered = False
-            if mpin:
-                # Strategy 1: 4 individual single-digit input boxes (Groww's actual layout)
+            pin_entered = False
+            if pin:
+                # Strategy 1: 4 individual single-digit boxes (most common Groww layout)
                 try:
-                    # Wait for any PIN-style input to appear
-                    page.wait_for_selector('input[maxlength="1"]', timeout=8000)
+                    page.wait_for_selector('input[maxlength="1"]', timeout=5000)
                     pin_boxes = page.query_selector_all('input[maxlength="1"]')
                     if len(pin_boxes) >= 4:
-                        for i, digit in enumerate(mpin[:4]):
+                        for i, digit in enumerate(pin[:4]):
                             pin_boxes[i].click()
-                            pin_boxes[i].type(digit)
+                            page.keyboard.type(digit)
                             time.sleep(0.15)
-                        logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN into 4 digit boxes")
-                        mpin_entered = True
+                        logger.info(f"[{format_ist_timestamp()}] Browser: typed PIN into 4 digit boxes")
+                        pin_entered = True
                         page.wait_for_load_state("networkidle", timeout=12000)
                 except PWTimeout:
                     pass
 
-                # Strategy 2: single input field (maxlength=4 or named pin/mpin)
-                if not mpin_entered:
+                # Strategy 2: any visible input that looks like a PIN field
+                if not pin_entered:
+                    # Try pressing Tab to focus next field, then type PIN
+                    try:
+                        page.keyboard.press("Tab")
+                        time.sleep(0.3)
+                        focused = page.evaluate("() => ({ tag: document.activeElement.tagName, type: document.activeElement.type, maxlength: document.activeElement.maxLength })")
+                        logger.info(f"[{format_ist_timestamp()}] Browser: focused element after Tab: {focused}")
+                        if focused.get("tag") == "INPUT":
+                            page.keyboard.type(pin)
+                            pin_entered = True
+                            logger.info(f"[{format_ist_timestamp()}] Browser: typed PIN via keyboard focus")
+                            page.wait_for_load_state("networkidle", timeout=12000)
+                    except Exception as e:
+                        logger.warning(f"[{format_ist_timestamp()}] Browser: Tab strategy failed: {e}")
+
+                # Strategy 3: try common selectors
+                if not pin_entered:
                     for sel in [
+                        'input[type="password"]',
                         'input[maxlength="4"]',
-                        'input[placeholder*="MPIN" i]',
                         'input[placeholder*="PIN" i]',
-                        'input[name="mpin"]',
+                        'input[placeholder*="pin" i]',
                         'input[name="pin"]',
-                        'input[type="password"][maxlength="4"]',
+                        'input[name="mpin"]',
+                        'input[id*="pin" i]',
+                        'input[autocomplete="one-time-code"]',
                     ]:
                         try:
-                            page.wait_for_selector(sel, timeout=3000)
-                            page.fill(sel, mpin)
-                            logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN into single field ({sel})")
-                            mpin_entered = True
-                            for btn_sel in submit_selectors:
-                                try:
-                                    btn = page.query_selector(btn_sel)
-                                    if btn and btn.is_visible():
-                                        btn.click()
-                                        break
-                                except Exception:
-                                    continue
-                            page.wait_for_load_state("networkidle", timeout=12000)
-                            break
-                        except PWTimeout:
+                            el = page.query_selector(sel)
+                            if el and el.is_visible():
+                                el.click()
+                                el.type(pin)
+                                logger.info(f"[{format_ist_timestamp()}] Browser: typed PIN into {sel}")
+                                pin_entered = True
+                                page.wait_for_load_state("networkidle", timeout=12000)
+                                break
+                        except Exception:
                             continue
 
-                if not mpin_entered:
-                    logger.warning(f"[{format_ist_timestamp()}] Browser: could not find MPIN field")
-                    page.screenshot(path="data/login_debug_mpin.png")
+                if not pin_entered:
+                    logger.warning(f"[{format_ist_timestamp()}] Browser: could not find PIN field — check login_debug_after_pwd.png")
+                    page.screenshot(path="data/login_debug_pin_fail.png")
 
-            page.screenshot(path="data/login_debug_after_mpin.png")
-            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot after MPIN — data/login_debug_after_mpin.png")
+            page.screenshot(path="data/login_debug_after_pin.png")
+            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot after PIN — data/login_debug_after_pin.png")
 
             # ── Step 4b: Enter TOTP / OTP (6-digit) if shown ─────────────────
             otp_selectors = [
