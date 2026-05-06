@@ -226,6 +226,22 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         f"| keys={[k for k,_ in keys_to_try]} email={'yes' if email else 'no'}"
     )
 
+    # ── Method 0: Headless Chrome browser login (most reliable) ──────────────
+    # Uses Playwright to log into groww.in exactly like a human.
+    # Works with just email + password + TOTP — no Cloud API Key needed.
+    # Only tried on first attempt of the day to avoid slowness.
+    if email and password and totp_secret and attempt_label in ("1/6", "1/3", ""):
+        try:
+            from browser_auth import login_via_browser
+            logger.info(f"[{format_ist_timestamp()}] Trying headless Chrome login...")
+            tok = login_via_browser(email, password, totp_secret)
+            if tok:
+                logger.info(f"[{format_ist_timestamp()}] Token via headless Chrome login")
+                return tok
+            logger.info(f"[{format_ist_timestamp()}] Chrome login failed — trying API methods...")
+        except Exception as e:
+            logger.info(f"  [browser_auth]: {e}")
+
     # ── Method 1: Groww Trade API — exact format from growwapi v1.5.0 SDK ─────
     # Endpoint: POST https://api.groww.in/v1/token/api/access
     # Required headers: x-request-id, x-client-id, x-client-platform, x-api-version

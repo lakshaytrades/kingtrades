@@ -24,6 +24,9 @@ python-telegram-bot>=20.0
 pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login
 requests>=2.31.0
 
+# ---- Browser automation (headless Chrome login to Groww) ----
+playwright>=1.40.0         # Headless Chrome — logs into groww.in like a human
+
 # ---- Timezone Handling (IST for UK server) ----
 pytz>=2023.3               # Timezone conversions
 # zoneinfo is built-in for Python 3.9+; backports below for older:

@@ -49,9 +49,15 @@ pip install --upgrade pip --quiet
 echo "  OK"
 
 # ── 4. Install dependencies ──────────────────────────────
-echo "[4/8] Installing Python dependencies (2-3 min)..."
+echo "[4/8] Installing Python dependencies (2-4 min)..."
 pip install -r requirements.txt --quiet
 echo "  OK"
+
+# ── 4b. Install Playwright + Chromium (headless Chrome for Groww login) ──
+echo "[4b] Installing Playwright Chromium (one-time, ~300MB)..."
+pip install playwright --quiet
+python3 -m playwright install chromium --with-deps 2>&1 | tail -3
+echo "  Chromium OK"
 
 # ── 5. Create required directories ──────────────────────
 echo "[5/8] Creating data directories..."
