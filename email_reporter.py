@@ -2,12 +2,18 @@
 email_reporter.py — Daily Trading Report via Email + Discord
 Sends a beautiful HTML email every evening so you wake up and read what the bot did.
 
-Setup (.env):
-  REPORT_EMAIL       = your@gmail.com         (where to send reports TO)
-  GMAIL_SENDER       = bot@gmail.com          (Gmail account that sends)
-  GMAIL_APP_PASSWORD = xxxx xxxx xxxx xxxx    (Google App Password — NOT your Gmail password)
-                       Get it: myaccount.google.com → Security → App Passwords
-  DISCORD_WEBHOOK    = https://discord.com/api/webhooks/...  (optional, free)
+Setup (.env) — choose ONE email method:
+
+  METHOD 1 — Brevo API (recommended — works on all VPS, free 300 emails/day)
+    BREVO_API_KEY = your-brevo-api-key
+    Get free key: brevo.com → signup → SMTP & API → API Keys
+
+  METHOD 2 — Gmail SMTP (only if your VPS allows port 465/587)
+    GMAIL_SENDER       = bot@gmail.com
+    GMAIL_APP_PASSWORD = xxxx xxxx xxxx xxxx
+
+  BOTH methods:
+    REPORT_EMAIL = your@gmail.com   (where to RECEIVE reports)
 """
 
 import logging
@@ -171,36 +177,76 @@ def _build_html_report(data: Dict) -> str:
 # Send via Gmail
 # ─────────────────────────────────────────────────────────────────────────────
 
-def send_email_report(data: Dict) -> bool:
-    to_addr   = os.getenv("REPORT_EMAIL", "")
-    from_addr = os.getenv("GMAIL_SENDER", to_addr)
-    app_pwd   = os.getenv("GMAIL_APP_PASSWORD", "")
-
-    if not to_addr or not app_pwd:
-        logger.debug("Email report skipped — REPORT_EMAIL or GMAIL_APP_PASSWORD not set")
+def _send_via_brevo(to_addr: str, subject: str, html_body: str, text_body: str = "") -> bool:
+    api_key = os.getenv("BREVO_API_KEY", "")
+    if not api_key:
+        return False
+    try:
+        resp = requests.post(
+            "https://api.brevo.com/v3/smtp/email",
+            headers={"api-key": api_key, "Content-Type": "application/json"},
+            json={
+                "sender": {"name": "KingTrades Bot", "email": "noreply@kingtrades.bot"},
+                "to": [{"email": to_addr}],
+                "subject": subject,
+                "htmlContent": html_body,
+                "textContent": text_body or subject,
+            },
+            timeout=15,
+        )
+        if resp.status_code in (200, 201):
+            logger.info(f"[{format_ist_timestamp()}] Email sent via Brevo to {to_addr}")
+            return True
+        logger.warning(f"[{format_ist_timestamp()}] Brevo error {resp.status_code}: {resp.text[:200]}")
+        return False
+    except Exception as e:
+        logger.warning(f"[{format_ist_timestamp()}] Brevo failed: {e}")
         return False
 
-    try:
-        date    = data.get("date", get_current_ist_time().strftime("%d %b %Y"))
-        pnl     = data.get("total_pnl", 0.0)
-        sign    = "+" if pnl >= 0 else ""
-        subject = f"[KingTrades] {sign}₹{pnl:,.0f} — {date}"
 
+def _send_via_gmail(to_addr: str, from_addr: str, app_pwd: str,
+                    subject: str, html_body: str) -> bool:
+    try:
         msg = MIMEMultipart("alternative")
         msg["Subject"] = subject
         msg["From"]    = from_addr
         msg["To"]      = to_addr
-        msg.attach(MIMEText(_build_html_report(data), "html", "utf-8"))
-
+        msg.attach(MIMEText(html_body, "html", "utf-8"))
         with smtplib.SMTP_SSL("smtp.gmail.com", 465) as smtp:
             smtp.login(from_addr, app_pwd)
             smtp.sendmail(from_addr, to_addr, msg.as_string())
-
-        logger.info(f"[{format_ist_timestamp()}] Email report sent to {to_addr}")
+        logger.info(f"[{format_ist_timestamp()}] Email sent via Gmail to {to_addr}")
         return True
-
     except Exception as e:
-        logger.error(f"[{format_ist_timestamp()}] Email send failed: {e}")
+        logger.warning(f"[{format_ist_timestamp()}] Gmail SMTP failed: {e}")
+        return False
+
+
+def _send_email(to_addr: str, subject: str, html_body: str, text_body: str = "") -> bool:
+    # Try Brevo first (works on all VPS — uses HTTPS port 443)
+    if _send_via_brevo(to_addr, subject, html_body, text_body):
+        return True
+    # Fallback: Gmail SMTP (works if VPS allows port 465)
+    from_addr = os.getenv("GMAIL_SENDER", to_addr)
+    app_pwd   = os.getenv("GMAIL_APP_PASSWORD", "")
+    if from_addr and app_pwd:
+        return _send_via_gmail(to_addr, from_addr, app_pwd, subject, html_body)
+    return False
+
+
+def send_email_report(data: Dict) -> bool:
+    to_addr = os.getenv("REPORT_EMAIL", "")
+    if not to_addr:
+        logger.debug("Email report skipped — REPORT_EMAIL not set")
+        return False
+    try:
+        date    = data.get("date", get_current_ist_time().strftime("%d %b %Y"))
+        pnl     = data.get("total_pnl", 0.0)
+        sign    = "+" if pnl >= 0 else ""
+        subject = f"[KingTrades] {sign}Rs.{pnl:,.0f} — {date}"
+        return _send_email(to_addr, subject, _build_html_report(data))
+    except Exception as e:
+        logger.error(f"[{format_ist_timestamp()}] Email report failed: {e}")
         return False
 
 
@@ -209,18 +255,10 @@ def send_email_report(data: Dict) -> bool:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def send_alert(subject: str, body: str) -> None:
-    """
-    Send an instant email alert — used for trade entries, exits, login status, errors.
-    Fire-and-forget (never blocks trading).
-    Falls back silently if email not configured.
-    """
-    to_addr   = os.getenv("REPORT_EMAIL", "")
-    from_addr = os.getenv("GMAIL_SENDER", to_addr)
-    app_pwd   = os.getenv("GMAIL_APP_PASSWORD", "")
-
-    if not to_addr or not app_pwd:
+    """Instant email alert for trade entries, exits, errors. Fire-and-forget."""
+    to_addr = os.getenv("REPORT_EMAIL", "")
+    if not to_addr:
         return
-
     try:
         html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px;color:#2d3436">
 <div style="max-width:500px;background:#fff;border-radius:10px;padding:20px;
@@ -228,16 +266,7 @@ def send_alert(subject: str, body: str) -> None:
 <pre style="font-family:monospace;font-size:14px;white-space:pre-wrap;margin:0">{body}</pre>
 <div style="margin-top:16px;font-size:11px;color:#aaa">{format_ist_timestamp()} IST · KingTrades Bot</div>
 </div></body></html>"""
-
-        msg = MIMEMultipart("alternative")
-        msg["Subject"] = f"[KingTrades] {subject}"
-        msg["From"]    = from_addr
-        msg["To"]      = to_addr
-        msg.attach(MIMEText(html, "html", "utf-8"))
-
-        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as smtp:
-            smtp.login(from_addr, app_pwd)
-            smtp.sendmail(from_addr, to_addr, msg.as_string())
+        _send_email(to_addr, f"[KingTrades] {subject}", html, body)
 
     except Exception:
         pass  # Never block trading for an alert failure
