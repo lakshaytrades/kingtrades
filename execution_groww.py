@@ -60,18 +60,34 @@ class OrderResult:
         return f"{status} OrderResult(id={self.order_id}, msg={self.message})"
 
 
-def _tg(text: str) -> None:
-    """Fire-and-forget Telegram message for trade briefs."""
-    try:
-        import requests as _r, config as _c
-        if _c.TELEGRAM_BOT_TOKEN and _c.TELEGRAM_CHAT_ID:
-            _r.post(
-                f"https://api.telegram.org/bot{_c.TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": _c.TELEGRAM_CHAT_ID, "parse_mode": "HTML", "text": text},
-                timeout=6,
-            )
-    except Exception:
-        pass
+def _notify(subject: str, body: str) -> None:
+    """
+    Fire-and-forget alert — sends via email (primary) and Telegram (optional).
+    Never blocks order execution.
+    """
+    import threading
+
+    def _send():
+        # Email (primary)
+        try:
+            from email_reporter import send_alert
+            send_alert(subject, body)
+        except Exception:
+            pass
+        # Telegram (optional — only if configured)
+        try:
+            import requests as _r, config as _c
+            if getattr(_c, "TELEGRAM_BOT_TOKEN", "") and getattr(_c, "TELEGRAM_CHAT_ID", ""):
+                _r.post(
+                    f"https://api.telegram.org/bot{_c.TELEGRAM_BOT_TOKEN}/sendMessage",
+                    json={"chat_id": _c.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
+                          "text": f"<b>{subject}</b>\n{body}"},
+                    timeout=6,
+                )
+        except Exception:
+            pass
+
+    threading.Thread(target=_send, daemon=True).start()
 
 
 class GrowwExecutor:
@@ -424,22 +440,20 @@ class GrowwExecutor:
                     f"{transaction_type} {signal.symbol} x{quantity} "
                     f"@ ₹{filled_price:.2f} (signal ₹{entry_price:.2f})"
                 )
-                # ── Telegram trade brief ──────────────────────────────────────
+                # ── Trade entry alert ─────────────────────────────────────────
                 cap   = self.risk_manager.state.daily_capital
-                _tg(
-                    f"{'📈' if transaction_type == 'BUY' else '📉'} "
-                    f"<b>TRADE ENTRY — {signal.symbol}</b>\n"
-                    f"Direction: <b>{'BUY (LONG)' if transaction_type == 'BUY' else 'SELL (SHORT)'}</b>\n"
-                    f"Qty: <b>{quantity} shares @ ₹{filled_price:.2f}</b>\n"
-                    f"Capital deployed: ₹{quantity * filled_price:,.0f} (5× MIS)\n"
-                    f"Margin used: ₹{quantity * filled_price / 5:,.0f} "
-                    f"(balance ₹{cap:,.0f})\n"
-                    f"SL: ₹{signal.stop_loss:.2f}  │  "
-                    f"Target: ₹{signal.take_profit:.2f}\n"
-                    f"Risk: ₹{abs(filled_price - signal.stop_loss) * quantity:,.0f} "
+                direction = 'BUY (LONG)' if transaction_type == 'BUY' else 'SELL (SHORT)'
+                _notify(
+                    f"TRADE ENTRY — {signal.symbol} ({direction})",
+                    f"Qty: {quantity} shares @ Rs.{filled_price:.2f}\n"
+                    f"Capital deployed: Rs.{quantity * filled_price:,.0f} (5x MIS)\n"
+                    f"Margin used: Rs.{quantity * filled_price / 5:,.0f} "
+                    f"(balance Rs.{cap:,.0f})\n"
+                    f"SL: Rs.{signal.stop_loss:.2f}  |  "
+                    f"Target: Rs.{signal.take_profit:.2f}\n"
+                    f"Risk: Rs.{abs(filled_price - signal.stop_loss) * quantity:,.0f} "
                     f"({abs(filled_price - signal.stop_loss) / filled_price * 100:.2f}%)\n"
-                    f"Score: {signal.signal_score:.0f}  │  "
-                    f"Order: <code>{order_id}</code>"
+                    f"Score: {signal.signal_score:.0f}  |  Order: {order_id}"
                 )
                 return OrderResult(True, order_id=order_id,
                                    message=f"Filled: {order_id}", raw=response)
@@ -460,22 +474,13 @@ class GrowwExecutor:
                 f"Raw error: {ip_err}"
             )
             logger.error(f"[{format_ist_timestamp()}] {msg}")
-            # Send Telegram alert only once per hour to avoid spam
+            # Alert once per hour to avoid spam
             global _ip_block_last_alerted
             now = get_current_ist_time()
             if (_ip_block_last_alerted is None or
                     (now - _ip_block_last_alerted).total_seconds() > 3600):
                 _ip_block_last_alerted = now
-                try:
-                    from alerts_telegram import TelegramAlerter
-                    import os
-                    alerter = TelegramAlerter(
-                        os.getenv("TELEGRAM_BOT_TOKEN", ""),
-                        os.getenv("TELEGRAM_CHAT_ID", ""),
-                    )
-                    alerter.send_text(msg)
-                except Exception:
-                    pass
+                _notify("GROWW IP BLOCKED — Orders cannot be placed!", msg)
             return OrderResult(False, message="IP not whitelisted on Groww")
 
         except Exception as e:
@@ -548,17 +553,16 @@ class GrowwExecutor:
                 logger.info(
                     f"[{format_ist_timestamp()}] ✅ EXIT ORDER: {symbol} x{quantity} | {reason}"
                 )
-                # ── Telegram exit brief ───────────────────────────────────────
+                # ── Trade exit alert ──────────────────────────────────────────
                 pnl    = trade.pnl     if trade else 0.0
                 entry  = trade.entry_price if trade else 0.0
-                emoji  = "✅" if pnl >= 0 else "🔴"
-                _tg(
-                    f"{emoji} <b>TRADE EXIT — {symbol}</b>\n"
+                result = "PROFIT" if pnl >= 0 else "LOSS"
+                _notify(
+                    f"TRADE EXIT — {symbol} ({result}: {'+'if pnl>=0 else ''}Rs.{pnl:,.0f})",
                     f"Reason: {reason}\n"
-                    f"Entry: ₹{entry:.2f}  │  Exit: ₹{exit_price:.2f}\n"
-                    f"Qty: {quantity}  │  "
-                    f"<b>P&L: {'+'if pnl>=0 else ''}₹{pnl:,.0f}</b>\n"
-                    f"Order: <code>{order_id}</code>"
+                    f"Entry: Rs.{entry:.2f}  |  Exit: Rs.{exit_price:.2f}\n"
+                    f"Qty: {quantity}  |  P&L: {'+'if pnl>=0 else ''}Rs.{pnl:,.0f}\n"
+                    f"Order: {order_id}"
                 )
                 return OrderResult(True, order_id=order_id, raw=response)
             else:

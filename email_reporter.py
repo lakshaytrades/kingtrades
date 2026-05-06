@@ -205,6 +205,45 @@ def send_email_report(data: Dict) -> bool:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Real-time trade alert via email (entry / exit / error)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def send_alert(subject: str, body: str) -> None:
+    """
+    Send an instant email alert — used for trade entries, exits, login status, errors.
+    Fire-and-forget (never blocks trading).
+    Falls back silently if email not configured.
+    """
+    to_addr   = os.getenv("REPORT_EMAIL", "")
+    from_addr = os.getenv("GMAIL_SENDER", to_addr)
+    app_pwd   = os.getenv("GMAIL_APP_PASSWORD", "")
+
+    if not to_addr or not app_pwd:
+        return
+
+    try:
+        html = f"""<!DOCTYPE html><html><body style="font-family:sans-serif;padding:20px;color:#2d3436">
+<div style="max-width:500px;background:#fff;border-radius:10px;padding:20px;
+     box-shadow:0 2px 8px rgba(0,0,0,.07)">
+<pre style="font-family:monospace;font-size:14px;white-space:pre-wrap;margin:0">{body}</pre>
+<div style="margin-top:16px;font-size:11px;color:#aaa">{format_ist_timestamp()} IST · KingTrades Bot</div>
+</div></body></html>"""
+
+        msg = MIMEMultipart("alternative")
+        msg["Subject"] = f"[KingTrades] {subject}"
+        msg["From"]    = from_addr
+        msg["To"]      = to_addr
+        msg.attach(MIMEText(html, "html", "utf-8"))
+
+        with smtplib.SMTP_SSL("smtp.gmail.com", 465, timeout=8) as smtp:
+            smtp.login(from_addr, app_pwd)
+            smtp.sendmail(from_addr, to_addr, msg.as_string())
+
+    except Exception:
+        pass  # Never block trading for an alert failure
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Send via Discord webhook
 # ─────────────────────────────────────────────────────────────────────────────
 
