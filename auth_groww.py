@@ -197,6 +197,17 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                           attempt_label: str = "") -> Optional[str]:
     _inspect_sdk_once()
 
+    # ── Method -1: Manual token file (from save_token.py or Safari export) ────
+    manual_file = Path("data/.manual_token.txt")
+    if manual_file.exists():
+        try:
+            tok = manual_file.read_text().strip()
+            if tok and len(tok) > 30:
+                logger.info(f"[{format_ist_timestamp()}] Using manually saved token from data/.manual_token.txt")
+                return tok
+        except Exception:
+            pass
+
     remaining = 30 - (int(time.time()) % 30)
     if remaining < 5:
         logger.debug(f"Waiting {remaining + 1}s for fresh TOTP window...")
