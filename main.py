@@ -1151,6 +1151,17 @@ class TradingBot:
         # Save compounded capital for tomorrow
         self._save_compounded_capital()
 
+        # Send EOD reports via email + Discord
+        try:
+            from email_reporter import send_eod_reports
+            send_eod_reports(
+                journal=self.journal,
+                risk_manager=self.risk_manager,
+                login_ok=self._token_refreshed_date == get_current_ist_time().strftime("%Y-%m-%d"),
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] EOD email/Discord report: {e}")
+
         self.market_open_today = False
         self.eod_done = True
         logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
