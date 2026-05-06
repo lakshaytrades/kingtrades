@@ -180,27 +180,46 @@ def login_via_browser(
             page.fill(pwd_field, password)
             logger.info(f"[{format_ist_timestamp()}] Browser: entered password")
 
-            # Click login/submit
+            # Submit password form — press Enter (most reliable on SPAs)
             submit_selectors = [
                 'button[type="submit"]',
                 'button:has-text("Login")',
                 'button:has-text("Sign in")',
                 'button:has-text("Continue")',
                 'button:has-text("Next")',
+                'button:has-text("Proceed")',
             ]
+            clicked = False
             for sel in submit_selectors:
                 try:
                     btn = page.query_selector(sel)
-                    if btn and btn.is_visible():
+                    if btn and btn.is_visible() and btn.is_enabled():
                         btn.click()
+                        clicked = True
+                        logger.info(f"[{format_ist_timestamp()}] Browser: clicked submit ({sel})")
                         break
                 except Exception:
                     continue
+            if not clicked:
+                # Fallback: press Enter in the password field
+                page.keyboard.press("Enter")
+                logger.info(f"[{format_ist_timestamp()}] Browser: pressed Enter to submit")
 
-            page.wait_for_load_state("networkidle", timeout=10000)
+            # Wait for PIN screen to appear — email field disappears when Groww navigates
+            try:
+                page.wait_for_selector('#login_email2', state='hidden', timeout=15000)
+                logger.info(f"[{format_ist_timestamp()}] Browser: email field hidden — PIN screen loaded")
+            except PWTimeout:
+                # Some Groww builds use URL change or DOM swap
+                try:
+                    page.wait_for_load_state("networkidle", timeout=10000)
+                except Exception:
+                    pass
+            time.sleep(1)  # let React finish rendering PIN boxes
+
             page.screenshot(path="data/login_debug_after_pwd.png")
 
-            # Dump ALL inputs on page so we know exact selectors to use
+            # Dump ALL inputs on page so we know exact selectors
             all_inputs = page.evaluate("""() => {
                 return Array.from(document.querySelectorAll('input')).map(el => ({
                     tag: el.tagName,
@@ -258,10 +277,9 @@ def login_via_browser(
                     except Exception as e:
                         logger.warning(f"[{format_ist_timestamp()}] Browser: Tab strategy failed: {e}")
 
-                # Strategy 3: try common selectors
+                # Strategy 3: try common selectors (exclude the login password field by ID)
                 if not pin_entered:
                     for sel in [
-                        'input[type="password"]',
                         'input[maxlength="4"]',
                         'input[placeholder*="PIN" i]',
                         'input[placeholder*="pin" i]',
@@ -269,6 +287,7 @@ def login_via_browser(
                         'input[name="mpin"]',
                         'input[id*="pin" i]',
                         'input[autocomplete="one-time-code"]',
+                        'input[type="number"]',
                     ]:
                         try:
                             el = page.query_selector(sel)
