@@ -79,18 +79,32 @@ def login_via_browser(
 
             def _on_response(resp):
                 try:
-                    if "token" in resp.url.lower() or "login" in resp.url.lower() or "auth" in resp.url.lower():
+                    # Capture token from any Groww API response
+                    if resp.status < 400 and "groww.in" in resp.url:
                         try:
                             body = resp.json()
-                            for key in ("token", "authToken", "auth_token", "access_token",
-                                        "jwtToken", "userToken", "accessToken"):
-                                val = (body.get(key) or (body.get("data") or {}).get(key, ""))
-                                if val and isinstance(val, str) and len(val) > 30:
-                                    captured_token.append(val.removeprefix("Bearer "))
-                                    logger.info(
-                                        f"[{format_ist_timestamp()}] Browser: captured token from "
-                                        f"response to {resp.url.split('?')[0]} ({key})"
-                                    )
+                            def _scan(obj, depth=0):
+                                if depth > 5 or not isinstance(obj, (dict, list)):
+                                    return
+                                if isinstance(obj, dict):
+                                    for key, val in obj.items():
+                                        if isinstance(val, str) and len(val) > 50 and (
+                                            "token" in key.lower() or "auth" in key.lower() or
+                                            "jwt" in key.lower() or val.startswith("eyJ")
+                                        ):
+                                            clean = val.removeprefix("Bearer ")
+                                            if clean not in captured_token:
+                                                captured_token.append(clean)
+                                                logger.info(
+                                                    f"[{format_ist_timestamp()}] Browser: captured token "
+                                                    f"key={key} from {resp.url.split('?')[0][:80]}"
+                                                )
+                                        else:
+                                            _scan(val, depth + 1)
+                                elif isinstance(obj, list):
+                                    for item in obj:
+                                        _scan(item, depth + 1)
+                            _scan(body)
                         except Exception:
                             pass
                 except Exception:
@@ -184,8 +198,51 @@ def login_via_browser(
                     continue
 
             page.wait_for_load_state("networkidle", timeout=10000)
+            page.screenshot(path="data/login_debug_after_pwd.png")
+            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot saved after password — data/login_debug_after_pwd.png")
 
-            # ── Step 4: Enter TOTP / OTP ──────────────────────────────────────
+            # ── Step 4a: Enter MPIN (4-digit PIN) — Groww consumer login ─────
+            # Groww website uses MPIN after email+password, not TOTP
+            mpin = os.getenv("GROWW_PIN", "")
+            mpin_selectors = [
+                'input[placeholder*="MPIN" i]',
+                'input[placeholder*="mpin" i]',
+                'input[placeholder*="M-PIN" i]',
+                'input[placeholder*="PIN" i]',
+                'input[placeholder*="pin" i]',
+                'input[type="password"][maxlength="4"]',
+                'input[maxlength="4"]',
+                'input[name="mpin"]',
+                'input[name="pin"]',
+                'input[autocomplete="current-password"][maxlength="4"]',
+            ]
+            mpin_field = None
+            for sel in mpin_selectors:
+                try:
+                    page.wait_for_selector(sel, timeout=5000)
+                    mpin_field = sel
+                    break
+                except PWTimeout:
+                    continue
+
+            if mpin_field and mpin:
+                page.fill(mpin_field, mpin)
+                logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN")
+                for sel in submit_selectors:
+                    try:
+                        btn = page.query_selector(sel)
+                        if btn and btn.is_visible():
+                            btn.click()
+                            break
+                    except Exception:
+                        continue
+                page.wait_for_load_state("networkidle", timeout=15000)
+            elif mpin_field and not mpin:
+                logger.warning(f"[{format_ist_timestamp()}] Browser: MPIN field found but GROWW_PIN not set in .env")
+            else:
+                logger.info(f"[{format_ist_timestamp()}] Browser: no MPIN field — checking for OTP/TOTP")
+
+            # ── Step 4b: Enter TOTP / OTP (6-digit) if shown ─────────────────
             otp_selectors = [
                 'input[placeholder*="OTP" i]',
                 'input[placeholder*="otp" i]',
@@ -200,7 +257,7 @@ def login_via_browser(
             otp_field = None
             for sel in otp_selectors:
                 try:
-                    page.wait_for_selector(sel, timeout=10000)
+                    page.wait_for_selector(sel, timeout=5000)
                     otp_field = sel
                     break
                 except PWTimeout:
@@ -210,8 +267,6 @@ def login_via_browser(
                 totp_code = _get_totp(totp_secret)
                 page.fill(otp_field, totp_code)
                 logger.info(f"[{format_ist_timestamp()}] Browser: entered TOTP code {totp_code}")
-
-                # Submit OTP
                 for sel in submit_selectors:
                     try:
                         btn = page.query_selector(sel)
@@ -220,10 +275,9 @@ def login_via_browser(
                             break
                     except Exception:
                         continue
-
                 page.wait_for_load_state("networkidle", timeout=15000)
             else:
-                logger.warning(f"[{format_ist_timestamp()}] Browser: OTP field not found — may not be required")
+                logger.info(f"[{format_ist_timestamp()}] Browser: no OTP field found")
 
             # ── Step 5: Wait for dashboard / extract token ────────────────────
             try:
