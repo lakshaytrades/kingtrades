@@ -331,7 +331,8 @@ class GrowwDataFetcher:
                     "datetime": dt, "open": float(c[1]), "high": float(c[2]), 
                     "low": float(c[3]), "close": float(c[4]), "volume": int(c[5])
                 })
-            except: continue
+            except Exception:
+                continue
         df = pd.DataFrame(records).sort_values("datetime").set_index("datetime")
         return df if not df.empty else None
 
@@ -474,7 +475,7 @@ class GrowwDataFetcher:
                     logger.info(
                         f"[{format_ist_timestamp()}] Balance empty during market hours — "
                         "attempting token refresh (once per 15 min). "
-                        "If this persists, check Groww API Settings → add Render IP."
+                        "If this persists, check Groww API Settings → whitelist your VPS IP."
                     )
                     try:
                         if self._reinit_with_fresh_token("Balance empty during market hours"):
@@ -521,7 +522,9 @@ class GrowwDataFetcher:
                 "product": "MIS", # Ensures leverage is tracked correctly
                 "avg_price": float(p.get("average_price", 0))
             } for p in (raw or []) if int(p.get("quantity", 0)) != 0]
-        except: return []
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] get_positions error: {e}")
+            return []
 
     # --------------------------------------------------------
     # PREVIOUS FEATURES: MTF, ORB, TODAY
@@ -530,8 +533,11 @@ class GrowwDataFetcher:
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
         data = {}
         for interval, days in [("5m", 5), ("15m", 10), ("1h", 30)]:
-            try: data[interval] = self.get_candles(symbol, interval=interval, days=days)
-            except: data[interval] = None
+            try:
+                data[interval] = self.get_candles(symbol, interval=interval, days=days)
+            except Exception as e:
+                logger.debug(f"MTF candle error {symbol}/{interval}: {e}")
+                data[interval] = None
         return data
 
     def get_today_candles(self, symbol: str, interval: str = "5m") -> Optional[pd.DataFrame]:

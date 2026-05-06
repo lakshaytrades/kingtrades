@@ -32,7 +32,18 @@ class GrowwIPBlockedError(Exception):
 _ip_block_last_alerted: Optional[datetime] = None  # throttle spam alerts
 
 # SEBI-compliant trade journal DB
+import os as _os
+_os.makedirs("logs/trades", exist_ok=True)
 TRADE_DB_PATH = "logs/trades/trade_journal.db"
+
+
+def _get_outbound_ip() -> str:
+    """Return this server's public IP — used in IP-whitelist error messages."""
+    try:
+        import requests as _r
+        return _r.get("https://api.ipify.org", timeout=5).text.strip()
+    except Exception:
+        return "your-vps-ip"
 
 
 class OrderResult:
@@ -444,7 +455,7 @@ class GrowwExecutor:
                 "Your VPS IP is not whitelisted in Groww.\n\n"
                 "Fix:\n"
                 "1. Go to Groww → Profile → Developer API Settings\n"
-                "2. Add your VPS IP (187.127.154.164) to the allowed list\n"
+                f"2. Add your VPS IP ({_get_outbound_ip()}) to the allowed list\n"
                 "3. Save and wait 1-2 minutes for it to take effect\n\n"
                 f"Raw error: {ip_err}"
             )
@@ -564,7 +575,7 @@ class GrowwExecutor:
         except GrowwIPBlockedError as ip_err:
             logger.error(
                 f"[{format_ist_timestamp()}] EXIT BLOCKED — IP not whitelisted: {ip_err}. "
-                "Add VPS IP (187.127.154.164) to Groww Developer API Settings."
+                f"Add VPS IP ({_get_outbound_ip()}) to Groww Developer API Settings."
             )
             return OrderResult(False, message="IP not whitelisted — exit blocked")
         except Exception as e:
@@ -675,6 +686,9 @@ class GrowwExecutor:
                              "CANCEL", "REJECT"}
 
         while _time.time() < deadline:
+            if not self._api:
+                logger.warning(f"[{format_ist_timestamp()}] API lost during fill-wait for {order_id}")
+                break
             try:
                 status_resp = self._api.get_order(order_id=order_id)
                 if not status_resp:

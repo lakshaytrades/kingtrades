@@ -663,6 +663,7 @@ class TradingBot:
                 overnight_mult = self.overnight.get_size_multiplier()
 
             # 4. Check if we can take new trades
+            now_ist = get_current_ist_time()
             if self.risk_manager.state.circuit_breaker_active:
                 logger.warning(f"[{format_ist_timestamp()}] 🔴 Circuit breaker ACTIVE — no new trades")
                 if self.alerter and not getattr(self, "_cb_alerted_hour", None) == now_ist.hour:
@@ -679,7 +680,6 @@ class TradingBot:
                 return
 
             # Hourly heartbeat (on the hour, e.g. 9:00, 10:00, 11:00...)
-            now_ist = get_current_ist_time()
             if now_ist.minute < 2 and now_ist.hour != self._last_heartbeat_min:
                 self._send_heartbeat()
                 self._last_heartbeat_min = now_ist.hour

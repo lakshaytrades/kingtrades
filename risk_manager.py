@@ -23,6 +23,7 @@ from zoneinfo import ZoneInfo
 
 import numpy as np
 
+import config as _config
 from utils import format_ist_timestamp, get_current_ist_time, format_currency
 
 logger = logging.getLogger(__name__)
@@ -312,7 +313,7 @@ class RiskManager:
                 s for s in self.state.positions
                 if get_sector(s) == sector
             ]
-            max_per_sector = getattr(config, "MAX_POSITIONS_PER_SECTOR", 2)
+            max_per_sector = getattr(_config, "MAX_POSITIONS_PER_SECTOR", 2)
             if len(same_sector) >= max_per_sector:
                 return {
                     "allowed": False,
@@ -565,7 +566,7 @@ class RiskManager:
         }
         trail_dist = grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER) * atr
 
-        be_trigger = getattr(__import__("config"), "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
+        be_trigger = getattr(_config, "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
 
         if position.direction == "LONG":
             position.max_price = max(position.max_price, current_price)
