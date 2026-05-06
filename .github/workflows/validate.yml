@@ -1,0 +1,55 @@
+name: Validate & Check
+
+on:
+  push:
+    branches: ["claude/nse-momentum-groww-bot-hvkv9"]
+  pull_request:
+    branches: ["claude/nse-momentum-groww-bot-hvkv9"]
+
+jobs:
+  validate:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install minimal deps for syntax check
+        run: pip install pyflakes --quiet
+
+      - name: Check Python syntax (all files)
+        run: |
+          echo "Checking Python syntax..."
+          failed=0
+          for f in *.py; do
+            python3 -m py_compile "$f" 2>&1 && echo "  OK  $f" || { echo "  FAIL $f"; failed=1; }
+          done
+          if [ $failed -eq 1 ]; then
+            echo "Syntax errors found — fix before VPS will auto-deploy"
+            exit 1
+          fi
+          echo "All files OK"
+
+      - name: Check for critical import errors
+        run: |
+          python3 -c "
+          import ast, sys, os
+          errors = []
+          for f in os.listdir('.'):
+              if not f.endswith('.py'): continue
+              try:
+                  ast.parse(open(f).read())
+              except SyntaxError as e:
+                  errors.append(f'{f}:{e.lineno}: {e.msg}')
+          if errors:
+              print('AST errors:')
+              for e in errors: print(' ', e)
+              sys.exit(1)
+          print(f'AST check passed on {len([f for f in os.listdir(\".\") if f.endswith(\".py\")])} files')
+          "
+
+      - name: Notify success
+        if: success()
+        run: echo "Code valid — VPS will auto-deploy within 5 minutes"

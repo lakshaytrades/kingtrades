@@ -1,7 +1,9 @@
 #!/bin/bash
 # ============================================================
 # NSE Momentum Bot — Hostinger VPS Setup Script
-# Run once on a fresh Hostinger Ubuntu VPS (as root)
+# Run ONCE on a fresh Hostinger Ubuntu VPS as root.
+# After this: bot runs forever, auto-updates, auto-heals.
+#
 # Usage: bash hostinger_setup.sh
 # ============================================================
 set -e
@@ -9,83 +11,118 @@ set -e
 INSTALL_DIR="/opt/kingtrades"
 BRANCH="claude/nse-momentum-groww-bot-hvkv9"
 REPO="https://github.com/lakshaytrades/kingtrades.git"
-SERVICE_NAME="kingtrades"
 
 echo ""
 echo "=================================================="
-echo "  NSE Momentum Bot — Hostinger VPS Setup"
+echo "  NSE Momentum Bot — Full Hostinger VPS Setup"
 echo "=================================================="
 echo ""
 
-# ── System packages ─────────────────────────────────────
-echo "[1/7] Installing system packages..."
+# ── 1. System packages ───────────────────────────────────
+echo "[1/8] Installing system packages..."
 apt-get update -qq
 apt-get install -y -qq python3 python3-pip python3-venv python3-dev \
     build-essential git curl wget libssl-dev libffi-dev 2>/dev/null
-echo "  System packages OK"
+echo "  OK"
 
-# ── Clone / update repo ──────────────────────────────────
-echo "[2/7] Setting up code at $INSTALL_DIR..."
+# ── 2. Clone / update code ───────────────────────────────
+echo "[2/8] Setting up code at $INSTALL_DIR..."
 if [ -d "$INSTALL_DIR/.git" ]; then
     cd "$INSTALL_DIR"
     git fetch origin
     git checkout "$BRANCH"
-    git pull origin "$BRANCH"
-    echo "  Code updated"
+    git reset --hard "origin/$BRANCH"
+    echo "  Updated to latest"
 else
-    mkdir -p "$INSTALL_DIR"
     git clone "$REPO" "$INSTALL_DIR"
     cd "$INSTALL_DIR"
     git checkout "$BRANCH"
-    echo "  Code cloned"
+    echo "  Cloned"
 fi
-
 cd "$INSTALL_DIR"
 
-# ── Python virtualenv ────────────────────────────────────
-echo "[3/7] Setting up Python virtualenv..."
+# ── 3. Python virtualenv ─────────────────────────────────
+echo "[3/8] Setting up Python virtualenv..."
 python3 -m venv venv
 source venv/bin/activate
 pip install --upgrade pip --quiet
-echo "  Virtualenv OK"
+echo "  OK"
 
-# ── Dependencies ─────────────────────────────────────────
-echo "[4/7] Installing Python dependencies (may take 2-3 min)..."
+# ── 4. Install dependencies ──────────────────────────────
+echo "[4/8] Installing Python dependencies (2-3 min)..."
 pip install -r requirements.txt --quiet
-echo "  Dependencies OK"
+echo "  OK"
 
-# ── Directories ──────────────────────────────────────────
-echo "[5/7] Creating data directories..."
+# ── 5. Create required directories ──────────────────────
+echo "[5/8] Creating data directories..."
 mkdir -p logs/trades logs/performance data charts
-echo "  Directories OK"
+chmod 755 autodeploy.sh healthcheck.sh
+echo "  OK"
 
-# ── .env file ────────────────────────────────────────────
-echo "[6/7] Checking .env..."
+# ── 6. .env file ─────────────────────────────────────────
+echo "[6/8] Checking .env..."
 if [ ! -f "$INSTALL_DIR/.env" ]; then
     cp "$INSTALL_DIR/.env.example" "$INSTALL_DIR/.env"
     echo ""
-    echo "  .env created from template."
-    echo "  IMPORTANT: Edit it now: nano $INSTALL_DIR/.env"
-    echo "  Add your Groww and Telegram credentials."
+    echo "  !! .env created from template."
+    echo "  !! Edit it now: nano $INSTALL_DIR/.env"
+    echo "  !! Required: GROWW_CLIENT_ID, GROWW_TOTP_SECRET, TELEGRAM_*"
     echo ""
 else
-    echo "  .env already exists — skipping"
+    echo "  .env already exists"
 fi
 
-# ── systemd service ──────────────────────────────────────
-echo "[7/7] Installing systemd service..."
-cp "$INSTALL_DIR/kingtrades.service" /etc/systemd/system/
-systemctl daemon-reload
-systemctl enable "$SERVICE_NAME"
+# ── 7. Install all systemd services ──────────────────────
+echo "[7/8] Installing systemd services..."
 
-# Only (re)start if .env is populated
-if grep -q "GROWW_TOTP_SECRET=" "$INSTALL_DIR/.env" && \
-   ! grep -q "GROWW_TOTP_SECRET=$" "$INSTALL_DIR/.env"; then
-    systemctl restart "$SERVICE_NAME"
-    echo "  Service started"
+# Main trading bot
+cp "$INSTALL_DIR/kingtrades.service"   /etc/systemd/system/
+
+# Auto-deploy (pulls GitHub every 5 min)
+cp "$INSTALL_DIR/autodeploy.service"   /etc/systemd/system/
+cp "$INSTALL_DIR/autodeploy.timer"     /etc/systemd/system/
+
+# Health check (restarts if crashed, every 15 min)
+cp "$INSTALL_DIR/healthcheck.service"  /etc/systemd/system/
+cp "$INSTALL_DIR/healthcheck.timer"    /etc/systemd/system/
+
+systemctl daemon-reload
+
+# Enable timers (auto-start on boot)
+systemctl enable autodeploy.timer
+systemctl enable healthcheck.timer
+
+# Start timers now
+systemctl start autodeploy.timer
+systemctl start healthcheck.timer
+
+echo "  Services installed and timers running"
+
+# ── 8. Start main bot ────────────────────────────────────
+echo "[8/8] Starting trading bot..."
+systemctl enable kingtrades
+
+ENV_OK=false
+if [ -f "$INSTALL_DIR/.env" ]; then
+    HAS_TOTP=$(grep -c "^GROWW_TOTP_SECRET=." "$INSTALL_DIR/.env" 2>/dev/null || echo "0")
+    HAS_TG=$(grep -c "^TELEGRAM_BOT_TOKEN=." "$INSTALL_DIR/.env" 2>/dev/null || echo "0")
+    if [ "$HAS_TOTP" -gt 0 ] && [ "$HAS_TG" -gt 0 ]; then
+        ENV_OK=true
+    fi
+fi
+
+if [ "$ENV_OK" = "true" ]; then
+    systemctl restart kingtrades
+    sleep 3
+    if systemctl is-active --quiet kingtrades; then
+        echo "  Bot started successfully"
+    else
+        echo "  Bot failed to start — check: journalctl -u kingtrades -n 30"
+    fi
 else
-    echo "  Service NOT started — fill in .env first, then run:"
-    echo "  systemctl start $SERVICE_NAME"
+    echo "  Bot NOT started — fill in .env first:"
+    echo "    nano $INSTALL_DIR/.env"
+    echo "    systemctl start kingtrades"
 fi
 
 echo ""
@@ -93,13 +130,19 @@ echo "=================================================="
 echo "  Setup complete!"
 echo "=================================================="
 echo ""
-echo "  Useful commands:"
-echo "  View logs:    journalctl -u $SERVICE_NAME -f"
-echo "  Status:       systemctl status $SERVICE_NAME"
-echo "  Restart:      systemctl restart $SERVICE_NAME"
-echo "  Stop:         systemctl stop $SERVICE_NAME"
-echo "  Edit .env:    nano $INSTALL_DIR/.env"
+echo "  What's running:"
+echo "  • kingtrades.service   — the trading bot"
+echo "  • autodeploy.timer     — checks GitHub every 5 min, auto-updates"
+echo "  • healthcheck.timer    — checks health every 15 min, auto-restarts"
 echo ""
-echo "  After editing .env:"
-echo "  systemctl restart $SERVICE_NAME"
+echo "  Commands:"
+echo "  Watch logs:     journalctl -u kingtrades -f"
+echo "  Bot status:     systemctl status kingtrades"
+echo "  Deploy status:  journalctl -u kingtrades-deploy -n 20"
+echo "  Health log:     tail -f /var/log/kingtrades-health.log"
+echo "  Restart bot:    systemctl restart kingtrades"
+echo "  Edit .env:      nano $INSTALL_DIR/.env"
+echo ""
+echo "  Auto-deploy: Any code I push to GitHub is live within 5 minutes."
+echo "  Auto-heal:   Bot restarts itself if it crashes."
 echo ""

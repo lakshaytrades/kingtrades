@@ -1,0 +1,12 @@
+[Unit]
+Description=NSE Bot Auto-Deploy Timer — checks GitHub every 5 minutes
+Requires=autodeploy.service
+
+[Timer]
+OnBootSec=2min
+OnUnitActiveSec=5min
+Unit=autodeploy.service
+AccuracySec=30s
+
+[Install]
+WantedBy=timers.target

@@ -1,0 +1,11 @@
+[Unit]
+Description=NSE Bot Auto-Deploy (pull latest code from GitHub)
+After=network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/bin/bash /opt/kingtrades/autodeploy.sh
+User=root
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kingtrades-deploy

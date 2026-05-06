@@ -1,0 +1,12 @@
+[Unit]
+Description=NSE Bot Health Check Timer — runs every 15 minutes
+Requires=healthcheck.service
+
+[Timer]
+OnBootSec=5min
+OnUnitActiveSec=15min
+Unit=healthcheck.service
+AccuracySec=60s
+
+[Install]
+WantedBy=timers.target
