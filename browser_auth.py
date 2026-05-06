@@ -62,16 +62,22 @@ def login_via_browser(
         with sync_playwright() as p:
             browser = p.chromium.launch(
                 headless=headless,
-                args=["--no-sandbox", "--disable-setuid-sandbox",
-                      "--disable-dev-shm-usage", "--disable-gpu"],
+                args=[
+                    "--no-sandbox", "--disable-setuid-sandbox",
+                    "--disable-dev-shm-usage", "--disable-gpu",
+                    "--disable-blink-features=AutomationControlled",
+                ],
             )
             ctx = browser.new_context(
                 user_agent=(
-                    "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                    "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
                     "AppleWebKit/537.36 (KHTML, like Gecko) "
-                    "Chrome/120.0.0.0 Safari/537.36"
+                    "Chrome/124.0.0.0 Safari/537.36"
                 ),
                 viewport={"width": 1280, "height": 800},
+                java_script_enabled=True,
+                # Mimic real browser — hide automation signals
+                extra_http_headers={"Accept-Language": "en-IN,en;q=0.9,hi;q=0.8"},
             )
 
             # Capture token from XHR responses
@@ -112,6 +118,14 @@ def login_via_browser(
 
             page = ctx.new_page()
             page.on("response", _on_response)
+
+            # Hide automation fingerprints so Groww doesn't detect headless Chrome
+            page.add_init_script("""
+                Object.defineProperty(navigator, 'webdriver', {get: () => undefined});
+                Object.defineProperty(navigator, 'plugins', {get: () => [1,2,3,4,5]});
+                Object.defineProperty(navigator, 'languages', {get: () => ['en-IN', 'en']});
+                window.chrome = { runtime: {} };
+            """)
 
             # ── Step 1: Navigate to Groww login ──────────────────────────────
             logger.info(f"[{format_ist_timestamp()}] Browser: navigating to groww.in/login")
@@ -180,14 +194,34 @@ def login_via_browser(
             page.fill(pwd_field, password)
             logger.info(f"[{format_ist_timestamp()}] Browser: entered password")
 
-            # Submit password form — press Enter (most reliable on SPAs)
+            # Log all buttons on page so we can see what submit looks like
+            all_buttons = page.evaluate("""() => {
+                return Array.from(document.querySelectorAll('button')).map(b => ({
+                    text: b.innerText.trim().substring(0, 50),
+                    type: b.type,
+                    disabled: b.disabled,
+                    visible: b.offsetParent !== null,
+                    id: b.id,
+                    className: b.className.substring(0, 60)
+                }));
+            }""")
+            logger.info(f"[{format_ist_timestamp()}] Browser: buttons on page:")
+            for b in all_buttons:
+                if b.get("visible"):
+                    logger.info(f"  BUTTON: text='{b.get('text')}' type={b.get('type')} "
+                                f"disabled={b.get('disabled')} id={b.get('id')}")
+
+            # Submit: try clicking each visible button, then Enter
             submit_selectors = [
                 'button[type="submit"]',
                 'button:has-text("Login")',
+                'button:has-text("Sign In")',
                 'button:has-text("Sign in")',
                 'button:has-text("Continue")',
                 'button:has-text("Next")',
                 'button:has-text("Proceed")',
+                'button:has-text("Log in")',
+                'button:has-text("Submit")',
             ]
             clicked = False
             for sel in submit_selectors:
@@ -196,26 +230,52 @@ def login_via_browser(
                     if btn and btn.is_visible() and btn.is_enabled():
                         btn.click()
                         clicked = True
-                        logger.info(f"[{format_ist_timestamp()}] Browser: clicked submit ({sel})")
+                        logger.info(f"[{format_ist_timestamp()}] Browser: clicked '{sel}'")
                         break
                 except Exception:
                     continue
             if not clicked:
-                # Fallback: press Enter in the password field
+                # Try JavaScript click on the first enabled visible button
+                try:
+                    page.evaluate("""() => {
+                        const btns = document.querySelectorAll('button');
+                        for (const b of btns) {
+                            if (!b.disabled && b.offsetParent !== null) {
+                                b.click(); break;
+                            }
+                        }
+                    }""")
+                    logger.info(f"[{format_ist_timestamp()}] Browser: JS-clicked first enabled button")
+                    clicked = True
+                except Exception:
+                    pass
+            if not clicked:
                 page.keyboard.press("Enter")
                 logger.info(f"[{format_ist_timestamp()}] Browser: pressed Enter to submit")
 
-            # Wait for PIN screen to appear — email field disappears when Groww navigates
+            # Wait for PIN screen — email field disappears when Groww navigates
             try:
-                page.wait_for_selector('#login_email2', state='hidden', timeout=15000)
+                page.wait_for_selector('#login_email2', state='hidden', timeout=20000)
                 logger.info(f"[{format_ist_timestamp()}] Browser: email field hidden — PIN screen loaded")
             except PWTimeout:
-                # Some Groww builds use URL change or DOM swap
                 try:
                     page.wait_for_load_state("networkidle", timeout=10000)
                 except Exception:
                     pass
-            time.sleep(1)  # let React finish rendering PIN boxes
+            time.sleep(1.5)
+
+            # Log URL and any error text so we know what happened
+            current_url = page.url
+            logger.info(f"[{format_ist_timestamp()}] Browser: current URL = {current_url}")
+            try:
+                error_text = page.evaluate("""() => {
+                    const errs = document.querySelectorAll('[class*="error" i],[class*="alert" i],[class*="message" i]');
+                    return Array.from(errs).map(e => e.innerText.trim()).filter(t => t).join(' | ');
+                }""")
+                if error_text:
+                    logger.warning(f"[{format_ist_timestamp()}] Browser: page errors: {error_text[:200]}")
+            except Exception:
+                pass
 
             page.screenshot(path="data/login_debug_after_pwd.png")
 
