@@ -199,48 +199,67 @@ def login_via_browser(
 
             page.wait_for_load_state("networkidle", timeout=10000)
             page.screenshot(path="data/login_debug_after_pwd.png")
-            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot saved after password — data/login_debug_after_pwd.png")
+            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot saved — data/login_debug_after_pwd.png")
 
-            # ── Step 4a: Enter MPIN (4-digit PIN) — Groww consumer login ─────
-            # Groww website uses MPIN after email+password, not TOTP
+            # ── Step 4a: Enter MPIN — Groww uses 4 separate digit boxes ──────
+            # After email+password, Groww shows 4 individual PIN digit inputs.
+            # We type each digit into each box using keyboard press.
             mpin = os.getenv("GROWW_PIN", "")
-            mpin_selectors = [
-                'input[placeholder*="MPIN" i]',
-                'input[placeholder*="mpin" i]',
-                'input[placeholder*="M-PIN" i]',
-                'input[placeholder*="PIN" i]',
-                'input[placeholder*="pin" i]',
-                'input[type="password"][maxlength="4"]',
-                'input[maxlength="4"]',
-                'input[name="mpin"]',
-                'input[name="pin"]',
-                'input[autocomplete="current-password"][maxlength="4"]',
-            ]
-            mpin_field = None
-            for sel in mpin_selectors:
-                try:
-                    page.wait_for_selector(sel, timeout=5000)
-                    mpin_field = sel
-                    break
-                except PWTimeout:
-                    continue
+            if not mpin:
+                logger.warning(f"[{format_ist_timestamp()}] Browser: GROWW_PIN not set in .env")
 
-            if mpin_field and mpin:
-                page.fill(mpin_field, mpin)
-                logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN")
-                for sel in submit_selectors:
-                    try:
-                        btn = page.query_selector(sel)
-                        if btn and btn.is_visible():
-                            btn.click()
+            mpin_entered = False
+            if mpin:
+                # Strategy 1: 4 individual single-digit input boxes (Groww's actual layout)
+                try:
+                    # Wait for any PIN-style input to appear
+                    page.wait_for_selector('input[maxlength="1"]', timeout=8000)
+                    pin_boxes = page.query_selector_all('input[maxlength="1"]')
+                    if len(pin_boxes) >= 4:
+                        for i, digit in enumerate(mpin[:4]):
+                            pin_boxes[i].click()
+                            pin_boxes[i].type(digit)
+                            time.sleep(0.15)
+                        logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN into 4 digit boxes")
+                        mpin_entered = True
+                        page.wait_for_load_state("networkidle", timeout=12000)
+                except PWTimeout:
+                    pass
+
+                # Strategy 2: single input field (maxlength=4 or named pin/mpin)
+                if not mpin_entered:
+                    for sel in [
+                        'input[maxlength="4"]',
+                        'input[placeholder*="MPIN" i]',
+                        'input[placeholder*="PIN" i]',
+                        'input[name="mpin"]',
+                        'input[name="pin"]',
+                        'input[type="password"][maxlength="4"]',
+                    ]:
+                        try:
+                            page.wait_for_selector(sel, timeout=3000)
+                            page.fill(sel, mpin)
+                            logger.info(f"[{format_ist_timestamp()}] Browser: entered MPIN into single field ({sel})")
+                            mpin_entered = True
+                            for btn_sel in submit_selectors:
+                                try:
+                                    btn = page.query_selector(btn_sel)
+                                    if btn and btn.is_visible():
+                                        btn.click()
+                                        break
+                                except Exception:
+                                    continue
+                            page.wait_for_load_state("networkidle", timeout=12000)
                             break
-                    except Exception:
-                        continue
-                page.wait_for_load_state("networkidle", timeout=15000)
-            elif mpin_field and not mpin:
-                logger.warning(f"[{format_ist_timestamp()}] Browser: MPIN field found but GROWW_PIN not set in .env")
-            else:
-                logger.info(f"[{format_ist_timestamp()}] Browser: no MPIN field — checking for OTP/TOTP")
+                        except PWTimeout:
+                            continue
+
+                if not mpin_entered:
+                    logger.warning(f"[{format_ist_timestamp()}] Browser: could not find MPIN field")
+                    page.screenshot(path="data/login_debug_mpin.png")
+
+            page.screenshot(path="data/login_debug_after_mpin.png")
+            logger.info(f"[{format_ist_timestamp()}] Browser: screenshot after MPIN — data/login_debug_after_mpin.png")
 
             # ── Step 4b: Enter TOTP / OTP (6-digit) if shown ─────────────────
             otp_selectors = [
