@@ -17,11 +17,13 @@ Required .env:
 """
 
 import base64
+import hashlib
 import json
 import logging
 import os
 import sys
 import time
+import uuid
 from datetime import datetime
 from pathlib import Path
 from typing import Optional, Tuple
@@ -193,7 +195,6 @@ def _inspect_sdk_once():
 
 def _single_totp_attempt(vendor_key: str, totp_secret: str,
                           attempt_label: str = "") -> Optional[str]:
-    import hashlib
     _inspect_sdk_once()
 
     remaining = 30 - (int(time.time()) % 30)
@@ -225,48 +226,65 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         f"| keys={[k for k,_ in keys_to_try]} email={'yes' if email else 'no'}"
     )
 
-    ts = int(time.time())
-
-    # ── Method 1: Groww Trade API endpoint ────────────────────────────────
-    # POST https://api.groww.in/v1/token/api/access
-    # Authorization: Bearer <Cloud-API-Key>  (UUID format from Trade API portal)
-    # Body: {"totp": "123456"}
+    # ── Method 1: Groww Trade API — exact format from growwapi v1.5.0 SDK ─────
+    # Endpoint: POST https://api.groww.in/v1/token/api/access
+    # Required headers: x-request-id, x-client-id, x-client-platform, x-api-version
+    # Body TOTP:     {"key_type": "totp", "totp": "123456"}        ← exact SDK format
+    # Body approval: {"key_type": "approval", "checksum": ..., "timestamp": ...}
+    # Response:      response.json()["token"]  (NOT wrapped in "data")
     for key_label, key_val in keys_to_try:
-        base_hdrs = {
-            "Content-Type":  "application/json",
-            "Accept":        "application/json",
-            "Authorization": f"Bearer {key_val}",
-            "User-Agent":    "growwapi-python/1.5.0",
+        sdk_hdrs = {
+            "x-request-id":              str(uuid.uuid4()),
+            "Authorization":             f"Bearer {key_val}",
+            "Content-Type":              "application/json",
+            "x-client-id":               "growwapi",
+            "x-client-platform":         "growwapi-python-client",
+            "x-client-platform-version": "1.5.0",
+            "x-api-version":             "1.0",
         }
-        bodies_to_try = [
-            {"totp": totp_code},
-            {"totp": str(totp_code)},
-            {"otp": totp_code},
-        ]
+        # Primary: TOTP method
+        totp_body = {"key_type": "totp", "totp": totp_code}
+        try:
+            resp = requests.post(
+                "https://api.groww.in/v1/token/api/access",
+                json=totp_body, headers=sdk_hdrs, timeout=15,
+            )
+            logger.info(
+                f"  [Trade-API TOTP] ({key_label}) HTTP {resp.status_code}: "
+                f"{resp.text[:300]}"
+            )
+            if resp.status_code in (200, 201):
+                data = resp.json()
+                tok = data.get("token") or _extract_token_from_response(data)
+                if tok:
+                    logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP ({key_label})")
+                    return tok
+        except Exception as e:
+            logger.info(f"  [Trade-API TOTP] ({key_label}): {e}")
+
+        # Secondary: approval/secret method (if GROWW_CLIENT_SECRET set)
         if client_secret:
+            ts = int(time.time())
             checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
-            bodies_to_try.append({
-                "key_type": "approval",
-                "checksum": checksum,
-                "timestamp": ts,
-            })
-        for body in bodies_to_try:
+            approval_body = {"key_type": "approval", "checksum": checksum, "timestamp": ts}
+            sdk_hdrs["x-request-id"] = str(uuid.uuid4())
             try:
                 resp = requests.post(
                     "https://api.groww.in/v1/token/api/access",
-                    json=body, headers=base_hdrs, timeout=15,
+                    json=approval_body, headers=sdk_hdrs, timeout=15,
                 )
                 logger.info(
-                    f"  [Trade-API/token] ({key_label}) HTTP {resp.status_code}: "
-                    f"{resp.text[:200]}"
+                    f"  [Trade-API approval] ({key_label}) HTTP {resp.status_code}: "
+                    f"{resp.text[:300]}"
                 )
                 if resp.status_code in (200, 201):
-                    tok = _extract_token_from_response(resp.json())
+                    data = resp.json()
+                    tok = data.get("token") or _extract_token_from_response(data)
                     if tok:
-                        logger.info(f"[{format_ist_timestamp()}] Token via Trade API ({key_label})")
+                        logger.info(f"[{format_ist_timestamp()}] Token via Trade API approval ({key_label})")
                         return tok
             except Exception as e:
-                logger.info(f"  [Trade-API/token] ({key_label}): {e}")
+                logger.info(f"  [Trade-API approval] ({key_label}): {e}")
 
     # ── Method 2: growwapi SDK ─────────────────────────────────────────────
     try:
@@ -606,17 +624,26 @@ class GrowwAuthManager:
                     "<i>Retrying every 5 min until 4 PM IST</i>"
                 )
             else:
+                cid = os.getenv("GROWW_CLIENT_ID", "")
+                is_numeric = cid.isdigit()
+                extra = (
+                    f"\n\n⚠️ <b>Current GROWW_CLIENT_ID = {cid}</b>\n"
+                    "This is a number — it should be a UUID like:\n"
+                    "<code>a1b2c3d4-e5f6-7890-abcd-ef1234567890</code>"
+                    if is_numeric else ""
+                )
                 self._send_alert(
-                    "⚠️ <b>Groww Login Failing — API Key Mismatch</b>\n\n"
-                    "TOTP codes generate correctly but Groww rejects them.\n\n"
-                    "<b>Most likely cause:</b>\n"
-                    "GROWW_CLIENT_ID is wrong format. It must be the UUID from\n"
-                    "groww.in → Trade API → Cloud API Keys\n"
-                    "(looks like: <code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>)\n\n"
-                    "<b>Also check:</b> GROWW_TOTP_SECRET must be the TOTP secret\n"
-                    "shown on THAT API Key page — NOT your account login TOTP.\n\n"
-                    "On VPS check your .env:\n"
-                    "<code>grep GROWW /opt/kingtrades/.env</code>\n\n"
+                    "⚠️ <b>Groww Login Failing</b>\n\n"
+                    "TOTP code is correct but Groww API rejects the key.\n"
+                    f"{extra}\n\n"
+                    "<b>Fix (2 minutes):</b>\n"
+                    "1. Groww app → Profile → Trade API → Cloud API Keys\n"
+                    "2. Copy your UUID API Key (format: xxxx-xxxx-xxxx)\n"
+                    "3. Copy the TOTP secret shown on THAT page\n"
+                    "4. On VPS:\n"
+                    "<code>nano /opt/kingtrades/.env</code>\n"
+                    "Update GROWW_CLIENT_ID and GROWW_TOTP_SECRET\n"
+                    "<code>systemctl restart kingtrades</code>\n\n"
                     "<i>Retrying every 5 min until 4 PM IST</i>"
                 )
         return False
