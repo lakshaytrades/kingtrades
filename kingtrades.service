@@ -1,0 +1,22 @@
+[Unit]
+Description=NSE Momentum Groww AI Trading Bot
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=root
+WorkingDirectory=/opt/kingtrades
+EnvironmentFile=/opt/kingtrades/.env
+Environment=PYTHONUNBUFFERED=1
+Environment=PYTHONPATH=/opt/kingtrades
+ExecStart=/opt/kingtrades/venv/bin/python main.py
+Restart=always
+RestartSec=30
+TimeoutStartSec=120
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kingtrades
+
+[Install]
+WantedBy=multi-user.target

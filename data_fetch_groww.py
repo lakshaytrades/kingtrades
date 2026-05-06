@@ -81,8 +81,8 @@ class GrowwDataFetcher:
                 logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with new access_token")
                 return True
             logger.error(
-                f"[{format_ist_timestamp()}] ❌ Token refresh failed — "
-                "check GROWW_AUTH_TOKEN and GROWW_TOTP_SECRET in Render env vars"
+                f"[{format_ist_timestamp()}] Token refresh failed — "
+                "check GROWW_CLIENT_ID and GROWW_TOTP_SECRET in /opt/kingtrades/.env"
             )
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Token refresh error: {e}")

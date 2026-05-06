@@ -594,7 +594,7 @@ class ContinuousLearner:
                     try:
                         alerter.send_html(
                             f"⚠️ <b>Token Refresh Failed</b> — {format_ist_timestamp()}\n"
-                            f"Will retry. Check GROWW_TOTP_SECRET in Render env."
+                            f"Will retry. Check GROWW_TOTP_SECRET in /opt/kingtrades/.env"
                         )
                     except Exception:
                         pass

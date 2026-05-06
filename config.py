@@ -380,16 +380,14 @@ API_HEALTH_CHECK_ENABLED: bool = True
 def validate_config() -> list:
     """Validate critical configuration. Returns list of issues."""
     issues = []
-    if not GROWW_AUTH_TOKEN:
-        issues.append("GROWW_AUTH_TOKEN not set")
     if not GROWW_TOTP_SECRET:
         issues.append("GROWW_TOTP_SECRET not set — TOTP auto-login disabled")
+    if not GROWW_CLIENT_ID and not GROWW_AUTH_TOKEN:
+        issues.append("GROWW_CLIENT_ID not set — add Cloud API Key from Groww Trade API portal")
     if not TELEGRAM_BOT_TOKEN:
         issues.append("TELEGRAM_BOT_TOKEN not set — alerts disabled")
     if not TELEGRAM_CHAT_ID:
         issues.append("TELEGRAM_CHAT_ID not set — alerts disabled")
-    if LIVE_TRADING_ENABLED and not GROWW_AUTH_TOKEN:
-        issues.append("CRITICAL: LIVE_TRADING_ENABLED=True but no Groww token!")
     return issues
 
 
@@ -401,6 +399,7 @@ if __name__ == "__main__":
             print(f"  ⚠️  {i}")
     else:
         print("✅ Configuration valid")
-    print(f"Live trading: {'⚡ ENABLED — REAL MONEY' if LIVE_TRADING_ENABLED else '🔒 DISABLED (safe mode)'}")
-    print(f"Capital: ₹{MAX_DAILY_CAPITAL:,.0f}")
+    print(f"Live trading: {'ENABLED — REAL MONEY' if LIVE_TRADING_ENABLED else 'DISABLED (safe mode)'}")
+    print(f"Client ID set: {'yes' if GROWW_CLIENT_ID else 'NO — add GROWW_CLIENT_ID to .env'}")
+    print(f"TOTP secret:   {'set' if GROWW_TOTP_SECRET else 'NO — add GROWW_TOTP_SECRET to .env'}")
     print(f"Timezone: IST (Asia/Kolkata) — Server: UK UTC")
