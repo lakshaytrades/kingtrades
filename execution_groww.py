@@ -62,28 +62,33 @@ class OrderResult:
 
 def _notify(subject: str, body: str) -> None:
     """
-    Fire-and-forget alert — sends via email (primary) and Telegram (optional).
+    Fire-and-forget alert — Telegram primary, email optional fallback.
     Never blocks order execution.
     """
     import threading
 
     def _send():
-        # Email (primary)
+        # Telegram (primary)
         try:
-            from email_reporter import send_alert
-            send_alert(subject, body)
+            import requests as _r
+            import os as _os
+            bot_token = _os.getenv("TELEGRAM_BOT_TOKEN", "")
+            chat_id = _os.getenv("TELEGRAM_CHAT_ID", "")
+            if bot_token and chat_id:
+                _r.post(
+                    f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                    json={"chat_id": chat_id, "parse_mode": "HTML",
+                          "text": f"<b>{subject}</b>\n\n{body}"},
+                    timeout=10,
+                )
         except Exception:
             pass
-        # Telegram (optional — only if configured)
+        # Email (optional fallback — only if configured)
         try:
-            import requests as _r, config as _c
-            if getattr(_c, "TELEGRAM_BOT_TOKEN", "") and getattr(_c, "TELEGRAM_CHAT_ID", ""):
-                _r.post(
-                    f"https://api.telegram.org/bot{_c.TELEGRAM_BOT_TOKEN}/sendMessage",
-                    json={"chat_id": _c.TELEGRAM_CHAT_ID, "parse_mode": "HTML",
-                          "text": f"<b>{subject}</b>\n{body}"},
-                    timeout=6,
-                )
+            import os as _os
+            if _os.getenv("GMAIL_APP_PASSWORD") or _os.getenv("BREVO_API_KEY"):
+                from email_reporter import send_alert
+                send_alert(subject, body)
         except Exception:
             pass
 
