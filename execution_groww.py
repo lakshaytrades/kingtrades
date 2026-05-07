@@ -345,6 +345,7 @@ class GrowwExecutor:
                 pass
 
             review = review_signal(signal_data, news)
+            signal._claude_review = review   # stash for dynamic leverage
 
             tg_msg = format_telegram_review(signal.symbol, signal.direction, review)
             if tg_msg:
@@ -413,6 +414,58 @@ class GrowwExecutor:
                 f"[{format_ist_timestamp()}] Size adjusted by {size_mult:.1f}x "
                 f"(Grade {getattr(signal, 'quality_grade', 'B')}) → {quantity} qty"
             )
+
+        # ── Dynamic Leverage — scale up on high-conviction setups ─────────
+        # Combines: signal score + Claude confidence + RL Q-edge + MTF + block deal + sector
+        # Multiplier range: 0.5x (marginal) → 3.0x (institutional-grade)
+        try:
+            from dynamic_leverage import calculate_conviction, apply_conviction_cap
+            _review = getattr(signal, "_claude_review", {})
+            _rl_agent = None
+            _rl_state = None
+            try:
+                from rl_agent import get_rl_agent
+                _rl_agent = get_rl_agent()
+                _rl_state = _rl_agent.state_builder.build({
+                    "rsi": getattr(signal, "rsi", 50),
+                    "macd_hist": getattr(signal, "macd_hist", 0),
+                    "vwap_deviation_pct": getattr(signal, "vwap_deviation_pct", 0),
+                    "volume_ratio": getattr(signal, "volume_ratio", 1),
+                    "mtf_alignment": getattr(signal, "mtf_alignment", "unknown"),
+                    "patterns": getattr(signal, "patterns", []),
+                    "session": getattr(signal, "session", "NORMAL"),
+                    "nifty_trend": getattr(signal, "nifty_trend", "neutral"),
+                })
+            except Exception:
+                pass
+
+            conviction = calculate_conviction(
+                signal_score      = getattr(signal, "signal_score", 0),
+                claude_confidence = _review.get("confidence", 50),
+                claude_approved   = _review.get("approved", True),
+                rl_qtable         = _rl_agent,
+                rl_state          = _rl_state,
+                mtf_alignment     = getattr(signal, "mtf_alignment_dict",
+                                           {"alignment_score": 50, "aligned_count": 2}),
+                symbol            = signal.symbol,
+                direction         = signal.direction,
+                daily_pnl         = self.risk_manager.state.daily_pnl,
+                daily_capital     = self.risk_manager.state.daily_capital,
+            )
+            old_qty = quantity
+            quantity = apply_conviction_cap(
+                quantity      = quantity,
+                multiplier    = conviction.multiplier,
+                entry_price   = signal.entry_price,
+                stop_loss     = signal.stop_loss,
+                daily_capital = self.risk_manager.state.daily_capital,
+            )
+            logger.info(
+                f"[{format_ist_timestamp()}] CONVICTION: {signal.symbol} | "
+                f"{conviction.reason} | qty {old_qty}→{quantity}"
+            )
+        except Exception as e:
+            logger.debug(f"Dynamic leverage skipped: {e}")
 
         entry_price = round_to_tick_size(signal.entry_price)
         transaction_type = "BUY" if signal.direction == "LONG" else "SELL"
