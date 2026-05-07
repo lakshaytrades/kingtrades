@@ -91,6 +91,7 @@ class TradingBot:
         self.options_signals = None     # Nifty/BankNifty CE/PE signals
         self.orb_strategy = None        # Opening Range Breakout (9:15-9:45 AM)
         self.scalping_engine = None     # Opening drive scalper (9:15-10:00 AM)
+        self.morning_intel = None       # Morning intelligence — day thesis + mode
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -316,6 +317,23 @@ class TradingBot:
             self.scalping_engine = None
             logger.warning(f"[{format_ist_timestamp()}] Scalping engine init failed: {e}")
 
+        # Initialize Morning Intelligence engine
+        try:
+            from morning_intelligence import get_morning_intelligence
+            self.morning_intel = get_morning_intelligence(
+                fii_tracker     = self.fii_tracker,
+                oc_analyzer     = self.oc_analyzer,
+                sector_rotation = self.sector_rotation,
+                overnight       = self.overnight,
+                gap_analyzer    = self.gap_analyzer,
+                calendar        = self.calendar,
+                news_filter     = self.news_filter,
+            )
+            logger.info(f"[{format_ist_timestamp()}] Morning Intelligence engine ready")
+        except Exception as e:
+            self.morning_intel = None
+            logger.warning(f"[{format_ist_timestamp()}] Morning Intelligence init failed: {e}")
+
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
         self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
@@ -535,12 +553,28 @@ class TradingBot:
                 except Exception as e:
                     logger.warning(f"FII/DII morning: {e}")
 
-            # Send combined morning brief
-            self.alerter.send_morning_brief(
-                watchlist, available, nifty_open,
-                oc_summary=oc_summary,
-                fii_summary=fii_summary,
-            )
+            # ── Morning Intelligence — full day thesis ────────────────────
+            if self.morning_intel:
+                try:
+                    thesis = self.morning_intel.generate(watchlist)
+                    self.alerter.send_text(self.morning_intel.format_telegram(thesis))
+                    self.morning_intel.apply_to_risk_manager(thesis, self.risk_manager)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Day thesis: {thesis.market_bias} | "
+                        f"Mode: {thesis.trading_mode} | Size: {thesis.size_multiplier}x | "
+                        f"VIX: {thesis.vix:.1f}"
+                    )
+                except Exception as e:
+                    logger.warning(f"Morning intelligence failed: {e}")
+                    # Fallback to basic morning brief
+                    self.alerter.send_morning_brief(watchlist, available, nifty_open,
+                                                    oc_summary=oc_summary, fii_summary=fii_summary)
+            else:
+                self.alerter.send_morning_brief(
+                    watchlist, available, nifty_open,
+                    oc_summary=oc_summary,
+                    fii_summary=fii_summary,
+                )
 
             # Also send overnight analysis text
             if self.overnight:
