@@ -468,6 +468,17 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Morning brief failed: {e}")
 
+        # ── RL Brain: reset daily state at market open ────────────────
+        try:
+            from rl_agent import LakshKingRL
+            LakshKingRL.reset()
+            rl_status = LakshKingRL.status_message()
+            logger.info(f"[{format_ist_timestamp()}] {rl_status}")
+            if self.alerter:
+                self.alerter.send_text(rl_status)
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] RL reset failed: {e}")
+
         # Log day-of-week mode
         now_ist  = get_current_ist_time()
         dow      = now_ist.weekday()

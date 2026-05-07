@@ -357,6 +357,33 @@ class GrowwExecutor:
         except Exception as e:
             logger.debug(f"Claude supervisor skipped: {e}")
 
+        # ── RL Brain — institution-level portfolio + learned conviction check ──
+        try:
+            from rl_agent import LakshKingRL
+            market_data = {
+                "rsi":          getattr(signal, "rsi", 50),
+                "macd_hist":    getattr(signal, "macd_hist", 0),
+                "vwap_deviation_pct": getattr(signal, "vwap_deviation_pct", 0),
+                "volume_ratio": getattr(signal, "volume_ratio", 1),
+                "mtf_alignment": getattr(signal, "mtf_alignment", "unknown"),
+                "patterns":     getattr(signal, "patterns", []),
+                "session":      getattr(signal, "session", "NORMAL"),
+                "nifty_trend":  getattr(signal, "nifty_trend", "neutral"),
+                "signal_score": getattr(signal, "signal_score", 0),
+            }
+            risk_amount = self.risk_manager.state.daily_capital * 0.005  # 0.5%
+            rl_decision = LakshKingRL.signal(
+                signal.symbol, signal.direction, market_data, risk_amount
+            )
+            if rl_decision == "SKIP":
+                logger.warning(
+                    f"[{format_ist_timestamp()}] RL SKIP: {signal.symbol} "
+                    "— portfolio or learned Q-table blocked this trade"
+                )
+                return OrderResult(False, message="RL brain: trade skipped (portfolio filter or low conviction)")
+        except Exception as e:
+            logger.debug(f"RL check skipped: {e}")
+
         # Recalculate quantity with live balance, apply filter size multiplier
         sizing = self.risk_manager.calculate_position_size(
             symbol=signal.symbol,
@@ -562,6 +589,18 @@ class GrowwExecutor:
             trade = self.risk_manager.close_position(symbol, exit_price, reason)
             if trade:
                 self._update_db_exit(symbol, exit_price, reason)
+                try:
+                    from rl_agent import LakshKingRL
+                    q = fetcher.get_quote(symbol) or {}
+                    LakshKingRL.close(symbol, trade.pnl, reason, {
+                        "rsi": q.get("rsi", 50), "macd_hist": 0,
+                        "vwap_deviation_pct": 0, "volume_ratio": 1,
+                        "mtf_alignment": "unknown", "patterns": [],
+                        "session": "NORMAL", "nifty_trend": "neutral",
+                        "signal_score": 0,
+                    })
+                except Exception:
+                    pass
             fake_id = f"DRY_EXIT_{symbol}_{get_current_ist_time().strftime('%H%M%S')}"
             logger.info(f"[{format_ist_timestamp()}] [DRY RUN] Exit simulated: {symbol}")
             return OrderResult(True, order_id=fake_id,
@@ -596,6 +635,17 @@ class GrowwExecutor:
                 trade = self.risk_manager.close_position(symbol, exit_price, reason)
                 if trade:
                     self._update_db_exit(symbol, exit_price, reason)
+                    try:
+                        from rl_agent import LakshKingRL
+                        LakshKingRL.close(symbol, trade.pnl, reason, {
+                            "rsi": 50, "macd_hist": 0,
+                            "vwap_deviation_pct": 0, "volume_ratio": 1,
+                            "mtf_alignment": "unknown", "patterns": [],
+                            "session": "NORMAL", "nifty_trend": "neutral",
+                            "signal_score": 0,
+                        })
+                    except Exception:
+                        pass
                 logger.info(
                     f"[{format_ist_timestamp()}] ✅ EXIT ORDER: {symbol} x{quantity} | {reason}"
                 )
