@@ -547,6 +547,7 @@ class GrowwAuthManager:
 
         self._vendor_key = (
             os.getenv("GROWW_VENDOR_KEY", "")
+            or os.getenv("GROWW_CLIENT_ID", "")
             or cached_vk
             or self._bootstrap_vendor_key()
         )
