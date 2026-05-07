@@ -89,6 +89,8 @@ class TradingBot:
         self.sector_rotation = None     # Sector momentum rotation engine
         self.pairs_engine = None        # Pairs trading (midday arbitrage)
         self.options_signals = None     # Nifty/BankNifty CE/PE signals
+        self.orb_strategy = None        # Opening Range Breakout (9:15-9:45 AM)
+        self.scalping_engine = None     # Opening drive scalper (9:15-10:00 AM)
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -297,6 +299,22 @@ class TradingBot:
         except Exception as e:
             self.options_signals = None
             logger.warning(f"[{format_ist_timestamp()}] Options signals init failed: {e}")
+
+        try:
+            from orb_strategy import get_orb_strategy
+            self.orb_strategy = get_orb_strategy()
+            logger.info(f"[{format_ist_timestamp()}] ORB strategy ready")
+        except Exception as e:
+            self.orb_strategy = None
+            logger.warning(f"[{format_ist_timestamp()}] ORB strategy init failed: {e}")
+
+        try:
+            from scalping_engine import get_scalping_engine
+            self.scalping_engine = get_scalping_engine()
+            logger.info(f"[{format_ist_timestamp()}] Scalping engine ready")
+        except Exception as e:
+            self.scalping_engine = None
+            logger.warning(f"[{format_ist_timestamp()}] Scalping engine init failed: {e}")
 
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
@@ -850,6 +868,46 @@ class TradingBot:
                         )
                 except Exception as e:
                     logger.debug(f"Block deal rescan failed: {e}")
+
+            # 4f. Opening Range Breakout (9:31–9:45 AM IST only)
+            if self.orb_strategy and self.orb_strategy.is_orb_time():
+                try:
+                    orb_setups = self.orb_strategy.scan_symbols(watchlist, self.fetcher)
+                    for setup in orb_setups:
+                        orb_sig = self.orb_strategy.to_trade_signal(setup)
+                        if orb_sig:
+                            signals.append(orb_sig)
+                        if self.alerter:
+                            self.alerter.send_text(
+                                self.orb_strategy.format_telegram_alert(setup)
+                            )
+                    if orb_setups:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] ORB: {len(orb_setups)} breakout(s) found"
+                        )
+                except Exception as e:
+                    logger.debug(f"ORB scan failed: {e}")
+
+            # 4g. Scalping engine (9:15–10:00 AM and 13:30–14:30 IST)
+            if self.scalping_engine and self.scalping_engine.is_scalp_time():
+                try:
+                    nifty_chg = 0.0
+                    if nifty_q:
+                        nifty_chg = nifty_q.get("change_pct", 0.0)
+                    scalp_signals = self.scalping_engine.scan(
+                        watchlist, self.fetcher, nifty_change_pct=nifty_chg
+                    )
+                    for ss in scalp_signals:
+                        if self.alerter:
+                            self.alerter.send_text(
+                                self.scalping_engine.format_telegram_alert(ss)
+                            )
+                        logger.info(
+                            f"[{format_ist_timestamp()}] SCALP: {ss.symbol} "
+                            f"{ss.direction} | momentum={ss.momentum_pct:+.2f}%"
+                        )
+                except Exception as e:
+                    logger.debug(f"Scalping scan failed: {e}")
 
             # 5. Execute signals
             for signal in signals:
