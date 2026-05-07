@@ -316,9 +316,9 @@ class GrowwExecutor:
             )
             return OrderResult(False, message=can_trade["reason"])
 
-        # ── Claude AI Supervisor — final check before execution ──────────
+        # ── Trade Supervisor — Gemini AI (free) + rule-based fallback ─────
         try:
-            from claude_supervisor import review_signal, format_telegram_review
+            from trade_supervisor import review_signal, format_telegram_review
             signal_data = {
                 "symbol":           signal.symbol,
                 "direction":        signal.direction,
@@ -349,14 +349,14 @@ class GrowwExecutor:
 
             tg_msg = format_telegram_review(signal.symbol, signal.direction, review)
             if tg_msg:
-                _notify(f"Claude Review — {signal.symbol}", tg_msg)
+                _notify(f"Supervisor — {signal.symbol}", tg_msg)
 
             if not review.get("approved", True) and not review.get("skipped", False):
-                reason = review.get("reason", "Rejected by Claude supervisor")
-                logger.warning(f"[{format_ist_timestamp()}] CLAUDE REJECTED: {signal.symbol} — {reason}")
-                return OrderResult(False, message=f"Claude supervisor: {reason}")
+                reason = review.get("reason", "Rejected by supervisor")
+                logger.warning(f"[{format_ist_timestamp()}] REJECTED: {signal.symbol} — {reason}")
+                return OrderResult(False, message=f"Supervisor: {reason}")
         except Exception as e:
-            logger.debug(f"Claude supervisor skipped: {e}")
+            logger.debug(f"Supervisor skipped: {e}")
 
         # ── RL Brain — institution-level portfolio + learned conviction check ──
         try:
