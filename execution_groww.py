@@ -316,6 +316,47 @@ class GrowwExecutor:
             )
             return OrderResult(False, message=can_trade["reason"])
 
+        # ── Claude AI Supervisor — final check before execution ──────────
+        try:
+            from claude_supervisor import review_signal, format_telegram_review
+            signal_data = {
+                "symbol":           signal.symbol,
+                "direction":        signal.direction,
+                "score":            getattr(signal, "signal_score", 0),
+                "entry_price":      signal.entry_price,
+                "stop_loss":        signal.stop_loss,
+                "target":           getattr(signal, "target_price", signal.entry_price),
+                "rsi":              getattr(signal, "rsi", 0),
+                "macd_hist":        getattr(signal, "macd_hist", 0),
+                "vwap_deviation_pct": getattr(signal, "vwap_deviation_pct", 0),
+                "volume_ratio":     getattr(signal, "volume_ratio", 0),
+                "patterns":         getattr(signal, "patterns", []),
+                "mtf_alignment":    getattr(signal, "mtf_alignment", "unknown"),
+                "session":          getattr(signal, "session", "unknown"),
+                "nifty_trend":      getattr(signal, "nifty_trend", "unknown"),
+            }
+            news = []
+            try:
+                from news_filter import get_news_filter
+                nf = get_news_filter()
+                sentiment = nf.get_symbol_sentiment(signal.symbol)
+                news = sentiment.get("headlines", [])
+            except Exception:
+                pass
+
+            review = review_signal(signal_data, news)
+
+            tg_msg = format_telegram_review(signal.symbol, signal.direction, review)
+            if tg_msg:
+                _notify(f"Claude Review — {signal.symbol}", tg_msg)
+
+            if not review.get("approved", True) and not review.get("skipped", False):
+                reason = review.get("reason", "Rejected by Claude supervisor")
+                logger.warning(f"[{format_ist_timestamp()}] CLAUDE REJECTED: {signal.symbol} — {reason}")
+                return OrderResult(False, message=f"Claude supervisor: {reason}")
+        except Exception as e:
+            logger.debug(f"Claude supervisor skipped: {e}")
+
         # Recalculate quantity with live balance, apply filter size multiplier
         sizing = self.risk_manager.calculate_position_size(
             symbol=signal.symbol,
