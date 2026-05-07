@@ -1,20 +1,13 @@
 """
-trade_supervisor.py — Free Trade Supervisor (replaces Claude supervisor)
+trade_supervisor.py — Rule-Based Trade Supervisor
 
-Two-layer system, zero cost:
-  Layer 1: Gemini AI  (google-generativeai, FREE tier: 1500 calls/day)
-            — If GEMINI_API_KEY is set in .env
-  Layer 2: Rule-based expert system (always runs as fallback)
-            — 12 hard rules from 18 years of NSE trading experience
-            — Zero API calls, zero cost, deterministic
+12 hard rules from 18 years of NSE intraday trading experience.
+Zero API calls, zero cost, instant, deterministic.
 
 Returns same interface as old claude_supervisor.py so nothing else breaks.
 """
 
-import json
 import logging
-import os
-from typing import Optional
 
 logger = logging.getLogger(__name__)
 
@@ -175,94 +168,14 @@ def _rule_based_review(signal_data: dict) -> dict:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# GEMINI SUPERVISOR (free tier — 1500 calls/day)
-# ─────────────────────────────────────────────────────────────────────────────
-
-def _gemini_review(signal_data: dict, news_headlines: list) -> Optional[dict]:
-    """
-    Use Gemini (free tier) to review signal.
-    Returns None on any failure so caller falls back to rules.
-    """
-    api_key = os.getenv("GEMINI_API_KEY", "")
-    if not api_key:
-        return None
-
-    try:
-        import google.generativeai as genai
-        genai.configure(api_key=api_key)
-        model = genai.GenerativeModel(
-            os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
-        )
-
-        sym      = signal_data.get("symbol", "?")
-        direction = signal_data.get("direction", "?")
-        score    = signal_data.get("score", 0)
-        entry    = signal_data.get("entry_price", 0)
-        sl       = signal_data.get("stop_loss", 0)
-        target   = signal_data.get("target", 0)
-        rsi      = signal_data.get("rsi", 0)
-        macd     = signal_data.get("macd_hist", 0)
-        vwap_dev = signal_data.get("vwap_deviation_pct", 0)
-        vol      = signal_data.get("volume_ratio", 0)
-        mtf      = signal_data.get("mtf_alignment", "unknown")
-        nifty    = signal_data.get("nifty_trend", "unknown")
-        rr       = round(abs(target - entry) / max(abs(entry - sl), 0.01), 2)
-        news_txt = "\n".join(f"- {h}" for h in news_headlines[:5]) or "No news."
-
-        prompt = f"""NSE intraday trade signal review. Reply ONLY in JSON.
-
-Signal: {sym} {direction} | Score:{score}/100 | R:R {rr}:1
-Entry:₹{entry} SL:₹{sl} Target:₹{target}
-RSI:{rsi:.0f} MACD:{macd:.4f} VWAP:{vwap_dev:+.1f}% Volume:{vol:.1f}x
-MTF:{mtf} Nifty:{nifty}
-News: {news_txt}
-
-Rules: Reject if R:R<1.5, RSI overbought for direction, MACD opposing, volume<1.2x, bad news.
-Approve if all indicators align, volume confirms, news neutral/positive.
-
-JSON only: {{"approved":true/false,"confidence":0-100,"reason":"one sentence","risk_note":"one sentence or null"}}"""
-
-        resp = model.generate_content(prompt)
-        raw  = resp.text.strip()
-        start = raw.find("{")
-        end   = raw.rfind("}") + 1
-        result = json.loads(raw[start:end])
-        result["skipped"] = False
-        result["source"]  = "gemini"
-
-        logger.info(
-            f"[Supervisor/Gemini] {sym} {direction} → "
-            f"{'APPROVED' if result.get('approved') else 'REJECTED'} "
-            f"({result.get('confidence', 0)}%) — {result.get('reason', '')}"
-        )
-        return result
-
-    except Exception as e:
-        logger.debug(f"[Supervisor/Gemini] Failed: {e}")
-        return None
-
-
-# ─────────────────────────────────────────────────────────────────────────────
 # PUBLIC INTERFACE — same as old claude_supervisor.py
 # ─────────────────────────────────────────────────────────────────────────────
 
 def review_signal(signal_data: dict, news_headlines: list = None) -> dict:
     """
-    Review a trade signal before execution.
-    Tries Gemini first (free tier), falls back to rule-based system.
-
-    Returns:
-        {"approved": bool, "confidence": int, "reason": str,
-         "risk_note": str|None, "skipped": bool, "source": str}
+    Review a trade signal before execution using rule-based expert system.
+    Zero cost, instant, deterministic.
     """
-    news = news_headlines or []
-
-    # Layer 1: Gemini (free, ~0.1s latency)
-    result = _gemini_review(signal_data, news)
-    if result is not None:
-        return result
-
-    # Layer 2: Rule-based expert (instant, zero cost)
     return _rule_based_review(signal_data)
 
 
@@ -275,11 +188,8 @@ def format_telegram_review(symbol: str, direction: str, review: dict) -> str:
     conf     = review.get("confidence", 0)
     reason   = review.get("reason", "")
     risk     = review.get("risk_note", "")
-    source   = review.get("source", "rules")
-    src_tag  = "🤖 Gemini" if source == "gemini" else "📋 Rules"
-
     lines = [
-        f"{icon} <b>{src_tag} Supervisor — {symbol} {direction}</b>",
+        f"{icon} <b>📋 Supervisor — {symbol} {direction}</b>",
         f"Decision: {'APPROVED' if approved else 'REJECTED'} ({conf}% confidence)",
         f"Reason: {reason}",
     ]
