@@ -154,8 +154,27 @@ def calculate_conviction(
             pass
     sector_contrib = sector_conv * 0.05
 
+    # ── 7. Win Predictor — ML model trained on past trades ───────────────
+    win_adj = 0.0
+    try:
+        from win_predictor import get_win_predictor
+        predictor = get_win_predictor()
+        win_prob, is_confident = predictor.predict({
+            "signal_score": signal_score, "rsi": 50,
+            "volume_ratio": 1.5, "session": "NORMAL",
+            "direction": direction, "macd_hist": 0.0,
+            "vwap_deviation_pct": 0.0,
+        })
+        if is_confident:
+            if win_prob > 0.70:    win_adj = +15.0
+            elif win_prob > 0.60:  win_adj = +8.0
+            elif win_prob < 0.30:  win_adj = -25.0   # Block via total score drop
+            elif win_prob < 0.40:  win_adj = -15.0
+    except Exception:
+        pass
+
     # ── Aggregate ─────────────────────────────────────────────────────────
-    total = sig_contrib + claude_contrib + rl_contrib + mtf_contrib + block_contrib + sector_contrib
+    total = sig_contrib + claude_contrib + rl_contrib + mtf_contrib + block_contrib + sector_contrib + win_adj
 
     # ── Capital protection: shrink size if already losing today ───────────
     loss_pct = abs(daily_pnl) / max(daily_capital, 1) * 100

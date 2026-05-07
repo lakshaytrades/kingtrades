@@ -316,7 +316,26 @@ class GrowwExecutor:
             )
             return OrderResult(False, message=can_trade["reason"])
 
-        # ── Trade Supervisor — Gemini AI (free) + rule-based fallback ─────
+        # ── Sentiment AI — block on bad news ─────────────────────────────
+        try:
+            from sentiment_ai import get_sentiment_ai
+            from news_filter import get_news_filter
+            _headlines = []
+            try:
+                _headlines = get_news_filter().get_symbol_sentiment(signal.symbol).get("headlines", [])
+            except Exception:
+                pass
+            if _headlines:
+                _sent = get_sentiment_ai()
+                block, reason = _sent.should_block_trade(signal.symbol, signal.direction, _headlines)
+                if block:
+                    logger.warning(f"[{format_ist_timestamp()}] SENTIMENT BLOCK: {signal.symbol} — {reason}")
+                    return OrderResult(False, message=f"Sentiment: {reason}")
+                signal._sentiment_headlines = _headlines
+        except Exception as e:
+            logger.debug(f"Sentiment check skipped: {e}")
+
+        # ── Trade Supervisor — rule-based expert system ───────────────────
         try:
             from trade_supervisor import review_signal, format_telegram_review
             signal_data = {
@@ -335,15 +354,7 @@ class GrowwExecutor:
                 "session":          getattr(signal, "session", "unknown"),
                 "nifty_trend":      getattr(signal, "nifty_trend", "unknown"),
             }
-            news = []
-            try:
-                from news_filter import get_news_filter
-                nf = get_news_filter()
-                sentiment = nf.get_symbol_sentiment(signal.symbol)
-                news = sentiment.get("headlines", [])
-            except Exception:
-                pass
-
+            news = getattr(signal, "_sentiment_headlines", [])
             review = review_signal(signal_data, news)
             signal._claude_review = review   # stash for dynamic leverage
 
