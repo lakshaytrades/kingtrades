@@ -1709,11 +1709,26 @@ class TradingBot:
             success = False
 
         if not success:
-            # Keep retrying — do NOT mark as done so the loop retries in 5 min
             logger.warning(
                 f"[{format_ist_timestamp()}] Login attempt #{attempt} failed — "
                 "auto-retry in 5 minutes..."
             )
+            # After 3 failed attempts (~15 min), send urgent Telegram with fix steps
+            if attempt in (3, 6, 12) and self.alerter:
+                urgency = "🚨 URGENT" if attempt >= 6 else "⚠️ WARNING"
+                self.alerter.send_text(
+                    f"{urgency} — Groww Login Failing (attempt #{attempt})\n\n"
+                    f"Bot cannot log into Groww. Retrying every 5 min automatically.\n\n"
+                    f"If this keeps failing, SSH into VPS and run:\n"
+                    f"<code>cd /opt/kingtrades</code>\n"
+                    f"<code>python update_token.py --test</code>\n\n"
+                    f"Common fixes:\n"
+                    f"• Check GROWW_TOTP_SECRET in .env is correct\n"
+                    f"• Check GROWW_EMAIL and GROWW_PASSWORD\n"
+                    f"• Groww servers may be down — wait 10 min\n"
+                    f"• If Groww changed API: get new key from groww.in/open-api\n\n"
+                    f"Bot will NOT trade until login succeeds. Capital is SAFE."
+                )
             return  # _token_refreshed_date NOT set → loop will retry
 
         # Login succeeded
@@ -2020,6 +2035,46 @@ class TradingBot:
                     .build()
                 )
 
+                async def cmd_relogin(update, context):
+                    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                        return
+                    await update.message.reply_text(
+                        "🔄 <b>Forcing Groww re-login now...</b>",
+                        parse_mode="HTML"
+                    )
+                    try:
+                        from auth_groww import get_auth_manager
+                        mgr = get_auth_manager()
+                        mgr._token = None
+                        mgr._token_timestamp = None
+                        success = mgr.refresh_token_if_needed()
+                        if success:
+                            self._token_refreshed_date = get_current_ist_time().strftime("%Y-%m-%d")
+                            self._token_refreshed_today = True
+                            setattr(self, "_login_attempt_count", 0)
+                            self._reinit_api_clients()
+                            await update.message.reply_text(
+                                "✅ <b>Groww login successful</b>\n"
+                                "Bot is authenticated and ready to trade.",
+                                parse_mode="HTML"
+                            )
+                        else:
+                            await update.message.reply_text(
+                                "❌ <b>Login failed again</b>\n\n"
+                                "Check on VPS:\n"
+                                "<code>cd /opt/kingtrades && python update_token.py --test</code>\n\n"
+                                "Verify .env has correct:\n"
+                                "• GROWW_TOTP_SECRET\n"
+                                "• GROWW_EMAIL\n"
+                                "• GROWW_PASSWORD",
+                                parse_mode="HTML"
+                            )
+                    except Exception as e:
+                        await update.message.reply_text(
+                            f"❌ Re-login error: {e}",
+                            parse_mode="HTML"
+                        )
+
                 app.add_handler(CommandHandler("kill",       cmd_kill))
                 app.add_handler(CommandHandler("status",     cmd_status))
                 app.add_handler(CommandHandler("pause",      cmd_pause))
@@ -2028,6 +2083,7 @@ class TradingBot:
                 app.add_handler(CommandHandler("report",     cmd_report))
                 app.add_handler(CommandHandler("balance",    cmd_balance))
                 app.add_handler(CommandHandler("capital",    cmd_capital))
+                app.add_handler(CommandHandler("relogin",    cmd_relogin))
 
                 # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
                 async def _tg_error_handler(update, context):
