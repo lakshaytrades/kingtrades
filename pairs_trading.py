@@ -70,8 +70,8 @@ class PairsTradingEngine:
     STOP_ZSCORE  = 3.5
 
     def __init__(self):
-        self._price_cache:  Dict[str, Tuple[pd.Series, float]] = {}
-        self._corr_cache:   Dict[str, Tuple[float, float]] = {}
+        self._price_cache: Dict[str, Tuple[pd.Series, float]] = {}
+        self._corr_cache:  Dict[str, Tuple[float, float]] = {}
 
     # ──────────────────────────────────────────────────────
     # PUBLIC API
@@ -120,7 +120,6 @@ class PairsTradingEngine:
         current_log_ratio = np.log(live1 / live2)
         zscore            = (current_log_ratio - mean_val) / std_val
 
-        # spread_pct: how far the current ratio is from the historical mean ratio, in %
         hist_mean_ratio = np.exp(mean_val)
         current_ratio   = live1 / live2
         spread_pct      = (current_ratio / hist_mean_ratio - 1.0) * 100.0
@@ -135,8 +134,8 @@ class PairsTradingEngine:
         return self.is_midday()
 
     def format_telegram_signal(self, sig: PairSignal) -> str:
-        direction = "+" if sig.zscore > 0 else ""
-        est_profit = abs(sig.spread_pct) * 100_000 / 100  # rough ₹ on ₹1L notional
+        direction  = "+" if sig.zscore > 0 else ""
+        est_profit = abs(sig.spread_pct) * 100_000 / 100
         return (
             f"⚖️ PAIRS TRADE SIGNAL\n"
             f"LONG  {sig.symbol_long:<12} @ ₹{sig.entry_long:,.2f}\n"
@@ -170,10 +169,10 @@ class PairsTradingEngine:
 
         # Positive zscore → sym1 expensive vs sym2 → SHORT sym1, LONG sym2
         if zscore > 0:
-            sym_short, sym_long   = sym1, sym2
+            sym_short, sym_long     = sym1, sym2
             entry_short, entry_long = live1, live2
         else:
-            sym_short, sym_long   = sym2, sym1
+            sym_short, sym_long     = sym2, sym1
             entry_short, entry_long = live2, live1
 
         if not is_fo_eligible(sym_short):
@@ -214,7 +213,7 @@ class PairsTradingEngine:
         Caches for 15 minutes to limit yfinance calls during a scan.
         """
         now_epoch = _time.time()
-        cached = self._price_cache.get(symbol)
+        cached    = self._price_cache.get(symbol)
         if cached is not None:
             series, ts = cached
             if now_epoch - ts < _PAIR_CACHE_TTL_SECS:
@@ -237,7 +236,6 @@ class PairsTradingEngine:
                 self._price_cache[symbol] = (None, now_epoch)
                 return None, 0.0
 
-            # yfinance may return MultiIndex columns when downloading single ticker
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.droplevel(1)
 
@@ -258,9 +256,9 @@ class PairsTradingEngine:
 
     def _get_correlation(self, sym1: str, sym2: str) -> float:
         """30-day daily return correlation. Cached per pair."""
-        key      = f"{sym1}_{sym2}"
+        key       = f"{sym1}_{sym2}"
         now_epoch = _time.time()
-        cached   = self._corr_cache.get(key)
+        cached    = self._corr_cache.get(key)
         if cached is not None:
             corr, ts = cached
             if now_epoch - ts < _PAIR_CACHE_TTL_SECS:
@@ -280,7 +278,7 @@ class PairsTradingEngine:
             returns1 = aligned["s1"].pct_change().dropna()
             returns2 = aligned["s2"].pct_change().dropna()
             corr     = float(returns1.corr(returns2))
-            corr     = max(0.0, min(1.0, corr))  # clip to [0, 1]
+            corr     = max(0.0, min(1.0, corr))
 
             self._corr_cache[key] = (corr, now_epoch)
             return corr

@@ -9,6 +9,10 @@ Strategy: Buy ATM or slightly OTM CE/PE on strong multi-factor trend confirmatio
    All signals go to Telegram for manual placement on the Groww mobile app.
    Target: +40% premium. Stop: -30% premium. Hold: 30–90 minutes intraday.
 
+Groww Trade API may not support options order placement via current SDK.
+Until confirmed, all signals go to Telegram for MANUAL execution.
+User places order manually on Groww app when Telegram alert arrives.
+
 Entry windows (IST):
   Morning drive:  09:20–11:00 — high directional momentum
   Afternoon:      13:30–14:30 — institutional resumption after lunch lull
@@ -77,21 +81,20 @@ class OptionsSignal:
 
 
 class OptionsSignalGenerator:
-    NIFTY_LOT_SIZE       = 50
-    BANKNIFTY_LOT_SIZE   = 15
-    MAX_PREMIUM_NIFTY    = 200
+    NIFTY_LOT_SIZE        = 50
+    BANKNIFTY_LOT_SIZE    = 15
+    MAX_PREMIUM_NIFTY     = 200
     MAX_PREMIUM_BANKNIFTY = 400
 
-    # Minimum confidence score required from option chain analyzer
     MIN_OC_CONFIDENCE = 70.0
 
     def __init__(self, oc_analyzer=None):
-        self._oc = oc_analyzer
-        self._spot_cache: Dict[str, Tuple[float, float]] = {}
-        self._ema_cache:  Dict[str, Tuple[pd.DataFrame, float]] = {}
-        self._expiry_cache: Dict[str, Tuple[str, float]] = {}
-        self._nse_session: Optional[requests.Session] = None
-        self._session_ok = False
+        self._oc             = oc_analyzer
+        self._spot_cache:    Dict[str, Tuple[float, float]] = {}
+        self._ema_cache:     Dict[str, Tuple[pd.DataFrame, float]] = {}
+        self._expiry_cache:  Dict[str, Tuple[str, float]] = {}
+        self._nse_session:   Optional[requests.Session] = None
+        self._session_ok     = False
 
     # ──────────────────────────────────────────────────────
     # PUBLIC API
@@ -114,16 +117,11 @@ class OptionsSignalGenerator:
         return signals
 
     def format_telegram_signal(self, sig: OptionsSignal) -> str:
-        arrow       = "📈" if sig.option_type == "CE" else "📉"
-        direction   = "BULLISH" if sig.option_type == "CE" else "BEARISH"
-        capital_est = sig.current_premium * (
-            self.NIFTY_LOT_SIZE if sig.symbol == "NIFTY" else self.BANKNIFTY_LOT_SIZE
-        )
-        tgt_pct = (sig.target_premium / sig.current_premium - 1) * 100
-        stp_pct = (sig.stop_premium  / sig.current_premium - 1) * 100
-        lot_size = (
-            self.NIFTY_LOT_SIZE if sig.symbol == "NIFTY" else self.BANKNIFTY_LOT_SIZE
-        )
+        arrow     = "📈" if sig.option_type == "CE" else "📉"
+        lot_size  = self.NIFTY_LOT_SIZE if sig.symbol == "NIFTY" else self.BANKNIFTY_LOT_SIZE
+        capital   = sig.current_premium * lot_size
+        tgt_pct   = (sig.target_premium / sig.current_premium - 1) * 100
+        stp_pct   = (sig.stop_premium  / sig.current_premium - 1) * 100
 
         return (
             f"{arrow} OPTIONS SIGNAL — {sig.symbol} {sig.option_type}\n"
@@ -134,7 +132,7 @@ class OptionsSignalGenerator:
             f"Target: ₹{sig.target_premium:.0f} ({tgt_pct:+.0f}%)\n"
             f"Stop:   ₹{sig.stop_premium:.0f} ({stp_pct:+.0f}%)\n"
             f"Lot size: {lot_size} | Max {sig.max_lots} lot\n"
-            f"Capital needed: ~₹{capital_est:,.0f}\n\n"
+            f"Capital needed: ~₹{capital:,.0f}\n\n"
             f"Reason: {sig.reason}\n"
             f"⚠️ MANUAL EXECUTION — Place on Groww app\n"
             f"[{format_ist_timestamp()}]"
@@ -172,9 +170,7 @@ class OptionsSignalGenerator:
     ) -> Optional[OptionsSignal]:
         oc_result = self._get_oc_result(symbol)
         if oc_result is None:
-            logger.debug(
-                f"[{format_ist_timestamp()}] options: no OC data for {symbol}"
-            )
+            logger.debug(f"[{format_ist_timestamp()}] options: no OC data for {symbol}")
             return None
 
         if oc_result.confidence_score < self.MIN_OC_CONFIDENCE:
@@ -255,9 +251,10 @@ class OptionsSignalGenerator:
         """
         Fetch nearest weekly expiry from NSE option chain.
         Falls back to a Thursday-based estimate if NSE is unreachable.
+        NSE weekly index options expire on Thursdays.
         """
         now_epoch = _time.time()
-        cached = self._expiry_cache.get(symbol)
+        cached    = self._expiry_cache.get(symbol)
         if cached is not None:
             expiry_str, ts = cached
             if now_epoch - ts < 3600:
@@ -274,12 +271,11 @@ class OptionsSignalGenerator:
                 timeout=10,
             )
             resp.raise_for_status()
-            data = resp.json()
+            data         = resp.json()
             expiry_dates = data.get("records", {}).get("expiryDates", [])
 
             if expiry_dates:
                 nearest = expiry_dates[0]
-                # NSE returns dates like "08-May-2026" — reformat to "08MAY2026"
                 try:
                     dt_obj     = datetime.strptime(nearest, "%d-%b-%Y")
                     expiry_str = dt_obj.strftime("%d%b%Y").upper()
@@ -299,14 +295,9 @@ class OptionsSignalGenerator:
         return fallback
 
     def _estimate_expiry(self) -> str:
-        """
-        Estimate nearest Thursday expiry when NSE API is unavailable.
-        NSE weekly index options expire on Thursdays.
-        """
         from datetime import timedelta
-        now_ist = get_current_ist_time()
-        today   = now_ist.date()
-        # weekday(): Monday=0, Thursday=3
+        now_ist          = get_current_ist_time()
+        today            = now_ist.date()
         days_to_thursday = (3 - today.weekday()) % 7
         if days_to_thursday == 0 and now_ist.time() >= time(15, 30):
             days_to_thursday = 7
@@ -319,7 +310,7 @@ class OptionsSignalGenerator:
 
     def _is_valid_time(self) -> bool:
         now_ist = get_current_ist_time()
-        t = now_ist.time()
+        t       = now_ist.time()
         return (
             (_MORNING_START <= t <= _MORNING_END) or
             (_AFTERNOON_START <= t <= _AFTERNOON_END)
@@ -329,9 +320,10 @@ class OptionsSignalGenerator:
         """
         EMA9 vs EMA21 on 5-minute candles.
         Returns True if trend direction aligns with the given bias.
+        Fails open (returns True) when data is unavailable — OC analysis drives the signal.
         """
         now_epoch = _time.time()
-        cached = self._ema_cache.get(yf_ticker)
+        cached    = self._ema_cache.get(yf_ticker)
         if cached is not None:
             df, ts = cached
             if now_epoch - ts < 300:
@@ -346,13 +338,13 @@ class OptionsSignalGenerator:
                 auto_adjust=True,
             )
             if raw is None or raw.empty or len(raw) < 30:
-                return True  # No data → don't block on EMA check
+                return True
 
             if isinstance(raw.columns, pd.MultiIndex):
                 raw.columns = raw.columns.droplevel(1)
 
-            close = raw["Close"].dropna()
-            df    = pd.DataFrame({"close": close})
+            close       = raw["Close"].dropna()
+            df          = pd.DataFrame({"close": close})
             df["ema9"]  = df["close"].ewm(span=9,  adjust=False).mean()
             df["ema21"] = df["close"].ewm(span=21, adjust=False).mean()
 
@@ -363,7 +355,7 @@ class OptionsSignalGenerator:
             logger.debug(
                 f"[{format_ist_timestamp()}] EMA check failed for {yf_ticker}: {e}"
             )
-            return True  # Fail open — let OC analysis drive
+            return True
 
     def _ema_aligned(self, df: pd.DataFrame, bias: str) -> bool:
         if len(df) < 2:
@@ -375,13 +367,11 @@ class OptionsSignalGenerator:
 
     def _check_pcr_direction(self, pcr: float, pcr_vol: float, bias: str) -> bool:
         """
-        For BULLISH: PCR should be ≥ 1.0 (put heavy = contrarian bullish floor)
-        or declining (PCR < previous session value).
-        Simplified check: use thresholds aligned with config.py OC_PCR constants.
+        BULLISH: PCR ≥ 1.0 (put-heavy = contrarian bullish floor) or pcr_vol ≥ 0.9.
+        BEARISH: PCR ≤ 1.1 (call-heavy = retail euphoria / institutional selling).
         """
         if bias == "BULLISH":
             return pcr >= 1.0 or pcr_vol >= 0.9
-        # BEARISH: PCR < 1.0 (call heavy = retail euphoria / institutional selling)
         return pcr <= 1.1 or pcr_vol <= 1.1
 
     # ──────────────────────────────────────────────────────
@@ -397,7 +387,7 @@ class OptionsSignalGenerator:
     ) -> Optional[float]:
         """
         Fetch live option premium from NSE option chain.
-        Falls back to a Black-Scholes intrinsic estimate on failure.
+        Falls back to a simple intrinsic + time-value estimate on failure.
         """
         try:
             session = self._get_nse_session()
@@ -414,10 +404,9 @@ class OptionsSignalGenerator:
             data = raw.get("records", {}).get("data", [])
 
             expiry = self._get_nearest_expiry(symbol)
-            # Convert expiry back to NSE format for matching: "08MAY2026" → "08-May-2026"
             try:
-                dt_obj      = datetime.strptime(expiry, "%d%b%Y")
-                expiry_nse  = dt_obj.strftime("%d-%b-%Y")
+                dt_obj     = datetime.strptime(expiry, "%d%b%Y")
+                expiry_nse = dt_obj.strftime("%d-%b-%Y")
             except ValueError:
                 expiry_nse = expiry
 
@@ -445,10 +434,10 @@ class OptionsSignalGenerator:
         """
         Rough ATM premium estimate: ~0.5% of spot for ATM options.
         Used only when NSE API is unavailable.
-        This is a conservative estimate — actual premium includes time value.
+        Actual premium includes time value — this is a conservative lower bound.
         """
-        intrinsic = max(0.0, spot - strike) if option_type == "CE" else max(0.0, strike - spot)
-        time_value = spot * 0.005  # ~0.5% of spot as time value proxy for ATM
+        intrinsic  = max(0.0, spot - strike) if option_type == "CE" else max(0.0, strike - spot)
+        time_value = spot * 0.005
         return round(intrinsic + time_value, 1)
 
     # ──────────────────────────────────────────────────────
@@ -463,9 +452,7 @@ class OptionsSignalGenerator:
             from option_chain import get_option_chain_analyzer
             return get_option_chain_analyzer().analyze(symbol)
         except Exception as e:
-            logger.debug(
-                f"[{format_ist_timestamp()}] OC analyzer unavailable: {e}"
-            )
+            logger.debug(f"[{format_ist_timestamp()}] OC analyzer unavailable: {e}")
             return None
 
     # ──────────────────────────────────────────────────────
