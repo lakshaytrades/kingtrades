@@ -85,6 +85,10 @@ class TradingBot:
         self.oc_analyzer = None   # Option Chain analyzer
         self.fii_tracker = None   # FII/DII flow tracker
         self.gap_analyzer = None  # Pre-market gap analyzer
+        self.block_deal_scanner = None  # Institutional block/bulk deal scanner
+        self.sector_rotation = None     # Sector momentum rotation engine
+        self.pairs_engine = None        # Pairs trading (midday arbitrage)
+        self.options_signals = None     # Nifty/BankNifty CE/PE signals
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -262,6 +266,38 @@ class TradingBot:
             self.fii_tracker = None
             logger.warning(f"[{format_ist_timestamp()}] FII/DII tracker init failed: {e}")
 
+        try:
+            from block_deal_scanner import get_block_deal_scanner
+            self.block_deal_scanner = get_block_deal_scanner()
+            logger.info(f"[{format_ist_timestamp()}] Block deal scanner ready")
+        except Exception as e:
+            self.block_deal_scanner = None
+            logger.warning(f"[{format_ist_timestamp()}] Block deal scanner init failed: {e}")
+
+        try:
+            from sector_rotation import get_sector_rotation_engine
+            self.sector_rotation = get_sector_rotation_engine()
+            logger.info(f"[{format_ist_timestamp()}] Sector rotation engine ready")
+        except Exception as e:
+            self.sector_rotation = None
+            logger.warning(f"[{format_ist_timestamp()}] Sector rotation init failed: {e}")
+
+        try:
+            from pairs_trading import get_pairs_engine
+            self.pairs_engine = get_pairs_engine()
+            logger.info(f"[{format_ist_timestamp()}] Pairs trading engine ready")
+        except Exception as e:
+            self.pairs_engine = None
+            logger.warning(f"[{format_ist_timestamp()}] Pairs trading init failed: {e}")
+
+        try:
+            from options_signals import get_options_signal_generator
+            self.options_signals = get_options_signal_generator(oc_analyzer=self.oc_analyzer)
+            logger.info(f"[{format_ist_timestamp()}] Options signals generator ready")
+        except Exception as e:
+            self.options_signals = None
+            logger.warning(f"[{format_ist_timestamp()}] Options signals init failed: {e}")
+
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
         self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
@@ -407,6 +443,35 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
             self.gap_analyzer = None
+
+        # ── Sector rotation: score sectors and filter watchlist ───────
+        try:
+            if self.sector_rotation:
+                sector_summary = self.sector_rotation.format_telegram_summary()
+                logger.info(f"[{format_ist_timestamp()}] {sector_summary}")
+                if self.alerter:
+                    self.alerter.send_text(sector_summary)
+                # Concentrate watchlist on hot sectors
+                watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=3)
+                logger.info(
+                    f"[{format_ist_timestamp()}] Sector-filtered watchlist: "
+                    f"{len(watchlist)} stocks in top 3 sectors"
+                )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Sector rotation failed: {e}")
+
+        # ── Block deal scan at open ───────────────────────────────────
+        try:
+            if self.block_deal_scanner:
+                buy_symbols = self.block_deal_scanner.scan_and_alert()
+                if buy_symbols:
+                    # Prepend institutional buy targets to watchlist (highest priority)
+                    watchlist = [s for s in buy_symbols if s not in watchlist] + watchlist
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Block deal buy targets added: {buy_symbols}"
+                    )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Block deal scan failed: {e}")
 
         # ── Pre-load corporate actions for today ──────────────────────
         try:
@@ -742,6 +807,49 @@ class TradingBot:
                         )
                     except Exception:
                         pass
+
+            # 4c. Options signals (Nifty/BankNifty CE/PE) — scan at start of valid windows
+            if self.options_signals:
+                try:
+                    if self.options_signals.is_valid_time():
+                        opts = self.options_signals.scan()
+                        for opt in opts:
+                            if self.alerter:
+                                self.alerter.send_text(
+                                    self.options_signals.format_telegram_signal(opt)
+                                )
+                except Exception as e:
+                    logger.debug(f"Options signals failed: {e}")
+
+            # 4d. Pairs trading — only during midday (11:00–13:30 IST)
+            if self.pairs_engine and self.pairs_engine.should_scan():
+                try:
+                    pair_signals = self.pairs_engine.scan_pairs(
+                        data_fetcher=self.fetcher
+                    )
+                    for ps in pair_signals:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] PAIRS: "
+                            f"LONG {ps.symbol_long} / SHORT {ps.symbol_short} "
+                            f"z={ps.zscore:.2f}"
+                        )
+                        if self.alerter:
+                            self.alerter.send_text(
+                                self.pairs_engine.format_telegram_signal(ps)
+                            )
+                except Exception as e:
+                    logger.debug(f"Pairs scan failed: {e}")
+
+            # 4e. Periodic block deal rescan (every 15 min during market hours)
+            if self.block_deal_scanner and now_ist.minute % 15 == 0:
+                try:
+                    new_buys = self.block_deal_scanner.scan_and_alert()
+                    if new_buys:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] New block deal targets: {new_buys}"
+                        )
+                except Exception as e:
+                    logger.debug(f"Block deal rescan failed: {e}")
 
             # 5. Execute signals
             for signal in signals:
