@@ -70,7 +70,7 @@ if not balance_found:
 print("\n[ 4 ] Fetching live price for RELIANCE...")
 try:
     from data_fetch_groww import GrowwDataFetcher
-    fetcher = GrowwDataFetcher(api)
+    fetcher = GrowwDataFetcher()
     quote = fetcher.get_quote("RELIANCE")
     if quote:
         ltp = quote.get("ltp") or quote.get("last_price") or quote.get("price", 0)
