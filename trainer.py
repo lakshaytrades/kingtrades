@@ -639,8 +639,10 @@ class EODSelfTrainer:
         avg_monthly = float(np.mean([s["monthly"]   for s in per_symbol_stats]))
 
         # Safety gate: only adopt if Sharpe improved ≥ 5% over yesterday's
+        # AND must meet minimum quality bar (never adopt params with Sharpe < 0.5 or WR < 40%)
         improvement = (avg_sharpe - baseline_sharpe) / max(abs(baseline_sharpe), 0.1)
-        improved    = bool(improvement >= 0.05 or baseline_sharpe == 0.0)
+        meets_quality = avg_sharpe >= 0.5 and avg_wr >= 40.0
+        improved    = bool((improvement >= 0.05 or baseline_sharpe == 0.0) and meets_quality)
 
         # Adaptive min_score: tighten if win rate is high, loosen if low
         current_min = baseline.get("min_score", _cfg.MIN_SIGNAL_SCORE)
