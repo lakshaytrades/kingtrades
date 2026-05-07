@@ -1135,7 +1135,7 @@ class PatternRecognizer:
 
         # Pattern scores
         for p in patterns:
-            weight = 0.8 if p.name in ELITE_PATTERNS else 0.6  # Elite patterns weighted more
+            weight = 1.0 if p.name in ELITE_PATTERNS else 0.4  # Elite=1.0, weak patterns=0.4
             if p.direction == "LONG":
                 long_score += p.confidence * weight
             elif p.direction == "SHORT":

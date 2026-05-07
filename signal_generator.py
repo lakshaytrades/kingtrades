@@ -516,7 +516,7 @@ class SignalGenerator:
         else:
             alignment_score -= 15  # 1h opposing means counter-trend — risky
 
-        aligned = alignment_score >= 50
+        aligned = alignment_score >= 70  # Raised: 50→70 — require strong HTF alignment
 
         return {
             "aligned": aligned,
@@ -647,10 +647,12 @@ class SignalGenerator:
         elif direction == "SHORT" and relative_strength < -0.5:
             score += min(abs(relative_strength) * 2, 8)
 
-        # ── Time of day bonus ─────────────────────────────
+        # ── Time of day filter ────────────────────────────
         now_ist  = get_current_ist_time()
         time_val = now_ist.hour + now_ist.minute / 60
-        if 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum power hour
+        if 11.0 <= time_val < 13.5:   # 11:00–1:30 PM: midday chop — hard block
+            return None
+        elif 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum power hour
             score += 6
         elif 13.5 <= time_val <= 14.5:  # 1:30–2:30 PM: afternoon institutional
             score += 4

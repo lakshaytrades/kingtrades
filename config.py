@@ -136,15 +136,15 @@ TREND_TIMEFRAME: str = "1h"
 
 # ── HIGH-ACCURACY MODE (targets 70-80% win rate) ───────────
 # 18yr rule: "It's not the number of trades, it's the quality."
-MIN_SIGNAL_SCORE: float = 72.0          # Hard minimum — no trade below this
-HIGH_CONFIDENCE_SCORE: float = 82.0     # Full size above this
-PREMIUM_SCORE: float = 90.0             # 1.2x size — A+ grade setups only
-MIN_VOLUME_RATIO: float = 1.8           # Min volume surge for entry
+MIN_SIGNAL_SCORE: float = 80.0          # Raised: 72→80 for 70-80% win rate target
+HIGH_CONFIDENCE_SCORE: float = 85.0     # Full size above this
+PREMIUM_SCORE: float = 92.0             # 1.2x size — A+ grade setups only
+MIN_VOLUME_RATIO: float = 2.1           # Raised: 1.8→2.1 — demand real surge
 REQUIRE_MTF_ALIGNMENT: bool = True      # Always require ≥2 TF alignment
 REQUIRE_POWER_HOUR: bool = True         # Only trade during power windows
 HEIKIN_ASHI_CONFIRM: bool = True        # Require HA confirmation
-MAX_TRADES_PER_DAY: int = 6             # Quality > quantity. Max 6 per day.
-MAX_TRADES_PER_STOCK: int = 2           # Max 2 trades per stock per day
+MAX_TRADES_PER_DAY: int = 4             # Lowered: 6→4 — fewer, better trades
+MAX_TRADES_PER_STOCK: int = 1           # Lowered: 2→1 — one clean shot per stock
 
 # ============================================================
 # CIRCUIT BREAKERS
