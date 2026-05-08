@@ -255,12 +255,9 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         except Exception as e:
             logger.info(f"  [browser_auth]: {e}")
 
-    # ── Method 1: Groww Trade API — exact format from growwapi v1.5.0 SDK ─────
-    # Endpoint: POST https://api.groww.in/v1/token/api/access
-    # Required headers: x-request-id, x-client-id, x-client-platform, x-api-version
-    # Body TOTP:     {"key_type": "totp", "totp": "123456"}        ← exact SDK format
-    # Body approval: {"key_type": "approval", "checksum": ..., "timestamp": ...}
-    # Response:      response.json()["token"]  (NOT wrapped in "data")
+    # ── Method 1: Groww Trade API — POST /v1/token/api/access ─────────────────
+    # Approval method (SHA256 HMAC checksum) tried FIRST — no QR scan needed.
+    # TOTP method tried second — requires TOTP key to be activated in authenticator.
     for key_label, key_val in keys_to_try:
         sdk_hdrs = {
             "x-request-id":              str(uuid.uuid4()),
@@ -271,38 +268,8 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
             "x-client-platform-version": "1.5.0",
             "x-api-version":             "1.0",
         }
-        # Primary: TOTP method — try all known key_type formats
-        for kt in ("totp", "TOTP", "auth-totp"):
-            totp_body = {"key_type": kt, "totp": totp_code}
-            sdk_hdrs["x-request-id"] = str(uuid.uuid4())
-            try:
-                resp = requests.post(
-                    "https://api.groww.in/v1/token/api/access",
-                    json=totp_body, headers=sdk_hdrs, timeout=15,
-                )
-                logger.info(
-                    f"  [Trade-API TOTP key_type={kt}] ({key_label}) HTTP {resp.status_code}: "
-                    f"{resp.text[:300]}"
-                )
-                if resp.status_code in (200, 201):
-                    data = resp.json()
-                    tok = data.get("token") or _extract_token_from_response(data)
-                    if tok:
-                        logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP key_type={kt} ({key_label})")
-                        return tok
-                elif resp.status_code == 403 and "allowlist" in resp.text.lower():
-                    logger.warning(
-                        f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings.\n"
-                        f"  Fix: Groww app → Profile → Trade API → Cloud API Keys → edit key → add IP: "
-                        f"(run 'curl ifconfig.me' on this server to get its IP)"
-                    )
-                    break  # No point retrying other key_types if IP blocked
-                elif resp.status_code == 400 and "invalid type" in resp.text.lower():
-                    continue  # Try next key_type variant
-            except Exception as e:
-                logger.info(f"  [Trade-API TOTP key_type={kt}] ({key_label}): {e}")
 
-        # Secondary: approval/secret method (if GROWW_CLIENT_SECRET set)
+        # Primary: approval/secret method (HMAC checksum — Approval-type key)
         if client_secret:
             ts = int(time.time())
             checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
@@ -323,8 +290,41 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                     if tok:
                         logger.info(f"[{format_ist_timestamp()}] Token via Trade API approval ({key_label})")
                         return tok
+                elif resp.status_code == 403 and "allowlist" in resp.text.lower():
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings."
+                    )
             except Exception as e:
                 logger.info(f"  [Trade-API approval] ({key_label}): {e}")
+
+        # Secondary: TOTP method — try all known key_type formats
+        for kt in ("totp", "TOTP", "auth-totp"):
+            totp_body = {"key_type": kt, "totp": totp_code}
+            sdk_hdrs["x-request-id"] = str(uuid.uuid4())
+            try:
+                resp = requests.post(
+                    "https://api.groww.in/v1/token/api/access",
+                    json=totp_body, headers=sdk_hdrs, timeout=15,
+                )
+                logger.info(
+                    f"  [Trade-API TOTP key_type={kt}] ({key_label}) HTTP {resp.status_code}: "
+                    f"{resp.text[:300]}"
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    tok = data.get("token") or _extract_token_from_response(data)
+                    if tok:
+                        logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP key_type={kt} ({key_label})")
+                        return tok
+                elif resp.status_code == 403 and "allowlist" in resp.text.lower():
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings."
+                    )
+                    break
+                elif resp.status_code == 400 and "invalid type" in resp.text.lower():
+                    continue
+            except Exception as e:
+                logger.info(f"  [Trade-API TOTP key_type={kt}] ({key_label}): {e}")
 
     # ── Method 2: growwapi SDK ─────────────────────────────────────────────
     try:
@@ -581,20 +581,6 @@ class GrowwAuthManager:
             or self._bootstrap_vendor_key()
         )
 
-        # ── KEY INSIGHT: GROWW_CLIENT_ID JWT is itself the access token ──────
-        # The platform JWT from groww.in → Trade API → Cloud API Keys IS the
-        # access token to use directly with GrowwAPI(). No TOTP exchange needed.
-        # It's IP-restricted — whitelist your server's IP in Groww app.
-        client_id = os.getenv("GROWW_CLIENT_ID", "")
-        if client_id and len(client_id) > 100 and "." in client_id:
-            # It's a JWT — use it directly as the access token
-            if not cached_tok or _is_expired_by_6am_reset(cached_ts):
-                self._token           = client_id
-                self._token_timestamp = get_current_ist_time()
-                logger.info(
-                    f"[{format_ist_timestamp()}] Using GROWW_CLIENT_ID JWT directly as access token"
-                )
-
         if cached_tok and not _is_expired_by_6am_reset(cached_ts):
             self._token           = cached_tok
             self._token_timestamp = cached_ts
@@ -721,26 +707,17 @@ class GrowwAuthManager:
 
     def get_valid_token(self) -> Optional[str]:
         try:
-            # If using the platform JWT directly (long-lived), return it as-is.
-            # It expires in 2051 and doesn't need daily refresh via TOTP.
-            client_id = os.getenv("GROWW_CLIENT_ID", "")
-            if client_id and len(client_id) > 100 and "." in client_id:
-                if not self._token or self._token != client_id:
-                    self._token = client_id
-                    self._token_timestamp = get_current_ist_time()
-                return self._token
-
             if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
                 return self._token
 
             now_ist = get_current_ist_time()
 
-            # Only attempt TOTP refresh during trading hours (7 AM – 5 PM IST)
+            # Only attempt token refresh during trading hours (7 AM – 5 PM IST)
             if not (7 <= now_ist.hour < 17):
                 return self._token
 
             reason = "Token expired (6 AM reset)" if self._token else "No token"
-            logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing via TOTP...")
+            logger.info(f"[{format_ist_timestamp()}] {reason} — refreshing...")
             self.refresh_token_if_needed()
             return self._token
         except Exception as e:
