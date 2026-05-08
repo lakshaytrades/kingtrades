@@ -203,61 +203,72 @@ if not browser_token:
     else:
         fail("Need GROWW_EMAIL + GROWW_PASSWORD + GROWW_TOTP_SECRET for browser login")
 
-# ── Step 5: Test SDK with whatever token we have ─────────────────
+# ── Step 5: Test SDK with all available tokens ───────────────────
 step(5, "Testing growwapi SDK")
-best_token = trade_token or browser_token
-if best_token:
-    info(f"Using {'Trade API' if trade_token else 'browser'} token...")
+
+import io
+from growwapi import GrowwAPI
+
+def sdk_test(label, token):
+    """Test SDK with a given token. Returns True if any call succeeds."""
+    buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
     try:
-        import io
-        buf = io.StringIO(); old = sys.stdout; sys.stdout = buf
+        api = GrowwAPI(token)
+    finally:
+        sys.stdout = old
+    info(f"  [{label}] SDK initialized ({len(token)} chars)")
+    success = False
+    for method, name in [
+        (api.get_holdings_for_user, "holdings"),
+        (api.get_positions_for_user, "positions"),
+        (api.get_available_margin_details, "margin"),
+    ]:
         try:
-            from growwapi import GrowwAPI
-            api = GrowwAPI(best_token)
-        finally:
-            sys.stdout = old
-        ok("SDK initialized")
-
-        # Try to get holdings
-        try:
-            holdings = api.get_holdings_for_user()
-            ok(f"Holdings: {json.dumps(holdings, indent=2)[:500] if holdings else 'empty'}")
+            result = method()
+            ok(f"  [{label}] {name}: {json.dumps(result, indent=2)[:400] if result else 'empty/none'}")
+            success = True
         except Exception as e:
-            info(f"get_holdings_for_user(): {e}")
+            info(f"  [{label}] {name}: {e}")
+    return success
 
-        # Try to get positions
-        try:
-            positions = api.get_positions_for_user()
-            ok(f"Positions: {json.dumps(positions, indent=2)[:500] if positions else 'none (market closed?)'}")
-        except Exception as e:
-            info(f"get_positions_for_user(): {e}")
+# Try all tokens: Trade API token first, then platform JWT directly, then browser JWT
+tokens_to_test = []
+if trade_token:
+    tokens_to_test.append(("Trade API token", trade_token))
+if client_id:
+    tokens_to_test.append(("Platform JWT (client_id)", client_id))
+if browser_token:
+    tokens_to_test.append(("Browser JWT", browser_token))
 
-        # Try to get margin
-        try:
-            margin = api.get_available_margin_details()
-            ok(f"Margin: {json.dumps(margin, indent=2)[:300] if margin else 'empty'}")
-        except Exception as e:
-            info(f"get_available_margin_details(): {e}")
-
-    except Exception as e:
-        fail(f"SDK error: {e}")
+sdk_success = False
+best_token = trade_token or browser_token
+if tokens_to_test:
+    for label, token in tokens_to_test:
+        if sdk_test(label, token):
+            sdk_success = True
+            best_token = token
+            ok(f"SDK WORKS with: {label}")
+            break
+    if not sdk_success:
+        fail("SDK authentication failed with all tokens")
 else:
     fail("No token available — fix auth first")
+
 
 # ── Summary ──────────────────────────────────────────────────────
 print()
 print(SEP)
-if trade_token:
-    print("  ✓ READY — Trade API token working. Bot will trade live!")
-elif browser_token:
-    print("  ⚠  PARTIAL — Browser token only.")
-    print("     Data feed works. Orders may fail if browser JWT not accepted by SDK.")
+if sdk_success:
+    print("  ✓ READY — SDK authenticated. Bot will trade live!")
+elif trade_token:
+    print("  ⚠  Trade API token obtained but SDK calls failing.")
+elif browser_token and not sdk_success:
+    print("  ✗ Browser JWT rejected by Trade API SDK.")
+    print("     The platform JWT (GROWW_CLIENT_ID) must be used as direct access token.")
     if server_ip:
-        print(f"")
-        print(f"  TO FIX: Whitelist this server's IP in Groww Trade API settings:")
-        print(f"  → Groww app → Profile → Trade API → Cloud API Keys")
-        print(f"  → Edit key → Add IP: {server_ip}")
-        print(f"  → Re-run: python3 setup_auth.py")
+        print(f"  TO FIX: In Groww app → Profile → Trade API → Cloud API Keys")
+        print(f"          Edit key → add IP: {server_ip}")
+        print(f"          Then delete data/.manual_token.txt and re-run setup_auth.py")
 else:
     print("  ✗ AUTH FAILED — Bot cannot trade. Check .env and re-run.")
 print(SEP)
