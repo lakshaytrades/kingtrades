@@ -269,11 +269,17 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
             "x-api-version":             "1.0",
         }
 
-        # Primary: approval/secret method (HMAC checksum — Approval-type key)
+        # Primary: approval/secret method — key_type="approval" + checksum + totp
+        # Groww requires BOTH the HMAC checksum AND a valid TOTP code (confirmed working)
         if client_secret:
             ts = int(time.time())
             checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
-            approval_body = {"key_type": "approval", "checksum": checksum, "timestamp": ts}
+            approval_body = {
+                "key_type": "approval",
+                "checksum": checksum,
+                "timestamp": ts,
+                "totp": totp_code,
+            }
             sdk_hdrs["x-request-id"] = str(uuid.uuid4())
             try:
                 resp = requests.post(
