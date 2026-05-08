@@ -581,6 +581,20 @@ class GrowwAuthManager:
             or self._bootstrap_vendor_key()
         )
 
+        # ── KEY INSIGHT: GROWW_CLIENT_ID JWT is itself the access token ──────
+        # The platform JWT from groww.in → Trade API → Cloud API Keys IS the
+        # access token to use directly with GrowwAPI(). No TOTP exchange needed.
+        # It's IP-restricted — whitelist your server's IP in Groww app.
+        client_id = os.getenv("GROWW_CLIENT_ID", "")
+        if client_id and len(client_id) > 100 and "." in client_id:
+            # It's a JWT — use it directly as the access token
+            if not cached_tok or _is_expired_by_6am_reset(cached_ts):
+                self._token           = client_id
+                self._token_timestamp = get_current_ist_time()
+                logger.info(
+                    f"[{format_ist_timestamp()}] Using GROWW_CLIENT_ID JWT directly as access token"
+                )
+
         if cached_tok and not _is_expired_by_6am_reset(cached_ts):
             self._token           = cached_tok
             self._token_timestamp = cached_ts
@@ -707,6 +721,15 @@ class GrowwAuthManager:
 
     def get_valid_token(self) -> Optional[str]:
         try:
+            # If using the platform JWT directly (long-lived), return it as-is.
+            # It expires in 2051 and doesn't need daily refresh via TOTP.
+            client_id = os.getenv("GROWW_CLIENT_ID", "")
+            if client_id and len(client_id) > 100 and "." in client_id:
+                if not self._token or self._token != client_id:
+                    self._token = client_id
+                    self._token_timestamp = get_current_ist_time()
+                return self._token
+
             if self._token and not _is_expired_by_6am_reset(self._token_timestamp):
                 return self._token
 
