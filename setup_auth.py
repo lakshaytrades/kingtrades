@@ -121,23 +121,26 @@ if client_id:
             except Exception as e:
                 info(f"SDK error: {e}")
 
-        # Try approval method with secret
+        # Try approval/secret method with TOTP included (Groww wants both)
         if not trade_token and client_secret:
-            info("Trying approval method variants...")
+            info("Trying approval+secret method variants (with and without TOTP)...")
             ts = int(time.time())
-            # SDK checksum: sha256(secret + str(timestamp))
-            checksum_sdk = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
-            # Alt: sha256(timestamp + secret)
-            checksum_alt = hashlib.sha256(f"{ts}{client_secret}".encode()).hexdigest()
+            checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
             approval_bodies = [
-                {"key_type": "approval", "checksum": checksum_sdk, "timestamp": ts},
-                {"key_type": "approval", "checksum": checksum_alt, "timestamp": ts},
-                {"key_type": "secret", "checksum": checksum_sdk, "timestamp": ts},
+                # "secret" type + TOTP (Groww said "totp value cannot be empty" for this type)
+                {"key_type": "secret", "checksum": checksum, "timestamp": ts, "totp": totp_code},
+                # "secret" type with TOTP only (no checksum)
+                {"key_type": "secret", "totp": totp_code},
+                # standard "approval" type + TOTP combined
+                {"key_type": "approval", "checksum": checksum, "timestamp": ts, "totp": totp_code},
+                # standard "approval" without TOTP
+                {"key_type": "approval", "checksum": checksum, "timestamp": ts},
             ]
             for body in approval_bodies:
                 if trade_token:
                     break
                 headers["x-request-id"] = str(uuid.uuid4())
+                time.sleep(2)  # avoid rate limiting
                 try:
                     resp = requests.post(
                         "https://api.groww.in/v1/token/api/access",
