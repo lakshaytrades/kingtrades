@@ -338,21 +338,46 @@ class GrowwExecutor:
         # ── Trade Supervisor — rule-based expert system ───────────────────
         try:
             from trade_supervisor import review_signal, format_telegram_review
+            _ind = signal.indicators  # IndicatorSet nested object
+            _vwap_dev = 0.0
+            if _ind and _ind.vwap and signal.entry_price:
+                _vwap_dev = (signal.entry_price - _ind.vwap) / _ind.vwap * 100
+            _mtf = signal.timeframe_alignment or {}
+            _aligned = _mtf.get("aligned_count", 0)
+            _dir = signal.direction
+            if _aligned == 3:
+                _mtf_str = "STRONG_BULLISH" if _dir == "LONG" else "STRONG_BEARISH"
+            elif _aligned >= 2:
+                _mtf_str = "BULLISH" if _dir == "LONG" else "BEARISH"
+            else:
+                _mtf_str = _mtf.get("alignment", "NEUTRAL")
+            _ist_now = get_current_ist_time()
+            _hour = _ist_now.hour
+            if _hour == 9 and _ist_now.minute < 30:
+                _session = "OPENING_DRIVE"
+            elif _hour < 10:
+                _session = "OPENING_DRIVE"
+            elif 11 <= _hour < 13:
+                _session = "MIDDAY"
+            elif _hour >= 14 and _hour < 15:
+                _session = "POWER_HOUR"
+            else:
+                _session = "NORMAL"
             signal_data = {
-                "symbol":           signal.symbol,
-                "direction":        signal.direction,
-                "score":            getattr(signal, "signal_score", 0),
-                "entry_price":      signal.entry_price,
-                "stop_loss":        signal.stop_loss,
-                "target":           getattr(signal, "target_price", signal.entry_price),
-                "rsi":              getattr(signal, "rsi", 0),
-                "macd_hist":        getattr(signal, "macd_hist", 0),
-                "vwap_deviation_pct": getattr(signal, "vwap_deviation_pct", 0),
-                "volume_ratio":     getattr(signal, "volume_ratio", 0),
-                "patterns":         getattr(signal, "patterns", []),
-                "mtf_alignment":    getattr(signal, "mtf_alignment", "unknown"),
-                "session":          getattr(signal, "session", "unknown"),
-                "nifty_trend":      getattr(signal, "nifty_trend", "unknown"),
+                "symbol":             signal.symbol,
+                "direction":          _dir,
+                "score":              signal.signal_score,
+                "entry_price":        signal.entry_price,
+                "stop_loss":          signal.stop_loss,
+                "target":             signal.target_1,
+                "rsi":                _ind.rsi if _ind else 50.0,
+                "macd_hist":          _ind.macd_hist if _ind else 0.0,
+                "vwap_deviation_pct": _vwap_dev,
+                "volume_ratio":       _ind.volume_ratio if _ind else 1.0,
+                "patterns":           signal.patterns,
+                "mtf_alignment":      _mtf_str,
+                "session":            _session,
+                "nifty_trend":        "neutral",
             }
             news = getattr(signal, "_sentiment_headlines", [])
             review = review_signal(signal_data, news)
@@ -373,15 +398,15 @@ class GrowwExecutor:
         try:
             from rl_agent import LakshKingRL
             market_data = {
-                "rsi":          getattr(signal, "rsi", 50),
-                "macd_hist":    getattr(signal, "macd_hist", 0),
-                "vwap_deviation_pct": getattr(signal, "vwap_deviation_pct", 0),
-                "volume_ratio": getattr(signal, "volume_ratio", 1),
-                "mtf_alignment": getattr(signal, "mtf_alignment", "unknown"),
-                "patterns":     getattr(signal, "patterns", []),
-                "session":      getattr(signal, "session", "NORMAL"),
-                "nifty_trend":  getattr(signal, "nifty_trend", "neutral"),
-                "signal_score": getattr(signal, "signal_score", 0),
+                "rsi":                _ind.rsi if _ind else 50.0,
+                "macd_hist":          _ind.macd_hist if _ind else 0.0,
+                "vwap_deviation_pct": _vwap_dev,
+                "volume_ratio":       _ind.volume_ratio if _ind else 1.0,
+                "mtf_alignment":      _mtf_str,
+                "patterns":           signal.patterns,
+                "session":            _session,
+                "nifty_trend":        "neutral",
+                "signal_score":       signal.signal_score,
             }
             risk_amount = self.risk_manager.state.daily_capital * 0.005  # 0.5%
             rl_decision = LakshKingRL.signal(
