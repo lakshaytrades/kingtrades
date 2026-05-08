@@ -467,6 +467,13 @@ def login_via_browser(
                 logger.error(f"[{format_ist_timestamp()}] Browser: logged in but could not find token in page")
             else:
                 logger.info(f"[{format_ist_timestamp()}] Browser auth SUCCESS ({len(token)} char token)")
+                # Save token so GrowwDataFetcher can use it immediately
+                try:
+                    Path("data").mkdir(exist_ok=True)
+                    Path("data/.manual_token.txt").write_text(token.strip())
+                    logger.info(f"[{format_ist_timestamp()}] Token saved to data/.manual_token.txt")
+                except Exception as ex:
+                    logger.warning(f"Could not save token file: {ex}")
 
             browser.close()
 
