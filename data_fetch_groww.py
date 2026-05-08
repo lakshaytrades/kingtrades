@@ -381,7 +381,7 @@ class GrowwDataFetcher:
             """Call Groww balance endpoint, return raw dict or None."""
             if not self._api:
                 return None
-            for method_name in ("get_balance", "get_funds", "get_margins"):
+            for method_name in ("get_available_margin_details", "get_balance", "get_funds", "get_margins"):
                 if hasattr(self._api, method_name):
                     try:
                         raw = getattr(self._api, method_name)()
@@ -525,18 +525,16 @@ class GrowwDataFetcher:
         """Fetch open intraday (MIS) positions."""
         if not self._api: return []
         try:
-            for method in ("get_positions", "positions", "get_portfolio_positions"):
-                if hasattr(self._api, method):
-                    raw = getattr(self._api, method)()
-                    return [{
-                        "symbol":    p.get("tradingSymbol") or p.get("symbol", "?"),
-                        "quantity":  int(p.get("netQuantity") or p.get("quantity", 0)),
-                        "avg_price": float(p.get("averagePrice") or p.get("average_price", 0)),
-                        "ltp":       float(p.get("ltp") or p.get("lastPrice", 0)),
-                        "pnl":       float(p.get("pnl") or p.get("unrealisedPnl", 0)),
-                        "product":   p.get("product", "MIS"),
-                    } for p in (raw or []) if int(p.get("netQuantity") or p.get("quantity", 0)) != 0]
-            return []
+            raw = self._api.get_positions_for_user()
+            items = raw if isinstance(raw, list) else raw.get("data", raw.get("positions", []))
+            return [{
+                "symbol":    p.get("tradingSymbol") or p.get("symbol", "?"),
+                "quantity":  int(p.get("netQuantity") or p.get("quantity", 0)),
+                "avg_price": float(p.get("averagePrice") or p.get("average_price", 0)),
+                "ltp":       float(p.get("ltp") or p.get("lastPrice", 0)),
+                "pnl":       float(p.get("pnl") or p.get("unrealisedPnl", 0)),
+                "product":   p.get("product", "MIS"),
+            } for p in (items or []) if int(p.get("netQuantity") or p.get("quantity", 0)) != 0]
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] get_positions error: {e}")
             return []
@@ -545,17 +543,15 @@ class GrowwDataFetcher:
         """Fetch delivery holdings (stocks you own)."""
         if not self._api: return []
         try:
-            for method in ("get_holdings", "holdings", "get_portfolio_holdings"):
-                if hasattr(self._api, method):
-                    raw = getattr(self._api, method)()
-                    return [{
-                        "symbol":    h.get("tradingSymbol") or h.get("symbol", "?"),
-                        "quantity":  int(h.get("quantity") or h.get("holdingQuantity", 0)),
-                        "avg_price": float(h.get("averagePrice") or h.get("average_price", 0)),
-                        "ltp":       float(h.get("ltp") or h.get("lastPrice", 0)),
-                        "pnl":       float(h.get("pnl") or h.get("unrealisedPnl", 0)),
-                    } for h in (raw or []) if int(h.get("quantity") or h.get("holdingQuantity", 0)) > 0]
-            return []
+            raw = self._api.get_holdings_for_user()
+            items = raw if isinstance(raw, list) else raw.get("data", raw.get("holdings", []))
+            return [{
+                "symbol":    h.get("tradingSymbol") or h.get("symbol", "?"),
+                "quantity":  int(h.get("quantity") or h.get("holdingQuantity", 0)),
+                "avg_price": float(h.get("averagePrice") or h.get("average_price", 0)),
+                "ltp":       float(h.get("ltp") or h.get("lastPrice", 0)),
+                "pnl":       float(h.get("pnl") or h.get("unrealisedPnl", 0)),
+            } for h in (items or []) if int(h.get("quantity") or h.get("holdingQuantity", 0)) > 0]
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] get_holdings error: {e}")
             return []
