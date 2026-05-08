@@ -213,7 +213,9 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
         logger.debug(f"Waiting {remaining + 1}s for fresh TOTP window...")
         time.sleep(remaining + 1)
 
-    totp_code   = pyotp.TOTP(totp_secret).now()
+    # Use API-key-specific TOTP if provided, else fall back to account TOTP
+    api_key_totp_secret = os.getenv("GROWW_API_KEY_TOTP", "") or totp_secret
+    totp_code   = pyotp.TOTP(api_key_totp_secret).now()
     window_left = 30 - (int(time.time()) % 30)
     label       = f"[{attempt_label}] " if attempt_label else ""
 
@@ -286,6 +288,12 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                 if tok:
                     logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP ({key_label})")
                     return tok
+            elif resp.status_code == 403 and "allowlist" in resp.text.lower():
+                logger.warning(
+                    f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings.\n"
+                    f"  Fix: Groww app → Profile → Trade API → Cloud API Keys → edit key → add IP: "
+                    f"(run 'curl ifconfig.me' on this server to get its IP)"
+                )
         except Exception as e:
             logger.info(f"  [Trade-API TOTP] ({key_label}): {e}")
 
