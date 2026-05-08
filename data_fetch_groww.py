@@ -41,7 +41,9 @@ class GrowwDataFetcher:
         self._balance_cache: Dict = {}        # last successful balance response
         self._balance_cache_time: Optional[datetime] = None
         self._last_token_refresh_time: Optional[datetime] = None  # debounce refreshes
-        self._TOKEN_REFRESH_COOLDOWN_MIN = 15  # never refresh token more often than this
+        self._TOKEN_REFRESH_COOLDOWN_MIN = 30  # never refresh token more often than this
+        self._auth_fail_count = 0             # circuit breaker
+        self._AUTH_FAIL_MAX = 3               # stop retrying after 3 consecutive failures
         self._init_api()
 
     def _init_api(self):
@@ -69,7 +71,12 @@ class GrowwDataFetcher:
                 )
                 return False
 
-        logger.warning(f"[{format_ist_timestamp()}] {reason} — forcing token refresh...")
+        # Circuit breaker — stop hammering Groww after repeated failures
+        if self._auth_fail_count >= self._AUTH_FAIL_MAX:
+            logger.debug(f"Auth circuit breaker open — skipping refresh ({self._auth_fail_count} failures)")
+            return False
+
+        logger.warning(f"[{format_ist_timestamp()}] {reason} — forcing token refresh (attempt {self._auth_fail_count + 1}/{self._AUTH_FAIL_MAX})...")
         self._last_token_refresh_time = now
         try:
             manager = get_auth_manager()
@@ -78,14 +85,17 @@ class GrowwDataFetcher:
             if ok and new_token:
                 from growwapi import GrowwAPI
                 self._api = GrowwAPI(new_token)
+                self._auth_fail_count = 0
                 logger.info(f"[{format_ist_timestamp()}] ✅ API client refreshed with new access_token")
                 return True
+            self._auth_fail_count += 1
             logger.error(
-                f"[{format_ist_timestamp()}] Token refresh failed — "
-                "check GROWW_CLIENT_ID and GROWW_TOTP_SECRET in /opt/kingtrades/.env"
+                f"[{format_ist_timestamp()}] Token refresh failed ({self._auth_fail_count}/{self._AUTH_FAIL_MAX}) — "
+                "Set GROWW_AUTH_TOKEN manually in /opt/kingtrades/.env"
             )
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Token refresh error: {e}")
+            self._auth_fail_count += 1
+            logger.error(f"[{format_ist_timestamp()}] Token refresh error ({self._auth_fail_count}/{self._AUTH_FAIL_MAX}): {e}")
         return False
 
     @retry_with_backoff(max_retries=4, delays=[2, 4, 8, 16])
