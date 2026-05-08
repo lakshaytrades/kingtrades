@@ -718,8 +718,9 @@ class GrowwAuthManager:
 
             now_ist = get_current_ist_time()
 
-            # Only attempt token refresh during trading hours (7 AM – 5 PM IST)
-            if not (7 <= now_ist.hour < 17):
+            # No token at all → fetch immediately regardless of time of day
+            # Has token but expired → only refresh during trading hours (7 AM–5 PM)
+            if self._token and not (7 <= now_ist.hour < 17):
                 return self._token
 
             reason = "Token expired (6 AM reset)" if self._token else "No token"
@@ -798,11 +799,12 @@ def get_groww_token() -> Optional[str]:
 
 def initialize_auth() -> bool:
     manager = get_auth_manager()
-    expired = _is_expired_by_6am_reset(manager._token_timestamp)
-    if expired:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token expired — will refresh at 8:30 AM IST")
+    # Always try to get a token at startup — don't wait for market hours
+    tok = manager.get_valid_token()
+    if tok:
+        logger.info(f"[{format_ist_timestamp()}] Auth init: token ready ({len(tok)} chars)")
     else:
-        logger.info(f"[{format_ist_timestamp()}] Auth init: token valid")
+        logger.warning(f"[{format_ist_timestamp()}] Auth init: no token — will retry at market open")
     return bool(manager.totp_secret)
 
 
