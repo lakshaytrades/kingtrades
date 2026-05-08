@@ -62,7 +62,7 @@ GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "")
 
 # LIVE TRADING SWITCH — Default False for safety
 # Set LIVE_TRADING_ENABLED=True in .env ONLY when ready
-LIVE_TRADING_ENABLED: bool = True
+LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() in ("true", "1", "yes")
 
 # Capital
 MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "50000"))
@@ -136,15 +136,15 @@ TREND_TIMEFRAME: str = "1h"
 
 # ── HIGH-ACCURACY MODE (targets 70-80% win rate) ───────────
 # 18yr rule: "It's not the number of trades, it's the quality."
-MIN_SIGNAL_SCORE: float = 80.0          # Raised: 72→80 for 70-80% win rate target
-HIGH_CONFIDENCE_SCORE: float = 85.0     # Full size above this
-PREMIUM_SCORE: float = 92.0             # 1.2x size — A+ grade setups only
-MIN_VOLUME_RATIO: float = 2.1           # Raised: 1.8→2.1 — demand real surge
-REQUIRE_MTF_ALIGNMENT: bool = True      # Always require ≥2 TF alignment
-REQUIRE_POWER_HOUR: bool = True         # Only trade during power windows
-HEIKIN_ASHI_CONFIRM: bool = True        # Require HA confirmation
-MAX_TRADES_PER_DAY: int = 4             # Lowered: 6→4 — fewer, better trades
-MAX_TRADES_PER_STOCK: int = 1           # Lowered: 2→1 — one clean shot per stock
+MIN_SIGNAL_SCORE: float = 68.0          # Quality gate — passes good momentum setups
+HIGH_CONFIDENCE_SCORE: float = 80.0     # Full size above this
+PREMIUM_SCORE: float = 90.0             # 1.2x size — A+ grade setups only
+MIN_VOLUME_RATIO: float = 1.8           # Demand volume confirmation
+REQUIRE_MTF_ALIGNMENT: bool = False     # Allow single-TF signals when market is moving
+REQUIRE_POWER_HOUR: bool = False        # Trade all sessions
+HEIKIN_ASHI_CONFIRM: bool = False       # Don't require HA — adds latency
+MAX_TRADES_PER_DAY: int = 10            # More opportunities = more profit
+MAX_TRADES_PER_STOCK: int = 2           # Allow re-entry after clean exit
 
 # ============================================================
 # CIRCUIT BREAKERS
