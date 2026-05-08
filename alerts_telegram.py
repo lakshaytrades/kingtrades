@@ -465,7 +465,8 @@ class TelegramAlerter:
     # STATUS REPORT
     # --------------------------------------------------------
 
-    def send_status(self, risk_manager=None) -> bool:
+    def send_status(self, risk_manager=None, balance_available: float = None,
+                    margin_used: float = None) -> bool:
         if risk_manager is None:
             return self._send(
                 f"{E['chart']} *Bot Status*\n"
@@ -473,7 +474,7 @@ class TelegramAlerter:
             )
 
         state     = getattr(risk_manager, "state", None)
-        positions = state.positions      if state else {}   # positions live on state, not risk_manager
+        positions = state.positions      if state else {}
         daily_pnl = state.daily_pnl     if state else 0
         capital   = state.daily_capital if state else 0
         n_trades  = state.daily_trades  if state else 0
@@ -486,6 +487,13 @@ class TelegramAlerter:
 
         lines = [
             f"{E['chart']} *Bot Status — {format_ist_timestamp()}*",
+        ]
+        if balance_available is not None:
+            bal_line = f"💰 Balance: `₹{balance_available:,.2f}`"
+            if margin_used:
+                bal_line += f" | Margin Used: `₹{margin_used:,.2f}`"
+            lines.append(bal_line)
+        lines += [
             f"Daily P&L: {pnl_emoji} *{pnl_str}*",
             f"Capital: `₹{capital:,.0f}` | Trades: `{n_trades}` | Win Rate: `{wr_pct:.1f}%`",
             f"Open Positions: `{len(positions)}` | State: `{'PAUSED' if paused else 'ACTIVE'}`",

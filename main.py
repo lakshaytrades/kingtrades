@@ -351,6 +351,24 @@ class TradingBot:
             logger.warning(f"[{format_ist_timestamp()}] Continuous learner failed: {e}")
 
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
+
+        # Send startup message to Telegram with live balance
+        try:
+            bal = self.fetcher.get_account_balance() if self.fetcher else {}
+            available = bal.get("available", 0)
+            mode = "⚡ LIVE TRADING" if config.LIVE_TRADING_ENABLED else "🔒 DRY RUN"
+            self.alerter.send_text(
+                f"🚀 <b>KingTrades Bot Started</b>\n"
+                f"<code>{format_ist_timestamp()}</code>\n\n"
+                f"Mode: <b>{mode}</b>\n"
+                f"Available Balance: <b>₹{available:,.2f}</b>\n"
+                f"Daily Capital: <b>₹{config.MAX_DAILY_CAPITAL:,.0f}</b>\n"
+                f"Watchlist: <b>{len(config.CUSTOM_WATCHLIST.split(',')) if config.CUSTOM_WATCHLIST else 0} stocks</b>\n\n"
+                f"Market opens at 9:15 AM IST. Bot will scan for signals then."
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
+
         return True
 
     # --------------------------------------------------------
@@ -1860,7 +1878,14 @@ class TradingBot:
         async def cmd_status(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
                 return
-            self.alerter.send_status(self.risk_manager)
+            # Inject live balance into status message
+            try:
+                bal = self.fetcher.get_account_balance() if self.fetcher else {}
+                available = bal.get("available", 0)
+                used_margin = bal.get("used_margin", 0)
+                self.alerter.send_status(self.risk_manager, balance_available=available, margin_used=used_margin)
+            except Exception:
+                self.alerter.send_status(self.risk_manager)
 
         async def cmd_pause(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
