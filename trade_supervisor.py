@@ -61,15 +61,19 @@ def _rule_based_review(signal_data: dict) -> dict:
 
     # ── Rule 3: RSI must not be in danger zone ────────────────────────────
     if direction == "LONG":
-        if rsi > 78:
-            rejections.append(f"RSI {rsi:.0f} overbought for LONG (>78)")
+        if rsi > 92:
+            rejections.append(f"RSI {rsi:.0f} extremely overbought for LONG (>92)")
+        elif rsi > 78:
+            warnings.append(f"RSI {rsi:.0f} overbought — reduce size on LONG")
         elif rsi > 70:
             warnings.append(f"RSI {rsi:.0f} elevated — reduce size")
         elif 40 <= rsi <= 60:
             confidence += 10   # Sweet spot: momentum without overextension
     else:  # SHORT
-        if rsi < 22:
-            rejections.append(f"RSI {rsi:.0f} oversold for SHORT (<22)")
+        if rsi < 8:
+            rejections.append(f"RSI {rsi:.0f} extremely oversold for SHORT (<8)")
+        elif rsi < 22:
+            warnings.append(f"RSI {rsi:.0f} oversold — reduce size on SHORT")
         elif rsi < 30:
             warnings.append(f"RSI {rsi:.0f} low — reduce size")
         elif 40 <= rsi <= 60:
