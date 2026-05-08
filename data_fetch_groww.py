@@ -522,18 +522,42 @@ class GrowwDataFetcher:
         return _empty
 
     def get_positions(self) -> List[Dict]:
-        """Fetch MIS leverage positions."""
+        """Fetch open intraday (MIS) positions."""
         if not self._api: return []
         try:
-            raw = self._api.get_positions()
-            return [{
-                "symbol": p.get("symbol"),
-                "quantity": int(p.get("quantity", 0)),
-                "product": "MIS", # Ensures leverage is tracked correctly
-                "avg_price": float(p.get("average_price", 0))
-            } for p in (raw or []) if int(p.get("quantity", 0)) != 0]
+            for method in ("get_positions", "positions", "get_portfolio_positions"):
+                if hasattr(self._api, method):
+                    raw = getattr(self._api, method)()
+                    return [{
+                        "symbol":    p.get("tradingSymbol") or p.get("symbol", "?"),
+                        "quantity":  int(p.get("netQuantity") or p.get("quantity", 0)),
+                        "avg_price": float(p.get("averagePrice") or p.get("average_price", 0)),
+                        "ltp":       float(p.get("ltp") or p.get("lastPrice", 0)),
+                        "pnl":       float(p.get("pnl") or p.get("unrealisedPnl", 0)),
+                        "product":   p.get("product", "MIS"),
+                    } for p in (raw or []) if int(p.get("netQuantity") or p.get("quantity", 0)) != 0]
+            return []
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] get_positions error: {e}")
+            return []
+
+    def get_holdings(self) -> List[Dict]:
+        """Fetch delivery holdings (stocks you own)."""
+        if not self._api: return []
+        try:
+            for method in ("get_holdings", "holdings", "get_portfolio_holdings"):
+                if hasattr(self._api, method):
+                    raw = getattr(self._api, method)()
+                    return [{
+                        "symbol":    h.get("tradingSymbol") or h.get("symbol", "?"),
+                        "quantity":  int(h.get("quantity") or h.get("holdingQuantity", 0)),
+                        "avg_price": float(h.get("averagePrice") or h.get("average_price", 0)),
+                        "ltp":       float(h.get("ltp") or h.get("lastPrice", 0)),
+                        "pnl":       float(h.get("pnl") or h.get("unrealisedPnl", 0)),
+                    } for h in (raw or []) if int(h.get("quantity") or h.get("holdingQuantity", 0)) > 0]
+            return []
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] get_holdings error: {e}")
             return []
 
     # --------------------------------------------------------
