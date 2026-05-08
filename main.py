@@ -940,6 +940,10 @@ class TradingBot:
                             f"[{format_ist_timestamp()}] SCALP: {ss.symbol} "
                             f"{ss.direction} | momentum={ss.momentum_pct:+.2f}%"
                         )
+                        ts = self.scalping_engine.to_trade_signal(ss)
+                        if ts:
+                            self.scalping_engine.register_scalp(ss.symbol)
+                            signals.append(ts)
                 except Exception as e:
                     logger.debug(f"Scalping scan failed: {e}")
 

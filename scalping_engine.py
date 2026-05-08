@@ -410,6 +410,31 @@ class ScalpingEngine:
         return round(min(max(score, 0.0), 100.0), 1)
 
 
+    def to_trade_signal(self, sig: ScalpSignal):
+        """Convert ScalpSignal to TradeSignal for execution."""
+        try:
+            from signal_generator import TradeSignal
+            from pattern_recognition import IndicatorSet
+            ind = IndicatorSet(rsi=sig.rsi, volume_ratio=sig.volume_ratio)
+            ts = TradeSignal(
+                symbol=sig.symbol,
+                direction=sig.direction,
+                entry_price=sig.entry_price,
+                stop_loss=sig.stop_loss,
+                target_1=sig.target,
+                target_2=sig.target,
+                signal_score=sig.confidence,
+                patterns=["SCALP_MOMENTUM"],
+                indicators=ind,
+                timeframe_alignment={"aligned_count": 2},
+                size_multiplier=0.5,   # half size for scalps — tight stop, fast exit
+            )
+            return ts
+        except Exception as e:
+            logger.warning(f"ScalpSignal → TradeSignal conversion failed: {e}")
+            return None
+
+
 _scalping_instance: Optional[ScalpingEngine] = None
 
 
