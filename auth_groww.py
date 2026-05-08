@@ -197,14 +197,18 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                           attempt_label: str = "") -> Optional[str]:
     _inspect_sdk_once()
 
-    # ── Method -1: Manual token file (from save_token.py or Safari export) ────
+    # ── Method -1: Manual token file (only if it looks like a Trade API token) ──
+    # Browser JWTs saved here won't work with the Trade API SDK — skip them.
+    # A valid Trade API access token is typically shorter than a browser JWT (< 800 chars).
     manual_file = Path("data/.manual_token.txt")
     if manual_file.exists():
         try:
             tok = manual_file.read_text().strip()
-            if tok and len(tok) > 30:
-                logger.info(f"[{format_ist_timestamp()}] Using manually saved token from data/.manual_token.txt")
+            if tok and 30 < len(tok) < 800:
+                logger.info(f"[{format_ist_timestamp()}] Using saved Trade API token from data/.manual_token.txt")
                 return tok
+            elif tok:
+                logger.info(f"[{format_ist_timestamp()}] Skipping data/.manual_token.txt — looks like browser JWT ({len(tok)} chars), not Trade API token")
         except Exception:
             pass
 
