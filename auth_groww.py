@@ -271,31 +271,36 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
             "x-client-platform-version": "1.5.0",
             "x-api-version":             "1.0",
         }
-        # Primary: TOTP method
-        totp_body = {"key_type": "totp", "totp": totp_code}
-        try:
-            resp = requests.post(
-                "https://api.groww.in/v1/token/api/access",
-                json=totp_body, headers=sdk_hdrs, timeout=15,
-            )
-            logger.info(
-                f"  [Trade-API TOTP] ({key_label}) HTTP {resp.status_code}: "
-                f"{resp.text[:300]}"
-            )
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                tok = data.get("token") or _extract_token_from_response(data)
-                if tok:
-                    logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP ({key_label})")
-                    return tok
-            elif resp.status_code == 403 and "allowlist" in resp.text.lower():
-                logger.warning(
-                    f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings.\n"
-                    f"  Fix: Groww app → Profile → Trade API → Cloud API Keys → edit key → add IP: "
-                    f"(run 'curl ifconfig.me' on this server to get its IP)"
+        # Primary: TOTP method — try all known key_type formats
+        for kt in ("totp", "TOTP", "auth-totp"):
+            totp_body = {"key_type": kt, "totp": totp_code}
+            sdk_hdrs["x-request-id"] = str(uuid.uuid4())
+            try:
+                resp = requests.post(
+                    "https://api.groww.in/v1/token/api/access",
+                    json=totp_body, headers=sdk_hdrs, timeout=15,
                 )
-        except Exception as e:
-            logger.info(f"  [Trade-API TOTP] ({key_label}): {e}")
+                logger.info(
+                    f"  [Trade-API TOTP key_type={kt}] ({key_label}) HTTP {resp.status_code}: "
+                    f"{resp.text[:300]}"
+                )
+                if resp.status_code in (200, 201):
+                    data = resp.json()
+                    tok = data.get("token") or _extract_token_from_response(data)
+                    if tok:
+                        logger.info(f"[{format_ist_timestamp()}] Token via Trade API TOTP key_type={kt} ({key_label})")
+                        return tok
+                elif resp.status_code == 403 and "allowlist" in resp.text.lower():
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⚠️  IP not whitelisted in Groww Cloud API Key settings.\n"
+                        f"  Fix: Groww app → Profile → Trade API → Cloud API Keys → edit key → add IP: "
+                        f"(run 'curl ifconfig.me' on this server to get its IP)"
+                    )
+                    break  # No point retrying other key_types if IP blocked
+                elif resp.status_code == 400 and "invalid type" in resp.text.lower():
+                    continue  # Try next key_type variant
+            except Exception as e:
+                logger.info(f"  [Trade-API TOTP key_type={kt}] ({key_label}): {e}")
 
         # Secondary: approval/secret method (if GROWW_CLIENT_SECRET set)
         if client_secret:
@@ -334,18 +339,34 @@ def _single_totp_attempt(vendor_key: str, totp_secret: str,
                 sys.stdout = old
 
         for key_label, key_val in keys_to_try:
+            # Try SDK with TOTP
             try:
                 result = GrowwAPI.get_access_token(api_key=key_val, totp=totp_code)
-                logger.info(f"  SDK.get_access_token({key_label}): {str(result)[:100]}")
+                logger.info(f"  SDK.get_access_token(totp, {key_label}): {str(result)[:100]}")
                 if isinstance(result, str) and len(result) > 20:
-                    logger.info(f"[{format_ist_timestamp()}] Token via SDK ({key_label})")
+                    logger.info(f"[{format_ist_timestamp()}] Token via SDK TOTP ({key_label})")
                     return result
                 if isinstance(result, dict):
                     tok = _extract_token_from_response(result)
                     if tok:
                         return tok
             except Exception as e:
-                logger.info(f"  SDK.get_access_token({key_label}): {e}")
+                logger.info(f"  SDK.get_access_token(totp, {key_label}): {e}")
+
+            # Try SDK with secret/approval
+            if client_secret:
+                try:
+                    result = GrowwAPI.get_access_token(api_key=key_val, secret=client_secret)
+                    logger.info(f"  SDK.get_access_token(secret, {key_label}): {str(result)[:100]}")
+                    if isinstance(result, str) and len(result) > 20:
+                        logger.info(f"[{format_ist_timestamp()}] Token via SDK approval ({key_label})")
+                        return result
+                    if isinstance(result, dict):
+                        tok = _extract_token_from_response(result)
+                        if tok:
+                            return tok
+                except Exception as e:
+                    logger.info(f"  SDK.get_access_token(secret, {key_label}): {e}")
 
             for method_name in ("get_access_token", "refresh_token", "generate_session"):
                 try:

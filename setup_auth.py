@@ -82,49 +82,87 @@ if client_id:
             "x-api-version": "1.0",
         }
 
-        try:
-            resp = requests.post(
-                "https://api.groww.in/v1/token/api/access",
-                json={"key_type": "totp", "totp": totp_code},
-                headers=headers, timeout=15,
-            )
-            info(f"HTTP {resp.status_code}: {resp.text[:300]}")
-            if resp.status_code in (200, 201):
-                data = resp.json()
-                trade_token = data.get("token")
-                if trade_token:
-                    ok(f"Trade API token obtained! ({len(trade_token)} chars)")
-            elif resp.status_code == 403 and "allowlist" in resp.text.lower():
-                fail("IP NOT WHITELISTED in Groww Cloud API Key settings!")
-                if server_ip:
-                    info(f"→ Groww app → Profile → Trade API → Cloud API Keys")
-                    info(f"→ Edit your key → add IP: {server_ip}")
-                    info(f"→ Then re-run this script")
-            else:
-                fail(f"Auth failed: {resp.text[:200]}")
-        except Exception as e:
-            fail(f"Request error: {e}")
-
-        # Try approval method with secret
-        if not trade_token and client_secret:
-            info("Trying approval method (API Secret)...")
-            ts = int(time.time())
-            checksum = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
+        # Try all known key_type values (Groww changes API format periodically)
+        totp_bodies = [
+            {"key_type": "totp", "totp": totp_code},
+            {"key_type": "TOTP", "totp": totp_code},
+            {"key_type": "auth-totp", "totp": totp_code},
+            {"totp": totp_code},
+        ]
+        for body in totp_bodies:
+            if trade_token:
+                break
             headers["x-request-id"] = str(uuid.uuid4())
             try:
                 resp = requests.post(
                     "https://api.groww.in/v1/token/api/access",
-                    json={"key_type": "approval", "checksum": checksum, "timestamp": ts},
-                    headers=headers, timeout=15,
+                    json=body, headers=headers, timeout=15,
                 )
-                info(f"HTTP {resp.status_code}: {resp.text[:300]}")
+                info(f"body={body} → HTTP {resp.status_code}: {resp.text[:200]}")
                 if resp.status_code in (200, 201):
                     data = resp.json()
-                    trade_token = data.get("token")
+                    trade_token = data.get("token") or data.get("data", {}).get("token")
                     if trade_token:
-                        ok("Trade API token via approval method!")
+                        ok(f"Trade API TOTP token! key_type={body.get('key_type','none')}")
             except Exception as e:
-                info(f"Approval method error: {e}")
+                info(f"Request error: {e}")
+
+        # Also try via SDK directly
+        if not trade_token:
+            info("Trying SDK get_access_token directly...")
+            try:
+                from growwapi import GrowwAPI
+                result = GrowwAPI.get_access_token(api_key=client_id, totp=totp_code)
+                if isinstance(result, str) and len(result) > 20:
+                    trade_token = result
+                    ok(f"SDK TOTP token! ({len(result)} chars)")
+                else:
+                    info(f"SDK result: {str(result)[:200]}")
+            except Exception as e:
+                info(f"SDK error: {e}")
+
+        # Try approval method with secret
+        if not trade_token and client_secret:
+            info("Trying approval method variants...")
+            ts = int(time.time())
+            # SDK checksum: sha256(secret + str(timestamp))
+            checksum_sdk = hashlib.sha256(f"{client_secret}{ts}".encode()).hexdigest()
+            # Alt: sha256(timestamp + secret)
+            checksum_alt = hashlib.sha256(f"{ts}{client_secret}".encode()).hexdigest()
+            approval_bodies = [
+                {"key_type": "approval", "checksum": checksum_sdk, "timestamp": ts},
+                {"key_type": "approval", "checksum": checksum_alt, "timestamp": ts},
+                {"key_type": "secret", "checksum": checksum_sdk, "timestamp": ts},
+            ]
+            for body in approval_bodies:
+                if trade_token:
+                    break
+                headers["x-request-id"] = str(uuid.uuid4())
+                try:
+                    resp = requests.post(
+                        "https://api.groww.in/v1/token/api/access",
+                        json=body, headers=headers, timeout=15,
+                    )
+                    info(f"approval body={body.get('key_type')} → HTTP {resp.status_code}: {resp.text[:200]}")
+                    if resp.status_code in (200, 201):
+                        data = resp.json()
+                        trade_token = data.get("token")
+                        if trade_token:
+                            ok(f"Approval token! checksum variant={approval_bodies.index(body)}")
+                except Exception as e:
+                    info(f"Approval error: {e}")
+
+            # Also try SDK approval method
+            if not trade_token:
+                try:
+                    result = GrowwAPI.get_access_token(api_key=client_id, secret=client_secret)
+                    if isinstance(result, str) and len(result) > 20:
+                        trade_token = result
+                        ok(f"SDK approval token! ({len(result)} chars)")
+                    else:
+                        info(f"SDK approval result: {str(result)[:200]}")
+                except Exception as e:
+                    info(f"SDK approval error: {e}")
     else:
         fail("No TOTP secret — set GROWW_API_KEY_TOTP or GROWW_TOTP_SECRET")
 else:
