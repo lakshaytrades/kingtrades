@@ -635,13 +635,7 @@ class GrowwAuthManager:
             logger.error(f"[{format_ist_timestamp()}] Cannot refresh — GROWW_TOTP_SECRET missing")
             return False
 
-        # Groww API maintenance window: 2–7 AM IST (servers offline)
-        now_ist = get_current_ist_time()
-        if 2 <= now_ist.hour < 7:
-            logger.info(
-                f"[{format_ist_timestamp()}] Skipping TOTP — Groww maintenance (2–7 AM IST)"
-            )
-            return False
+        # Note: approval method works 24/7 — no maintenance window block needed
 
         for attempt in range(1, 7):
             self._attempt_count += 1
