@@ -61,6 +61,12 @@ try:
 except ImportError:
     _NSE_DATA_AVAILABLE = False
 
+try:
+    from smart_money import SmartMoneyEnhancer, SmartMoneyScore, get_smart_money_enhancer
+    _SM_AVAILABLE = True
+except ImportError:
+    _SM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -154,6 +160,11 @@ class SignalGenerator:
         # NSE supplementary data (bulk/block deals, delivery %, FII futures)
         self._nse_data: Optional["NSEDataFetcher"] = (
             get_nse_data_fetcher() if _NSE_DATA_AVAILABLE else None
+        )
+
+        # Smart Money / institutional intelligence enhancer
+        self._sm: Optional["SmartMoneyEnhancer"] = (
+            get_smart_money_enhancer() if _SM_AVAILABLE else None
         )
 
         # Concurrent scanning config
@@ -259,6 +270,24 @@ class SignalGenerator:
                 institutional_ctx=inst_ctx,
             )
 
+            # 6b. Smart Money Enhancement (Liquidity Sweeps, Wyckoff, ORB, RVOL,
+            #     Market Regime, Killzones, Key Levels, Momentum Quality)
+            sm_score = self._get_smart_money_score(
+                symbol=symbol,
+                direction=direction,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
+                base_score=ai_score,
+            )
+            if sm_score is not None:
+                ai_score = min(100.0, ai_score + sm_score.total_score)
+                if sm_score.reasons:
+                    logger.debug(
+                        f"{symbol} SM boost {sm_score.total_score:+.1f} | "
+                        + " | ".join(sm_score.reasons[:3])
+                    )
+
             if ai_score < self.min_score:
                 logger.debug(f"{symbol}: score {ai_score:.1f} below threshold {self.min_score}")
                 return None
@@ -310,6 +339,9 @@ class SignalGenerator:
                 return None
 
             # 8. Build signal using filter's final score and size
+            # Apply smart money regime multiplier on top of filter's size
+            regime_mult = sm_score.regime_multiplier if sm_score is not None else 1.0
+            combined_size = round(filter_result.size_multiplier * regime_mult, 2)
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,
@@ -321,8 +353,9 @@ class SignalGenerator:
                 rs=rs,
                 news_clear=news_clear,
                 quality_grade=filter_result.quality_grade,
-                size_multiplier=filter_result.size_multiplier,
+                size_multiplier=combined_size,
                 filter_bonuses=filter_result.bonuses,
+                sm_score=sm_score,
             )
 
             logger.info(
@@ -569,6 +602,40 @@ class SignalGenerator:
         return max(0.0, (now_ist - market_open).total_seconds() / 60)
 
     # --------------------------------------------------------
+    # SMART MONEY ENHANCEMENT
+    # --------------------------------------------------------
+
+    def _get_smart_money_score(
+        self,
+        symbol: str,
+        direction: str,
+        df_5m,
+        df_15m=None,
+        df_1h=None,
+        base_score: float = 65.0,
+    ) -> Optional["SmartMoneyScore"]:
+        """
+        Run smart money analysis (Liquidity Sweeps, Wyckoff, ORB, RVOL,
+        Market Regime, Killzones, Key Levels, Momentum Quality) and return
+        a SmartMoneyScore with bonus points and regime_multiplier.
+        Returns None if smart_money module not available.
+        """
+        if not self._sm:
+            return None
+        try:
+            return self._sm.enhance_signal(
+                symbol=symbol,
+                signal_direction=direction,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
+                base_score=base_score,
+            )
+        except Exception as e:
+            logger.debug(f"smart_money enhance_signal({symbol}): {e}")
+            return None
+
+    # --------------------------------------------------------
     # AI COMPOSITE SCORE
     # --------------------------------------------------------
 
@@ -711,6 +778,7 @@ class SignalGenerator:
         quality_grade: str = "B",
         size_multiplier: float = 1.0,
         filter_bonuses: Optional[List[str]] = None,
+        sm_score: Optional["SmartMoneyScore"] = None,
     ) -> TradeSignal:
         """Build complete TradeSignal with entry, SL, TP levels."""
         from config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
@@ -737,6 +805,9 @@ class SignalGenerator:
         pattern_names = [p.name for p in patterns if hasattr(p, "name") and
                          getattr(p, "direction", direction) == direction][:3]
         bonus_str    = " | " + ", ".join((filter_bonuses or [])[:4]) if filter_bonuses else ""
+        sm_str = ""
+        if sm_score and sm_score.reasons:
+            sm_str = " | SM: " + "; ".join(sm_score.reasons[:2])
 
         rationale = (
             f"Grade {quality_grade} | MTF: {mtf_str} | "
@@ -745,7 +816,7 @@ class SignalGenerator:
             f"RSI: {ind.rsi:.0f} | "
             f"MACD: {'▲' if ind.macd_hist > 0 else '▼'} | "
             f"Supertrend: {'▲' if ind.supertrend_dir == 1 else '▼'}"
-            f"{bonus_str}"
+            f"{bonus_str}{sm_str}"
         )
 
         return TradeSignal(
