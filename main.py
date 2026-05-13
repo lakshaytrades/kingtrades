@@ -92,6 +92,7 @@ class TradingBot:
         self.orb_strategy = None        # Opening Range Breakout (9:15-9:45 AM)
         self.scalping_engine = None     # Opening drive scalper (9:15-10:00 AM)
         self.morning_intel = None       # Morning intelligence — day thesis + mode
+        self.profit_engine = None       # Daily profit target + compounding engine
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -334,6 +335,15 @@ class TradingBot:
             self.morning_intel = None
             logger.warning(f"[{format_ist_timestamp()}] Morning Intelligence init failed: {e}")
 
+        # Initialize Daily Profit Engine (₹5-10k target management + compounding)
+        try:
+            from daily_profit_engine import get_profit_engine
+            self.profit_engine = get_profit_engine()
+            logger.info(f"[{format_ist_timestamp()}] Daily Profit Engine ready (target: ₹5,000/day)")
+        except Exception as e:
+            self.profit_engine = None
+            logger.warning(f"[{format_ist_timestamp()}] Profit engine init failed: {e}")
+
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
         self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
@@ -357,14 +367,16 @@ class TradingBot:
             bal = self.fetcher.get_account_balance() if self.fetcher else {}
             available = bal.get("available", 0)
             mode = "⚡ LIVE TRADING" if config.LIVE_TRADING_ENABLED else "🔒 DRY RUN"
+            wl_count = len(config.WATCHLIST)
             self.alerter.send_text(
                 f"🚀 <b>KingTrades Bot Started</b>\n"
                 f"<code>{format_ist_timestamp()}</code>\n\n"
                 f"Mode: <b>{mode}</b>\n"
-                f"Available Balance: <b>₹{available:,.2f}</b>\n"
-                f"Daily Capital: <b>₹{config.MAX_DAILY_CAPITAL:,.0f}</b>\n"
-                f"Watchlist: <b>{len(config.CUSTOM_WATCHLIST.split(',')) if config.CUSTOM_WATCHLIST else 0} stocks</b>\n\n"
-                f"Market opens at 9:15 AM IST. Bot will scan for signals then."
+                f"Balance: <b>₹{available:,.2f}</b> | 5× MIS = <b>₹{available*5:,.0f}</b>\n"
+                f"Daily Target: <b>₹{config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
+                f"Watchlist: <b>{wl_count} stocks</b>\n\n"
+                f"Strategies: MTF + SmartMoney + ProfitMaximizer\n"
+                f"Market opens at 9:15 AM IST"
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
@@ -465,6 +477,26 @@ class TradingBot:
 
         # Initialize risk manager for the day
         self.risk_manager.initialize_day(available, nifty_open)
+
+        # Initialize Profit Engine for the day
+        try:
+            if self.profit_engine:
+                daily_target = float(os.getenv("DAILY_PROFIT_TARGET", "5000"))
+                self.profit_engine.initialize(available, daily_target=daily_target)
+                logger.info(
+                    f"[{format_ist_timestamp()}] Profit Engine initialized | "
+                    f"Balance: ₹{available:,.0f} | Target: ₹{daily_target:,.0f} | "
+                    f"With 5× MIS: ₹{available * 5:,.0f} buying power"
+                )
+                if self.alerter:
+                    self.alerter.send_text(
+                        f"💰 <b>Daily Target Set: ₹{daily_target:,.0f}</b>\n"
+                        f"Balance: ₹{available:,.0f} | 5× MIS = ₹{available*5:,.0f} buying power\n"
+                        f"🎯 Stretch: ₹{daily_target*1.5:,.0f} | Max: ₹{daily_target*2:,.0f}\n"
+                        f"Mode: NORMAL — Trading begins now"
+                    )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Profit engine day init failed: {e}")
 
         # Build watchlist (sector filter from overnight analysis)
         watchlist = self.watchlist_mgr.get_watchlist(
@@ -967,7 +999,55 @@ class TradingBot:
 
             # 5. Execute signals
             for signal in signals:
-                # Apply FII/DII institutional size multiplier to signal
+                # 5a. Profit Engine gate — check if we should still be trading
+                if self.profit_engine:
+                    ok, mode = self.profit_engine.should_take_trade()
+                    if not ok:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] Profit Engine BLOCKED — {mode}"
+                        )
+                        break
+                    # Enforce min score from current mode
+                    engine_min = self.profit_engine.get_min_signal_score()
+                    if signal.signal_score < engine_min:
+                        logger.debug(
+                            f"[{format_ist_timestamp()}] {signal.symbol}: score "
+                            f"{signal.signal_score:.0f} < engine min {engine_min:.0f} "
+                            f"(mode: {mode})"
+                        )
+                        continue
+                    # Get optimal capital deployment from profit engine
+                    try:
+                        deployment = self.profit_engine.get_capital_deployment(
+                            quality_grade=signal.quality_grade,
+                            signal_score=signal.signal_score,
+                            size_multiplier=signal.size_multiplier,
+                        )
+                        if deployment.blocked:
+                            logger.info(
+                                f"[{format_ist_timestamp()}] Deployment blocked: "
+                                f"{deployment.reason}"
+                            )
+                            continue
+                        # Override size_multiplier based on engine's capital plan
+                        # Translate capital_rupees → size multiplier relative to default
+                        if self.profit_engine._available_balance > 0:
+                            default_pct = config.MAX_CAPITAL_PER_TRADE_PCT / 100
+                            engine_pct  = deployment.capital_rupees / max(
+                                self.profit_engine._available_balance, 1
+                            )
+                            signal.size_multiplier = round(
+                                engine_pct / max(default_pct, 0.01), 2
+                            )
+                            signal.size_multiplier = max(0.3, min(signal.size_multiplier, 3.0))
+                            logger.info(
+                                f"[{format_ist_timestamp()}] {signal.symbol}: "
+                                + deployment.reason
+                            )
+                    except Exception as dep_err:
+                        logger.debug(f"Deployment calc: {dep_err}")
+
+                # 5b. Apply FII/DII institutional size multiplier to signal
                 if self.fii_tracker:
                     try:
                         fii_mult = self.fii_tracker.get_position_size_multiplier()
@@ -1068,6 +1148,15 @@ class TradingBot:
                     )
                     if result.success:
                         pnl = pos.pnl
+                        # Record closed trade in Profit Engine for compounding/mode tracking
+                        if self.profit_engine:
+                            try:
+                                self.profit_engine.record_trade_closed(
+                                    pos.symbol, pnl,
+                                    was_partial=pos.t1_done  # avoid double-counting T1
+                                )
+                            except Exception:
+                                pass
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             ltp, pos.quantity, pnl, action["reason"]
@@ -1089,6 +1178,18 @@ class TradingBot:
                             f"{pos.symbol} {exit_qty}qty @ ₹{ltp:.2f} | "
                             f"Partial P&L: ₹{pnl_partial:.0f}"
                         )
+                        # Notify Profit Engine — triggers compounding activation
+                        if self.profit_engine and action["action"] == "PARTIAL_EXIT_T1":
+                            try:
+                                self.profit_engine.record_t1_exit(pos.symbol, pnl_partial)
+                                mode_msg = self.profit_engine.state.mode
+                                logger.info(
+                                    f"[{format_ist_timestamp()}] Profit Engine T1 recorded: "
+                                    f"₹{pnl_partial:+.0f} | Mode: {mode_msg} | "
+                                    f"Total: ₹{self.profit_engine.state.realised_pnl:+,.0f}"
+                                )
+                            except Exception:
+                                pass
                         try:
                             self.alerter.send_exit_alert(
                                 pos.symbol, pos.direction, pos.entry_price,

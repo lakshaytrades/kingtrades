@@ -78,7 +78,7 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)  # Hard cap at 3%
 # Position limits
 MAX_POSITIONS: int = 10        # Max simultaneous open positions
 MIN_POSITIONS: int = 1
-MAX_CAPITAL_PER_TRADE_PCT: float = 15.0  # Max 15% of capital in single trade
+MAX_CAPITAL_PER_TRADE_PCT: float = 20.0  # Default 20%; profit engine uses 25% for A+ signals
 
 # ============================================================
 # STRATEGY PARAMETERS
@@ -160,11 +160,24 @@ PAUSE_AFTER_LOSSES_MINUTES: int = 30  # Pause duration after consecutive losses
 # WATCHLIST
 # ============================================================
 DEFAULT_WATCHLIST = [
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
+    # ── NIFTY 50 / Large Cap — guaranteed institutional liquidity ──
+    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
     "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK", "LT",
     "WIPRO", "HCLTECH", "AXISBANK", "MARUTI", "SUNPHARMA",
-    "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ULTRACEMCO", "TITAN"
-]
+    "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ULTRACEMCO", "TITAN",
+    "NTPC", "POWERGRID", "ONGC", "BPCL", "IOC",
+    "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP", "HINDUNILVR",
+    # ── High-Beta NSE intraday favorites — best for momentum ──
+    "INDUSINDBK", "BANDHANBNK", "FEDERALBNK", "PNB", "BANKBARODA",
+    "TATASTEEL", "JSWSTEEL", "HINDALCO", "SAIL", "NMDC",
+    "ADANIPORTS", "ADANIGREEN", "TATAPOWER", "GAIL", "COALINDIA",
+    "ZOMATO", "PAYTM", "NYKAA", "DMART", "IRCTC",
+    # ── Mid-cap movers with good liquidity ──
+    "MUTHOOTFIN", "CHOLAFIN", "BAJAJFINSV", "SBICARD", "HDFCLIFE",
+]  # 55 stocks — 2.75× more opportunities than before
+
+# Daily profit target (₹) for DailyProfitEngine
+DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "5000"))
 
 CUSTOM_WATCHLIST_STR = os.getenv("CUSTOM_WATCHLIST", "")
 WATCHLIST = (
