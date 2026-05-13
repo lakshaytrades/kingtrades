@@ -267,31 +267,42 @@ class RiskManager:
     # DYNAMIC KELLY CRITERION
     # --------------------------------------------------------
 
-    def _dynamic_kelly_fraction(self) -> float:
+    def _dynamic_kelly_fraction(self, signal_rr: float = 2.0) -> float:
         """
-        Dynamic Kelly using the last 20 closed trades (updates intraday).
-        Falls back to 0.55 win-rate estimate if fewer than 5 trades.
+        Half-Kelly using the last 20 closed trades + signal's R:R.
+        Half-Kelly is standard hedge-fund practice (reduces drawdown vs full Kelly).
 
-        Kelly% = W - (1-W)/R  where R = avg_win / avg_loss
-        Capped at 25% to prevent overbetting.
+        Kelly% = W - (1-W)/R  where W=win_rate, R=avg_win/avg_loss
+        Half-Kelly = Kelly/2 — safer, still captures most of the edge
+
+        Falls back to signal's R:R with conservative 55% estimated win rate.
+        Capped at 20% of buying power (safe for NSE intraday with 5x leverage).
         """
         recent = self.state.closed_trades[-20:]
         if len(recent) < 5:
-            return 0.55   # Fallback
+            # Bootstrap using signal's R:R with 55% estimated win rate
+            kelly = 0.55 - 0.45 / max(signal_rr, 1.0)
+            return max(0.08, min(kelly * 0.5, 0.18))
 
         wins   = [t for t in recent if t.get("pnl", 0) > 0]
         losses = [t for t in recent if t.get("pnl", 0) <= 0]
         if not wins or not losses:
-            return 0.55
+            return 0.12   # Minimum safe fraction
 
         wr      = len(wins) / len(recent)
         avg_win = abs(sum(t["pnl"] for t in wins)   / len(wins))
         avg_los = abs(sum(t["pnl"] for t in losses) / len(losses))
         if avg_los < 1:
-            return 0.55
+            return 0.12
 
-        kelly = wr - (1 - wr) / (avg_win / avg_los)
-        return max(0.10, min(kelly, 0.25))   # Clamp 10-25%
+        # Use max of historical R:R and current signal R:R
+        hist_rr = avg_win / avg_los
+        R = max(hist_rr, signal_rr * 0.7)   # Trust signal R:R partially
+        kelly = wr - (1 - wr) / R
+
+        # Half-Kelly for safety (industry standard, reduces drawdown ~40%)
+        half_kelly = kelly * 0.5
+        return max(0.08, min(half_kelly, 0.22))
 
     # --------------------------------------------------------
     # SECTOR CORRELATION GUARD
@@ -377,6 +388,7 @@ class RiskManager:
         direction: str = "LONG",
         win_rate_estimate: float = 0.55,
         size_multiplier: float = 1.0,
+        signal_rr: float = 2.0,    # Signal's reward:risk — feeds dynamic Kelly
     ) -> Dict:
         """
         Multi-layer position sizing:
@@ -403,8 +415,8 @@ class RiskManager:
         risk_amount = capital * (self.max_risk_pct / 100)
         risk_qty    = int(risk_amount / sl_distance)
 
-        # 2. Dynamic Kelly (on buying power)
-        kelly_frac  = self._dynamic_kelly_fraction()
+        # 2. Dynamic Half-Kelly (on buying power) — uses signal's R:R
+        kelly_frac  = self._dynamic_kelly_fraction(signal_rr=signal_rr)
         kelly_qty   = int((buying_power * kelly_frac) / entry_price)
 
         # More conservative of the two

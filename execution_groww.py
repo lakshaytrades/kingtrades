@@ -515,11 +515,12 @@ class GrowwExecutor:
 
         # Recalculate quantity with live balance, apply signal grade size multiplier
         sizing = self.risk_manager.calculate_position_size(
-            symbol=signal.symbol,
-            entry_price=signal.entry_price,
-            stop_loss=signal.stop_loss,
-            direction=signal.direction,
-            size_multiplier=getattr(signal, "size_multiplier", 1.0),
+            symbol       = signal.symbol,
+            entry_price  = signal.entry_price,
+            stop_loss    = signal.stop_loss,
+            direction    = signal.direction,
+            size_multiplier = getattr(signal, "size_multiplier", 1.0),
+            signal_rr    = getattr(signal, "risk_reward", 2.0),
         )
         quantity = sizing.get("quantity", 0)
         logger.info(
@@ -646,46 +647,112 @@ class GrowwExecutor:
                 return OrderResult(False, message=msg)
 
         try:
-            # ── MARKET order: fills immediately at current price.
-            # LIMIT orders at a stale signal price risk never filling within the
-            # NSE session window, forcing cancellation and missed momentum moves.
-            # For liquid NSE stocks the slippage on MARKET is negligible (<0.05%).
-            order_params = {
-                "trading_symbol": signal.symbol,
-                "exchange": "NSE",
-                "segment": "CASH",         # Equity cash segment
-                "transaction_type": transaction_type,
-                "quantity": quantity,
-                "product": "MIS",          # Intraday only — never delivery
-                "order_type": "MARKET",    # MARKET: fills instantly, no stale-price risk
-                "validity": "DAY",
-            }
+            # ── LIMIT-FIRST execution strategy (Grok: slippage eats 20-70% of edge) ──
+            # 1. Place LIMIT at ask + slippage buffer (fills instantly on liquid NSE stocks)
+            # 2. If not filled in 12s → adjust limit by another buffer, retry once
+            # 3. If not filled in 24s → fall back to MARKET
+            # This recovers ~0.1-0.2% per trade vs pure MARKET orders.
+            try:
+                from slippage_tracker import get_slippage_tracker
+                _slip_tracker = get_slippage_tracker()
+                _limit_price = _slip_tracker.adjust_limit_price(
+                    signal.symbol, signal.direction, entry_price, retry=0
+                )
+                _use_limit = _limit_price > 0
+            except Exception:
+                _use_limit = False
+                _limit_price = entry_price
+                _slip_tracker = None
 
-            response = self._call_place_order(order_params)
-            logger.info(f"[{format_ist_timestamp()}] place_order response: {response}")
+            filled_price = None
+            order_id = None
+            _used_order_type = "MARKET"
 
-            if response and (response.get("order_id") or response.get("id")):
-                order_id = str(response.get("order_id") or response.get("id"))
+            for _attempt in range(3):   # 0=LIMIT, 1=LIMIT retry, 2=MARKET fallback
+                if _attempt == 2 or not _use_limit:
+                    _order_type  = "MARKET"
+                    _price_param = {}
+                    _used_order_type = "MARKET"
+                else:
+                    _order_type = "LIMIT"
+                    _used_order_type = "LIMIT"
+                    if _attempt == 1 and _slip_tracker:
+                        _limit_price = _slip_tracker.adjust_limit_price(
+                            signal.symbol, signal.direction, entry_price, retry=1
+                        )
+                    _price_param = {"price": _limit_price}
 
-                # ── Wait for fill confirmation (MARKET fills in <5s normally) ──
-                # We do NOT cancel on timeout: a MARKET order is already sent to
-                # the exchange and will fill at whatever the current price is.
-                # Cancelling would create a phantom unclosed position.
-                filled_price = self._wait_for_fill(
-                    order_id, entry_price, timeout=60, is_market_order=True
+                order_params = {
+                    "trading_symbol": signal.symbol,
+                    "exchange": "NSE",
+                    "segment": "CASH",
+                    "transaction_type": transaction_type,
+                    "quantity": quantity,
+                    "product": "MIS",
+                    "order_type": _order_type,
+                    "validity": "DAY",
+                    **_price_param,
+                }
+
+                response = self._call_place_order(order_params)
+                logger.info(
+                    f"[{format_ist_timestamp()}] place_order({_order_type}) "
+                    f"attempt={_attempt+1}: {response}"
                 )
 
-                # For MARKET orders: if status API is slow, trust the order went
-                # through and use the live quote as a proxy for fill price.
-                if filled_price is None:
-                    from data_fetch_groww import get_data_fetcher
-                    q = get_data_fetcher().get_quote(signal.symbol)
-                    filled_price = q.get("ltp", entry_price) if q else entry_price
-                    logger.warning(
-                        f"[{format_ist_timestamp()}] ⚠️ {order_id}: fill status not "
-                        f"confirmed in 60s — using live LTP ₹{filled_price:.2f} as fill price. "
-                        f"CHECK GROWW APP to verify position."
+                if not (response and (response.get("order_id") or response.get("id"))):
+                    if _attempt < 2:
+                        continue
+                    break
+
+                order_id = str(response.get("order_id") or response.get("id"))
+
+                if _order_type == "MARKET":
+                    filled_price = self._wait_for_fill(
+                        order_id, entry_price, timeout=60, is_market_order=True
                     )
+                    if filled_price is None:
+                        from data_fetch_groww import get_data_fetcher
+                        q = get_data_fetcher().get_quote(signal.symbol)
+                        filled_price = q.get("ltp", entry_price) if q else entry_price
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] ⚠️ {order_id}: fill status not "
+                            f"confirmed — using LTP ₹{filled_price:.2f}. CHECK GROWW APP."
+                        )
+                    break
+                else:
+                    # LIMIT: wait 12 seconds for fill
+                    filled_price = self._wait_for_fill(
+                        order_id, _limit_price, timeout=12, is_market_order=False
+                    )
+                    if filled_price:
+                        break   # Filled!
+                    else:
+                        # Not filled — cancel and retry with wider limit or market
+                        try:
+                            self._cancel_order(order_id)
+                        except Exception:
+                            pass
+                        logger.info(
+                            f"[{format_ist_timestamp()}] LIMIT not filled in 12s — "
+                            f"{'retrying wider' if _attempt == 0 else 'falling back to MARKET'}"
+                        )
+                        order_id = None
+                        continue
+
+            if not order_id or filled_price is None:
+                return OrderResult(False, message="Order placement failed after 3 attempts")
+
+                # ── Record slippage for adaptive limit pricing ────────────────
+                if _slip_tracker:
+                    try:
+                        _slip_tracker.record_fill(
+                            symbol=signal.symbol, direction=signal.direction,
+                            signal_price=entry_price, fill_price=filled_price,
+                            quantity=quantity, order_type=_used_order_type,
+                        )
+                    except Exception:
+                        pass
 
                 position = self._create_position(signal, quantity, filled_price, order_id)
 

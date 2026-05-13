@@ -1190,6 +1190,27 @@ class TradingBot:
                 except Exception:
                     pass
 
+                # 5c. Portfolio Heat Guard — sector concentration + correlation check
+                try:
+                    from portfolio_heat import get_heat_guard
+                    _heat_ok, _heat_reason = get_heat_guard().apply_to_signal(
+                        signal,
+                        open_positions    = self.risk_manager.state.positions,
+                        available_capital = self.risk_manager.state.daily_capital,
+                    )
+                    if not _heat_ok:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] HEAT GUARD BLOCK: "
+                            f"{signal.symbol} — {_heat_reason}"
+                        )
+                        continue
+                    if _heat_reason != "OK":
+                        logger.debug(
+                            f"[{format_ist_timestamp()}] Heat guard: {signal.symbol} — {_heat_reason}"
+                        )
+                except Exception as _he:
+                    logger.debug(f"Portfolio heat check skipped: {_he}")
+
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
                 if result.success:
