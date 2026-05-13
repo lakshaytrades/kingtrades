@@ -67,6 +67,12 @@ try:
 except ImportError:
     _SM_AVAILABLE = False
 
+try:
+    from profit_maximizer import ProfitMaximizer, ProfitMaxScore, get_profit_maximizer
+    _PM_AVAILABLE = True
+except ImportError:
+    _PM_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -165,6 +171,11 @@ class SignalGenerator:
         # Smart Money / institutional intelligence enhancer
         self._sm: Optional["SmartMoneyEnhancer"] = (
             get_smart_money_enhancer() if _SM_AVAILABLE else None
+        )
+
+        # Profit Maximizer (NR7, Fibonacci, Hidden Divergence, Camarilla, Ichimoku, VSA, MIB)
+        self._pm: Optional["ProfitMaximizer"] = (
+            get_profit_maximizer() if _PM_AVAILABLE else None
         )
 
         # Concurrent scanning config
@@ -288,6 +299,25 @@ class SignalGenerator:
                         + " | ".join(sm_score.reasons[:3])
                     )
 
+            # 6c. Profit Maximizer Enhancement
+            #     (NR7, Fibonacci Golden Pocket, Hidden Divergence, Camarilla Pivots,
+            #      Ichimoku, VSA, Multiple Inside Bars)
+            pm_score = self._get_profit_max_score(
+                symbol=symbol,
+                direction=direction,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
+                stock_quote=inst_ctx,  # passes prev_high/low/close when available
+            )
+            if pm_score is not None:
+                ai_score = min(100.0, ai_score + pm_score.total_bonus)
+                if pm_score.reasons:
+                    logger.debug(
+                        f"{symbol} PM boost {pm_score.total_bonus:+.1f} | "
+                        + " | ".join(pm_score.reasons[:3])
+                    )
+
             if ai_score < self.min_score:
                 logger.debug(f"{symbol}: score {ai_score:.1f} below threshold {self.min_score}")
                 return None
@@ -356,6 +386,7 @@ class SignalGenerator:
                 size_multiplier=combined_size,
                 filter_bonuses=filter_result.bonuses,
                 sm_score=sm_score,
+                pm_score=pm_score,
             )
 
             logger.info(
@@ -602,6 +633,45 @@ class SignalGenerator:
         return max(0.0, (now_ist - market_open).total_seconds() / 60)
 
     # --------------------------------------------------------
+    # PROFIT MAXIMIZER ENHANCEMENT
+    # --------------------------------------------------------
+
+    def _get_profit_max_score(
+        self,
+        symbol: str,
+        direction: str,
+        df_5m,
+        df_15m=None,
+        df_1h=None,
+        stock_quote: Optional[Dict] = None,
+    ) -> Optional["ProfitMaxScore"]:
+        """
+        Run profit maximizer (NR7, Fibonacci, Hidden Divergence, Camarilla Pivots,
+        Ichimoku, VSA, Multiple Inside Bars) and return bonus score.
+        Returns None if profit_maximizer module not available.
+        """
+        if not self._pm:
+            return None
+        try:
+            q = stock_quote or {}
+            prev_high  = float(q.get("prev_high",  q.get("high",  0)) or 0)
+            prev_low   = float(q.get("prev_low",   q.get("low",   0)) or 0)
+            prev_close = float(q.get("prev_close", q.get("close", 0)) or 0)
+            return self._pm.enhance(
+                symbol=symbol,
+                signal_direction=direction,
+                df_5m=df_5m,
+                df_15m=df_15m,
+                df_1h=df_1h,
+                prev_high=prev_high,
+                prev_low=prev_low,
+                prev_close=prev_close,
+            )
+        except Exception as e:
+            logger.debug(f"profit_maximizer enhance({symbol}): {e}")
+            return None
+
+    # --------------------------------------------------------
     # SMART MONEY ENHANCEMENT
     # --------------------------------------------------------
 
@@ -779,6 +849,7 @@ class SignalGenerator:
         size_multiplier: float = 1.0,
         filter_bonuses: Optional[List[str]] = None,
         sm_score: Optional["SmartMoneyScore"] = None,
+        pm_score: Optional["ProfitMaxScore"] = None,
     ) -> TradeSignal:
         """Build complete TradeSignal with entry, SL, TP levels."""
         from config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
@@ -808,6 +879,9 @@ class SignalGenerator:
         sm_str = ""
         if sm_score and sm_score.reasons:
             sm_str = " | SM: " + "; ".join(sm_score.reasons[:2])
+        pm_str = ""
+        if pm_score and pm_score.reasons:
+            pm_str = " | PM: " + "; ".join(pm_score.reasons[:2])
 
         rationale = (
             f"Grade {quality_grade} | MTF: {mtf_str} | "
@@ -816,7 +890,7 @@ class SignalGenerator:
             f"RSI: {ind.rsi:.0f} | "
             f"MACD: {'▲' if ind.macd_hist > 0 else '▼'} | "
             f"Supertrend: {'▲' if ind.supertrend_dir == 1 else '▼'}"
-            f"{bonus_str}{sm_str}"
+            f"{bonus_str}{sm_str}{pm_str}"
         )
 
         return TradeSignal(
