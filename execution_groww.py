@@ -335,17 +335,97 @@ class GrowwExecutor:
         except Exception as e:
             logger.debug(f"Sentiment check skipped: {e}")
 
-        # Supervisor removed — signal generator already enforces quality gates.
-        # Set a neutral review stub so dynamic leverage doesn't break.
-        signal._claude_review = {"approved": True, "confidence": 70, "skipped": True}
+        # ── Shared indicator refs (reused by supervisor, win_predictor, RL) ─────
+        _ind = signal.indicators
+        _vwap_dev = 0.0
+        if _ind and _ind.vwap and signal.entry_price:
+            _vwap_dev = (signal.entry_price - _ind.vwap) / _ind.vwap * 100
+        _mtf = signal.timeframe_alignment or {}
+        _aligned = _mtf.get("aligned_count", 0)
+        if _aligned == 3:
+            _mtf_str = "STRONG_BULLISH" if signal.direction == "LONG" else "STRONG_BEARISH"
+        elif _aligned >= 2:
+            _mtf_str = "BULLISH" if signal.direction == "LONG" else "BEARISH"
+        else:
+            _mtf_str = _mtf.get("alignment", "NEUTRAL")
+        _h = get_current_ist_time().hour
+        _session = (
+            "OPENING_DRIVE" if _h < 10
+            else "MIDDAY" if 11 <= _h < 13
+            else "POWER_HOUR" if 14 <= _h < 15
+            else "NORMAL"
+        )
+
+        # ── Trade Supervisor — 12-rule expert system ──────────────────────────
+        try:
+            from trade_supervisor import review_signal as _ts_review
+            _ts_data = {
+                "symbol":             signal.symbol,
+                "direction":          signal.direction,
+                "score":              signal.signal_score,
+                "entry_price":        signal.entry_price,
+                "stop_loss":          signal.stop_loss,
+                "target":             signal.target_1,
+                "rsi":                _ind.rsi if _ind else 50.0,
+                "macd_hist":          _ind.macd_hist if _ind else 0.0,
+                "vwap_deviation_pct": _vwap_dev,
+                "volume_ratio":       _ind.volume_ratio if _ind else 1.0,
+                "mtf_alignment":      _mtf_str,
+                "session":            _session,
+                "nifty_trend":        "neutral",
+            }
+            _review = _ts_review(_ts_data)
+            signal._claude_review = _review
+            if not _review.get("approved", True):
+                logger.info(
+                    f"[{format_ist_timestamp()}] SUPERVISOR REJECT: {signal.symbol} "
+                    f"— {_review.get('reason')}"
+                )
+                return OrderResult(False, message=f"Supervisor: {_review.get('reason')}")
+            logger.debug(
+                f"[{format_ist_timestamp()}] Supervisor APPROVED: {signal.symbol} "
+                f"conf={_review.get('confidence')}%"
+            )
+        except Exception as e:
+            signal._claude_review = {"approved": True, "confidence": 70, "skipped": True}
+            logger.debug(f"Supervisor check skipped: {e}")
+
+        # ── Win Predictor — RF-based win probability / size adjustment ─────────
+        try:
+            from win_predictor import get_win_predictor, conviction_adjustment, should_block_by_win_prob
+            _ist_now = get_current_ist_time()
+            _wp_data = {
+                "signal_score":   signal.signal_score,
+                "rsi":            _ind.rsi if _ind else 50.0,
+                "volume_ratio":   _ind.volume_ratio if _ind else 1.0,
+                "hour":           _ist_now.hour,
+                "day_of_week":    _ist_now.weekday(),
+                "direction":      signal.direction,
+                "session":        _session,
+                "macd_hist":      _ind.macd_hist if _ind else 0.0,
+                "vwap_deviation": _vwap_dev,
+            }
+            _win_prob, _confident = get_win_predictor().predict(_wp_data)
+            if _confident and should_block_by_win_prob(_win_prob):
+                logger.info(
+                    f"[{format_ist_timestamp()}] WIN_PRED BLOCK: {signal.symbol} "
+                    f"— win_prob={_win_prob:.0%} too low"
+                )
+                return OrderResult(False, message=f"WinPredictor: win_prob={_win_prob:.0%} too low")
+            _adj = conviction_adjustment(_win_prob)
+            if _adj > 0 and _confident:
+                old_mult = getattr(signal, "size_multiplier", 1.0)
+                signal.size_multiplier = round(old_mult * (1 + _adj / 100), 3)
+                logger.debug(
+                    f"[{format_ist_timestamp()}] WinPredictor boost: {signal.symbol} "
+                    f"win_prob={_win_prob:.0%} mult {old_mult:.2f}→{signal.size_multiplier:.2f}"
+                )
+        except Exception as e:
+            logger.debug(f"WinPredictor check skipped: {e}")
 
         # ── RL Brain — institution-level portfolio + learned conviction check ──
         try:
             from rl_agent import LakshKingRL
-            _ind = signal.indicators
-            _vwap_dev = 0.0
-            if _ind and _ind.vwap and signal.entry_price:
-                _vwap_dev = (signal.entry_price - _ind.vwap) / _ind.vwap * 100
             _mtf = signal.timeframe_alignment or {}
             _aligned = _mtf.get("aligned_count", 0)
             if _aligned == 3:

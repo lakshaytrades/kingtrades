@@ -109,6 +109,7 @@ class TradingBot:
         self._weekly_pnl_file = Path(config.WEEKLY_DATA_FILE)
         self._weekly_pnl_file.parent.mkdir(exist_ok=True)
         self._weekly_mode: str = "NORMAL"   # NORMAL / PROTECT / LOCKED
+        self._day_bias_score: int = 0        # overnight bias -100 to +100 (set at market open)
 
     # --------------------------------------------------------
     # STARTUP
@@ -497,6 +498,23 @@ class TradingBot:
                     )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Profit engine day init failed: {e}")
+
+        # ── Overnight bias_score → opening size multiplier ─────────────
+        if self.overnight:
+            self._day_bias_score = self.overnight.get_bias_score()
+            _bias_tag = (
+                "VERY BULLISH" if self._day_bias_score >= 60
+                else "BULLISH" if self._day_bias_score >= 30
+                else "SLIGHTLY BULLISH" if self._day_bias_score >= 15
+                else "VERY BEARISH" if self._day_bias_score <= -60
+                else "BEARISH" if self._day_bias_score <= -30
+                else "SLIGHTLY BEARISH" if self._day_bias_score <= -15
+                else "NEUTRAL"
+            )
+            logger.info(
+                f"[{format_ist_timestamp()}] Overnight bias: {_bias_tag} "
+                f"(score={self._day_bias_score:+d})"
+            )
 
         # Build watchlist (sector filter from overnight analysis)
         watchlist = self.watchlist_mgr.get_watchlist(
@@ -926,6 +944,7 @@ class TradingBot:
             # 4d. Pairs trading — only during midday (11:00–13:30 IST)
             if self.pairs_engine and self.pairs_engine.should_scan():
                 try:
+                    from signal_generator import TradeSignal as _TS
                     pair_signals = self.pairs_engine.scan_pairs(
                         data_fetcher=self.fetcher
                     )
@@ -939,17 +958,67 @@ class TradingBot:
                             self.alerter.send_text(
                                 self.pairs_engine.format_telegram_signal(ps)
                             )
+                        # Convert each leg to a TradeSignal for live execution
+                        for _direction, _sym, _entry in [
+                            ("LONG",  ps.symbol_long,  ps.entry_long),
+                            ("SHORT", ps.symbol_short, ps.entry_short),
+                        ]:
+                            if _entry <= 0:
+                                continue
+                            _sl_pct  = max(0.012, min(0.025, abs(ps.spread_pct) / 100 * 0.5))
+                            _t1_pct  = max(0.020, abs(ps.spread_pct) / 100 * (abs(ps.zscore) - ps.target_zscore) / max(abs(ps.zscore), 0.01) * 0.5)
+                            _t2_pct  = _t1_pct * 1.5
+                            if _direction == "LONG":
+                                _sl  = round(_entry * (1 - _sl_pct), 2)
+                                _t1  = round(_entry * (1 + _t1_pct), 2)
+                                _t2  = round(_entry * (1 + _t2_pct), 2)
+                            else:
+                                _sl  = round(_entry * (1 + _sl_pct), 2)
+                                _t1  = round(_entry * (1 - _t1_pct), 2)
+                                _t2  = round(_entry * (1 - _t2_pct), 2)
+                            _score  = min(92.0, 70.0 + abs(ps.zscore) * 4 + ps.confidence * 0.1)
+                            _grade  = "A+" if _score >= 88 else "A" if _score >= 82 else "B"
+                            _mult   = 1.2 if _grade == "A+" else 1.1 if _grade == "A" else 1.0
+                            _rr     = round(abs(_t1 - _entry) / max(abs(_sl - _entry), 0.01), 2)
+                            _ts = _TS(
+                                symbol=_sym, direction=_direction,
+                                signal_score=round(_score, 1),
+                                entry_price=_entry, stop_loss=_sl,
+                                target_1=_t1, target_2=_t2,
+                                risk_reward=_rr, atr=round(_entry * 0.01, 2),
+                                patterns=["PAIRS_MEAN_REVERSION"],
+                                quality_grade=_grade, size_multiplier=_mult,
+                                rationale=f"Pairs z={ps.zscore:+.2f} | {ps.reason}",
+                                is_high_confidence=_score >= 80,
+                            )
+                            signals.append(_ts)
                 except Exception as e:
                     logger.debug(f"Pairs scan failed: {e}")
 
-            # 4e. Periodic block deal rescan (every 15 min during market hours)
+            # 4e. Block deal rescan (every 15 min) + immediate signal scan for new buys
             if self.block_deal_scanner and now_ist.minute % 15 == 0:
                 try:
                     new_buys = self.block_deal_scanner.scan_and_alert()
                     if new_buys:
                         logger.info(
-                            f"[{format_ist_timestamp()}] New block deal targets: {new_buys}"
+                            f"[{format_ist_timestamp()}] Block deal: new institutional "
+                            f"buy targets — immediate scan: {new_buys}"
                         )
+                        # Scan only the hot block-deal stocks right now for signals
+                        _bd_signals = self.signal_gen.scan_watchlist(
+                            symbols=new_buys, max_signals=len(new_buys)
+                        )
+                        for _bd_sig in _bd_signals:
+                            _bd_sig.rationale = "[BLOCK-DEAL] " + _bd_sig.rationale
+                            _bd_sig.size_multiplier = min(
+                                _bd_sig.size_multiplier * 1.2, 2.0
+                            )
+                            signals.append(_bd_sig)
+                        if _bd_signals:
+                            logger.info(
+                                f"[{format_ist_timestamp()}] Block deal immediate scan: "
+                                f"{len(_bd_signals)} signal(s) added"
+                            )
                 except Exception as e:
                     logger.debug(f"Block deal rescan failed: {e}")
 
@@ -1047,16 +1116,35 @@ class TradingBot:
                     except Exception as dep_err:
                         logger.debug(f"Deployment calc: {dep_err}")
 
-                # 5b. Apply FII/DII institutional size multiplier to signal
-                if self.fii_tracker:
-                    try:
+                # 5b. Apply FII/DII + overnight bias + directional day bias
+                try:
+                    fii_mult = 1.0
+                    if self.fii_tracker:
                         fii_mult = self.fii_tracker.get_position_size_multiplier()
-                        signal.size_multiplier = round(
-                            signal.size_multiplier * fii_mult * overnight_mult, 2
-                        )
-                        signal.size_multiplier = max(0.25, min(signal.size_multiplier, 2.0))
-                    except Exception:
-                        pass
+
+                    # Directional day-bias multiplier from overnight analysis
+                    _bias = self._day_bias_score
+                    if _bias >= 60:
+                        _dir_mult = 1.25 if signal.direction == "LONG" else 0.75
+                    elif _bias >= 30:
+                        _dir_mult = 1.15 if signal.direction == "LONG" else 0.85
+                    elif _bias >= 15:
+                        _dir_mult = 1.08 if signal.direction == "LONG" else 0.92
+                    elif _bias <= -60:
+                        _dir_mult = 0.65 if signal.direction == "LONG" else 1.25
+                    elif _bias <= -30:
+                        _dir_mult = 0.80 if signal.direction == "LONG" else 1.15
+                    elif _bias <= -15:
+                        _dir_mult = 0.92 if signal.direction == "LONG" else 1.08
+                    else:
+                        _dir_mult = 1.0
+
+                    signal.size_multiplier = round(
+                        signal.size_multiplier * fii_mult * overnight_mult * _dir_mult, 2
+                    )
+                    signal.size_multiplier = max(0.25, min(signal.size_multiplier, 2.0))
+                except Exception:
+                    pass
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
