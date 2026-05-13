@@ -423,6 +423,59 @@ class GrowwExecutor:
         except Exception as e:
             logger.debug(f"WinPredictor check skipped: {e}")
 
+        # ── Elite Brain — 12-module fusion (Grand Slam detector) ─────────────
+        try:
+            from elite_brain import make_elite_decision
+            _eb_ctx = {
+                "oc_score":            getattr(signal, "_oc_score", 0),
+                "fii_mult":            getattr(signal, "_fii_mult", 1.0),
+                "vp_score":            getattr(signal, "_vp_score", 0),
+                "vp_notes":            [],
+                "regime_name":         getattr(signal, "_regime_name", "UNKNOWN"),
+                "regime_strategy":     getattr(signal, "_regime_strategy", "MOMENTUM"),
+                "regime_size_mult":    getattr(signal, "_regime_size_mult", 1.0),
+                "regime_preferred_dir":getattr(signal, "_regime_dir", "BOTH"),
+                "regime_tradeable":    getattr(signal, "_regime_tradeable", True),
+                "overnight_bias":      0,
+                "sentiment_score":     0,
+                "nse_score":           0,
+                "mtf_alignment":       signal.timeframe_alignment or {},
+            }
+            _eb_review = signal._claude_review if hasattr(signal, "_claude_review") else None
+            _eb_decision = make_elite_decision(
+                symbol         = signal.symbol,
+                direction      = signal.direction,
+                signal_score   = signal.signal_score,
+                ctx            = _eb_ctx,
+                supervisor_review = _eb_review,
+                win_prob       = _win_prob if "_win_prob" in dir() else 0.55,
+                win_prob_confident = _confident if "_confident" in dir() else False,
+                sm_score       = getattr(signal, "_sm_score", None),
+                pm_score       = getattr(signal, "_pm_score", None),
+            )
+            if not _eb_decision.approved:
+                logger.info(
+                    f"[{format_ist_timestamp()}] ELITE BRAIN REJECT: {signal.symbol} "
+                    f"— {_eb_decision.reject_reason} "
+                    f"({_eb_decision.aligned_count}/{_eb_decision.total_modules} modules)"
+                )
+                return OrderResult(False, message=_eb_decision.reject_reason)
+
+            # Apply elite brain size multiplier if larger than current
+            if _eb_decision.size_multiplier > signal.size_multiplier:
+                signal.size_multiplier = round(_eb_decision.size_multiplier, 2)
+
+            if _eb_decision.grand_slam:
+                logger.info(
+                    f"[{format_ist_timestamp()}] 🏆 GRAND SLAM: {signal.symbol} "
+                    f"{signal.direction} — {_eb_decision.aligned_count}/12 modules "
+                    f"| conviction={_eb_decision.conviction_score:.0f} "
+                    f"| size={signal.size_multiplier:.1f}x"
+                )
+                signal.rationale = f"[GRAND SLAM] {signal.rationale}"
+        except Exception as e:
+            logger.debug(f"Elite Brain check skipped: {e}")
+
         # ── RL Brain — institution-level portfolio + learned conviction check ──
         try:
             from rl_agent import LakshKingRL

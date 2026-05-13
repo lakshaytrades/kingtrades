@@ -93,6 +93,8 @@ class TradingBot:
         self.scalping_engine = None     # Opening drive scalper (9:15-10:00 AM)
         self.morning_intel = None       # Morning intelligence — day thesis + mode
         self.profit_engine = None       # Daily profit target + compounding engine
+        self.elite_brain   = None       # 12-module signal fusion (Grand Slam detector)
+        self.burst_detector = None      # Explosive momentum burst scanner
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -344,6 +346,24 @@ class TradingBot:
         except Exception as e:
             self.profit_engine = None
             logger.warning(f"[{format_ist_timestamp()}] Profit engine init failed: {e}")
+
+        # Initialize Elite Brain (12-module signal fusion + Grand Slam detector)
+        try:
+            from elite_brain import get_elite_brain
+            self.elite_brain = get_elite_brain()
+            logger.info(f"[{format_ist_timestamp()}] Elite Brain ready — 12-module fusion engine")
+        except Exception as e:
+            self.elite_brain = None
+            logger.warning(f"[{format_ist_timestamp()}] Elite Brain init failed: {e}")
+
+        # Initialize Momentum Burst Detector (explosive 3-5% move scanner)
+        try:
+            from momentum_burst import get_burst_detector
+            self.burst_detector = get_burst_detector()
+            logger.info(f"[{format_ist_timestamp()}] Momentum Burst Detector ready")
+        except Exception as e:
+            self.burst_detector = None
+            logger.warning(f"[{format_ist_timestamp()}] Burst detector init failed: {e}")
 
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
@@ -1066,6 +1086,30 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Scalping scan failed: {e}")
 
+            # 4h. Momentum Burst Detector (opening 9:15-10:15 + afternoon 13:30-14:45)
+            if self.burst_detector and self.burst_detector.is_burst_time():
+                try:
+                    burst_setups = self.burst_detector.scan(watchlist[:20], self.fetcher)
+                    for bs in burst_setups:
+                        burst_ts = self.burst_detector.to_trade_signal(bs)
+                        if burst_ts:
+                            signals.append(burst_ts)
+                            logger.info(
+                                f"[{format_ist_timestamp()}] {bs.summary()}"
+                            )
+                            if self.alerter:
+                                self.alerter.send_html(
+                                    f"🚀 <b>BURST SIGNAL: {bs.symbol} {bs.direction}</b>\n"
+                                    f"Score: {bs.burst_score:.0f}/100 | "
+                                    f"RVOL: {bs.rvol:.1f}x\n"
+                                    f"Conditions: {', '.join(bs.conditions_met[:4])}\n"
+                                    f"Entry: ₹{bs.entry_price:.2f} | "
+                                    f"SL: ₹{bs.stop_loss:.2f} | "
+                                    f"T1: ₹{bs.target_1:.2f}"
+                                )
+                except Exception as e:
+                    logger.debug(f"Burst scan failed: {e}")
+
             # 5. Execute signals
             for signal in signals:
                 # 5a. Profit Engine gate — check if we should still be trading
@@ -1243,6 +1287,14 @@ class TradingBot:
                                     pos.symbol, pnl,
                                     was_partial=pos.t1_done  # avoid double-counting T1
                                 )
+                            except Exception:
+                                pass
+                        # Record outcome in Elite Brain for adaptive weight learning
+                        if self.elite_brain:
+                            try:
+                                _eb_votes = getattr(pos, "_elite_module_votes", {})
+                                if _eb_votes:
+                                    self.elite_brain.record_trade_outcome(_eb_votes, won=pnl > 0)
                             except Exception:
                                 pass
                         self.alerter.send_exit_alert(

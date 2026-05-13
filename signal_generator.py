@@ -73,6 +73,12 @@ try:
 except ImportError:
     _PM_AVAILABLE = False
 
+try:
+    from market_regime import MarketRegimeDetector, RegimeState
+    _REGIME_AVAILABLE = True
+except ImportError:
+    _REGIME_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -178,6 +184,11 @@ class SignalGenerator:
             get_profit_maximizer() if _PM_AVAILABLE else None
         )
 
+        # Market Regime Detector — tells us WHAT strategy to use right now
+        self._regime: Optional["MarketRegimeDetector"] = (
+            MarketRegimeDetector() if _REGIME_AVAILABLE else None
+        )
+
         # Concurrent scanning config
         self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
 
@@ -268,6 +279,10 @@ class SignalGenerator:
 
             # 5b. Institutional intelligence context (Option Chain + Volume Profile)
             inst_ctx = self._get_institutional_context(symbol, df_5m)
+
+            # 5c. Regime block — skip signal if regime is AVOID
+            if inst_ctx.get("regime_block", False):
+                return None
 
             # 6. Composite AI score
             ai_score = self._compute_ai_score(
@@ -527,6 +542,28 @@ class SignalGenerator:
                 ctx["nse_reason"] = nse_reason
             except Exception as e:
                 logger.debug(f"NSE data context error for {symbol}: {e}")
+
+        # ── Market Regime Detection ───────────────────────────
+        if self._regime and df_5m is not None and not df_5m.empty:
+            try:
+                regime = self._regime.detect(df_5m)
+                ctx["regime_name"]         = regime.regime
+                ctx["regime_strategy"]     = regime.strategy
+                ctx["regime_size_mult"]    = regime.size_multiplier
+                ctx["regime_preferred_dir"]= regime.preferred_direction
+                ctx["regime_tradeable"]    = regime.is_tradeable
+                ctx["regime_confidence"]   = regime.confidence
+                ctx["regime_description"]  = regime.description
+                ctx["fii_mult"]            = ctx.get("fii_size_mult", 1.0)
+                # Block AVOID regimes before signal generation
+                if not regime.is_tradeable:
+                    logger.debug(
+                        f"[{format_ist_timestamp()}] {symbol}: regime={regime.regime} "
+                        f"strategy=AVOID — skipping signal"
+                    )
+                    ctx["regime_block"] = True
+            except Exception as e:
+                logger.debug(f"Market regime error for {symbol}: {e}")
 
         return ctx
 
@@ -827,6 +864,22 @@ class SignalGenerator:
                 logger.debug(
                     f"NSE data adj={nse_adj:+d} | {ctx.get('nse_reason', '')}"
                 )
+
+        # ── [NEW] Market Regime bonus/penalty ────────────────
+        regime_strategy  = ctx.get("regime_strategy", "MOMENTUM")
+        regime_pref_dir  = ctx.get("regime_preferred_dir", "BOTH")
+        regime_tradeable = ctx.get("regime_tradeable", True)
+        if not regime_tradeable:
+            score -= 20   # Non-tradeable regime = heavy penalty
+        elif regime_strategy == "MOMENTUM":
+            if regime_pref_dir == direction or regime_pref_dir == "BOTH":
+                score += 12   # Regime confirms direction
+            else:
+                score -= 15   # Regime opposes direction
+        elif regime_strategy == "MEAN_REVERSION":
+            score -= 5    # Momentum signals in mean-reversion regime = slight penalty
+        else:
+            score -= 25   # AVOID regime = very heavy penalty
 
         return min(round(score, 1), 100)
 
