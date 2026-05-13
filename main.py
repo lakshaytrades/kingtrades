@@ -1340,12 +1340,19 @@ class TradingBot:
                             f"Partial P&L: ₹{pnl_partial:.0f}"
                         )
                         # Notify Profit Engine — triggers compounding activation
-                        if self.profit_engine and action["action"] == "PARTIAL_EXIT_T1":
+                        if self.profit_engine:
                             try:
-                                self.profit_engine.record_t1_exit(pos.symbol, pnl_partial)
+                                if action["action"] == "PARTIAL_EXIT_T1":
+                                    self.profit_engine.record_t1_exit(pos.symbol, pnl_partial)
+                                elif action["action"] == "PARTIAL_EXIT_T2":
+                                    # T2 exit = additional locked profit, update mode
+                                    self.profit_engine.record_trade_closed(
+                                        pos.symbol, pnl_partial, was_partial=True
+                                    )
                                 mode_msg = self.profit_engine.state.mode
                                 logger.info(
-                                    f"[{format_ist_timestamp()}] Profit Engine T1 recorded: "
+                                    f"[{format_ist_timestamp()}] Profit Engine "
+                                    f"{action['action']} recorded: "
                                     f"₹{pnl_partial:+.0f} | Mode: {mode_msg} | "
                                     f"Total: ₹{self.profit_engine.state.realised_pnl:+,.0f}"
                                 )
