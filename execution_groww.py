@@ -380,11 +380,13 @@ class GrowwExecutor:
         except Exception as e:
             logger.debug(f"RL check skipped: {e}")
 
-        # Recalculate quantity with live balance, apply filter size multiplier
+        # Recalculate quantity with live balance, apply signal grade size multiplier
         sizing = self.risk_manager.calculate_position_size(
             symbol=signal.symbol,
             entry_price=signal.entry_price,
             stop_loss=signal.stop_loss,
+            direction=signal.direction,
+            size_multiplier=getattr(signal, "size_multiplier", 1.0),
         )
         quantity = sizing.get("quantity", 0)
         logger.info(
@@ -553,6 +555,29 @@ class GrowwExecutor:
                     )
 
                 position = self._create_position(signal, quantity, filled_price, order_id)
+
+                # ── Place SL order immediately after entry (critical safety net) ──
+                # This ensures Groww's exchange-side SL fires even if the bot crashes.
+                sl_order_id = self._place_sl_order(
+                    symbol=signal.symbol,
+                    direction=signal.direction,
+                    quantity=quantity,
+                    sl_price=signal.stop_loss,
+                    entry_price=filled_price,
+                )
+                if sl_order_id:
+                    position.sl_order_id = sl_order_id
+                    logger.info(
+                        f"[{format_ist_timestamp()}] ✅ SL ORDER: {sl_order_id} | "
+                        f"{signal.symbol} SL @ ₹{signal.stop_loss:.2f}"
+                    )
+                else:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] ⚠️ SL ORDER FAILED for {signal.symbol} "
+                        f"@ ₹{signal.stop_loss:.2f} — monitor manually! "
+                        f"Bot will manage SL via polling but exchange-side protection is missing."
+                    )
+
                 self.risk_manager.add_position(position)
                 self._log_to_db(signal, quantity, filled_price, order_id, live=True)
 
@@ -571,7 +596,7 @@ class GrowwExecutor:
                     f"Margin used: Rs.{quantity * filled_price / 5:,.0f} "
                     f"(balance Rs.{cap:,.0f})\n"
                     f"SL: Rs.{signal.stop_loss:.2f}  |  "
-                    f"Target: Rs.{signal.take_profit:.2f}\n"
+                    f"T1: Rs.{signal.target_1:.2f}  |  T2: Rs.{signal.target_2:.2f}\n"
                     f"Risk: Rs.{abs(filled_price - signal.stop_loss) * quantity:,.0f} "
                     f"({abs(filled_price - signal.stop_loss) / filled_price * 100:.2f}%)\n"
                     f"Score: {signal.signal_score:.0f}  |  Order: {order_id}"
@@ -748,20 +773,35 @@ class GrowwExecutor:
             logger.info(f"[{format_ist_timestamp()}] [DRY] SL modified: {symbol} → ₹{new_sl:.2f}")
             return OrderResult(True, message=f"Dry: SL updated to ₹{new_sl:.2f}")
 
-        # Modify SL order on Groww if sl_order_id exists
+        # Update SL order on Groww: cancel old SL, place new one at updated price
         if pos.sl_order_id and self._api:
             try:
-                response = self._api.modify_order(
-                    order_id=pos.sl_order_id,
-                    price=round_to_tick_size(new_sl),
+                # Cancel the existing SL order
+                self._cancel_order(pos.sl_order_id)
+            except Exception:
+                pass
+
+        # Always place a fresh SL order at the new level (trailing stop update)
+        if self._api:
+            new_sl_order_id = self._place_sl_order(
+                symbol=symbol,
+                direction=pos.direction,
+                quantity=pos.quantity,
+                sl_price=new_sl,
+                entry_price=pos.entry_price,
+            )
+            if new_sl_order_id:
+                pos.sl_order_id = new_sl_order_id
+                logger.info(
+                    f"[{format_ist_timestamp()}] SL updated: {symbol} → ₹{new_sl:.2f} "
+                    f"(order: {new_sl_order_id})"
                 )
-                if response:
-                    logger.info(
-                        f"[{format_ist_timestamp()}] SL modified: {symbol} → ₹{new_sl:.2f}"
-                    )
-                    return OrderResult(True, order_id=pos.sl_order_id)
-            except Exception as e:
-                logger.error(f"Modify SL error: {e}")
+                return OrderResult(True, order_id=new_sl_order_id)
+            else:
+                logger.warning(
+                    f"[{format_ist_timestamp()}] SL order replace failed: "
+                    f"{symbol} → ₹{new_sl:.2f} — local state updated, monitor manually"
+                )
 
         return OrderResult(True, message=f"SL updated locally to ₹{new_sl:.2f}")
 
@@ -916,6 +956,73 @@ class GrowwExecutor:
             return False
 
     # --------------------------------------------------------
+
+    def _place_sl_order(
+        self,
+        symbol: str,
+        direction: str,
+        quantity: int,
+        sl_price: float,
+        entry_price: float,
+    ) -> str:
+        """
+        Place a Stop-Loss Market (SLM) order on Groww immediately after entry.
+        This is the exchange-side safety net — fires even if the bot crashes.
+
+        SL direction is the OPPOSITE of entry:
+          LONG entry → SL is a SELL stop (triggers when price drops to sl_price)
+          SHORT entry → SL is a BUY stop (triggers when price rises to sl_price)
+
+        Returns the sl_order_id string, or "" on failure.
+        """
+        if not self.live_enabled or not self._api:
+            return ""
+
+        sl_transaction = "SELL" if direction == "LONG" else "BUY"
+
+        # Add a small buffer to trigger price to avoid premature triggers:
+        # LONG SL: trigger slightly below sl_price (0.05% buffer)
+        # SHORT SL: trigger slightly above sl_price (0.05% buffer)
+        buffer = sl_price * 0.0005
+        if direction == "LONG":
+            trigger_price = round_to_tick_size(sl_price - buffer)
+        else:
+            trigger_price = round_to_tick_size(sl_price + buffer)
+
+        sl_params = {
+            "trading_symbol": symbol,
+            "exchange":       "NSE",
+            "segment":        "CASH",
+            "transaction_type": sl_transaction,
+            "quantity":       quantity,
+            "product":        "MIS",
+            "order_type":     "SLM",       # Stop-Loss Market — triggers and fills at market
+            "trigger_price":  trigger_price,
+            "validity":       "DAY",
+        }
+
+        try:
+            resp = self._call_place_order(sl_params)
+            if resp and (resp.get("order_id") or resp.get("id")):
+                return str(resp.get("order_id") or resp.get("id"))
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] SL order placement error: {e}")
+
+        # Fallback: try SL-Limit (price = 0.1% worse than trigger for guaranteed fill)
+        try:
+            if direction == "LONG":
+                limit_price = round_to_tick_size(trigger_price * 0.999)
+            else:
+                limit_price = round_to_tick_size(trigger_price * 1.001)
+            sl_params["order_type"] = "SL"
+            sl_params["price"] = limit_price
+            resp2 = self._call_place_order(sl_params)
+            if resp2 and (resp2.get("order_id") or resp2.get("id")):
+                return str(resp2.get("order_id") or resp2.get("id"))
+        except Exception as e2:
+            logger.warning(f"[{format_ist_timestamp()}] SL-Limit fallback error: {e2}")
+
+        return ""
 
     def _create_position(
         self, signal: TradeSignal, quantity: int,

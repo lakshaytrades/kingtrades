@@ -376,6 +376,7 @@ class RiskManager:
         stop_loss: float,
         direction: str = "LONG",
         win_rate_estimate: float = 0.55,
+        size_multiplier: float = 1.0,
     ) -> Dict:
         """
         Multi-layer position sizing:
@@ -424,6 +425,10 @@ class RiskManager:
         inst_mult = getattr(self, "_inst_mult", 1.0)
         quantity  = max(1, int(quantity * inst_mult))
 
+        # 4c. Signal grade / profit engine size multiplier (A+=1.25, A=1.1, etc.)
+        if size_multiplier != 1.0:
+            quantity = max(1, int(quantity * size_multiplier))
+
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
         current_heat       = self.state.portfolio_heat
@@ -436,8 +441,9 @@ class RiskManager:
                 ),
             }
 
-        # 6. Capital cap: max 15% of buying power (leveraged) per position
-        max_by_capital = int((buying_power * 0.15) / entry_price)
+        # 6. Capital cap: max MAX_CAPITAL_PER_TRADE_PCT% of buying power per position
+        cap_pct = getattr(_cfg, "MAX_CAPITAL_PER_TRADE_PCT", 20.0) / 100.0
+        max_by_capital = int((buying_power * cap_pct) / entry_price)
         quantity = min(quantity, max_by_capital)
         quantity = max(quantity, 1)
 
