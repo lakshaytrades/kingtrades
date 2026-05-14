@@ -296,6 +296,25 @@ class GrowwExecutor:
         fetcher = get_data_fetcher()
         balance = fetcher.get_account_balance()
         available = balance.get("available", 0)
+
+        # Mid-session auth recovery: if Groww returns 0 twice in a row,
+        # the token may have expired — attempt a silent TOTP re-login
+        if available <= 0:
+            try:
+                from auth_groww import get_auth_manager
+                _auth = get_auth_manager()
+                if _auth and hasattr(_auth, "refresh_token_if_needed"):
+                    _refreshed = _auth.refresh_token_if_needed()
+                    if _refreshed:
+                        balance = fetcher.get_account_balance()
+                        available = balance.get("available", 0)
+                        logger.info(
+                            f"[{format_ist_timestamp()}] Mid-session token refresh: "
+                            f"new balance=₹{available:,.0f}"
+                        )
+            except Exception as _e:
+                logger.debug(f"Mid-session token refresh skipped: {_e}")
+
         # update_balance() guards against 0 — keeps last known good capital
         self.risk_manager.update_balance(available)
 
@@ -355,6 +374,14 @@ class GrowwExecutor:
             else "POWER_HOUR" if 14 <= _h < 15
             else "NORMAL"
         )
+        # Pairs mean-reversion and momentum burst signals are designed for
+        # midday (11-13:30 IST) — let them bypass the supervisor midday block
+        _is_special_strategy = any(
+            p.startswith("PAIRS") or p.startswith("BURST")
+            for p in (signal.patterns or [])
+        )
+        if _is_special_strategy and _session == "MIDDAY":
+            _session = "AFTERNOON"   # Supervisor allows AFTERNOON; midday block skipped
 
         # ── Trade Supervisor — 12-rule expert system ──────────────────────────
         try:
@@ -424,57 +451,61 @@ class GrowwExecutor:
             logger.debug(f"WinPredictor check skipped: {e}")
 
         # ── Elite Brain — 12-module fusion (Grand Slam detector) ─────────────
-        try:
-            from elite_brain import make_elite_decision
-            _eb_ctx = {
-                "oc_score":            getattr(signal, "_oc_score", 0),
-                "fii_mult":            getattr(signal, "_fii_mult", 1.0),
-                "vp_score":            getattr(signal, "_vp_score", 0),
-                "vp_notes":            [],
-                "regime_name":         getattr(signal, "_regime_name", "UNKNOWN"),
-                "regime_strategy":     getattr(signal, "_regime_strategy", "MOMENTUM"),
-                "regime_size_mult":    getattr(signal, "_regime_size_mult", 1.0),
-                "regime_preferred_dir":getattr(signal, "_regime_dir", "BOTH"),
-                "regime_tradeable":    getattr(signal, "_regime_tradeable", True),
-                "overnight_bias":      0,
-                "sentiment_score":     0,
-                "nse_score":           0,
-                "mtf_alignment":       signal.timeframe_alignment or {},
-            }
-            _eb_review = signal._claude_review if hasattr(signal, "_claude_review") else None
-            _eb_decision = make_elite_decision(
-                symbol         = signal.symbol,
-                direction      = signal.direction,
-                signal_score   = signal.signal_score,
-                ctx            = _eb_ctx,
-                supervisor_review = _eb_review,
-                win_prob       = _win_prob if "_win_prob" in dir() else 0.55,
-                win_prob_confident = _confident if "_confident" in dir() else False,
-                sm_score       = getattr(signal, "_sm_score", None),
-                pm_score       = getattr(signal, "_pm_score", None),
-            )
-            if not _eb_decision.approved:
-                logger.info(
-                    f"[{format_ist_timestamp()}] ELITE BRAIN REJECT: {signal.symbol} "
-                    f"— {_eb_decision.reject_reason} "
-                    f"({_eb_decision.aligned_count}/{_eb_decision.total_modules} modules)"
+        # Pairs/burst signals are pre-validated by their own engines; skip elite
+        # brain's module-count gate (it requires 3+ aligned modules, which pairs
+        # signals don't have — they lack SM/PM/MTF data by design)
+        if not _is_special_strategy:
+            try:
+                from elite_brain import make_elite_decision
+                _eb_ctx = {
+                    "oc_score":            getattr(signal, "_oc_score", 0),
+                    "fii_mult":            getattr(signal, "_fii_mult", 1.0),
+                    "vp_score":            getattr(signal, "_vp_score", 0),
+                    "vp_notes":            [],
+                    "regime_name":         getattr(signal, "_regime_name", "UNKNOWN"),
+                    "regime_strategy":     getattr(signal, "_regime_strategy", "MOMENTUM"),
+                    "regime_size_mult":    getattr(signal, "_regime_size_mult", 1.0),
+                    "regime_preferred_dir":getattr(signal, "_regime_dir", "BOTH"),
+                    "regime_tradeable":    getattr(signal, "_regime_tradeable", True),
+                    "overnight_bias":      0,
+                    "sentiment_score":     0,
+                    "nse_score":           0,
+                    "mtf_alignment":       signal.timeframe_alignment or {},
+                }
+                _eb_review = signal._claude_review if hasattr(signal, "_claude_review") else None
+                _eb_decision = make_elite_decision(
+                    symbol             = signal.symbol,
+                    direction          = signal.direction,
+                    signal_score       = signal.signal_score,
+                    ctx                = _eb_ctx,
+                    supervisor_review  = _eb_review,
+                    win_prob           = _win_prob if "_win_prob" in dir() else 0.55,
+                    win_prob_confident = _confident if "_confident" in dir() else False,
+                    sm_score           = getattr(signal, "_sm_score", None),
+                    pm_score           = getattr(signal, "_pm_score", None),
                 )
-                return OrderResult(False, message=_eb_decision.reject_reason)
+                if not _eb_decision.approved:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] ELITE BRAIN REJECT: {signal.symbol} "
+                        f"— {_eb_decision.reject_reason} "
+                        f"({_eb_decision.aligned_count}/{_eb_decision.total_modules} modules)"
+                    )
+                    return OrderResult(False, message=_eb_decision.reject_reason)
 
-            # Apply elite brain size multiplier if larger than current
-            if _eb_decision.size_multiplier > signal.size_multiplier:
-                signal.size_multiplier = round(_eb_decision.size_multiplier, 2)
+                # Apply elite brain size multiplier if larger than current
+                if _eb_decision.size_multiplier > signal.size_multiplier:
+                    signal.size_multiplier = round(_eb_decision.size_multiplier, 2)
 
-            if _eb_decision.grand_slam:
-                logger.info(
-                    f"[{format_ist_timestamp()}] 🏆 GRAND SLAM: {signal.symbol} "
-                    f"{signal.direction} — {_eb_decision.aligned_count}/12 modules "
-                    f"| conviction={_eb_decision.conviction_score:.0f} "
-                    f"| size={signal.size_multiplier:.1f}x"
-                )
-                signal.rationale = f"[GRAND SLAM] {signal.rationale}"
-        except Exception as e:
-            logger.debug(f"Elite Brain check skipped: {e}")
+                if _eb_decision.grand_slam:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 🏆 GRAND SLAM: {signal.symbol} "
+                        f"{signal.direction} — {_eb_decision.aligned_count}/12 modules "
+                        f"| conviction={_eb_decision.conviction_score:.0f} "
+                        f"| size={signal.size_multiplier:.1f}x"
+                    )
+                    signal.rationale = f"[GRAND SLAM] {signal.rationale}"
+            except Exception as e:
+                logger.debug(f"Elite Brain check skipped: {e}")
 
         # ── RL Brain — institution-level portfolio + learned conviction check ──
         try:
@@ -487,8 +518,7 @@ class GrowwExecutor:
                 _mtf_str = "BULLISH" if signal.direction == "LONG" else "BEARISH"
             else:
                 _mtf_str = _mtf.get("alignment", "NEUTRAL")
-            _h = get_current_ist_time().hour
-            _session = "OPENING_DRIVE" if _h < 10 else "MIDDAY" if 11 <= _h < 13 else "POWER_HOUR" if 14 <= _h < 15 else "NORMAL"
+            # Reuse the corrected _session (already bypass-adjusted for pairs/burst)
             market_data = {
                 "rsi":                _ind.rsi if _ind else 50.0,
                 "macd_hist":          _ind.macd_hist if _ind else 0.0,

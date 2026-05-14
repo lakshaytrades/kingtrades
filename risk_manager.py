@@ -192,7 +192,9 @@ class RiskManager:
             available_capital=cap,
             nifty_open=nifty_open,
         )
-        self._available_balance = available_balance
+        # Use the effective cap so the balance guard (< 1000) doesn't block
+        # trades when Groww API returns 0 at initialization
+        self._available_balance = cap
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
             f"Balance: {format_currency(cap)} × 5x leverage = "
