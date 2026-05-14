@@ -389,7 +389,17 @@ class SignalGenerator:
             # 8. Build signal using filter's final score and size
             # Apply smart money regime multiplier on top of filter's size
             regime_mult = sm_score.regime_multiplier if sm_score is not None else 1.0
-            combined_size = round(filter_result.size_multiplier * regime_mult, 2)
+            # Scale size by signal quality score (1–3% risk based on score)
+            score_size_mult = 1.0
+            if ai_score >= 85:
+                score_size_mult = 1.3   # High-conviction: scale up
+            elif ai_score >= 75:
+                score_size_mult = 1.0   # Normal
+            elif ai_score >= 65:
+                score_size_mult = 0.75  # Below threshold: reduce
+            else:
+                score_size_mult = 0.5   # Weak signal: half size
+            combined_size = round(filter_result.size_multiplier * regime_mult * score_size_mult, 2)
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,
@@ -409,7 +419,7 @@ class SignalGenerator:
 
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ SIGNAL: {direction} {symbol} "
-                f"| Score: {filter_result.final_score:.0f} | Entry: ₹{signal.entry_price:.2f}"
+                f"| Score: {filter_result.final_score:.0f} | Entry: ${signal.entry_price:.2f}"
             )
             return signal
 

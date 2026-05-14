@@ -27,7 +27,7 @@ Each regime has:
 
 import logging
 from dataclasses import dataclass
-from datetime import time
+from datetime import time, datetime
 from typing import Optional, Dict, List
 from zoneinfo import ZoneInfo
 
@@ -432,4 +432,79 @@ class MarketRegimeDetector:
             "adr_pct": round(adr_pct, 2),
             "tradeable": adr_pct >= 1.5,
             "note": f"ADR={adr_pct:.1f}% {'✅ sufficient' if adr_pct >= 1.5 else '❌ too low for intraday'}"
+        }
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# SPY / QQQ 200-DAY MA REGIME — standalone function (module-level cache)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_SPY_QQQ_REGIME_CACHE: Dict = {}
+_SPY_QQQ_REGIME_TIME: Optional[datetime] = None
+
+
+def get_spy_qqq_regime(adx: float = 0.0) -> Dict:
+    """
+    Check if SPY and QQQ are above 200-day MA (bull market regime).
+
+    Cached for 4 hours — this is a daily macro signal, not real-time.
+
+    Returns:
+        {
+            "spy_above_200ma": bool,
+            "qqq_above_200ma": bool,
+            "bullish_regime":  bool,   # both above 200MA
+            "aggressive_allowed": bool,  # bullish + ADX rising
+            "spy_200ma": float,
+            "qqq_200ma": float,
+            "spy_price": float,
+            "qqq_price": float,
+        }
+    """
+    global _SPY_QQQ_REGIME_CACHE, _SPY_QQQ_REGIME_TIME
+    now = get_current_ist_time()
+    if _SPY_QQQ_REGIME_TIME and (now - _SPY_QQQ_REGIME_TIME).total_seconds() < 14400:
+        result = dict(_SPY_QQQ_REGIME_CACHE)
+        result["aggressive_allowed"] = result.get("bullish_regime", True) and adx > 20
+        return result
+    try:
+        import yfinance as yf
+        data = yf.download(["SPY", "QQQ"], period="252d", interval="1d",
+                           auto_adjust=True, progress=False)
+        closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
+        spy_price = float(closes["SPY"].iloc[-1])
+        qqq_price = float(closes["QQQ"].iloc[-1])
+        spy_200ma = float(closes["SPY"].rolling(200).mean().iloc[-1])
+        qqq_200ma = float(closes["QQQ"].rolling(200).mean().iloc[-1])
+        spy_above = spy_price > spy_200ma
+        qqq_above = qqq_price > qqq_200ma
+        result = {
+            "spy_above_200ma":    spy_above,
+            "qqq_above_200ma":    qqq_above,
+            "bullish_regime":     spy_above and qqq_above,
+            "aggressive_allowed": (spy_above and qqq_above) and adx > 20,
+            "spy_200ma":          round(spy_200ma, 2),
+            "qqq_200ma":          round(qqq_200ma, 2),
+            "spy_price":          round(spy_price, 2),
+            "qqq_price":          round(qqq_price, 2),
+        }
+        _SPY_QQQ_REGIME_CACHE = result
+        _SPY_QQQ_REGIME_TIME  = now
+        logging.getLogger(__name__).info(
+            f"SPY/QQQ regime: SPY ${spy_price:.2f} {'>' if spy_above else '<'} "
+            f"200MA ${spy_200ma:.2f} | QQQ ${qqq_price:.2f} {'>' if qqq_above else '<'} "
+            f"200MA ${qqq_200ma:.2f} | Bullish={spy_above and qqq_above}"
+        )
+        return result
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"SPY/QQQ regime check failed: {e}")
+        return {
+            "bullish_regime":    True,
+            "aggressive_allowed": True,
+            "spy_above_200ma":   True,
+            "qqq_above_200ma":   True,
+            "spy_200ma": 0,
+            "qqq_200ma": 0,
+            "spy_price": 0,
+            "qqq_price": 0,
         }
