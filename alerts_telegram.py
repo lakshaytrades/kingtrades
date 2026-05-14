@@ -834,3 +834,13 @@ class TelegramAlerter:
         except Exception as e:
             logger.debug(f"send_options_uoa_alert: {e}")
             return False
+
+    def send_capital_projection(self, capital: float = 500.0) -> bool:
+        """Send $500 (or custom) account P&L projection via capital_calculator."""
+        try:
+            from capital_calculator import get_telegram_summary
+            text = get_telegram_summary(capital)
+            return self._send(text)
+        except Exception as e:
+            logger.debug(f"send_capital_projection: {e}")
+            return False

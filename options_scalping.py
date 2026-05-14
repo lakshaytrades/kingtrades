@@ -13,10 +13,13 @@ Additional standalone signal source:
   - Unusual Options Activity (UOA) scanner: large volume/OI sweeps
     signal institutional positioning → bot piggybacks the smart money
 
-$200/day target math:
-  Capital $5,000 × 1% risk = $50 per options trade max loss
-  Average gain target: $100-150 per winning trade (80-150% premium gain)
-  Win 2-3 options trades per day = $200-450/day
+$500 micro-account + $200/day target math:
+  Capital $500 × 5% options budget = $25 max premium per trade
+  Buying power $2,000 (4× Alpaca leverage) for stock scalps
+  Stock risk: $500 × 1% = $5/trade (1 share of expensive stock or 2-5 shares cheap)
+  Options: 1 contract @ $0.25 premium = $25 cost → target +80-150% = $20-37 gain
+  Win 3-5 options trades/day + stock scalps = $100-200/day realistic range
+  Scale-up: reinvest gains — $500→$1k in ~2-3 months at moderate pace
 """
 
 import logging
@@ -35,7 +38,9 @@ logger = logging.getLogger(__name__)
 OPTIONS_ENABLED             = True
 MIN_STOCK_SCORE_FOR_OPTIONS = 70.0   # only buy options when stock signal is strong
 MAX_OPTIONS_POSITIONS       = 3      # max simultaneous options positions
-MAX_PREMIUM_PCT_OF_CAPITAL  = 0.012  # 1.2% of capital per options trade
+MAX_PREMIUM_PCT_OF_CAPITAL  = 0.05   # 5% of capital per options trade (=$25 on $500 account)
+MAX_PREMIUM_FLOOR_USD       = 25.0   # absolute floor for micro accounts
+MAX_PREMIUM_CAP_USD         = 500.0  # absolute cap per trade
 MAX_CONTRACTS_PER_TRADE     = 5      # hard cap on contracts
 MIN_DELTA                   = 0.25   # not too far OTM
 MAX_DELTA                   = 0.75   # not deep ITM (poor leverage)
@@ -101,8 +106,10 @@ class OptionsScalpingEngine:
             return None
 
         # Gate 4: find best contract
+        # Micro-account: use 5% (=$25 on $500) — larger pct to stay tradeable
         max_premium = available_capital * MAX_PREMIUM_PCT_OF_CAPITAL
-        max_premium = min(max_premium, 500.0)   # hard cap at $500 total premium
+        max_premium = max(max_premium, MAX_PREMIUM_FLOOR_USD)
+        max_premium = min(max_premium, MAX_PREMIUM_CAP_USD)
 
         from options_alpaca import get_options_data
         opt_data = get_options_data()
@@ -245,7 +252,11 @@ class OptionsScalpingEngine:
             if price <= 0:
                 continue
 
-            max_p = available_capital * MAX_PREMIUM_PCT_OF_CAPITAL
+            max_p = max(
+                available_capital * MAX_PREMIUM_PCT_OF_CAPITAL,
+                MAX_PREMIUM_FLOOR_USD,
+            )
+            max_p = min(max_p, MAX_PREMIUM_CAP_USD)
             contract = opt_data.find_best_contract(
                 symbol           = sym,
                 underlying_price = price,

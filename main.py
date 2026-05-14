@@ -686,6 +686,13 @@ class TradingBot:
                 if self.calendar:
                     brief += "\n" + self.calendar.format_upcoming_events()
                 self.alerter.send_text(brief)
+
+            # Send $500 micro-account capital projection once per day at open
+            try:
+                capital = config.MAX_DAILY_CAPITAL
+                self.alerter.send_capital_projection(capital)
+            except Exception as _cp_e:
+                logger.debug(f"Capital projection send failed: {_cp_e}")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Morning brief failed: {e}")
 
@@ -2243,18 +2250,32 @@ class TradingBot:
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
                 return
             try:
-                data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
-                base = config.MAX_DAILY_CAPITAL
-                compounded = data.get("compounded_capital", base)
-                growth = data.get("total_growth_pct", 0)
-                date = data.get("date", "never")
-                self.alerter.send_text(
-                    f"📈 <b>Capital Growth</b>\n"
-                    f"Base: ₹{base:,.0f}\n"
-                    f"Current: ₹{compounded:,.0f}\n"
-                    f"Total Growth: {growth:+.2f}%\n"
-                    f"Last Updated: {date}"
-                )
+                args = context.args  # e.g. /capital 500
+                custom_capital = float(args[0]) if args else None
+
+                # Show capital_calculator projection for any amount
+                try:
+                    from capital_calculator import get_telegram_summary
+                    cap = custom_capital or config.MAX_DAILY_CAPITAL
+                    projection = get_telegram_summary(cap)
+                    self.alerter.send_text(projection)
+                except Exception as _ce:
+                    logger.debug(f"capital_calculator error: {_ce}")
+
+                # Also show NSE compounded growth if available
+                if not custom_capital:
+                    data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+                    base = config.MAX_DAILY_CAPITAL
+                    compounded = data.get("compounded_capital", base)
+                    growth = data.get("total_growth_pct", 0)
+                    date = data.get("date", "never")
+                    self.alerter.send_text(
+                        f"📈 <b>Actual Capital Growth</b>\n"
+                        f"Base: ${base:,.0f}\n"
+                        f"Current: ${compounded:,.0f}\n"
+                        f"Total Growth: {growth:+.2f}%\n"
+                        f"Last Updated: {date}"
+                    )
             except Exception as e:
                 self.alerter.send_text(f"Capital data error: {e}")
 

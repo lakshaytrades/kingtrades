@@ -82,11 +82,11 @@ class StrategyStats:
 CONSERVATIVE = StrategyStats(
     name              = "Conservative",
     win_rate          = 0.52,      # 52% — barely above coin flip, very realistic
-    avg_win_r         = 1.8,       # avg winner = 1.8R (stop tight, target 3R partial)
-    avg_loss_r        = 0.95,      # avg loss = 0.95R (sometimes stop slips a little)
-    trades_per_day    = 2.5,       # 2-3 qualifying signals per day (strict filter)
-    options_win_rate  = 0.38,      # options are harder
-    options_avg_win_r = 1.50,      # 80-150% premium gain, conservative
+    avg_win_r         = 1.3,       # 1.3R avg winner (tight targets, small account)
+    avg_loss_r        = 0.95,      # avg loss = 0.95R (stop slips slightly)
+    trades_per_day    = 2.0,       # PDT rule: max 3 round-trips / 5 days
+    options_win_rate  = 0.35,      # options are harder; 35% is honest
+    options_avg_win_r = 1.20,      # 80-120% premium gain, conservative
     options_avg_loss_r= 0.45,
     risk_per_trade_pct= 1.0,
     options_premium_pct= 5.0,
@@ -94,12 +94,12 @@ CONSERVATIVE = StrategyStats(
 
 MODERATE = StrategyStats(
     name              = "Moderate",
-    win_rate          = 0.57,      # 57% — realistic for well-tuned momentum system
-    avg_win_r         = 2.1,       # avg winner = 2.1R (good R:R setups)
-    avg_loss_r        = 0.92,      # avg loss < 1R (some stop moves to breakeven)
-    trades_per_day    = 3.5,       # 3-4 trades per day
-    options_win_rate  = 0.42,
-    options_avg_win_r = 1.90,
+    win_rate          = 0.55,      # 55% — realistic for well-tuned momentum system
+    avg_win_r         = 1.6,       # avg winner = 1.6R (good R:R, partial exits)
+    avg_loss_r        = 0.92,      # some stops moved to breakeven
+    trades_per_day    = 2.5,       # PDT-constrained; options add 1 trade/day
+    options_win_rate  = 0.40,
+    options_avg_win_r = 1.50,
     options_avg_loss_r= 0.45,
     risk_per_trade_pct= 1.0,
     options_premium_pct= 5.0,
@@ -107,12 +107,12 @@ MODERATE = StrategyStats(
 
 AGGRESSIVE = StrategyStats(
     name              = "Aggressive (Best Month)",
-    win_rate          = 0.63,      # 63% — best months, everything clicking
-    avg_win_r         = 2.4,       # avg winner = 2.4R
+    win_rate          = 0.60,      # 60% — best months, everything clicking
+    avg_win_r         = 2.0,       # avg winner = 2.0R
     avg_loss_r        = 0.90,
-    trades_per_day    = 4.5,
-    options_win_rate  = 0.48,
-    options_avg_win_r = 2.20,
+    trades_per_day    = 3.0,
+    options_win_rate  = 0.45,
+    options_avg_win_r = 1.80,
     options_avg_loss_r= 0.45,
     risk_per_trade_pct= 1.0,
     options_premium_pct= 5.0,
@@ -158,13 +158,12 @@ def project_growth(
 
         if add_daily_variance:
             # Simulate daily variance: normally distributed around expected
-            # Std dev ≈ 2× expected (trading is volatile!)
             std_dev  = abs(expected) * 2.5
             daily    = random.gauss(expected, std_dev)
-            # Bad day cap: max loss = 2% of capital (daily loss limit)
+            # Bad day cap: daily loss limit = 2% of capital
             daily    = max(daily, -capital * 0.02)
-            # Good day cap: max gain = 5% of capital (realistic for small account)
-            daily    = min(daily,  capital * 0.05)
+            # Good day cap: 1.5% of capital (realistic intraday for small accounts)
+            daily    = min(daily,  capital * 0.015)
         else:
             daily = expected
 
@@ -201,8 +200,8 @@ def milestone_summary(snapshots: List[DailySnapshot]) -> Dict:
     winning_days  = len(snapshots) - losing_days
     max_capital   = max(s.capital for s in snapshots)
     min_capital   = min(s.capital for s in snapshots)
-    max_drawdown  = (start + max(s.cumulative_pnl for s in snapshots) - min_capital)
-    max_dd_pct    = max_drawdown / start * 100
+    max_drawdown  = max_capital - min_capital   # peak-to-trough dollar drop
+    max_dd_pct    = (max_drawdown / max_capital * 100) if max_capital > 0 else 0
 
     weekly = get_at_day(5)
     monthly = get_at_day(20)
@@ -336,29 +335,38 @@ def get_telegram_summary(capital: float = 500.0) -> str:
     opts   = capital * 0.05
     bp     = capital * 4
 
-    cons   = CONSERVATIVE.daily_expected_pnl(capital, 1.0)
-    mod    = MODERATE.daily_expected_pnl(capital, 1.0)
-    agg    = AGGRESSIVE.daily_expected_pnl(capital, 1.0)
+    cons  = CONSERVATIVE.daily_expected_pnl(capital, 1.0)
+    mod   = MODERATE.daily_expected_pnl(capital, 1.0)
+    agg   = AGGRESSIVE.daily_expected_pnl(capital, 1.0)
 
-    # Monthly (20 days compounded, approximate)
-    cons_m = capital * ((1 + cons / capital) ** 20 - 1)
-    mod_m  = capital * ((1 + mod  / capital) ** 20 - 1)
-    agg_m  = capital * ((1 + agg  / capital) ** 20 - 1)
+    # Simple (non-compounded) monthly — honest for small accounts
+    cons_m = cons * 20
+    mod_m  = mod  * 20
+    agg_m  = agg  * 20
+
+    # Simulated 6-month with realistic compounding + variance
+    snaps = project_growth(capital, MODERATE, days=120, seed=42)
+    cap_6m = snaps[-1].capital if snaps else capital
+    snaps3 = snaps[59] if len(snaps) > 59 else snaps[-1]
+    cap_3m = snaps3.capital
 
     return (
         f"💰 *${capital:.0f} Account Projection*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Buying power: `${bp:,.0f}` (4× Alpaca)\n"
-        f"Risk/trade:   `${risk:.2f}` (1%)\n"
-        f"Options max:  `${opts:.2f}` (5%)\n"
+        f"Buying power: `${bp:,.0f}` (4× Alpaca margin)\n"
+        f"Risk/trade:   `${risk:.2f}` (1% stock)\n"
+        f"Options max:  `${opts:.2f}` (5% per trade)\n"
+        f"⚠️ PDT rule: max 3 day-trades per 5 days under $25k\n"
         f"\n"
-        f"📊 *Daily Expected P&L:*\n"
-        f"🟡 Conservative: `${cons:.2f}/day`  → `${cons_m:.0f}/month`\n"
-        f"🟢 Moderate:     `${mod:.2f}/day`   → `${mod_m:.0f}/month`\n"
-        f"🚀 Best months:  `${agg:.2f}/day`   → `${agg_m:.0f}/month`\n"
+        f"📊 *Expected Daily P&L:*\n"
+        f"🟡 Conservative: `${cons:.2f}/day` → `${cons_m:.0f}/month`\n"
+        f"🟢 Moderate:     `${mod:.2f}/day` → `${mod_m:.0f}/month`\n"
+        f"🚀 Best months:  `${agg:.2f}/day` → `${agg_m:.0f}/month`\n"
         f"\n"
-        f"📈 *12-Month Compounding (Moderate):*\n"
-    ) + _year_projection_line(capital, MODERATE)
+        f"📈 *Realistic Growth (Moderate, simulated):*\n"
+        f"`${capital:.0f}` → `${cap_3m:.0f}` (3mo) → `${cap_6m:.0f}` (6mo)\n"
+        f"Goal: reach $25k (PDT threshold) to unlock full day trading"
+    )
 
 
 def _year_projection_line(capital: float, stats: StrategyStats) -> str:
@@ -367,9 +375,8 @@ def _year_projection_line(capital: float, stats: StrategyStats) -> str:
     return (
         f"`${capital:.0f}` → `${m['month_1']['capital']:.0f}` (1mo) → "
         f"`${m['month_3']['capital']:.0f}` (3mo) → "
-        f"`${m['month_6']['capital']:.0f}` (6mo) → "
-        f"`${m['month_12']['capital']:.0f}` (1yr)\n"
-        f"Max drawdown: `${m['max_drawdown_usd']:.0f}` ({m['max_drawdown_pct']:.1f}%)"
+        f"`${m['month_6']['capital']:.0f}` (6mo)\n"
+        f"Max drawdown est: `${m['max_drawdown_usd']:.0f}` ({m['max_drawdown_pct']:.1f}%)"
     )
 
 
