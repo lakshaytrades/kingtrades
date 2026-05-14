@@ -601,6 +601,8 @@ class PatternRecognizer:
             # ── Gap strategies ────────────────────────────────────────────
             self.detect_gap_and_go,
             self.detect_gap_fill,
+            # ── SMT Divergence (Smart Money Technique) ────────────────────
+            self.detect_smt_divergence,
         ]
 
         for detector in detectors:
@@ -3076,6 +3078,53 @@ class PatternRecognizer:
             logger.debug(f"Smart money advanced failed: {e}")
         return results
 
+    # ─────────────────────────────────────────────────────────
+    # SMT DIVERGENCE (Smart Money Technique)
+    # ─────────────────────────────────────────────────────────
+
+    def detect_smt_divergence(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        SMT-style divergence: price makes new high/low but OBV diverges.
+        Institutional confirmation or warning sign.
+        """
+        if len(df) < 20:
+            return None
+        try:
+            c = df["close"]
+            # Compute OBV series from close/volume
+            obv_s = (df["volume"] * df["close"].diff().apply(
+                lambda x: 1 if x > 0 else (-1 if x < 0 else 0)
+            )).cumsum()
+
+            recent = 15
+            price_high = c.iloc[-recent:].max()
+            price_low  = c.iloc[-recent:].min()
+            obv_high   = obv_s.iloc[-recent:].max()
+            obv_low    = obv_s.iloc[-recent:].min()
+            price_now  = float(c.iloc[-1])
+            obv_now    = float(obv_s.iloc[-1])
+
+            # Bearish SMT: price near recent high but OBV diverging down
+            near_high = price_now >= price_high * 0.995
+            obv_diverging_down = obv_now < obv_high * 0.97
+            if near_high and obv_diverging_down:
+                return PatternResult(
+                    "SMT Divergence Bearish", "SHORT", 72,
+                    "Price near high but OBV diverging — institutional distribution signal"
+                )
+
+            # Bullish SMT: price near recent low but OBV diverging up
+            near_low = price_now <= price_low * 1.005
+            obv_diverging_up = obv_now > obv_low * 1.03
+            if near_low and obv_diverging_up:
+                return PatternResult(
+                    "SMT Divergence Bullish", "LONG", 72,
+                    "Price near low but OBV diverging — institutional accumulation signal"
+                )
+        except Exception:
+            pass
+        return None
+
     # --------------------------------------------------------
     # COMPOSITE SCORE
     # --------------------------------------------------------
@@ -3131,6 +3180,8 @@ class PatternRecognizer:
             "Ichimoku Bull", "Ichimoku Bear",
             "RVOL Momentum Confirmed",
             "Gap & Go Long", "Gap & Go Short",
+            # SMT Divergence (institutional accumulation/distribution)
+            "SMT Divergence Bullish", "SMT Divergence Bearish",
         }
 
         # ADX quality filter: choppy = reduce weights, trending = boost
