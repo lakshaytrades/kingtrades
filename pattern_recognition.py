@@ -62,6 +62,46 @@ class IndicatorSet:
     minus_di: float = 0.0
     supertrend: float = 0.0
     supertrend_dir: int = 1   # 1 = bullish, -1 = bearish
+    # Extended indicators
+    adx_plus_di: float = 0.0
+    adx_minus_di: float = 0.0
+    parabolic_sar: float = 0.0
+    parabolic_sar_bull: bool = False
+    keltner_upper: float = 0.0
+    keltner_lower: float = 0.0
+    keltner_mid: float = 0.0
+    donchian_upper: float = 0.0
+    donchian_lower: float = 0.0
+    donchian_mid: float = 0.0
+    chandelier_long: float = 0.0
+    chandelier_short: float = 0.0
+    stoch_rsi_k: float = 50.0
+    stoch_rsi_d: float = 50.0
+    cci: float = 0.0
+    roc: float = 0.0
+    williams_r: float = -50.0
+    rvol: float = 1.0
+    bb_pct_b: float = 0.5
+    bb_bandwidth: float = 0.0
+    ichimoku_tenkan: float = 0.0
+    ichimoku_kijun: float = 0.0
+    ichimoku_senkou_a: float = 0.0
+    ichimoku_senkou_b: float = 0.0
+    ichimoku_chikou: float = 0.0
+    pivot_pp: float = 0.0
+    pivot_r1: float = 0.0
+    pivot_r2: float = 0.0
+    pivot_r3: float = 0.0
+    pivot_s1: float = 0.0
+    pivot_s2: float = 0.0
+    pivot_s3: float = 0.0
+    vwap_upper_1: float = 0.0
+    vwap_lower_1: float = 0.0
+    vwap_upper_2: float = 0.0
+    vwap_lower_2: float = 0.0
+    poc: float = 0.0
+    vah: float = 0.0
+    val: float = 0.0
 
 
 class TechnicalIndicators:
@@ -142,10 +182,152 @@ class TechnicalIndicators:
                 df["supertrend"] = df["close"]
                 df["supertrend_dir"] = 1
 
+            # Extended indicators block
+            try:
+                self._compute_extended_indicators(df)
+            except Exception as ex:
+                logger.debug(f"Extended indicator compute error: {ex}")
+
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Indicator compute error: {e}")
 
         return df.ffill().infer_objects(copy=False).fillna(0)
+
+    def _compute_extended_indicators(self, df: pd.DataFrame) -> None:
+        """Compute ADX, Parabolic SAR, Keltner, Donchian, Chandelier, StochRSI,
+        CCI, ROC, Williams %R, RVOL, BB %B/BW, Ichimoku, Pivots, VWAP bands, POC."""
+        if len(df) < 20:
+            return
+
+        # True Range (recompute for local use)
+        high_low = df['high'] - df['low']
+        high_close = (df['high'] - df['close'].shift()).abs()
+        low_close = (df['low'] - df['close'].shift()).abs()
+        tr = pd.concat([high_low, high_close, low_close], axis=1).max(axis=1)
+        atr14 = tr.ewm(span=14, adjust=False).mean()
+
+        # ADX (14)
+        up_move = df['high'] - df['high'].shift()
+        dn_move = df['low'].shift() - df['low']
+        plus_dm = up_move.where((up_move > dn_move) & (up_move > 0), 0.0)
+        minus_dm = dn_move.where((dn_move > up_move) & (dn_move > 0), 0.0)
+        plus_di = 100 * (plus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, np.nan))
+        minus_di = 100 * (minus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, np.nan))
+        dx = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        df['_adx'] = dx.ewm(span=14, adjust=False).mean()
+        df['_adx_plus_di'] = plus_di
+        df['_adx_minus_di'] = minus_di
+
+        # Parabolic SAR (step=0.02, max=0.20)
+        try:
+            af = 0.02
+            af_step = 0.02
+            af_max = 0.20
+            closes = df['close'].values
+            highs = df['high'].values
+            lows = df['low'].values
+            n = len(closes)
+            sar = np.zeros(n)
+            bull = True
+            ep = lows[0]
+            sar[0] = highs[0]
+            for i in range(1, n):
+                prev_sar = sar[i - 1]
+                if bull:
+                    sar[i] = prev_sar + af * (ep - prev_sar)
+                    sar[i] = min(sar[i], lows[i - 1], lows[i - 2] if i > 1 else lows[i - 1])
+                    if lows[i] < sar[i]:
+                        bull = False
+                        sar[i] = ep
+                        ep = lows[i]
+                        af = af_step
+                    else:
+                        if highs[i] > ep:
+                            ep = highs[i]
+                            af = min(af + af_step, af_max)
+                else:
+                    sar[i] = prev_sar + af * (ep - prev_sar)
+                    sar[i] = max(sar[i], highs[i - 1], highs[i - 2] if i > 1 else highs[i - 1])
+                    if highs[i] > sar[i]:
+                        bull = True
+                        sar[i] = ep
+                        ep = highs[i]
+                        af = af_step
+                    else:
+                        if lows[i] < ep:
+                            ep = lows[i]
+                            af = min(af + af_step, af_max)
+            df['_psar'] = sar
+            df['_psar_bull'] = bull
+        except Exception:
+            df['_psar'] = df['close']
+            df['_psar_bull'] = True
+
+        # Keltner Channels (20, 2x ATR)
+        kc_mid = df['close'].ewm(span=20).mean()
+        kc_atr = tr.rolling(20).mean()
+        df['_kc_mid'] = kc_mid
+        df['_kc_upper'] = kc_mid + 2 * kc_atr
+        df['_kc_lower'] = kc_mid - 2 * kc_atr
+
+        # Donchian Channels (20)
+        df['_dc_upper'] = df['high'].rolling(20).max()
+        df['_dc_lower'] = df['low'].rolling(20).min()
+        df['_dc_mid'] = (df['_dc_upper'] + df['_dc_lower']) / 2
+
+        # Chandelier Exit (22, 3x ATR)
+        atr22 = tr.rolling(22).mean()
+        df['_chan_long'] = df['high'].rolling(22).max() - 3 * atr22
+        df['_chan_short'] = df['low'].rolling(22).min() + 3 * atr22
+
+        # StochRSI (14)
+        if 'rsi' in df.columns:
+            rsi_s = df['rsi']
+            rsi_min = rsi_s.rolling(14).min()
+            rsi_max = rsi_s.rolling(14).max()
+            stoch_rsi = (rsi_s - rsi_min) / (rsi_max - rsi_min).replace(0, np.nan)
+            df['_srsi_k'] = stoch_rsi.rolling(3).mean() * 100
+            df['_srsi_d'] = df['_srsi_k'].rolling(3).mean()
+
+        # CCI (20)
+        tp = (df['high'] + df['low'] + df['close']) / 3
+        tp_ma = tp.rolling(20).mean()
+        tp_md = tp.rolling(20).apply(lambda x: np.mean(np.abs(x - x.mean())), raw=True)
+        df['_cci'] = (tp - tp_ma) / (0.015 * tp_md.replace(0, np.nan))
+
+        # ROC (10)
+        df['_roc'] = (df['close'] - df['close'].shift(10)) / df['close'].shift(10) * 100
+
+        # Williams %R (14)
+        highest14 = df['high'].rolling(14).max()
+        lowest14 = df['low'].rolling(14).min()
+        df['_willr'] = (highest14 - df['close']) / (highest14 - lowest14).replace(0, np.nan) * -100
+
+        # RVOL
+        vol_sma20 = df['volume'].rolling(20).mean()
+        df['_rvol'] = df['volume'] / vol_sma20.replace(0, np.nan)
+
+        # Ichimoku (9, 26, 52)
+        tenkan = (df['high'].rolling(9).max() + df['low'].rolling(9).min()) / 2
+        kijun = (df['high'].rolling(26).max() + df['low'].rolling(26).min()) / 2
+        senkou_a = ((tenkan + kijun) / 2).shift(26)
+        senkou_b = ((df['high'].rolling(52).max() + df['low'].rolling(52).min()) / 2).shift(26)
+        df['_ichi_tenkan'] = tenkan
+        df['_ichi_kijun'] = kijun
+        df['_ichi_senkou_a'] = senkou_a
+        df['_ichi_senkou_b'] = senkou_b
+
+        # VWAP bands (1 and 2 std dev)
+        tp2 = (df['high'] + df['low'] + df['close']) / 3
+        cum_vol = df['volume'].cumsum()
+        cum_tp_vol = (tp2 * df['volume']).cumsum()
+        vwap_s = cum_tp_vol / cum_vol.replace(0, np.nan)
+        vwap_dev = ((tp2 - vwap_s) ** 2 * df['volume']).cumsum() / cum_vol.replace(0, np.nan)
+        vwap_std = np.sqrt(vwap_dev.clip(lower=0))
+        df['_vwap_u1'] = vwap_s + vwap_std
+        df['_vwap_l1'] = vwap_s - vwap_std
+        df['_vwap_u2'] = vwap_s + 2 * vwap_std
+        df['_vwap_l2'] = vwap_s - 2 * vwap_std
 
     def _calculate_vwap(self, df: pd.DataFrame) -> pd.Series:
         """
@@ -179,16 +361,24 @@ class TechnicalIndicators:
         if df.empty:
             return IndicatorSet()
         row = df.iloc[-1]
-        return IndicatorSet(
+        bb_upper = float(row.get("bb_upper", 0))
+        bb_mid = float(row.get("bb_mid", 0))
+        bb_lower = float(row.get("bb_lower", 0))
+        close = float(row.get("close", 0))
+        bb_pct_b = (close - bb_lower) / (bb_upper - bb_lower) if (bb_upper - bb_lower) > 0 else 0.5
+        bb_bandwidth = (bb_upper - bb_lower) / bb_mid if bb_mid > 0 else 0.0
+
+        # Pivot points from last 2 bars
+        ind = IndicatorSet(
             rsi=float(row.get("rsi", 50)),
             macd=float(row.get("macd", 0)),
             macd_signal=float(row.get("macd_signal", 0)),
             macd_hist=float(row.get("macd_hist", 0)),
             atr=float(row.get("atr", 0)),
-            vwap=float(row.get("vwap", row.get("close", 0))),
-            bb_upper=float(row.get("bb_upper", 0)),
-            bb_mid=float(row.get("bb_mid", 0)),
-            bb_lower=float(row.get("bb_lower", 0)),
+            vwap=float(row.get("vwap", close)),
+            bb_upper=bb_upper,
+            bb_mid=bb_mid,
+            bb_lower=bb_lower,
             bb_width=float(row.get("bb_width", 0)),
             ema9=float(row.get("ema9", 0)),
             ema21=float(row.get("ema21", 0)),
@@ -202,9 +392,88 @@ class TechnicalIndicators:
             adx=float(row.get("adx", 0)),
             plus_di=float(row.get("plus_di", 0)),
             minus_di=float(row.get("minus_di", 0)),
-            supertrend=float(row.get("supertrend", row.get("close", 0))),
+            supertrend=float(row.get("supertrend", close)),
             supertrend_dir=int(row.get("supertrend_dir", 1)),
+            # Extended indicators
+            adx_plus_di=float(row.get("_adx_plus_di", row.get("plus_di", 0))),
+            adx_minus_di=float(row.get("_adx_minus_di", row.get("minus_di", 0))),
+            parabolic_sar=float(row.get("_psar", close)),
+            parabolic_sar_bull=bool(row.get("_psar_bull", True)),
+            keltner_upper=float(row.get("_kc_upper", 0)),
+            keltner_lower=float(row.get("_kc_lower", 0)),
+            keltner_mid=float(row.get("_kc_mid", 0)),
+            donchian_upper=float(row.get("_dc_upper", 0)),
+            donchian_lower=float(row.get("_dc_lower", 0)),
+            donchian_mid=float(row.get("_dc_mid", 0)),
+            chandelier_long=float(row.get("_chan_long", 0)),
+            chandelier_short=float(row.get("_chan_short", 0)),
+            stoch_rsi_k=float(row.get("_srsi_k", 50) or 50),
+            stoch_rsi_d=float(row.get("_srsi_d", 50) or 50),
+            cci=float(row.get("_cci", 0) or 0),
+            roc=float(row.get("_roc", 0) or 0),
+            williams_r=float(row.get("_willr", -50) or -50),
+            rvol=float(row.get("_rvol", 1) or 1),
+            bb_pct_b=bb_pct_b,
+            bb_bandwidth=bb_bandwidth,
+            ichimoku_tenkan=float(row.get("_ichi_tenkan", 0) or 0),
+            ichimoku_kijun=float(row.get("_ichi_kijun", 0) or 0),
+            ichimoku_senkou_a=float(row.get("_ichi_senkou_a", 0) or 0),
+            ichimoku_senkou_b=float(row.get("_ichi_senkou_b", 0) or 0),
+            ichimoku_chikou=float(df["close"].iloc[-26] if len(df) > 26 else 0),
+            vwap_upper_1=float(row.get("_vwap_u1", 0) or 0),
+            vwap_lower_1=float(row.get("_vwap_l1", 0) or 0),
+            vwap_upper_2=float(row.get("_vwap_u2", 0) or 0),
+            vwap_lower_2=float(row.get("_vwap_l2", 0) or 0),
         )
+
+        # Pivot points (use second-to-last bar as prior session proxy)
+        if len(df) > 1:
+            ph = float(df["high"].iloc[-2])
+            pl = float(df["low"].iloc[-2])
+            pc = float(df["close"].iloc[-2])
+        else:
+            ph = float(df["high"].iloc[-1])
+            pl = float(df["low"].iloc[-1])
+            pc = float(df["close"].iloc[-1])
+        pp = (ph + pl + pc) / 3
+        ind.pivot_pp = pp
+        ind.pivot_r1 = 2 * pp - pl
+        ind.pivot_r2 = pp + (ph - pl)
+        ind.pivot_r3 = ph + 2 * (pp - pl)
+        ind.pivot_s1 = 2 * pp - ph
+        ind.pivot_s2 = pp - (ph - pl)
+        ind.pivot_s3 = pl - 2 * (ph - pp)
+
+        # Volume Profile POC/VAH/VAL
+        try:
+            price_range = df['high'].max() - df['low'].min()
+            n_buckets = 20
+            bucket_size = price_range / n_buckets if price_range > 0 else 1
+            low_min = df['low'].min()
+            buckets: dict = {}
+            for _, r in df.iterrows():
+                mid = (r['high'] + r['low']) / 2
+                bucket = int((mid - low_min) / bucket_size)
+                buckets[bucket] = buckets.get(bucket, 0) + r['volume']
+            if buckets:
+                poc_bucket = max(buckets, key=buckets.get)  # type: ignore[arg-type]
+                ind.poc = float(low_min + (poc_bucket + 0.5) * bucket_size)
+                total_vol = sum(buckets.values())
+                sorted_buckets = sorted(buckets.items(), key=lambda x: x[1], reverse=True)
+                cum = 0
+                va_buckets = []
+                for b, v in sorted_buckets:
+                    cum += v
+                    va_buckets.append(b)
+                    if cum >= total_vol * 0.70:
+                        break
+                if va_buckets:
+                    ind.vah = float(low_min + (max(va_buckets) + 1) * bucket_size)
+                    ind.val = float(low_min + min(va_buckets) * bucket_size)
+        except Exception:
+            pass
+
+        return ind
 
 
 class PatternRecognizer:
