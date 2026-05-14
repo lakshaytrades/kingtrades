@@ -33,7 +33,10 @@ from utils import (
     is_market_open_ist, round_to_tick_size
 )
 from pattern_recognition import PatternRecognizer, IndicatorSet
-from data_fetch_groww import GrowwDataFetcher
+try:
+    from data_fetch_alpaca import AlpacaDataFetcher as GrowwDataFetcher
+except ImportError:
+    GrowwDataFetcher = object
 from high_accuracy_filter import HighAccuracyFilter, FilterResult
 
 # ── Institutional intelligence modules (new) ────────────────

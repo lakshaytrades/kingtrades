@@ -1131,7 +1131,7 @@ def main():
     logger.info(f"[{format_ist_timestamp()}] Trainer. Symbols: {symbols}, Days: {args.days}")
 
     try:
-        from data_fetch_groww import get_data_fetcher
+        from data_fetch_alpaca import get_data_fetcher
         fetcher = get_data_fetcher()
     except Exception as e:
         logger.error(f"Cannot initialize data fetcher: {e}")

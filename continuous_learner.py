@@ -105,7 +105,7 @@ class ContinuousLearner:
     def _load_modules(self):
         """Lazy-load all bot modules. Avoids import errors at startup."""
         try:
-            from data_fetch_groww import get_data_fetcher
+            from data_fetch_alpaca import get_data_fetcher
             self._modules["fetcher"] = get_data_fetcher()
         except Exception as e:
             logger.warning(f"Fetcher not available: {e}")
@@ -547,27 +547,24 @@ class ContinuousLearner:
         alerter = self._modules.get("alerter")
 
         try:
-            from auth_groww import get_auth_manager
+            from auth_alpaca import get_auth_manager
             mgr = get_auth_manager()
-            old_token = mgr.token or ""
+            old_token = ""
 
-            logger.info(f"[{format_ist_timestamp()}] Token refresh cascade attempt...")
-            success = mgr.refresh_token_if_needed()
-            new_token = mgr.token or ""
+            logger.info(f"[{format_ist_timestamp()}] Alpaca auth check...")
+            ok, msg = mgr.validate()
+            success = ok
+            new_token = msg or ""
 
-            if success and new_token and new_token != old_token:
-                # Token genuinely changed — propagate to fetcher + executor
+            if success:
                 self._token_refreshed_date = today
-                logger.info(f"[{format_ist_timestamp()}] ✅ Groww token refreshed (cascade success)")
+                logger.info(f"[{format_ist_timestamp()}] ✅ Alpaca auth OK ({msg})")
 
-                # Kick the data-fetcher singleton so it picks up the new token
                 try:
-                    from data_fetch_groww import get_data_fetcher
+                    from data_fetch_alpaca import get_data_fetcher
                     fetcher = get_data_fetcher()
-                    if hasattr(fetcher, "_refresh_api_if_needed"):
-                        fetcher._refresh_api_if_needed()
                 except Exception as e:
-                    logger.debug(f"Fetcher token propagation: {e}")
+                    logger.debug(f"Fetcher check: {e}")
 
                 if alerter:
                     try:

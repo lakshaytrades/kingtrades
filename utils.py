@@ -200,6 +200,9 @@ is_squareoff_time_ist  = is_us_squareoff_time
 should_force_squareoff_ist = is_us_squareoff_time
 is_market_day_ist      = is_market_day_et
 convert_candle_timestamps_to_ist = convert_candle_timestamps_to_et
+get_market_open_datetime_ist  = get_market_open_datetime_et
+get_market_close_datetime_ist = get_market_close_datetime_et
+get_next_market_open_ist      = get_next_market_open_et
 
 def is_token_refresh_time() -> bool:
     """No-op for Alpaca (no daily token refresh needed)."""
