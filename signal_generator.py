@@ -298,6 +298,9 @@ class SignalGenerator:
                 alignment=alignment,
                 institutional_ctx=inst_ctx,
             )
+            if ai_score is None:
+                logger.debug(f"{symbol}: time-of-day block — skipping")
+                return None
 
             # 6b. Smart Money Enhancement (Liquidity Sweeps, Wyckoff, ORB, RVOL,
             #     Market Regime, Killzones, Key Levels, Momentum Quality)
@@ -336,7 +339,21 @@ class SignalGenerator:
                         + " | ".join(pm_score.reasons[:3])
                     )
 
-            if ai_score < self.min_score:
+            # 6d. Earnings Catalyst boost (up to +25 pts when EPS beat + RVOL surge)
+            try:
+                from catalyst_scanner import get_catalyst_scanner
+                cat = get_catalyst_scanner().get_catalyst_boost(symbol)
+                if cat.get("has_catalyst") and cat.get("boost", 0) > 0:
+                    cat_boost = float(cat["boost"])
+                    ai_score = min(100.0, ai_score + cat_boost)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: "
+                        f"catalyst boost +{cat_boost:.1f} — {cat.get('reason', '')}"
+                    )
+            except Exception as _cat_err:
+                logger.debug(f"Catalyst boost error for {symbol}: {_cat_err}")
+
+            if ai_score is None or ai_score < self.min_score:
                 logger.debug(f"{symbol}: score {ai_score:.1f} below threshold {self.min_score}")
                 return None
 
@@ -389,10 +406,10 @@ class SignalGenerator:
             # 8. Build signal using filter's final score and size
             # Apply smart money regime multiplier on top of filter's size
             regime_mult = sm_score.regime_multiplier if sm_score is not None else 1.0
-            # Scale size by signal quality score (1–3% risk based on score)
+            # Score-based sizing: selective leverage only on 90+ score setups
             score_size_mult = 1.0
-            if ai_score >= 85:
-                score_size_mult = 1.3   # High-conviction: scale up
+            if ai_score >= 90:
+                score_size_mult = 1.3   # Elite conviction: scale up (Grok: 90+ only)
             elif ai_score >= 75:
                 score_size_mult = 1.0   # Normal
             elif ai_score >= 65:
@@ -836,17 +853,17 @@ class SignalGenerator:
         elif direction == "SHORT" and relative_strength < -0.5:
             score += min(abs(relative_strength) * 2, 8)
 
-        # ── Time of day filter ────────────────────────────
-        now_ist  = get_current_ist_time()
-        time_val = now_ist.hour + now_ist.minute / 60
-        if 11.0 <= time_val < 13.5:   # 11:00–1:30 PM: midday chop — hard block
-            return None
-        elif 9.25 <= time_val <= 10.5:  # 9:15–10:30: morning momentum power hour
+        # ── Time of day filter (US ET market hours) ──────────
+        now_et   = get_current_ist_time()   # IST alias → ET after migration
+        time_val = now_et.hour + now_et.minute / 60
+        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop
+            score -= 10
+        elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone
+            score += 8
+        elif 14.5 <= time_val <= 16.0:  # 2:30–4:00 PM ET: Power Hour
             score += 6
-        elif 13.5 <= time_val <= 14.5:  # 1:30–2:30 PM: afternoon institutional
-            score += 4
-        elif time_val >= 14.75:  # After 2:45 PM: avoid new positions
-            score -= 8
+        elif time_val >= 15.75:         # After 3:45 PM ET: avoid new positions
+            score -= 12
 
         # ── [NEW] Option Chain direction bias ─────────────
         oc_score = ctx.get("oc_score", 0.0)

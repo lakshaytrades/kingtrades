@@ -102,6 +102,10 @@ class IndicatorSet:
     poc: float = 0.0
     vah: float = 0.0
     val: float = 0.0
+    hvn_nearest: float = 0.0    # nearest High Volume Node price level
+    lvn_nearest: float = 0.0    # nearest Low Volume Node price level
+    at_hvn: bool = False         # price within 0.3% of nearest HVN
+    at_lvn: bool = False         # price within 0.3% of nearest LVN
 
 
 class TechnicalIndicators:
@@ -444,24 +448,28 @@ class TechnicalIndicators:
         ind.pivot_s2 = pp - (ph - pl)
         ind.pivot_s3 = pl - 2 * (ph - pp)
 
-        # Volume Profile POC/VAH/VAL
+        # Volume Profile: POC / VAH / VAL / HVN / LVN
         try:
             price_range = df['high'].max() - df['low'].min()
             n_buckets = 20
             bucket_size = price_range / n_buckets if price_range > 0 else 1
-            low_min = df['low'].min()
+            low_min = float(df['low'].min())
             buckets: dict = {}
             for _, r in df.iterrows():
-                mid = (r['high'] + r['low']) / 2
+                mid = (float(r['high']) + float(r['low'])) / 2
                 bucket = int((mid - low_min) / bucket_size)
-                buckets[bucket] = buckets.get(bucket, 0) + r['volume']
+                buckets[bucket] = buckets.get(bucket, 0) + float(r['volume'])
+
             if buckets:
+                # POC
                 poc_bucket = max(buckets, key=buckets.get)  # type: ignore[arg-type]
                 ind.poc = float(low_min + (poc_bucket + 0.5) * bucket_size)
+
+                # VAH / VAL (70% of volume around POC)
                 total_vol = sum(buckets.values())
                 sorted_buckets = sorted(buckets.items(), key=lambda x: x[1], reverse=True)
                 cum = 0
-                va_buckets = []
+                va_buckets: list = []
                 for b, v in sorted_buckets:
                     cum += v
                     va_buckets.append(b)
@@ -470,6 +478,28 @@ class TechnicalIndicators:
                 if va_buckets:
                     ind.vah = float(low_min + (max(va_buckets) + 1) * bucket_size)
                     ind.val = float(low_min + min(va_buckets) * bucket_size)
+
+                # HVN / LVN: classify each bucket relative to mean volume
+                mean_vol = total_vol / max(len(buckets), 1)
+                hvn_levels = [
+                    low_min + (b + 0.5) * bucket_size
+                    for b, v in buckets.items()
+                    if v >= mean_vol * 1.5   # High Volume Node
+                ]
+                lvn_levels = [
+                    low_min + (b + 0.5) * bucket_size
+                    for b, v in buckets.items()
+                    if v <= mean_vol * 0.5   # Low Volume Node
+                ]
+                current_price = float(df['close'].iloc[-1])
+                if hvn_levels:
+                    nearest_hvn = min(hvn_levels, key=lambda p: abs(p - current_price))
+                    ind.hvn_nearest = float(nearest_hvn)
+                    ind.at_hvn = abs(nearest_hvn - current_price) / max(current_price, 1) < 0.003
+                if lvn_levels:
+                    nearest_lvn = min(lvn_levels, key=lambda p: abs(p - current_price))
+                    ind.lvn_nearest = float(nearest_lvn)
+                    ind.at_lvn = abs(nearest_lvn - current_price) / max(current_price, 1) < 0.003
         except Exception:
             pass
 
@@ -3133,199 +3163,249 @@ class PatternRecognizer:
         self, patterns: List[PatternResult], ind: IndicatorSet
     ) -> Dict:
         """
-        Compute composite bullish/bearish score from all patterns + indicators.
-        Returns {"long": 0-100, "short": 0-100, "direction": "LONG"/"SHORT"/"NEUTRAL"}
+        Composite score following Grok's recommended category weights:
+          ICT/SMC patterns  : 35 pts max
+          Chart patterns    : 20 pts max
+          Momentum/Volume   : 25 pts max
+          (Earnings/RS bonus: handled in signal_generator.py — 20 pts max)
+        Total base max = 80 pts → normalized to 100 by ×1.25.
+        HVN/LVN proximity adds a bonus on top (fast-move / S&R confirmation).
         """
-        long_score = 0.0
-        short_score = 0.0
 
-        # Elite patterns get higher weight (these are the money-makers)
-        ELITE_PATTERNS = {
+        # ── ICT / Smart Money pattern set (35 pts max) ────────────────────
+        ICT_PATTERNS = {
             "Bullish FVG", "Bearish FVG",
             "Bullish Order Block", "Bearish Order Block",
             "BOS — Higher High (Trend Continues)", "BOS — Lower Low (Trend Continues)",
             "ChoCH — Bullish Reversal", "ChoCH — Bearish Reversal",
-            "Full EMA Stack Bullish", "Full EMA Stack Bearish",
+            "Breaker Block Bullish", "Breaker Block Bearish",
+            "Bullish Liquidity Sweep", "Bearish Liquidity Sweep",
+            "Liquidity Sweep Bullish", "Liquidity Sweep Bearish",
+            "Judas Swing Bullish", "Judas Swing Bearish",
+            "OTE Bullish (ICT)", "OTE Bearish (ICT)",
+            "Power of 3 — Bullish Distribution", "Power of 3 — Bearish Distribution",
+            "Wyckoff Spring (Bullish)", "Wyckoff Upthrust (Bearish)",
+            "Wyckoff Accumulation Base", "Wyckoff Distribution Top",
+            "Liquidity Pool Bullish", "Liquidity Pool Bearish",
+            "SMT Divergence Bullish", "SMT Divergence Bearish",
+            "Kill Zone Bullish", "Kill Zone Bearish",
+            "Gap & Go Long", "Gap & Go Short",
+            "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
+        }
+
+        # ── Chart / Technical patterns (20 pts max) ───────────────────────
+        CHART_PATTERNS = {
             "Double Bottom", "Double Top",
-            "Heikin Ashi Bull Trend", "Heikin Ashi Bear Trend",
-            # Advanced patterns (equally high confidence)
+            "Triple Bottom", "Triple Top",
+            "Head & Shoulders", "Inverse Head & Shoulders",
             "Cup and Handle",
-            "Inverse Head & Shoulders", "Head & Shoulders",
+            "Ascending Triangle", "Descending Triangle", "Symmetrical Triangle",
+            "Bull Flag", "Bear Flag",
+            "Rectangle Pattern", "Rounding Bottom",
+            "Bullish Engulfing", "Bearish Engulfing",
+            "Doji Reversal", "Hammer", "Shooting Star",
+            "Inverted Hammer", "Hanging Man",
+            "Bullish Marubozu", "Bearish Marubozu",
+            "Dragonfly Doji", "Gravestone Doji", "Spinning Top",
+            "Three Inside Up", "Three Inside Down",
             "Bullish Abandoned Baby", "Bearish Abandoned Baby",
             "Bullish Kicker", "Bearish Kicker",
-            "Ascending Triangle", "Descending Triangle",
-            "Three Inside Up", "Three Inside Down",
-            # Harmonic patterns (high-precision institutional levels)
+            "Mat Hold (Bullish)",
+            "Full EMA Stack Bullish", "Full EMA Stack Bearish",
+            "Heikin Ashi Bull Trend", "Heikin Ashi Bear Trend",
             "Bat Bullish", "Bat Bearish",
             "Gartley Bullish (222)", "Gartley Bearish (222)",
             "Butterfly Bullish", "Butterfly Bearish",
             "Crab Bullish", "Crab Bearish",
-            "OTE Bullish (ICT)", "OTE Bearish (ICT)",
             "Three Drives Bullish", "Three Drives Bearish",
-            # Smart money institutional patterns
-            "Bullish Liquidity Sweep", "Bearish Liquidity Sweep",
-            "Wyckoff Spring (Bullish)", "Wyckoff Upthrust (Bearish)",
-            "Wyckoff Accumulation Base", "Wyckoff Distribution Top",
-            "Power of 3 — Bullish Distribution", "Power of 3 — Bearish Distribution",
-            "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
-            "Mat Hold (Bullish)",
-            # New elite patterns
-            "Breaker Block Bullish", "Breaker Block Bearish",
-            "Liquidity Sweep Bullish", "Liquidity Sweep Bearish",
-            "Judas Swing Bullish", "Judas Swing Bearish",
-            "Bullish Marubozu", "Bearish Marubozu",
+            "Quasimodo Bullish", "Quasimodo Bearish",
+            "Gap Fill Long", "Gap Fill Short",
             "Keltner Squeeze Breakout Long", "Keltner Squeeze Breakout Short",
             "Donchian Breakout Long", "Donchian Breakout Short",
             "ADX Trend Long", "ADX Trend Short",
             "Ichimoku Bull", "Ichimoku Bear",
-            "RVOL Momentum Confirmed",
-            "Gap & Go Long", "Gap & Go Short",
-            # SMT Divergence (institutional accumulation/distribution)
-            "SMT Divergence Bullish", "SMT Divergence Bearish",
         }
 
-        # ADX quality filter: choppy = reduce weights, trending = boost
-        adx_multiplier = 1.0
-        if ind.adx < 20:
-            adx_multiplier = 0.7   # Choppy market — reduce all pattern weights
-        elif ind.adx > 30:
-            adx_multiplier = 1.1   # Strong trend — boost all pattern weights
+        # ADX quality multiplier: choppy → reduce, trending → boost
+        adx_mult = 0.7 if ind.adx < 20 else (1.1 if ind.adx > 30 else 1.0)
 
-        # Pattern scores
+        # ── Category 1: ICT/SMC patterns (cap 35) ─────────────────────────
+        ict_long = 0.0
+        ict_short = 0.0
+
+        # ── Category 2: Chart patterns (cap 20) ───────────────────────────
+        chart_long = 0.0
+        chart_short = 0.0
+
         for p in patterns:
-            weight = 1.0 if p.name in ELITE_PATTERNS else 0.4  # Elite=1.0, weak patterns=0.4
-            weight *= adx_multiplier
-            if p.direction == "LONG":
-                long_score += p.confidence * weight
-            elif p.direction == "SHORT":
-                short_score += p.confidence * weight
-
-        # ── Indicator confluence scoring ──────────────────────────────────
-        # RSI
-        if ind.rsi < 35:
-            long_score += 15
-        elif ind.rsi > 65:
-            short_score += 15
-
-        # MACD histogram direction
-        if ind.macd_hist > 0:
-            long_score += 10
-        elif ind.macd_hist < 0:
-            short_score += 10
-
-        # EMA alignment
-        if ind.ema9 > ind.ema21 > ind.ema50:
-            long_score += 12
-        elif ind.ema9 < ind.ema21 < ind.ema50:
-            short_score += 12
-
-        # Volume confirmation (RVOL preferred; fall back to volume_ratio)
-        rvol = getattr(ind, "rvol", ind.volume_ratio)
-        if rvol >= 2.0:
-            if long_score >= short_score:
-                long_score += 12
+            conf_norm = (p.confidence * adx_mult) / 100.0   # 0.0–1.1 range
+            if p.name in ICT_PATTERNS:
+                bucket = ict_long if p.direction == "LONG" else ict_short
+                contrib = conf_norm * 35
+                if p.direction == "LONG":
+                    ict_long += contrib
+                elif p.direction == "SHORT":
+                    ict_short += contrib
+            elif p.name in CHART_PATTERNS:
+                contrib = conf_norm * 20
+                if p.direction == "LONG":
+                    chart_long += contrib
+                elif p.direction == "SHORT":
+                    chart_short += contrib
             else:
-                short_score += 12
-        elif rvol >= 1.5:
-            if long_score >= short_score:
-                long_score += 6
-            else:
-                short_score += 6
+                # Unclassified patterns (e.g. RVOL Momentum Confirmed) → half-weight chart bucket
+                contrib = conf_norm * 10
+                if p.direction == "LONG":
+                    chart_long += contrib
+                elif p.direction == "SHORT":
+                    chart_short += contrib
 
-        # Supertrend
-        if ind.supertrend_dir == 1:
-            long_score += 8
-        else:
-            short_score += 8
+        ict_long  = min(ict_long,  35.0)
+        ict_short = min(ict_short, 35.0)
+        chart_long  = min(chart_long,  20.0)
+        chart_short = min(chart_short, 20.0)
 
-        # ADX trend strength + DI direction
-        if ind.adx > 25:
-            plus_di  = getattr(ind, "adx_plus_di",  getattr(ind, "plus_di",  0))
-            minus_di = getattr(ind, "adx_minus_di", getattr(ind, "minus_di", 0))
-            if plus_di > minus_di:
-                long_score += 10
-            else:
-                short_score += 10
-
-        # StochRSI
+        # ── Category 3: Momentum / Volume indicators (cap 25) ─────────────
+        rvol    = getattr(ind, "rvol", ind.volume_ratio)
         stoch_k = getattr(ind, "stoch_rsi_k", 50)
-        if stoch_k < 25:
-            long_score += 8
-        elif stoch_k > 75:
-            short_score += 8
-
-        # CCI
-        cci = getattr(ind, "cci", 0)
-        if cci < -100:
-            long_score += 7
-        elif cci > 100:
-            short_score += 7
-
-        # Williams %R
-        wr = getattr(ind, "williams_r", -50)
-        if wr > -20:
-            short_score += 6
-        elif wr < -80:
-            long_score += 6
-
-        # Ichimoku cloud position
+        cci     = getattr(ind, "cci", 0)
+        wr      = getattr(ind, "williams_r", -50)
+        bb_pb   = getattr(ind, "bb_pct_b", 0.5)
+        plus_di  = getattr(ind, "adx_plus_di", getattr(ind, "plus_di",  0))
+        minus_di = getattr(ind, "adx_minus_di", getattr(ind, "minus_di", 0))
         tenkan   = getattr(ind, "ichimoku_tenkan",   0)
         kijun    = getattr(ind, "ichimoku_kijun",    0)
         senkou_a = getattr(ind, "ichimoku_senkou_a", 0)
         senkou_b = getattr(ind, "ichimoku_senkou_b", 0)
+
+        mom_long = 0.0
+        mom_short = 0.0
+
+        # RVOL: up to 8 pts (directional towards dominant side)
+        if rvol >= 2.0:
+            if ict_long + chart_long >= ict_short + chart_short:
+                mom_long += 8
+            else:
+                mom_short += 8
+        elif rvol >= 1.5:
+            if ict_long + chart_long >= ict_short + chart_short:
+                mom_long += 5
+            else:
+                mom_short += 5
+
+        # RSI: up to 5 pts
+        if ind.rsi < 35:
+            mom_long += 5
+        elif ind.rsi > 65:
+            mom_short += 5
+
+        # MACD histogram: up to 3 pts
+        if ind.macd_hist > 0:
+            mom_long += 3
+        elif ind.macd_hist < 0:
+            mom_short += 3
+
+        # Supertrend: up to 4 pts
+        if ind.supertrend_dir == 1:
+            mom_long += 4
+        else:
+            mom_short += 4
+
+        # ADX + DI: up to 5 pts
+        if ind.adx > 25:
+            if plus_di > minus_di:
+                mom_long += 5
+            else:
+                mom_short += 5
+
+        # StochRSI: up to 4 pts
+        if stoch_k < 25:
+            mom_long += 4
+        elif stoch_k > 75:
+            mom_short += 4
+
+        # CCI: up to 3 pts
+        if cci < -100:
+            mom_long += 3
+        elif cci > 100:
+            mom_short += 3
+
+        # Williams %R: up to 3 pts
+        if wr < -80:
+            mom_long += 3
+        elif wr > -20:
+            mom_short += 3
+
+        # Ichimoku cloud position: up to 5 pts
         if tenkan and kijun and senkou_a and senkou_b:
             cloud_top = max(senkou_a, senkou_b)
             cloud_bot = min(senkou_a, senkou_b)
-            close_px  = tenkan  # proxy for current price vicinity
-            if close_px > cloud_top and tenkan > kijun:
-                long_score += 10
-            elif close_px < cloud_bot and tenkan < kijun:
-                short_score += 10
+            if tenkan > cloud_top and tenkan > kijun:
+                mom_long += 5
+            elif tenkan < cloud_bot and tenkan < kijun:
+                mom_short += 5
 
-        # BB %B extremes (mean-reversion or breakout confirmation)
-        bb_pb = getattr(ind, "bb_pct_b", 0.5)
+        # BB %B extremes: up to 3 pts
         if bb_pb > 1.0:
-            short_score += 6   # above upper band = extended
+            mom_short += 3
         elif bb_pb < 0.0:
-            long_score += 6    # below lower band = oversold
+            mom_long += 3
 
-        # Pivot point proximity
-        pp  = getattr(ind, "pivot_pp", 0)
-        r1  = getattr(ind, "pivot_r1", 0)
-        s1  = getattr(ind, "pivot_s1", 0)
-        if pp and r1 and s1:
-            plus_di  = getattr(ind, "adx_plus_di",  getattr(ind, "plus_di",  0))
-            minus_di = getattr(ind, "adx_minus_di", getattr(ind, "minus_di", 0))
-            if plus_di > minus_di:    # bullish bias
-                long_score += 5   # trending above PP
-            else:
-                short_score += 5
+        # EMA full-stack alignment: up to 5 pts
+        if ind.ema9 > ind.ema21 > ind.ema50:
+            mom_long += 5
+        elif ind.ema9 < ind.ema21 < ind.ema50:
+            mom_short += 5
 
-        # ── High-confluence multi-factor bonus ────────────────────────────
-        # FVG/OB + High RVOL + ADX rising = institutional momentum setup
+        mom_long  = min(mom_long,  25.0)
+        mom_short = min(mom_short, 25.0)
+
+        # ── Multi-factor ICT confluence bonus (adds within ICT 35 cap) ────
         elite_names = {p.name for p in patterns}
-        has_fvg_ob  = bool({"Bullish FVG","Bullish Order Block","Breaker Block Bullish"} & elite_names)
-        has_fvg_ob_s = bool({"Bearish FVG","Bearish Order Block","Breaker Block Bearish"} & elite_names)
-        adx_rising  = ind.adx > 25
-        high_rvol   = rvol >= 1.8
+        has_ict_bull = bool({"Bullish FVG", "Bullish Order Block", "Breaker Block Bullish"} & elite_names)
+        has_ict_bear = bool({"Bearish FVG", "Bearish Order Block", "Breaker Block Bearish"} & elite_names)
+        high_rvol = rvol >= 1.8
+        adx_rising = ind.adx > 25
+        if has_ict_bull and adx_rising and high_rvol:
+            ict_long  = min(ict_long  + 10, 35.0)
+        if has_ict_bear and adx_rising and high_rvol:
+            ict_short = min(ict_short + 10, 35.0)
 
-        if has_fvg_ob and adx_rising and high_rvol:
-            long_score += 18   # top-tier confluence bonus
-        if has_fvg_ob_s and adx_rising and high_rvol:
-            short_score += 18
-
-        # Kill zone timing bonus (NY Open or London Close)
+        # Kill zone timing bonus (adds within chart 20 cap)
         has_kz = any("Kill Zone" in p.name for p in patterns)
         if has_kz:
-            if long_score >= short_score:
-                long_score += 8
+            if ict_long + mom_long >= ict_short + mom_short:
+                chart_long  = min(chart_long  + 5, 20.0)
             else:
-                short_score += 8
+                chart_short = min(chart_short + 5, 20.0)
 
-        # Normalize to 0-100
-        max_score = max(long_score, short_score, 1)
-        long_norm = min((long_score / max_score) * 100 * (max_score / 150), 100)
-        short_norm = min((short_score / max_score) * 100 * (max_score / 150), 100)
+        # ── HVN / LVN proximity bonus ──────────────────────────────────────
+        # at_lvn: price in a low-volume node → fast move incoming (+6)
+        # at_hvn: price at a high-volume node = strong S/R reaction
+        at_hvn = getattr(ind, "at_hvn", False)
+        at_lvn = getattr(ind, "at_lvn", False)
+
+        hvn_long = hvn_short = 0.0
+        if at_lvn:
+            # LVN = fast move zone: boost the dominant side
+            if ict_long + chart_long + mom_long >= ict_short + chart_short + mom_short:
+                hvn_long = 6.0
+            else:
+                hvn_short = 6.0
+        if at_hvn:
+            # HVN = strong S/R: boost if momentum is coming FROM this level
+            if ict_long + chart_long + mom_long > ict_short + chart_short + mom_short:
+                hvn_long = 4.0   # bouncing off HVN support
+            else:
+                hvn_short = 4.0  # rejecting at HVN resistance
+
+        # ── Totals: max 80 base → normalize to 100 ────────────────────────
+        raw_long  = ict_long  + chart_long  + mom_long  + hvn_long
+        raw_short = ict_short + chart_short + mom_short + hvn_short
+
+        # ×1.25 maps 80-pt ceiling → 100; hvn bonus can push to ~86 before cap
+        long_norm  = min(raw_long  * 1.25, 100.0)
+        short_norm = min(raw_short * 1.25, 100.0)
 
         direction = "NEUTRAL"
         if long_norm > short_norm and long_norm >= 55:
