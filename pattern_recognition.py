@@ -565,6 +565,39 @@ class PatternRecognizer:
             self.detect_homing_pigeon,
             self.detect_matching_low,
             self.detect_counterattack_lines,
+            # ── New candlestick patterns ──────────────────────────────────
+            self.detect_inverted_hammer,
+            self.detect_hanging_man,
+            self.detect_marubozu_bullish,
+            self.detect_marubozu_bearish,
+            self.detect_spinning_top,
+            self.detect_dragonfly_doji,
+            self.detect_gravestone_doji,
+            # ── New chart patterns ────────────────────────────────────────
+            self.detect_rectangle_pattern,
+            self.detect_triple_top,
+            self.detect_triple_bottom,
+            self.detect_quasimodo,
+            # ── New ICT / Smart Money patterns ────────────────────────────
+            self.detect_breaker_block,
+            self.detect_liquidity_pool,
+            self.detect_kill_zone,
+            self.detect_judas_swing,
+            self.detect_premium_discount,
+            self.detect_fibonacci_retracement,
+            # ── New indicator-based signals ───────────────────────────────
+            self.detect_adx_trend,
+            self.detect_ichimoku_signal,
+            self.detect_keltner_squeeze,
+            self.detect_donchian_breakout,
+            self.detect_chandelier_exit_signal,
+            self.detect_stoch_rsi_signal,
+            self.detect_cci_signal,
+            self.detect_williams_r_signal,
+            self.detect_pivot_bounce,
+            self.detect_vwap_band_signal,
+            self.detect_poc_reaction,
+            self.detect_rvol_confirmation,
         ]
 
         for detector in detectors:
@@ -2211,6 +2244,739 @@ class PatternRecognizer:
         return None
 
     # ─────────────────────────────────────────────────────────
+    # NEW CANDLESTICK PATTERNS
+    # ─────────────────────────────────────────────────────────
+
+    def detect_inverted_hammer(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 2:
+            return None
+        c = df.iloc[-1]
+        body = abs(c["close"] - c["open"])
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        upper_shadow = c["high"] - max(c["close"], c["open"])
+        lower_shadow = min(c["close"], c["open"]) - c["low"]
+        if upper_shadow < 2 * body or lower_shadow > body * 0.5:
+            return None
+        # Must be at support (near recent lows)
+        recent_low = df["low"].iloc[-10:].min() if len(df) >= 10 else df["low"].min()
+        if c["low"] > recent_low * 1.02:
+            return None
+        confidence = 65 + (upper_shadow / total_range) * 15
+        if ind.rsi < 40:
+            confidence = min(confidence + 10, 88)
+        return PatternResult("Inverted Hammer", "LONG", min(confidence, 85),
+                             f"Inverted hammer at support — rejection of lows, RSI={ind.rsi:.0f}")
+
+    def detect_hanging_man(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 5:
+            return None
+        c = df.iloc[-1]
+        body = abs(c["close"] - c["open"])
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        lower_shadow = min(c["close"], c["open"]) - c["low"]
+        upper_shadow = c["high"] - max(c["close"], c["open"])
+        if lower_shadow < 2 * body or upper_shadow > body:
+            return None
+        # Must be at the top of an uptrend
+        recent_high = df["high"].iloc[-10:].max() if len(df) >= 10 else df["high"].max()
+        if c["high"] < recent_high * 0.98:
+            return None
+        confidence = 62 + (lower_shadow / total_range) * 15
+        if ind.rsi > 60:
+            confidence = min(confidence + 8, 82)
+        return PatternResult("Hanging Man", "SHORT", min(confidence, 80),
+                             f"Hanging man at uptrend top — bearish warning, RSI={ind.rsi:.0f}")
+
+    def detect_marubozu_bullish(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 1:
+            return None
+        c = df.iloc[-1]
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        body = c["close"] - c["open"]
+        if body <= 0:
+            return None
+        upper_shadow = c["high"] - c["close"]
+        lower_shadow = c["open"] - c["low"]
+        # Body must be >= 95% of total range (tiny wicks only)
+        if body / total_range < 0.95:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+        confidence = 80 + min(ind.volume_ratio * 3, 8)
+        if body > atr:
+            confidence = min(confidence + 5, 92)
+        return PatternResult("Bullish Marubozu", "LONG", confidence,
+                             f"Bullish Marubozu: full body candle, no wicks — strong institutional buying")
+
+    def detect_marubozu_bearish(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 1:
+            return None
+        c = df.iloc[-1]
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        body = c["open"] - c["close"]
+        if body <= 0:
+            return None
+        if body / total_range < 0.95:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+        confidence = 80 + min(ind.volume_ratio * 3, 8)
+        if body > atr:
+            confidence = min(confidence + 5, 92)
+        return PatternResult("Bearish Marubozu", "SHORT", confidence,
+                             f"Bearish Marubozu: full body candle, no wicks — strong institutional selling")
+
+    def detect_spinning_top(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 1:
+            return None
+        c = df.iloc[-1]
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        body = abs(c["close"] - c["open"])
+        upper_shadow = c["high"] - max(c["close"], c["open"])
+        lower_shadow = min(c["close"], c["open"]) - c["low"]
+        # Small body (<30% of range), roughly equal shadows
+        if body / total_range > 0.3:
+            return None
+        shadow_ratio = min(upper_shadow, lower_shadow) / max(max(upper_shadow, lower_shadow), 0.001)
+        if shadow_ratio < 0.5:
+            return None
+        return PatternResult("Spinning Top", "NEUTRAL", 55,
+                             "Spinning top — indecision, equal upper/lower wicks; watch for breakout")
+
+    def detect_dragonfly_doji(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 1:
+            return None
+        c = df.iloc[-1]
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        body = abs(c["close"] - c["open"])
+        upper_shadow = c["high"] - max(c["close"], c["open"])
+        lower_shadow = min(c["close"], c["open"]) - c["low"]
+        # Doji body (<10% of range), long lower shadow, tiny/no upper shadow
+        if body / total_range > 0.1:
+            return None
+        if lower_shadow < total_range * 0.6:
+            return None
+        if upper_shadow > total_range * 0.1:
+            return None
+        confidence = 72 + (lower_shadow / total_range) * 10
+        if ind.rsi < 40:
+            confidence = min(confidence + 8, 88)
+        return PatternResult("Dragonfly Doji", "LONG", min(confidence, 85),
+                             f"Dragonfly Doji: long lower wick, strong rejection of lows — LONG reversal")
+
+    def detect_gravestone_doji(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 1:
+            return None
+        c = df.iloc[-1]
+        total_range = c["high"] - c["low"]
+        if total_range == 0:
+            return None
+        body = abs(c["close"] - c["open"])
+        upper_shadow = c["high"] - max(c["close"], c["open"])
+        lower_shadow = min(c["close"], c["open"]) - c["low"]
+        # Doji body, long upper shadow, tiny/no lower shadow
+        if body / total_range > 0.1:
+            return None
+        if upper_shadow < total_range * 0.6:
+            return None
+        if lower_shadow > total_range * 0.1:
+            return None
+        confidence = 72 + (upper_shadow / total_range) * 10
+        if ind.rsi > 60:
+            confidence = min(confidence + 8, 88)
+        return PatternResult("Gravestone Doji", "SHORT", min(confidence, 85),
+                             f"Gravestone Doji: long upper wick, strong rejection of highs — SHORT reversal")
+
+    # ─────────────────────────────────────────────────────────
+    # NEW CHART PATTERNS
+    # ─────────────────────────────────────────────────────────
+
+    def detect_rectangle_pattern(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        recent = df.iloc[-20:]
+        resistance = recent["high"].max()
+        support = recent["low"].min()
+        price_range = resistance - support
+        if price_range <= 0:
+            return None
+        # Flat S/R: highs within 1% of resistance, lows within 1% of support
+        high_spread = (recent["high"].max() - recent["high"].mean()) / resistance
+        low_spread = (recent["low"].mean() - recent["low"].min()) / max(abs(support), 0.01)
+        if high_spread > 0.015 or low_spread > 0.015:
+            return None
+        curr = df.iloc[-1]["close"]
+        # Breakout or breakdown
+        if curr > resistance * 1.001 and ind.volume_ratio >= 1.5:
+            confidence = min(65 + ind.volume_ratio * 8, 85)
+            return PatternResult("Rectangle Breakout", "LONG", confidence,
+                                 f"Rectangle breakout above ${resistance:.2f} — vol={ind.volume_ratio:.1f}x")
+        if curr < support * 0.999 and ind.volume_ratio >= 1.5:
+            confidence = min(65 + ind.volume_ratio * 8, 85)
+            return PatternResult("Rectangle Breakdown", "SHORT", confidence,
+                                 f"Rectangle breakdown below ${support:.2f} — vol={ind.volume_ratio:.1f}x")
+        return None
+
+    def detect_triple_top(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 40:
+            return None
+        highs = df["high"].values[-40:]
+        closes = df["close"].values
+        # Find three peaks within 1% of each other, each separated by at least 5 bars
+        peak_indices = []
+        for i in range(3, len(highs) - 3):
+            if highs[i] == highs[max(0, i-3):i+4].max():
+                peak_indices.append(i)
+        if len(peak_indices) < 3:
+            return None
+        # Use last three peaks
+        p1, p2, p3 = peak_indices[-3], peak_indices[-2], peak_indices[-1]
+        if p2 - p1 < 5 or p3 - p2 < 5:
+            return None
+        h1, h2, h3 = highs[p1], highs[p2], highs[p3]
+        avg_high = (h1 + h2 + h3) / 3
+        if max(h1, h2, h3) / avg_high > 1.01:
+            return None
+        # Neckline: minimum low between peaks
+        neckline = df["low"].values[-40:][p1:p3+1].min()
+        if closes[-1] > neckline * 1.002:
+            return None
+        confidence = min(70 + ind.volume_ratio * 5, 85)
+        return PatternResult("Triple Top", "SHORT", confidence,
+                             f"Triple top at ${avg_high:.2f} — breakdown below neckline ${neckline:.2f}")
+
+    def detect_triple_bottom(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 40:
+            return None
+        lows = df["low"].values[-40:]
+        closes = df["close"].values
+        # Find three troughs within 1% of each other
+        trough_indices = []
+        for i in range(3, len(lows) - 3):
+            if lows[i] == lows[max(0, i-3):i+4].min():
+                trough_indices.append(i)
+        if len(trough_indices) < 3:
+            return None
+        t1, t2, t3 = trough_indices[-3], trough_indices[-2], trough_indices[-1]
+        if t2 - t1 < 5 or t3 - t2 < 5:
+            return None
+        l1, l2, l3 = lows[t1], lows[t2], lows[t3]
+        avg_low = (l1 + l2 + l3) / 3
+        if avg_low / min(l1, l2, l3) > 1.01:
+            return None
+        # Neckline: maximum high between troughs
+        neckline = df["high"].values[-40:][t1:t3+1].max()
+        if closes[-1] < neckline * 0.998:
+            return None
+        confidence = min(70 + ind.volume_ratio * 5, 85)
+        return PatternResult("Triple Bottom", "LONG", confidence,
+                             f"Triple bottom at ${avg_low:.2f} — breakout above neckline ${neckline:.2f}")
+
+    def detect_quasimodo(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        highs = df["high"].values[-20:]
+        lows = df["low"].values[-20:]
+        closes = df["close"].values
+        # Bearish QM: left shoulder → head (highest) → right shoulder (lower than head but higher than left)
+        # then breaks below the neckline (trough between head and right shoulder)
+        head_idx = int(np.argmax(highs))
+        if head_idx < 3 or head_idx > len(highs) - 3:
+            return None
+        left_sh = highs[:head_idx].max()
+        right_sh_arr = highs[head_idx+1:]
+        if len(right_sh_arr) == 0:
+            return None
+        right_sh = right_sh_arr.max()
+        if not (highs[head_idx] > left_sh and highs[head_idx] > right_sh and right_sh > left_sh):
+            return None
+        # Neckline: lowest low between head and right shoulder
+        neckline = lows[head_idx:].min()
+        if closes[-1] > neckline * 1.002:
+            return None
+        confidence = 72
+        if ind.rsi > 55:
+            confidence += 5
+        return PatternResult("Quasimodo Bearish", "SHORT", min(confidence, 82),
+                             f"QM pattern: head=${highs[head_idx]:.2f}, neckline=${neckline:.2f} broken")
+
+    # ─────────────────────────────────────────────────────────
+    # NEW ICT / SMART MONEY CONCEPTS
+    # ─────────────────────────────────────────────────────────
+
+    def detect_breaker_block(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 15:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+        curr_close = df.iloc[-1]["close"]
+        # Bullish Breaker: a prior bearish OB that was broken (price moved strongly through it)
+        # and now price returns to it as support
+        for i in range(-12, -4):
+            ob = df.iloc[i]
+            if ob["close"] >= ob["open"]:
+                continue  # Need a bearish candle as the original OB
+            # Was there a strong bullish impulse after that broke through this zone?
+            subsequent = df.iloc[i+1:i+5]
+            if len(subsequent) < 3:
+                continue
+            max_close_after = subsequent["close"].max()
+            if max_close_after < ob["high"] * 1.002:
+                continue  # Didn't break through
+            # Price now returning to the broken OB zone (now support)
+            ob_high = float(ob["high"])
+            ob_low = float(ob["low"])
+            if ob_low * 0.997 <= curr_close <= ob_high * 1.005:
+                confidence = 82
+                if ind.ema9 > ind.ema21:
+                    confidence = min(confidence + 5, 90)
+                return PatternResult("Breaker Block Bullish", "LONG", confidence,
+                                     f"Bullish breaker block: broken bearish OB now support at ${ob_low:.2f}–${ob_high:.2f}")
+        # Bearish Breaker: a prior bullish OB broken to the downside, now acting as resistance
+        for i in range(-12, -4):
+            ob = df.iloc[i]
+            if ob["close"] <= ob["open"]:
+                continue
+            subsequent = df.iloc[i+1:i+5]
+            if len(subsequent) < 3:
+                continue
+            min_close_after = subsequent["close"].min()
+            if min_close_after > ob["low"] * 0.998:
+                continue
+            ob_high = float(ob["high"])
+            ob_low = float(ob["low"])
+            if ob_low * 0.995 <= curr_close <= ob_high * 1.003:
+                confidence = 82
+                if ind.ema9 < ind.ema21:
+                    confidence = min(confidence + 5, 90)
+                return PatternResult("Breaker Block Bearish", "SHORT", confidence,
+                                     f"Bearish breaker block: broken bullish OB now resistance at ${ob_low:.2f}–${ob_high:.2f}")
+        return None
+
+    def detect_liquidity_pool(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        curr = df.iloc[-1]
+        # Equal highs = stop cluster above (sell-side liquidity)
+        recent_highs = df["high"].iloc[-20:-1]
+        max_high = recent_highs.max()
+        # Count highs within 0.2% of the maximum
+        equal_highs = (recent_highs >= max_high * 0.998).sum()
+        if equal_highs >= 2 and curr["close"] > max_high * 1.001:
+            # Price swept above equal highs then could reverse
+            confidence = 75 + min(equal_highs * 3, 12)
+            if ind.rsi > 65:
+                confidence = min(confidence + 8, 90)
+            return PatternResult("Liquidity Sweep Bearish", "SHORT", min(confidence, 88),
+                                 f"Buy-side liquidity swept: {equal_highs} equal highs at ${max_high:.2f} breached — reversal likely")
+        # Equal lows = stop cluster below (buy-side liquidity)
+        recent_lows = df["low"].iloc[-20:-1]
+        min_low = recent_lows.min()
+        equal_lows = (recent_lows <= min_low * 1.002).sum()
+        if equal_lows >= 2 and curr["close"] < min_low * 0.999:
+            confidence = 75 + min(equal_lows * 3, 12)
+            if ind.rsi < 35:
+                confidence = min(confidence + 8, 90)
+            return PatternResult("Liquidity Sweep Bullish", "LONG", min(confidence, 88),
+                                 f"Sell-side liquidity swept: {equal_lows} equal lows at ${min_low:.2f} breached — reversal likely")
+        return None
+
+    def detect_kill_zone(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 5:
+            return None
+        try:
+            from utils import get_current_ist_time
+            from zoneinfo import ZoneInfo
+            ist_now = get_current_ist_time()
+            et_offset = -5  # ET is UTC-5 (EST) or UTC-4 (EDT); approximate
+            et_hour = (ist_now.hour - 5) % 24  # IST to ET: subtract 10:30, approx
+            et_minute = ist_now.minute
+            # NY Open Kill Zone: 9:30–10:00 ET
+            ny_open_kz = (et_hour == 9 and 30 <= et_minute <= 59) or (et_hour == 10 and et_minute == 0)
+            # London Close Kill Zone: 11:00–12:00 ET
+            london_close_kz = et_hour == 11 or (et_hour == 12 and et_minute == 0)
+            if not (ny_open_kz or london_close_kz):
+                return None
+            zone_name = "NY Open" if ny_open_kz else "London Close"
+            curr = df.iloc[-1]
+            direction = "LONG" if curr["close"] > curr["open"] else "SHORT"
+            confidence = 78
+            if ind.volume_ratio >= 1.5:
+                confidence = min(confidence + 8, 88)
+            return PatternResult(f"ICT Kill Zone ({zone_name})", direction, confidence,
+                                 f"ICT {zone_name} kill zone — high-probability institutional move window")
+        except Exception:
+            return None
+
+    def detect_judas_swing(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 12:
+            return None
+        # First 6 bars form the early session
+        early = df.iloc[:6]
+        # Subsequent bars
+        later = df.iloc[6:]
+        if len(later) < 3:
+            return None
+        early_high = early["high"].max()
+        early_low = early["low"].min()
+        early_range = early_high - early_low
+        if early_range <= 0:
+            return None
+        atr = ind.atr if ind.atr > 0 else 1
+        # Bullish Judas: early spike DOWN below range, then recovery above early high
+        early_spike_low = early["low"].min()
+        later_close = df.iloc[-1]["close"]
+        if early_spike_low < early_low * 0.998 and later_close > early_high:
+            if (later_close - early_spike_low) > atr:
+                confidence = 80
+                if ind.volume_ratio >= 1.5:
+                    confidence = min(confidence + 7, 90)
+                return PatternResult("Judas Swing Bullish", "LONG", confidence,
+                                     f"Judas Swing: early false breakdown below ${early_spike_low:.2f}, "
+                                     f"now reversed above ${early_high:.2f}")
+        # Bearish Judas: early spike UP above range, then rejection below early low
+        early_spike_high = early["high"].max()
+        if early_spike_high > early_high * 1.002 and later_close < early_low:
+            if (early_spike_high - later_close) > atr:
+                confidence = 80
+                if ind.volume_ratio >= 1.5:
+                    confidence = min(confidence + 7, 90)
+                return PatternResult("Judas Swing Bearish", "SHORT", confidence,
+                                     f"Judas Swing: early false breakup to ${early_spike_high:.2f}, "
+                                     f"now reversed below ${early_low:.2f}")
+        return None
+
+    def detect_premium_discount(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        recent_high = df["high"].iloc[-20:].max()
+        recent_low = df["low"].iloc[-20:].min()
+        equilibrium = (recent_high + recent_low) / 2
+        curr_close = df.iloc[-1]["close"]
+        range_size = recent_high - recent_low
+        if range_size <= 0:
+            return None
+        pct_from_eq = (curr_close - equilibrium) / range_size
+        # Discount zone: price below equilibrium (below 40% of range)
+        if pct_from_eq < -0.1:
+            depth = abs(pct_from_eq) * 100
+            confidence = min(60 + depth * 0.5, 78)
+            if ind.rsi < 45:
+                confidence = min(confidence + 8, 82)
+            return PatternResult("Discount Zone (Long Bias)", "LONG", confidence,
+                                 f"Price at discount ({depth:.1f}% below equilibrium ${equilibrium:.2f}) — long bias")
+        # Premium zone: price above equilibrium (above 60% of range)
+        if pct_from_eq > 0.1:
+            height = pct_from_eq * 100
+            confidence = min(60 + height * 0.5, 78)
+            if ind.rsi > 55:
+                confidence = min(confidence + 8, 82)
+            return PatternResult("Premium Zone (Short Bias)", "SHORT", confidence,
+                                 f"Price at premium ({height:.1f}% above equilibrium ${equilibrium:.2f}) — short bias")
+        return None
+
+    def detect_fibonacci_retracement(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        # Find recent swing high and low
+        recent = df.iloc[-20:]
+        swing_high = recent["high"].max()
+        swing_low = recent["low"].min()
+        swing_range = swing_high - swing_low
+        if swing_range <= 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        # Fib levels
+        fib_382 = swing_high - 0.382 * swing_range
+        fib_500 = swing_high - 0.500 * swing_range
+        fib_618 = swing_high - 0.618 * swing_range
+        tolerance = swing_range * 0.02  # 2% tolerance
+        # Bullish: upswing retracing, price near fib support
+        high_idx = recent["high"].idxmax()
+        low_idx = recent["low"].idxmin()
+        # Determine if uptrend or downtrend based on which came first
+        try:
+            high_pos = recent.index.get_loc(high_idx)
+            low_pos = recent.index.get_loc(low_idx)
+        except Exception:
+            return None
+        if low_pos < high_pos:
+            # Uptrend: look for retracement to fib support levels
+            for fib_level, fib_name in [(fib_618, "61.8%"), (fib_500, "50%"), (fib_382, "38.2%")]:
+                if abs(curr_close - fib_level) <= tolerance:
+                    confidence = 68 if fib_name == "61.8%" else (65 if fib_name == "50%" else 62)
+                    if ind.rsi < 50:
+                        confidence = min(confidence + 8, 82)
+                    return PatternResult(f"Fib Retracement {fib_name} Support", "LONG", confidence,
+                                         f"Price at Fib {fib_name} retracement (${fib_level:.2f}) of upswing — long entry")
+        else:
+            # Downtrend: look for retracement to fib resistance levels
+            fib_382_dn = swing_low + 0.382 * swing_range
+            fib_500_dn = swing_low + 0.500 * swing_range
+            fib_618_dn = swing_low + 0.618 * swing_range
+            for fib_level, fib_name in [(fib_618_dn, "61.8%"), (fib_500_dn, "50%"), (fib_382_dn, "38.2%")]:
+                if abs(curr_close - fib_level) <= tolerance:
+                    confidence = 68 if fib_name == "61.8%" else (65 if fib_name == "50%" else 62)
+                    if ind.rsi > 50:
+                        confidence = min(confidence + 8, 82)
+                    return PatternResult(f"Fib Retracement {fib_name} Resistance", "SHORT", confidence,
+                                         f"Price at Fib {fib_name} retracement (${fib_level:.2f}) of downswing — short entry")
+        return None
+
+    # ─────────────────────────────────────────────────────────
+    # NEW INDICATOR-BASED SIGNALS
+    # ─────────────────────────────────────────────────────────
+
+    def detect_adx_trend(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 15:
+            return None
+        if ind.adx < 20:
+            return None  # Choppy market — avoid
+        if ind.adx < 25:
+            return None  # Not strong enough
+        plus_di = ind.adx_plus_di if ind.adx_plus_di > 0 else ind.plus_di
+        minus_di = ind.adx_minus_di if ind.adx_minus_di > 0 else ind.minus_di
+        confidence = min(60 + ind.adx * 0.8, 88)
+        if plus_di > minus_di:
+            return PatternResult("ADX Trend Long", "LONG", confidence,
+                                 f"ADX={ind.adx:.1f} (trending), +DI({plus_di:.1f}) > -DI({minus_di:.1f}) — bullish trend")
+        elif minus_di > plus_di:
+            return PatternResult("ADX Trend Short", "SHORT", confidence,
+                                 f"ADX={ind.adx:.1f} (trending), -DI({minus_di:.1f}) > +DI({plus_di:.1f}) — bearish trend")
+        return None
+
+    def detect_ichimoku_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 52:
+            return None
+        if ind.ichimoku_tenkan == 0 or ind.ichimoku_kijun == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        cloud_top = max(ind.ichimoku_senkou_a, ind.ichimoku_senkou_b)
+        cloud_bot = min(ind.ichimoku_senkou_a, ind.ichimoku_senkou_b)
+        # Bullish: price above cloud, Tenkan > Kijun
+        if curr_close > cloud_top and ind.ichimoku_tenkan > ind.ichimoku_kijun:
+            cloud_dist = (curr_close - cloud_top) / max(cloud_top, 0.01) * 100
+            confidence = min(70 + cloud_dist * 2, 88)
+            return PatternResult("Ichimoku Bull", "LONG", confidence,
+                                 f"Ichimoku: price above cloud, Tenkan({ind.ichimoku_tenkan:.2f}) > Kijun({ind.ichimoku_kijun:.2f})")
+        # Bearish: price below cloud, Tenkan < Kijun
+        if curr_close < cloud_bot and ind.ichimoku_tenkan < ind.ichimoku_kijun:
+            cloud_dist = (cloud_bot - curr_close) / max(cloud_bot, 0.01) * 100
+            confidence = min(70 + cloud_dist * 2, 88)
+            return PatternResult("Ichimoku Bear", "SHORT", confidence,
+                                 f"Ichimoku: price below cloud, Tenkan({ind.ichimoku_tenkan:.2f}) < Kijun({ind.ichimoku_kijun:.2f})")
+        return None
+
+    def detect_keltner_squeeze(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 25:
+            return None
+        if ind.keltner_upper == 0 or ind.bb_upper == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        # Squeeze: BB inside Keltner
+        bb_in_keltner = ind.bb_upper <= ind.keltner_upper and ind.bb_lower >= ind.keltner_lower
+        # Was it squeezed recently? Check prior bars
+        if not bb_in_keltner:
+            return None
+        # BB expanding beyond Keltner = breakout from squeeze
+        if "bb_upper" in df.columns and "_kc_upper" in df.columns:
+            prior = df.iloc[-3]
+            prior_bb_in = (float(prior.get("bb_upper", ind.keltner_upper)) <= float(prior.get("_kc_upper", ind.keltner_upper)) and
+                           float(prior.get("bb_lower", ind.keltner_lower)) >= float(prior.get("_kc_lower", ind.keltner_lower)))
+            if not prior_bb_in:
+                return None  # Not coming out of squeeze
+        # Determine direction of breakout
+        if curr_close > ind.bb_upper:
+            confidence = 80 + min(ind.rvol * 3, 10)
+            return PatternResult("Keltner Squeeze Breakout Long", "LONG", min(confidence, 90),
+                                 f"Keltner squeeze breakout LONG: BB inside KC, now breaking up")
+        elif curr_close < ind.bb_lower:
+            confidence = 80 + min(ind.rvol * 3, 10)
+            return PatternResult("Keltner Squeeze Breakout Short", "SHORT", min(confidence, 90),
+                                 f"Keltner squeeze breakout SHORT: BB inside KC, now breaking down")
+        return None
+
+    def detect_donchian_breakout(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 21:
+            return None
+        if ind.donchian_upper == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        prev_close = df.iloc[-2]["close"]
+        # Breakout above Donchian upper
+        if curr_close > ind.donchian_upper and prev_close <= ind.donchian_upper:
+            confidence = min(68 + ind.volume_ratio * 6, 85)
+            return PatternResult("Donchian Breakout Long", "LONG", confidence,
+                                 f"Donchian 20-bar breakout above ${ind.donchian_upper:.2f}")
+        # Breakdown below Donchian lower
+        if curr_close < ind.donchian_lower and prev_close >= ind.donchian_lower:
+            confidence = min(68 + ind.volume_ratio * 6, 85)
+            return PatternResult("Donchian Breakout Short", "SHORT", confidence,
+                                 f"Donchian 20-bar breakdown below ${ind.donchian_lower:.2f}")
+        return None
+
+    def detect_chandelier_exit_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 23:
+            return None
+        if ind.chandelier_long == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        prev_close = df.iloc[-2]["close"]
+        # Long position exit: price drops below chandelier_long
+        if curr_close < ind.chandelier_long and prev_close >= ind.chandelier_long:
+            return PatternResult("Chandelier Exit Long", "SHORT", 72,
+                                 f"Chandelier exit: close ${curr_close:.2f} dropped below long stop ${ind.chandelier_long:.2f}")
+        # Short position exit: price rises above chandelier_short
+        if ind.chandelier_short > 0 and curr_close > ind.chandelier_short and prev_close <= ind.chandelier_short:
+            return PatternResult("Chandelier Exit Short", "LONG", 72,
+                                 f"Chandelier exit: close ${curr_close:.2f} rose above short stop ${ind.chandelier_short:.2f}")
+        return None
+
+    def detect_stoch_rsi_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 20:
+            return None
+        if "_srsi_k" not in df.columns:
+            return None
+        prev_k = float(df["_srsi_k"].iloc[-2] or 50)
+        curr_k = ind.stoch_rsi_k
+        # Cross above 20 from below = LONG
+        if prev_k < 20 and curr_k >= 20:
+            confidence = min(65 + (curr_k - prev_k) * 0.5, 80)
+            return PatternResult("StochRSI Cross Long", "LONG", confidence,
+                                 f"StochRSI crossed above 20 ({prev_k:.1f}→{curr_k:.1f}) — oversold reversal")
+        # Cross below 80 from above = SHORT
+        if prev_k > 80 and curr_k <= 80:
+            confidence = min(65 + (prev_k - curr_k) * 0.5, 80)
+            return PatternResult("StochRSI Cross Short", "SHORT", confidence,
+                                 f"StochRSI crossed below 80 ({prev_k:.1f}→{curr_k:.1f}) — overbought reversal")
+        return None
+
+    def detect_cci_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 22:
+            return None
+        if "_cci" not in df.columns:
+            return None
+        prev_cci = float(df["_cci"].iloc[-2] or 0)
+        curr_cci = ind.cci
+        # Cross above -100 from below = LONG
+        if prev_cci < -100 and curr_cci >= -100:
+            confidence = min(65 + abs(curr_cci - prev_cci) * 0.1, 80)
+            return PatternResult("CCI Cross Long", "LONG", confidence,
+                                 f"CCI crossed above -100 ({prev_cci:.0f}→{curr_cci:.0f}) — bullish momentum")
+        # Cross below +100 from above = SHORT
+        if prev_cci > 100 and curr_cci <= 100:
+            confidence = min(65 + abs(prev_cci - curr_cci) * 0.1, 80)
+            return PatternResult("CCI Cross Short", "SHORT", confidence,
+                                 f"CCI crossed below +100 ({prev_cci:.0f}→{curr_cci:.0f}) — bearish momentum")
+        return None
+
+    def detect_williams_r_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 15:
+            return None
+        if "_willr" not in df.columns:
+            return None
+        prev_wr = float(df["_willr"].iloc[-2] or -50)
+        curr_wr = ind.williams_r
+        # Cross above -80 from below = LONG (leaving oversold)
+        if prev_wr < -80 and curr_wr >= -80:
+            confidence = min(65 + abs(curr_wr - prev_wr) * 0.3, 80)
+            return PatternResult("Williams %R Long", "LONG", confidence,
+                                 f"Williams %R crossed above -80 ({prev_wr:.1f}→{curr_wr:.1f}) — oversold exit")
+        # Cross below -20 from above = SHORT (leaving overbought)
+        if prev_wr > -20 and curr_wr <= -20:
+            confidence = min(65 + abs(prev_wr - curr_wr) * 0.3, 80)
+            return PatternResult("Williams %R Short", "SHORT", confidence,
+                                 f"Williams %R crossed below -20 ({prev_wr:.1f}→{curr_wr:.1f}) — overbought exit")
+        return None
+
+    def detect_pivot_bounce(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 5 or ind.pivot_pp == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        curr = df.iloc[-1]
+        atr = ind.atr if ind.atr > 0 else 1
+        tol = atr * 0.3  # Tolerance for "near" pivot
+        # Bullish: near S1 or S2 with bullish candle
+        for level, name in [(ind.pivot_s1, "S1"), (ind.pivot_s2, "S2")]:
+            if level > 0 and abs(curr_close - level) <= tol:
+                if curr["close"] > curr["open"]:
+                    confidence = 68 if name == "S1" else 72
+                    if ind.rsi < 45:
+                        confidence = min(confidence + 7, 82)
+                    return PatternResult(f"Pivot {name} Bounce Long", "LONG", confidence,
+                                         f"Bullish bounce at pivot {name} (${level:.2f})")
+        # Bearish: near R1 or R2 with bearish candle
+        for level, name in [(ind.pivot_r1, "R1"), (ind.pivot_r2, "R2")]:
+            if level > 0 and abs(curr_close - level) <= tol:
+                if curr["close"] < curr["open"]:
+                    confidence = 68 if name == "R1" else 72
+                    if ind.rsi > 55:
+                        confidence = min(confidence + 7, 82)
+                    return PatternResult(f"Pivot {name} Rejection Short", "SHORT", confidence,
+                                         f"Bearish rejection at pivot {name} (${level:.2f})")
+        return None
+
+    def detect_vwap_band_signal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 5 or ind.vwap_upper_2 == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        atr = ind.atr if ind.atr > 0 else 1
+        tol = atr * 0.3
+        # Price at VWAP + 2std = SHORT (overbought vs VWAP)
+        if abs(curr_close - ind.vwap_upper_2) <= tol:
+            confidence = 72
+            if ind.rsi > 65:
+                confidence = min(confidence + 8, 82)
+            return PatternResult("VWAP +2σ Rejection", "SHORT", confidence,
+                                 f"Price at VWAP+2σ (${ind.vwap_upper_2:.2f}) — mean-reversion SHORT")
+        # Price at VWAP - 2std = LONG (oversold vs VWAP)
+        if ind.vwap_lower_2 > 0 and abs(curr_close - ind.vwap_lower_2) <= tol:
+            confidence = 72
+            if ind.rsi < 35:
+                confidence = min(confidence + 8, 82)
+            return PatternResult("VWAP -2σ Bounce", "LONG", confidence,
+                                 f"Price at VWAP-2σ (${ind.vwap_lower_2:.2f}) — mean-reversion LONG")
+        return None
+
+    def detect_poc_reaction(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 10 or ind.poc == 0:
+            return None
+        curr_close = df.iloc[-1]["close"]
+        atr = ind.atr if ind.atr > 0 else 1
+        tol = atr * 0.4
+        if abs(curr_close - ind.poc) <= tol:
+            # Direction based on price vs prior bar
+            prev_close = df.iloc[-2]["close"]
+            direction = "LONG" if curr_close > prev_close else "SHORT"
+            return PatternResult("POC Reaction", direction, 65,
+                                 f"Price at POC ${ind.poc:.2f} (high-volume node) — expect reaction or magnet")
+        return None
+
+    def detect_rvol_confirmation(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        if len(df) < 5:
+            return None
+        if ind.rvol < 2.0:
+            return None
+        curr = df.iloc[-1]
+        body = abs(curr["close"] - curr["open"])
+        atr = ind.atr if ind.atr > 0 else 1
+        if body < 0.5 * atr:
+            return None  # Need a meaningful candle with the surge
+        direction = "LONG" if curr["close"] > curr["open"] else "SHORT"
+        confidence = min(65 + (ind.rvol - 2.0) * 8, 88)
+        return PatternResult("RVOL Momentum Confirmed", direction, confidence,
+                             f"RVOL={ind.rvol:.1f}x with directional candle — momentum confirmed")
+
+    # ─────────────────────────────────────────────────────────
     # HARMONIC + SMART MONEY INTEGRATION
     # ─────────────────────────────────────────────────────────
 
@@ -2282,11 +3048,29 @@ class PatternRecognizer:
             "Power of 3 — Bullish Distribution", "Power of 3 — Bearish Distribution",
             "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
             "Mat Hold (Bullish)",
+            # New elite patterns
+            "Breaker Block Bullish", "Breaker Block Bearish",
+            "Liquidity Sweep Bullish", "Liquidity Sweep Bearish",
+            "Judas Swing Bullish", "Judas Swing Bearish",
+            "Bullish Marubozu", "Bearish Marubozu",
+            "Keltner Squeeze Breakout Long", "Keltner Squeeze Breakout Short",
+            "Donchian Breakout Long", "Donchian Breakout Short",
+            "ADX Trend Long", "ADX Trend Short",
+            "Ichimoku Bull", "Ichimoku Bear",
+            "RVOL Momentum Confirmed",
         }
+
+        # ADX quality filter: choppy = reduce weights, trending = boost
+        adx_multiplier = 1.0
+        if ind.adx < 20:
+            adx_multiplier = 0.7   # Choppy market — reduce all pattern weights
+        elif ind.adx > 30:
+            adx_multiplier = 1.1   # Strong trend — boost all pattern weights
 
         # Pattern scores
         for p in patterns:
             weight = 1.0 if p.name in ELITE_PATTERNS else 0.4  # Elite=1.0, weak patterns=0.4
+            weight *= adx_multiplier
             if p.direction == "LONG":
                 long_score += p.confidence * weight
             elif p.direction == "SHORT":
