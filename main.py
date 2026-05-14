@@ -46,6 +46,19 @@ from utils import (
 )
 import config
 
+# Broker adapter — honours BROKER env var (alpaca | groww)
+from broker import (
+    get_auth_manager as _broker_get_auth,
+    get_data_fetcher  as _broker_get_fetcher,
+    get_executor      as _broker_get_executor,
+    is_market_open    as _broker_is_market_open,
+    is_pre_market     as _broker_is_pre_market,
+    is_squareoff_time as _broker_is_squareoff,
+    should_force_squareoff as _broker_force_squareoff,
+    do_morning_login  as _broker_morning_login,
+    CURRENCY_SYMBOL, HEALTH_CHECK_SYMBOL, MARKET_NAME, WATCHLIST as BROKER_WATCHLIST,
+)
+
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -138,14 +151,9 @@ class TradingBot:
         else:
             logger.info(f"[{format_ist_timestamp()}] 🔒 DRY RUN MODE — No real orders")
 
-        # Initialize Groww auth
-        from auth_groww import initialize_auth, get_auth_manager
-        if not initialize_auth():
-            logger.warning(f"[{format_ist_timestamp()}] Auth init incomplete — will retry at 8:45 AM IST")
-
-        # Initialize data fetcher
-        from data_fetch_groww import GrowwDataFetcher
-        self.fetcher = GrowwDataFetcher()
+        # Initialize broker auth (Alpaca: just validates API keys; Groww: TOTP)
+        logger.info(f"[{format_ist_timestamp()}] Broker: {MARKET_NAME}")
+        self.fetcher = _broker_get_fetcher()
 
         # Initialize risk manager
         from risk_manager import RiskManager
@@ -160,10 +168,9 @@ class TradingBot:
         )
 
         # Initialize executor
-        from execution_groww import GrowwExecutor
-        self.executor = GrowwExecutor(
+        self.executor = _broker_get_executor(
             self.risk_manager,
-            live_enabled=config.LIVE_TRADING_ENABLED
+            live_enabled=config.LIVE_TRADING_ENABLED,
         )
 
         # Initialize news filter
@@ -421,38 +428,30 @@ class TradingBot:
         try:
             logger.info(f"[{format_ist_timestamp()}] Running API health check...")
 
-            # 1. Check auth token is valid
-            from auth_groww import get_auth_manager
-            manager = get_auth_manager()
-            token = manager.get_valid_token()
-            if not token:
-                logger.error(
-                    f"[{format_ist_timestamp()}] ❌ API health: No valid auth token. "
-                    "Run python update_token.py --test to diagnose."
-                )
+            # 1. Auth health check
+            auth_ok = _broker_morning_login()
+            if not auth_ok:
+                logger.error(f"[{format_ist_timestamp()}] ❌ API health: Broker auth failed")
                 if self.alerter:
                     self.alerter.send_text(
-                        "🚨 API HEALTH FAIL: No valid Groww token at market open!\n"
-                        "Bot will NOT trade today. Fix: check GROWW_TOTP_SECRET in .env"
+                        f"🚨 API HEALTH FAIL: {MARKET_NAME} auth failed!\n"
+                        "Check API credentials in .env"
                     )
                 return False
 
-            # 2. Test a quote fetch (proves API is connected and token works)
-            from data_fetch_groww import get_data_fetcher
-            fetcher = get_data_fetcher()
-            test_quote = fetcher.get_quote("RELIANCE")
+            # 2. Test a live quote fetch
+            test_quote = self.fetcher.get_quote(HEALTH_CHECK_SYMBOL)
             if not test_quote or not test_quote.get("ltp"):
                 logger.warning(
-                    f"[{format_ist_timestamp()}] ⚠️ API health: Quote fetch returned "
-                    f"empty for RELIANCE. Market may not be open yet or API is slow."
+                    f"[{format_ist_timestamp()}] ⚠️ API health: Quote fetch empty for "
+                    f"{HEALTH_CHECK_SYMBOL} — market may not be open yet"
                 )
-                # Non-fatal — market may be just opening
-                return True
+                return True   # Non-fatal
 
             ltp = test_quote.get("ltp", 0)
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ API health OK — "
-                f"RELIANCE LTP: ₹{ltp:.2f} | Token valid"
+                f"{HEALTH_CHECK_SYMBOL} LTP: {CURRENCY_SYMBOL}{ltp:.2f}"
             )
             return True
 
@@ -762,40 +761,43 @@ class TradingBot:
                         and not self._overnight_run_today):
                     self._run_overnight_analysis()
 
-                # Pre-market: build watchlist + holiday check
-                if is_pre_market_ist() and not self._day_initialized:
-                    # Check if today is a holiday
-                    if self.calendar and self.calendar.is_holiday_today():
+                # Pre-market: build watchlist
+                if _broker_is_pre_market() and not self._day_initialized:
+                    if self.calendar and hasattr(self.calendar, 'is_holiday_today') and self.calendar.is_holiday_today():
                         events = self.calendar.get_today_events()
                         holiday = next((e["event"] for e in events if e["impact"] == "HOLIDAY"), "Holiday")
-                        logger.info(f"[{format_ist_timestamp()}] NSE Holiday today: {holiday}. Bot idle.")
+                        logger.info(f"[{format_ist_timestamp()}] Market holiday today: {holiday}. Bot idle.")
                         time.sleep(3600)
                         continue
-                    logger.info(f"[{format_ist_timestamp()}] Pre-market: preparing watchlist...")
-                    self.watchlist_mgr.get_watchlist(
-                        data_fetcher=self.fetcher, learner=self.learner
-                    )
+                    logger.info(f"[{format_ist_timestamp()}] Pre-market: preparing watchlist for {MARKET_NAME}...")
+                    if BROKER_WATCHLIST:
+                        # Alpaca: use built-in US watchlist, no dynamic NSE scan needed
+                        logger.info(f"[{format_ist_timestamp()}] Using {MARKET_NAME} watchlist ({len(BROKER_WATCHLIST)} symbols)")
+                    else:
+                        self.watchlist_mgr.get_watchlist(
+                            data_fetcher=self.fetcher, learner=self.learner
+                        )
 
                 # Market is open
-                if is_market_open_ist():
+                if _broker_is_market_open():
                     # Initialize day on first open
                     if not self._day_initialized:
                         self.initialize_market_day()
 
-                    # Check for force square-off time (3:20 PM IST)
-                    if should_force_squareoff_ist():
+                    # Check for force square-off
+                    if _broker_force_squareoff():
                         if not self.eod_done:
                             self._do_eod_squareoff()
-                    # Warning at 3:15 PM IST
-                    elif is_squareoff_time_ist():
+                    # Square-off warning
+                    elif _broker_is_squareoff():
                         open_pos = self.risk_manager.state.positions
                         if open_pos:
                             logger.warning(
-                                f"[{format_ist_timestamp()}] ⏰ 3:15 PM IST — "
-                                f"{len(open_pos)} positions still open. Square-off in 5 min!"
+                                f"[{format_ist_timestamp()}] ⏰ Near close — "
+                                f"{len(open_pos)} positions still open. Squaring off soon!"
                             )
                             self.alerter.send_text(
-                                f"⚠️ 3:15 PM IST — Square-off in 5 min! "
+                                f"⚠️ Near close — Squaring off! "
                                 f"{len(open_pos)} positions open."
                             )
                     else:
@@ -1715,114 +1717,42 @@ class TradingBot:
         Checks everything, auto-fixes what it can, sends Telegram report.
         If unfixable, sends specific instructions so you can act by 9:15 AM.
         """
-        logger.info(f"[{format_ist_timestamp()}] 🔍 7:00 AM health check running...")
+        logger.info(f"[{format_ist_timestamp()}] 🔍 Pre-market health check ({MARKET_NAME})...")
         issues   = []
         fixed    = []
         critical = []
+        login_ok = False
 
-        # ── 1. Check TOTP secret ─────────────────────────────────────────
-        totp_secret = os.getenv("GROWW_TOTP_SECRET", "")
-        if not totp_secret:
-            critical.append(
-                "❌ GROWW_TOTP_SECRET missing from .env\n"
-                "  Fix: add GROWW_TOTP_SECRET=<base32 secret from groww.in>"
-            )
-        else:
-            try:
-                import pyotp
-                code = pyotp.TOTP(totp_secret).now()
-                if not code or len(code) != 6:
-                    critical.append(f"❌ TOTP secret invalid — generated '{code}' (expected 6 digits)")
-                else:
-                    logger.info(f"[{format_ist_timestamp()}] ✅ TOTP secret valid (test code: {code})")
-            except Exception as e:
-                critical.append(f"❌ TOTP secret error: {e}")
-
-        # ── 2. Check + auto-fix vendor key ───────────────────────────────
-        from auth_groww import (
-            get_auth_manager, _extract_vendor_key_from_jwt,
-            _is_expired_by_6am_reset, _TOKEN_CACHE_FILE
-        )
-        mgr = get_auth_manager()
-
-        if not mgr._vendor_key:
-            # Try to recover from GROWW_AUTH_TOKEN
-            raw = os.getenv("GROWW_AUTH_TOKEN", "")
-            if raw:
-                vk = _extract_vendor_key_from_jwt(raw)
-                if vk:
-                    mgr._vendor_key = vk
-                    fixed.append(f"✅ Vendor key auto-recovered from GROWW_AUTH_TOKEN: {vk[:8]}...")
-                elif len(raw) < 64 and "." not in raw:
-                    mgr._vendor_key = raw
-                    fixed.append(f"✅ Using GROWW_AUTH_TOKEN as vendor key: {raw[:8]}...")
-                else:
-                    critical.append(
-                        "❌ Cannot extract vendor key from GROWW_AUTH_TOKEN\n"
-                        "  Fix: add GROWW_VENDOR_KEY=<key> to .env\n"
-                        "  Get it: python3 auth_groww.py --extract-key"
-                    )
+        # ── 1. Broker auth check ─────────────────────────────────────────
+        try:
+            login_ok = _broker_morning_login()
+            if login_ok:
+                fixed.append(f"✅ {MARKET_NAME} auth: OK")
+                self._token_refreshed_date  = today_str
+                self._token_refreshed_today = True
             else:
                 critical.append(
-                    "❌ Neither GROWW_VENDOR_KEY nor GROWW_AUTH_TOKEN is set\n"
-                    "  Fix: add GROWW_AUTH_TOKEN=<your token from groww.in> to .env"
+                    f"❌ {MARKET_NAME} auth failed\n"
+                    f"  Fix: check ALPACA_API_KEY / ALPACA_SECRET_KEY in .env"
                 )
-
-        # ── 3. Clear stale token cache (expired tokens cause silent failures) ─
-        try:
-            if _TOKEN_CACHE_FILE.exists():
-                import json as _j
-                data = _j.loads(_TOKEN_CACHE_FILE.read_text())
-                ts_str = data.get("timestamp", "")
-                if ts_str:
-                    from datetime import datetime
-                    from zoneinfo import ZoneInfo
-                    ts = datetime.fromisoformat(ts_str)
-                    if ts.tzinfo is None:
-                        ts = ts.replace(tzinfo=ZoneInfo("Asia/Kolkata"))
-                    if _is_expired_by_6am_reset(ts):
-                        _TOKEN_CACHE_FILE.unlink()
-                        mgr._token           = None
-                        mgr._token_timestamp = None
-                        fixed.append("✅ Stale token cache cleared (expired at 6 AM reset)")
         except Exception as e:
-            issues.append(f"⚠️ Cache check: {e}")
+            critical.append(f"❌ Auth error: {e}")
 
-        # ── 4. Live TOTP login test ───────────────────────────────────────
-        login_ok = False
-        if mgr._vendor_key and totp_secret:
-            logger.info(f"[{format_ist_timestamp()}] Testing live TOTP login...")
-            try:
-                login_ok = mgr.refresh_token_if_needed()
-                if login_ok:
-                    fixed.append("✅ Live TOTP login test PASSED — token valid for today")
-                    # Push fresh token into clients immediately
-                    self._reinit_api_clients()
-                    # Mark token as refreshed so 8:30 AM block is skipped
-                    self._token_refreshed_date  = today_str
-                    self._token_refreshed_today = True
-                else:
-                    issues.append(
-                        "⚠️ Live login test failed — will retry at 8:30 AM\n"
-                        "  (May be a temporary Groww server issue)"
-                    )
-            except Exception as e:
-                issues.append(f"⚠️ Login test exception: {e}")
-
-        # ── 5. Check internet connectivity ───────────────────────────────
+        # ── 2. Internet connectivity ─────────────────────────────────────
         try:
             import requests as _req
-            r = _req.get("https://api.groww.in", timeout=5)
-            logger.info(f"[{format_ist_timestamp()}] ✅ Groww API reachable (HTTP {r.status_code})")
+            api_url = "https://api.alpaca.markets" if MARKET_NAME != "NSE" else "https://api.groww.in"
+            r = _req.get(api_url, timeout=5)
+            logger.info(f"[{format_ist_timestamp()}] ✅ {MARKET_NAME} API reachable (HTTP {r.status_code})")
         except Exception:
-            issues.append("⚠️ Cannot reach api.groww.in — check VPS internet connection")
+            issues.append(f"⚠️ Cannot reach {MARKET_NAME} API — check VPS internet")
 
-        # ── 6. Check service memory / uptime ─────────────────────────────
+        # ── 3. Memory check ───────────────────────────────────────────────
         try:
             import resource
             mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             if mem_mb > 800:
-                issues.append(f"⚠️ High memory usage: {mem_mb:.0f} MB — consider restarting")
+                issues.append(f"⚠️ High memory: {mem_mb:.0f} MB — consider restart")
         except Exception:
             pass
 
@@ -1831,49 +1761,32 @@ class TradingBot:
         if critical:
             lines = [
                 f"🚨 <b>Pre-Market Check — ACTION NEEDED</b>",
-                f"📅 {now_str} | 7:00 AM IST",
+                f"📅 {now_str} | {MARKET_NAME}",
                 "",
-                "<b>Critical issues (fix before 9:15 AM):</b>",
-            ]
-            for c in critical:
-                lines.append(c)
+                "<b>Critical issues:</b>",
+            ] + critical
             if issues:
-                lines += ["", "<b>Warnings:</b>"]
-                for w in issues:
-                    lines.append(w)
-            lines += [
-                "",
-                "⏰ Market opens 9:15 AM IST",
-                "Bot will keep retrying — fix critical items ASAP.",
-            ]
-        elif issues and not login_ok:
+                lines += ["", "<b>Warnings:</b>"] + issues
+            lines += ["", "Bot will keep retrying — fix ASAP."]
+        elif issues:
             lines = [
                 f"⚠️ <b>Pre-Market Check — Minor Issues</b>",
-                f"📅 {now_str} | 7:00 AM IST",
+                f"📅 {now_str} | {MARKET_NAME}",
                 "",
             ]
             if fixed:
                 lines += ["<b>Auto-fixed:</b>"] + fixed + [""]
-            lines += ["<b>Warnings (bot will retry):</b>"] + issues
-            lines += ["", "Bot retries login at 8:30 AM — likely fine."]
+            lines += ["<b>Warnings:</b>"] + issues
         else:
             lines = [
                 f"✅ <b>Pre-Market Check — All Systems Go</b>",
-                f"📅 {now_str} | 7:00 AM IST",
+                f"📅 {now_str} | {MARKET_NAME}",
                 "",
-            ]
-            if fixed:
-                lines += ["<b>Auto-fixed:</b>"] + fixed + [""]
-            lines += [
-                "🔑 Groww login: ✅ Ready",
-                "🔢 TOTP secret: ✅ Valid",
-                "🌐 API reachable: ✅",
+            ] + fixed + [
                 "",
-                "⏰ Pre-market scan at 8:30 AM IST",
-                "📈 Trading starts at 9:15 AM IST",
+                f"📈 {MARKET_NAME} market opens soon",
             ]
 
-        # Only send Telegram if there's a problem — never wake user for green status
         has_problem = bool(critical) or (issues and not login_ok)
         if has_problem:
             try:
@@ -1927,18 +1840,15 @@ class TradingBot:
         try:
             # Reinit fetcher if dead
             if not self.fetcher:
-                from data_fetch_groww import GrowwDataFetcher
-                self.fetcher = GrowwDataFetcher()
-                logger.warning(f"[{format_ist_timestamp()}] ♻️ Fetcher reinitialized")
+                self.fetcher = _broker_get_fetcher()
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Fetcher reinitialized ({MARKET_NAME})")
 
             # Reinit executor if dead
             if not self.executor:
-                from execution_groww import GrowwExecutor
-                self.executor = GrowwExecutor(
-                    self.risk_manager,
-                    live_enabled=config.LIVE_TRADING_ENABLED
+                self.executor = _broker_get_executor(
+                    self.risk_manager, live_enabled=config.LIVE_TRADING_ENABLED
                 )
-                logger.warning(f"[{format_ist_timestamp()}] ♻️ Executor reinitialized")
+                logger.warning(f"[{format_ist_timestamp()}] ♻️ Executor reinitialized ({MARKET_NAME})")
 
             # Reinit signal generator if dead
             if not self.signal_gen:
@@ -1960,13 +1870,10 @@ class TradingBot:
                 )
                 logger.warning(f"[{format_ist_timestamp()}] ♻️ Alerter reinitialized")
 
-            # Check if token expired mid-day (edge case: restart between 6-8:30 AM)
-            from auth_groww import get_auth_manager
-            mgr = get_auth_manager()
-            if not mgr.get_valid_token():
-                logger.warning(f"[{format_ist_timestamp()}] ♻️ Token missing mid-session — refreshing...")
+            # Mid-session auth check (Alpaca: no-op; Groww: re-login if token gone)
+            mgr = _broker_get_auth()
+            if hasattr(mgr, "refresh_token_if_needed"):
                 mgr.refresh_token_if_needed()
-                self._reinit_api_clients()
 
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Auto-heal error: {e}")
@@ -1977,60 +1884,34 @@ class TradingBot:
 
     def _do_morning_login_and_scan(self, today_str: str = ""):
         """
-        8:30 AM IST: TOTP login + full pre-market stock scan.
-        Auto-called every 5 minutes until login succeeds.
-        No manual action ever needed.
+        Morning broker auth check — called before market opens.
+        Alpaca: just validates API keys (instant, no TOTP).
+        Groww: TOTP login with retry every 5 min.
         """
-        now_ist  = get_current_ist_time()
-        now_mins = now_ist.hour * 60 + now_ist.minute
-        attempt  = getattr(self, "_login_attempt_count", 0) + 1
+        attempt = getattr(self, "_login_attempt_count", 0) + 1
         setattr(self, "_login_attempt_count", attempt)
 
-        logger.info(
-            f"[{format_ist_timestamp()}] ☀️ Morning TOTP login attempt #{attempt}..."
-        )
+        logger.info(f"[{format_ist_timestamp()}] ☀️ Morning broker auth check (attempt #{attempt}) — {MARKET_NAME}")
 
-        # 1. TOTP login
-        try:
-            from auth_groww import get_auth_manager
-            mgr     = get_auth_manager()
-            success = mgr.refresh_token_if_needed()
-        except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Auth error: {e}")
-            success = False
+        success = _broker_morning_login()
 
         if not success:
             logger.warning(
-                f"[{format_ist_timestamp()}] Login attempt #{attempt} failed — "
-                "auto-retry in 5 minutes..."
+                f"[{format_ist_timestamp()}] Auth attempt #{attempt} failed — auto-retry in 5 minutes..."
             )
-            # After 3 failed attempts (~15 min), send urgent Telegram with fix steps
             if attempt in (3, 6, 12) and self.alerter:
-                urgency = "🚨 URGENT" if attempt >= 6 else "⚠️ WARNING"
                 self.alerter.send_text(
-                    f"{urgency} — Groww Login Failing (attempt #{attempt})\n\n"
-                    f"Bot cannot log into Groww. Retrying every 5 min automatically.\n\n"
-                    f"If this keeps failing, SSH into VPS and run:\n"
-                    f"<code>cd /opt/kingtrades</code>\n"
-                    f"<code>python update_token.py --test</code>\n\n"
-                    f"Common fixes:\n"
-                    f"• Check GROWW_TOTP_SECRET in .env is correct\n"
-                    f"• Check GROWW_EMAIL and GROWW_PASSWORD\n"
-                    f"• Groww servers may be down — wait 10 min\n"
-                    f"• If Groww changed API: get new key from groww.in/open-api\n\n"
-                    f"Bot will NOT trade until login succeeds. Capital is SAFE."
+                    f"⚠️ {MARKET_NAME} auth failing (attempt #{attempt})\n"
+                    f"Check API credentials in .env\n"
+                    f"Bot will NOT trade until auth succeeds. Capital is SAFE."
                 )
-            return  # _token_refreshed_date NOT set → loop will retry
+            return
 
-        # Login succeeded
+        # Auth succeeded
         self._token_refreshed_date  = today_str
         self._token_refreshed_today = True
-        self._token_refresh_attempts += 1
         setattr(self, "_login_attempt_count", 0)
-
-        # Push fresh token into fetcher and executor
-        self._reinit_api_clients()
-        logger.info(f"[{format_ist_timestamp()}] ✅ Morning TOTP login successful")
+        logger.info(f"[{format_ist_timestamp()}] ✅ Morning auth OK — {MARKET_NAME} ready")
 
         # 2. Run overnight analysis if not yet done (usually runs at 8:00 AM)
         if not self._overnight_run_today:
@@ -2337,39 +2218,31 @@ class TradingBot:
                     if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
                         return
                     await update.message.reply_text(
-                        "🔄 <b>Forcing Groww re-login now...</b>",
+                        f"🔄 <b>Forcing {MARKET_NAME} re-auth now...</b>",
                         parse_mode="HTML"
                     )
                     try:
-                        from auth_groww import get_auth_manager
-                        mgr = get_auth_manager()
-                        mgr._token = None
-                        mgr._token_timestamp = None
-                        success = mgr.refresh_token_if_needed()
+                        success = _broker_morning_login()
                         if success:
                             self._token_refreshed_date = get_current_ist_time().strftime("%Y-%m-%d")
                             self._token_refreshed_today = True
                             setattr(self, "_login_attempt_count", 0)
-                            self._reinit_api_clients()
                             await update.message.reply_text(
-                                "✅ <b>Groww login successful</b>\n"
+                                f"✅ <b>{MARKET_NAME} auth successful</b>\n"
                                 "Bot is authenticated and ready to trade.",
                                 parse_mode="HTML"
                             )
                         else:
                             await update.message.reply_text(
-                                "❌ <b>Login failed again</b>\n\n"
-                                "Check on VPS:\n"
-                                "<code>cd /opt/kingtrades && python update_token.py --test</code>\n\n"
-                                "Verify .env has correct:\n"
-                                "• GROWW_TOTP_SECRET\n"
-                                "• GROWW_EMAIL\n"
-                                "• GROWW_PASSWORD",
+                                f"❌ <b>{MARKET_NAME} auth failed</b>\n\n"
+                                "Check .env has correct:\n"
+                                "• ALPACA_API_KEY\n"
+                                "• ALPACA_SECRET_KEY",
                                 parse_mode="HTML"
                             )
                     except Exception as e:
                         await update.message.reply_text(
-                            f"❌ Re-login error: {e}",
+                            f"❌ Re-auth error: {e}",
                             parse_mode="HTML"
                         )
 

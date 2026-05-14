@@ -1,9 +1,12 @@
 # ============================================================
-# NSE Momentum Groww AI Bot - Dependencies
+# KingTrades — US Momentum Bot (Alpaca) + NSE Legacy (Groww)
 # Install: pip install -r requirements.txt
 # ============================================================
 
-# ---- Groww Broker SDK ----
+# ---- Alpaca Broker SDK (US stocks, 4x leverage, free API) ----
+alpaca-py>=0.20.0             # Official Alpaca Python SDK (replaces alpaca-trade-api)
+
+# ---- Groww Broker SDK (NSE legacy — set BROKER=groww to use) ----
 growwapi>=1.0.0
 
 # ---- Data & Analysis ----

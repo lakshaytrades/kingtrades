@@ -175,6 +175,45 @@ def should_force_squareoff_ist() -> bool:
     return now_ist.time() >= MARKET_SQUAREOFF
 
 
+# ============================================================
+# US MARKET (NYSE/NASDAQ) — ET TIMEZONE UTILITIES
+# ============================================================
+
+ET = ZoneInfo("America/New_York")   # handles DST automatically
+
+US_MARKET_OPEN  = time(9, 30)
+US_MARKET_CLOSE = time(16, 0)
+US_SQUAREOFF    = time(15, 50)      # close positions 10 min before close
+
+
+def get_current_et_time() -> datetime:
+    """Get current datetime in US Eastern Time (ET). Handles DST automatically."""
+    return datetime.now(ET)
+
+
+def is_market_open_et() -> bool:
+    """
+    Check if US market (NYSE/NASDAQ) is currently open.
+    Handles ET/EST/EDT automatically — no hardcoded UTC offsets.
+    Returns True if 9:30 AM – 4:00 PM ET on a weekday.
+    """
+    now_et = get_current_et_time()
+    if now_et.weekday() >= 5:   # Sat/Sun
+        return False
+    t = now_et.time()
+    return US_MARKET_OPEN <= t < US_MARKET_CLOSE
+
+
+def is_us_squareoff_time() -> bool:
+    """Check if it's time to square off US positions (after 3:50 PM ET)."""
+    return get_current_et_time().time() >= US_SQUAREOFF
+
+
+def format_et_timestamp() -> str:
+    """Format current ET datetime as string for logs."""
+    return get_current_et_time().strftime("%Y-%m-%d %H:%M:%S ET")
+
+
 def is_market_day_ist() -> bool:
     """Check if today is a trading day (weekday + not an NSE holiday) in IST."""
     now_ist = get_current_ist_time()
