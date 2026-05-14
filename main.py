@@ -1,28 +1,27 @@
 """
-main.py — NSE Momentum Groww AI Bot
-Central Orchestrator with IST Market Hours + Auto-Shutdown + AI Learning
+main.py — US Momentum Alpaca AI Bot
+Central Orchestrator with ET Market Hours + Auto-Shutdown + AI Learning
 
-⚠️ WARNING: THIS BOT PLACES REAL ORDERS WITH REAL MONEY ON GROWW.
-⚠️ Server runs in UK (UTC) — ALL market logic uses IST (Asia/Kolkata).
+⚠️ WARNING: THIS BOT PLACES REAL ORDERS WITH REAL MONEY ON ALPACA.
+⚠️ Server may be UTC — ALL market logic uses ET (America/New_York).
 ⚠️ Start with LIVE_TRADING_ENABLED=False until confident in the setup.
 ⚠️ Monitor manually for at least 2 weeks before increasing capital.
 
 Full lifecycle:
   [24/7 Background]   continuous_learner.py — downloads data, learns, adapts
-  [08:00 AM IST]      Overnight analysis (global markets, Gift Nifty, VIX)
-  [08:30 AM IST]      TOTP login to Groww + full pre-market stock scan
-  [08:30 AM IST]      Morning brief → Telegram (watchlist, top picks, events)
-  [09:15 AM IST]      Market open → trading begins
-  [09:15–10:00 IST]   OPENING DRIVE — most aggressive momentum window
-  [10:00–11:00 IST]   Morning session — normal trading
-  [11:00–13:00 IST]   MIDDAY CHOP — 70% reduced size / skip
-  [13:30–15:00 IST]   Afternoon trend — institutional activity
-  [15:15 AM IST]      Square-off warning sent
-  [15:20 AM IST]      Force close all positions
-  [15:30 AM IST]      EOD shutdown
-  [16:00 PM IST]      Self-learning cycle
-  [16:30 PM IST]      AI trade review → lessons extracted
-  [17:00 PM IST]      Incremental trainer run
+  [08:00 AM ET]       Overnight analysis (global markets, VIX, futures)
+  [08:30 AM ET]       Alpaca API validation + full pre-market stock scan
+  [08:45 AM ET]       Morning brief → Telegram (watchlist, top picks, events)
+  [09:30 AM ET]       Market open → trading begins
+  [09:30–10:30 ET]    OPENING DRIVE — most aggressive momentum window
+  [10:30–11:30 ET]    Morning session — normal trading
+  [11:30–13:30 ET]    MIDDAY CHOP — 50% reduced size / skip
+  [13:30–15:30 ET]    Afternoon trend — institutional activity
+  [15:45 PM ET]       Square-off warning sent
+  [15:50 PM ET]       Force close all positions
+  [16:00 PM ET]       EOD shutdown
+  [16:30 PM ET]       Self-learning cycle
+  [17:00 PM ET]       AI trade review → lessons extracted
 """
 
 import asyncio
@@ -42,11 +41,12 @@ from utils import (
     format_ist_timestamp, get_current_ist_time, is_market_open_ist,
     is_pre_market_ist, should_force_squareoff_ist, is_squareoff_time_ist,
     minutes_until_market_open, minutes_until_market_close,
-    setup_logging, is_market_day_ist
+    setup_logging, is_market_day_ist,
+    format_et_timestamp, get_current_et_time,
 )
 import config
 
-# Broker adapter — honours BROKER env var (alpaca | groww)
+# Broker adapter — Alpaca (US NYSE/NASDAQ)
 from broker import (
     get_auth_manager as _broker_get_auth,
     get_data_fetcher  as _broker_get_fetcher,
@@ -60,12 +60,13 @@ from broker import (
 )
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
+IST = ET   # alias — all IST references now mean ET
 
 
 class TradingBot:
     """
-    Main NSE Momentum Trading Bot Orchestrator.
+    US Momentum Alpaca Trading Bot Orchestrator.
     Handles the full lifecycle from startup to EOD shutdown.
     """
 
@@ -264,70 +265,21 @@ class TradingBot:
         self.mtf_analyzer = MultiTimeframeAnalyzer()
         logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
 
-        # NSE-only institutional modules — skip entirely for US/Alpaca
-        _nse_mode = (MARKET_NAME == "NSE")
+        # NSE-only modules — all disabled (Alpaca US mode)
+        self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
+        self.sector_rotation = self.pairs_engine = self.options_signals = None
 
-        if _nse_mode:
-            try:
-                from option_chain import get_option_chain_analyzer
-                self.oc_analyzer = get_option_chain_analyzer()
-                logger.info(f"[{format_ist_timestamp()}] Option Chain analyzer ready")
-            except Exception as e:
-                self.oc_analyzer = None
-                logger.warning(f"[{format_ist_timestamp()}] Option Chain init failed: {e}")
-
-            try:
-                from fii_dii_tracker import get_fii_dii_tracker
-                self.fii_tracker = get_fii_dii_tracker()
-                logger.info(f"[{format_ist_timestamp()}] FII/DII tracker ready")
-            except Exception as e:
-                self.fii_tracker = None
-
-            try:
-                from block_deal_scanner import get_block_deal_scanner
-                self.block_deal_scanner = get_block_deal_scanner()
-                logger.info(f"[{format_ist_timestamp()}] Block deal scanner ready")
-            except Exception as e:
-                self.block_deal_scanner = None
-
-            try:
-                from sector_rotation import get_sector_rotation_engine
-                self.sector_rotation = get_sector_rotation_engine()
-                logger.info(f"[{format_ist_timestamp()}] Sector rotation engine ready")
-            except Exception as e:
-                self.sector_rotation = None
-
-            try:
-                from pairs_trading import get_pairs_engine
-                self.pairs_engine = get_pairs_engine()
-                logger.info(f"[{format_ist_timestamp()}] Pairs trading engine ready")
-            except Exception as e:
-                self.pairs_engine = None
-
-            try:
-                from options_signals import get_options_signal_generator
-                self.options_signals = get_options_signal_generator(oc_analyzer=self.oc_analyzer)
-                logger.info(f"[{format_ist_timestamp()}] Options signals generator ready")
-            except Exception as e:
-                self.options_signals = None
-        else:
-            # US/Alpaca — skip all NSE-only modules, set to None silently
-            self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
-            self.sector_rotation = self.pairs_engine = self.options_signals = None
-            logger.info(f"[{format_ist_timestamp()}] NSE-specific modules skipped ({MARKET_NAME} mode)")
-
-        # Options Scalping Engine (US market only — Alpaca options)
+        # Options Scalping Engine — Alpaca US options
         self.options_scalper = None
-        if MARKET_NAME != "NSE":
-            try:
-                from options_scalping import get_options_scalping_engine
-                self.options_scalper = get_options_scalping_engine(
-                    live_enabled=config.LIVE_TRADING_ENABLED
-                )
-                logger.info(f"[{format_ist_timestamp()}] Options Scalping Engine ready (live={config.LIVE_TRADING_ENABLED})")
-            except Exception as e:
-                self.options_scalper = None
-                logger.warning(f"[{format_ist_timestamp()}] Options scalping init failed: {e}")
+        try:
+            from options_scalping import get_options_scalping_engine
+            self.options_scalper = get_options_scalping_engine(
+                live_enabled=config.LIVE_TRADING_ENABLED
+            )
+            logger.info(f"[{format_ist_timestamp()}] Options Scalping Engine ready (live={config.LIVE_TRADING_ENABLED})")
+        except Exception as e:
+            self.options_scalper = None
+            logger.warning(f"[{format_ist_timestamp()}] Options scalping init failed: {e}")
 
         try:
             from orb_strategy import get_orb_strategy
@@ -740,24 +692,19 @@ class TradingBot:
                 today_str = now_ist.strftime("%Y-%m-%d")
                 now_mins  = now_ist.hour * 60 + now_ist.minute
 
-                # ── 7:00 AM IST: Pre-market health check + auto-fix ───────────
-                # Runs before you wake up. Clears stale cache, validates
-                # credentials, tests TOTP login. Sends Telegram confirmation
-                # or specific fix instructions by 7:05 AM.
+                # ── 7:00 AM ET: Pre-market health check + auto-fix ─────────
                 if (now_ist.hour == 7 and now_ist.minute < 10
                         and getattr(self, "_health_check_date", "") != today_str):
                     self._health_check_date = today_str
                     self._run_premarket_health_check(today_str)
 
-                # ── 8:30 AM–4:00 PM IST: TOTP login — retry every 5 min ─────
-                # Groww resets tokens at 6:00 AM IST daily.
-                # Login at 8:30 AM; retry every 5 min if it fails.
-                # Stop at 4:00 PM — no point logging in after market close.
+                # ── 8:30 AM–4:00 PM ET: Auth check + pre-market scan ───────
+                # Alpaca key validation (instant, no TOTP needed).
                 if (8 * 60 + 30 <= now_mins <= 16 * 60
                         and self._token_refreshed_date != today_str):
                     last_try   = getattr(self, "_last_login_try_ts", None)
                     secs_since = (now_ist - last_try).total_seconds() if last_try else 999
-                    if secs_since >= 300:  # retry every 5 minutes
+                    if secs_since >= 300:
                         self._last_login_try_ts = now_ist
                         self._do_morning_login_and_scan(today_str)
 
@@ -974,7 +921,7 @@ class TradingBot:
                     except Exception:
                         pass
 
-            # 4c. Options signals (Nifty/BankNifty CE/PE) — scan at start of valid windows
+            # 4c. NSE options signals — disabled (Alpaca mode)
             if self.options_signals:
                 try:
                     if self.options_signals.is_valid_time():
@@ -987,7 +934,7 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Options signals failed: {e}")
 
-            # 4d. Pairs trading — only during midday (11:00–13:30 IST)
+            # 4d. Pairs trading — disabled (NSE-only feature)
             if self.pairs_engine and self.pairs_engine.should_scan():
                 try:
                     from signal_generator import TradeSignal as _TS
@@ -1952,15 +1899,11 @@ class TradingBot:
             logger.error(f"[{format_ist_timestamp()}] Auto-heal error: {e}")
 
     # --------------------------------------------------------
-    # MORNING LOGIN + PRE-MARKET SCAN (8:30 AM IST)
+    # MORNING LOGIN + PRE-MARKET SCAN (8:30 AM ET)
     # --------------------------------------------------------
 
     def _do_morning_login_and_scan(self, today_str: str = ""):
-        """
-        Morning broker auth check — called before market opens.
-        Alpaca: just validates API keys (instant, no TOTP).
-        Groww: TOTP login with retry every 5 min.
-        """
+        """Morning broker auth check — validates Alpaca API keys + pre-market scan."""
         attempt = getattr(self, "_login_attempt_count", 0) + 1
         setattr(self, "_login_attempt_count", attempt)
 
@@ -2031,7 +1974,7 @@ class TradingBot:
             lines = [
                 f"☀️ <b>KingTrades — Morning Scan Ready</b>",
                 f"📅 {now_ist.strftime('%d %b %Y')} | {dow_name}",
-                f"🔑 Groww login: ✅ TOTP",
+                f"🔑 Alpaca auth: ✅ API keys",
                 f"📊 Watchlist: {len(watchlist)} stocks scanned",
                 f"",
                 f"<b>⚙️ Today's Settings</b>",
@@ -2044,10 +1987,10 @@ class TradingBot:
                 lines.append("<b>🎯 Pre-Market Movers</b>")
                 for i, (sym, chg, ltp, vol, _) in enumerate(top5, 1):
                     arrow = "📈" if chg > 0 else "📉"
-                    lines.append(f"{i}. {arrow} <b>{sym}</b> ₹{ltp:.1f} ({chg:+.2f}%)")
+                    lines.append(f"{i}. {arrow} <b>{sym}</b> ${ltp:.2f} ({chg:+.2f}%)")
                 lines.append("")
 
-            lines.append("⏰ Market opens 9:15 AM IST — watching for breakout signals")
+            lines.append("⏰ Market opens 9:30 AM ET — watching for breakout signals")
 
             if self.alerter:
                 self.alerter.send_html("\n".join(lines))
@@ -2517,11 +2460,7 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _sync_positions_from_groww(self):
-        """
-        On startup/restart, read open positions from Groww and register
-        them in the risk manager so trailing stops & exits work correctly.
-        Called during initialize_market_day() if market is open.
-        """
+        """Sync open positions from Alpaca on restart."""
         if not self.fetcher or not self.risk_manager:
             return
         try:
@@ -2535,7 +2474,6 @@ class TradingBot:
                 avg = float(p.get("avg_price", 0))
                 if not sym or qty == 0:
                     continue
-                # Register in risk manager state so bot tracks them
                 if sym not in self.risk_manager.state.positions:
                     from risk_manager import Position
                     pos = Position(
@@ -2543,19 +2481,17 @@ class TradingBot:
                         direction="LONG" if qty > 0 else "SHORT",
                         quantity=abs(qty),
                         entry_price=avg,
-                        stop_loss=avg * 0.98,   # 2% fallback SL until ATR recalculated
+                        stop_loss=avg * 0.98,
                         target1=avg * 1.02,
                         target2=avg * 1.04,
-                        entry_time=get_current_ist_time(),
+                        entry_time=get_current_et_time(),
                     )
                     self.risk_manager.state.positions[sym] = pos
                     synced += 1
             if synced:
-                logger.info(
-                    f"[{format_ist_timestamp()}] Synced {synced} open position(s) from Groww"
-                )
+                logger.info(f"[{format_ist_timestamp()}] Synced {synced} open position(s) from Alpaca")
                 self.alerter.send_text(
-                    f"🔄 Bot restarted — synced {synced} open position(s) from Groww.\n"
+                    f"🔄 Bot restarted — synced {synced} open position(s) from Alpaca.\n"
                     "Trailing stops re-applied. Monitoring active."
                 )
         except Exception as e:

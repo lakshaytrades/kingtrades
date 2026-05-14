@@ -1,18 +1,15 @@
 # ============================================================
-# KingTrades — US Momentum Bot (Alpaca) + NSE Legacy (Groww)
+# KingTrades — US Momentum Bot (Alpaca)
 # Install: pip install -r requirements.txt
 # ============================================================
 
-# ---- Alpaca Broker SDK (US stocks + options, 4x leverage, free API) ----
-alpaca-py>=0.40.0             # Official Alpaca Python SDK — includes options chain + Greeks
-
-# ---- Groww Broker SDK (NSE legacy — set BROKER=groww to use) ----
-growwapi>=1.0.0
+# ---- Alpaca Broker SDK (US stocks + options, 4x leverage) ----
+alpaca-py>=0.40.0             # Official Alpaca Python SDK — stocks, options, Greeks
 
 # ---- Data & Analysis ----
 pandas>=2.0.0
 numpy>=1.26.0
-pandas-ta>=0.3.14b         # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
+pandas-ta>=0.3.14b            # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
 scipy>=1.10.0
 
 # ---- Visualization ----
@@ -23,39 +20,29 @@ Pillow>=10.0.0
 # ---- Telegram Notifications ----
 python-telegram-bot>=20.0
 
-# ---- TOTP / Authentication ----
-pyotp>=2.9.0               # TOTP generation for Groww 2FA auto-login
+# ---- HTTP & Requests ----
 requests>=2.31.0
-
-# ---- Browser automation (headless Chrome login to Groww) ----
-playwright>=1.40.0         # Headless Chrome — logs into groww.in like a human
-
-# ---- Timezone Handling (IST for UK server) ----
-pytz>=2023.3               # Timezone conversions
-# zoneinfo is built-in for Python 3.9+; backports below for older:
-# backports.zoneinfo>=0.2.1
-
-# ---- HTTP & API ----
 httpx>=0.25.0
 aiohttp>=3.9.0
 websockets>=12.0
-tenacity>=8.2.0            # Retry logic with exponential backoff
+tenacity>=8.2.0               # Retry logic with exponential backoff
 
 # ---- News & Sentiment ----
 newsapi-python>=0.2.7
-feedparser>=6.0.10         # RSS feeds for economic calendar
+feedparser>=6.0.10            # RSS feeds for economic calendar
 beautifulsoup4>=4.12.0
 lxml>=4.9.0
 
 # ---- Machine Learning (Trainer module) ----
 scikit-learn>=1.3.0
-optuna>=3.4.0              # Hyperparameter optimization for strategy tuning
+optuna>=3.4.0                 # Hyperparameter optimization
 joblib>=1.3.0
 
 # ---- Async & Scheduling ----
 schedule>=1.2.0
 asyncio-throttle>=1.0.2
 apscheduler>=3.10.0
+APScheduler>=3.10.0
 
 # ---- Environment & Config ----
 python-dotenv>=1.0.0
@@ -63,8 +50,8 @@ pydantic>=2.0.0
 pydantic-settings>=2.0.0
 
 # ---- Logging ----
-loguru>=0.7.0              # Rich structured logging with IST timestamps
-rich>=13.0.0               # Terminal formatting
+loguru>=0.7.0
+rich>=13.0.0
 
 # ---- Security ----
 cryptography>=41.0.0
@@ -73,21 +60,11 @@ cryptography>=41.0.0
 sqlalchemy>=2.0.0
 aiosqlite>=0.19.0
 
-# ---- AI Brain (Claude API — for market intelligence & learning) ----
+# ---- AI Brain ----
 anthropic>=0.40.0             # Claude API — set ANTHROPIC_API_KEY in .env
+google-genai>=1.0.0           # Gemini AI brain for market intelligence
 
-# ---- Global Market Data (overnight analysis) ----
-yfinance>=0.2.40              # Free global market data: US, Asian markets, VIX, FX, commodities
-
-# ---- Additional Data ----
+# ---- Global Market Data ----
+yfinance>=0.2.40              # Free global market data: VIX, FX, commodities
 pandas-datareader>=0.10.0     # Economic data (FRED, World Bank)
-ta>=0.11.0                    # Alternative TA library (fallback for pandas-ta)
-
-# ---- Smart Scheduling (continuous learner) ----
-APScheduler>=3.10.0           # Advanced scheduler for nightly tasks
-google-genai>=1.0.0           # Gemini AI brain for market intelligence (replaces google-generativeai)
-
-# ---- NSE Option Chain + FII/DII (no extra libs — uses requests already listed) ----
-# option_chain.py: requests + pandas (already above)
-# fii_dii_tracker.py: requests + sqlite3 (stdlib) + pandas (already above)
-# volume_profile.py: numpy + pandas (already above)
+ta>=0.11.0                    # Alternative TA library fallback

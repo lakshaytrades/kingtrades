@@ -1,207 +1,94 @@
 """
-utils.py — NSE Momentum Groww AI Bot
-IST Timezone Utilities + Helper Functions
+utils.py — US Momentum Alpaca AI Bot
+ET Timezone Utilities + Helper Functions
 
-⚠️ CRITICAL: Server runs in UK (UTC). ALL market logic uses IST.
-Never use datetime.now() without timezone. Always use get_current_ist_time().
-
-Timezone: Asia/Kolkata (IST = UTC+5:30)
+All market logic uses ET (America/New_York). Server may be UTC — always
+use get_current_et_time() instead of datetime.now().
 """
 
 import logging
+import functools
+import time as time_module
 from datetime import datetime, time, timedelta, date
 from zoneinfo import ZoneInfo
-from typing import Optional, Union
+from typing import Optional, Union, Callable, Any
 import pandas as pd
 
-# IST and UTC zone objects
-IST = ZoneInfo("Asia/Kolkata")
+ET  = ZoneInfo("America/New_York")
 UTC = ZoneInfo("UTC")
 
-# Market hours in IST
-MARKET_OPEN = time(9, 15)
-MARKET_CLOSE = time(15, 30)
-MARKET_SQUAREOFF = time(15, 20)
-MARKET_SQUAREOFF_WARN = time(15, 15)
-PRE_MARKET_START = time(9, 0)
-TOKEN_REFRESH_TIME = time(5, 50)   # Groww tokens expire at 6:00 AM IST — refresh 10 min BEFORE
+# US market hours in ET
+US_MARKET_OPEN  = time(9, 30)
+US_MARKET_CLOSE = time(16, 0)
+US_SQUAREOFF    = time(15, 50)   # close positions 10 min before close
+US_SQUAREOFF_WARN = time(15, 45)
+US_PRE_MARKET_START = time(8, 30)
 
 logger = logging.getLogger(__name__)
 
 
 # ============================================================
-# CORE IST TIME FUNCTIONS
+# CORE ET TIME FUNCTIONS
 # ============================================================
-
-def get_current_ist_time() -> datetime:
-    """
-    Get current datetime in IST (Asia/Kolkata).
-    Use this EVERYWHERE instead of datetime.now() or datetime.utcnow().
-    Server may be in UK (UTC) — this always returns IST regardless.
-    """
-    return datetime.now(tz=IST)
-
-
-def get_current_ist_date() -> date:
-    """Get current date in IST."""
-    return get_current_ist_time().date()
-
-
-def convert_to_ist(dt: Union[datetime, pd.Timestamp]) -> datetime:
-    """
-    Convert any datetime (UTC, naive, or other tz) to IST.
-
-    Args:
-        dt: datetime or pd.Timestamp to convert
-
-    Returns:
-        datetime in IST timezone
-    """
-    if isinstance(dt, pd.Timestamp):
-        dt = dt.to_pydatetime()
-
-    if dt.tzinfo is None:
-        # Assume UTC if no timezone info (common with exchange data)
-        dt = dt.replace(tzinfo=UTC)
-        logger.debug(f"Naive datetime assumed UTC, converted to IST: {dt}")
-
-    return dt.astimezone(IST)
-
-
-def convert_utc_to_ist(utc_dt: datetime) -> datetime:
-    """Convert UTC datetime to IST."""
-    if utc_dt.tzinfo is None:
-        utc_dt = utc_dt.replace(tzinfo=UTC)
-    return utc_dt.astimezone(IST)
-
-
-def ist_to_utc(ist_dt: datetime) -> datetime:
-    """Convert IST datetime to UTC."""
-    if ist_dt.tzinfo is None:
-        ist_dt = ist_dt.replace(tzinfo=IST)
-    return ist_dt.astimezone(UTC)
-
-
-def format_ist_timestamp(dt: Optional[datetime] = None) -> str:
-    """
-    Format datetime as IST timestamp string for logs and alerts.
-    Always shows IST regardless of server timezone.
-
-    Returns: "2024-01-15 09:15:00 IST"
-    """
-    if dt is None:
-        dt = get_current_ist_time()
-    elif dt.tzinfo is None or dt.tzinfo != IST:
-        dt = convert_to_ist(dt)
-    return dt.strftime("%Y-%m-%d %H:%M:%S IST")
-
-
-def format_ist_time_only(dt: Optional[datetime] = None) -> str:
-    """Format as time only: "09:15:00 IST" """
-    if dt is None:
-        dt = get_current_ist_time()
-    elif dt.tzinfo is None or dt.tzinfo != IST:
-        dt = convert_to_ist(dt)
-    return dt.strftime("%H:%M:%S IST")
-
-
-# ============================================================
-# MARKET HOURS CHECKS
-# ============================================================
-
-# NSE trading holidays 2026 (BSE/NSE official calendar)
-NSE_HOLIDAYS_2026 = {
-    date(2026, 1, 26),   # Republic Day
-    date(2026, 2, 19),   # Chhatrapati Shivaji Maharaj Jayanti
-    date(2026, 3, 14),   # Holi (Dhuleti)
-    date(2026, 3, 31),   # Id-Ul-Fitr (Ramzan Eid)
-    date(2026, 4, 2),    # Shri Ram Navami
-    date(2026, 4, 3),    # Good Friday
-    date(2026, 4, 14),   # Dr. Baba Saheb Ambedkar Jayanti
-    date(2026, 5, 1),    # Maharashtra Day
-    date(2026, 6, 28),   # Eid ul Adha
-    date(2026, 8, 15),   # Independence Day
-    date(2026, 8, 27),   # Ganesh Chaturthi
-    date(2026, 9, 16),   # Milad-un-Nabi
-    date(2026, 10, 2),   # Mahatma Gandhi Jayanti
-    date(2026, 10, 22),  # Dussehra (Vijaya Dashami)
-    date(2026, 11, 11),  # Diwali Laxmi Puja (Muhurat Trading only)
-    date(2026, 11, 12),  # Diwali Balipratipada
-    date(2026, 11, 25),  # Guru Nanak Jayanti
-    date(2026, 12, 25),  # Christmas
-}
-
-
-def is_nse_holiday(d: date = None) -> bool:
-    """Return True if the given date (default: today IST) is an NSE trading holiday."""
-    if d is None:
-        d = get_current_ist_date()
-    return d in NSE_HOLIDAYS_2026
-
-
-def is_market_open_ist() -> bool:
-    """
-    Check if NSE market is currently open.
-    Returns True if 9:15–3:30 PM IST on a weekday that is not an NSE holiday.
-    """
-    now_ist = get_current_ist_time()
-
-    if now_ist.weekday() >= 5:          # Sat/Sun
-        return False
-    if is_nse_holiday(now_ist.date()):  # NSE holiday
-        return False
-
-    return MARKET_OPEN <= now_ist.time() < MARKET_CLOSE
-
-
-def is_pre_market_ist() -> bool:
-    """Check if it's pre-market time (9:00 AM to 9:15 AM IST)."""
-    now_ist = get_current_ist_time()
-    current_time = now_ist.time()
-    if now_ist.weekday() >= 5:
-        return False
-    return PRE_MARKET_START <= current_time < MARKET_OPEN
-
-
-def is_squareoff_time_ist() -> bool:
-    """Check if it's time to begin squaring off (after 3:15 PM IST)."""
-    now_ist = get_current_ist_time()
-    return now_ist.time() >= MARKET_SQUAREOFF_WARN
-
-
-def should_force_squareoff_ist() -> bool:
-    """Check if forced square-off should happen now (after 3:20 PM IST)."""
-    now_ist = get_current_ist_time()
-    return now_ist.time() >= MARKET_SQUAREOFF
-
-
-# ============================================================
-# US MARKET (NYSE/NASDAQ) — ET TIMEZONE UTILITIES
-# ============================================================
-
-ET = ZoneInfo("America/New_York")   # handles DST automatically
-
-US_MARKET_OPEN  = time(9, 30)
-US_MARKET_CLOSE = time(16, 0)
-US_SQUAREOFF    = time(15, 50)      # close positions 10 min before close
-
 
 def get_current_et_time() -> datetime:
     """Get current datetime in US Eastern Time (ET). Handles DST automatically."""
     return datetime.now(ET)
 
 
+def get_current_et_date() -> date:
+    """Get current date in ET."""
+    return get_current_et_time().date()
+
+
+def format_et_timestamp(dt: Optional[datetime] = None) -> str:
+    """Format datetime as ET timestamp string for logs."""
+    if dt is None:
+        dt = get_current_et_time()
+    elif dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC).astimezone(ET)
+    else:
+        dt = dt.astimezone(ET)
+    return dt.strftime("%Y-%m-%d %H:%M:%S ET")
+
+
+def format_et_time_only(dt: Optional[datetime] = None) -> str:
+    """Format as time only: '09:30:00 ET'"""
+    if dt is None:
+        dt = get_current_et_time()
+    return dt.astimezone(ET).strftime("%H:%M:%S ET")
+
+
+def convert_to_et(dt: Union[datetime, "pd.Timestamp"]) -> datetime:
+    """Convert any datetime to ET."""
+    if isinstance(dt, pd.Timestamp):
+        dt = dt.to_pydatetime()
+    if dt.tzinfo is None:
+        dt = dt.replace(tzinfo=UTC)
+    return dt.astimezone(ET)
+
+
+# ============================================================
+# MARKET HOURS CHECKS
+# ============================================================
+
 def is_market_open_et() -> bool:
     """
     Check if US market (NYSE/NASDAQ) is currently open.
-    Handles ET/EST/EDT automatically — no hardcoded UTC offsets.
     Returns True if 9:30 AM – 4:00 PM ET on a weekday.
     """
-    now_et = get_current_et_time()
-    if now_et.weekday() >= 5:   # Sat/Sun
+    now = get_current_et_time()
+    if now.weekday() >= 5:
         return False
-    t = now_et.time()
-    return US_MARKET_OPEN <= t < US_MARKET_CLOSE
+    return US_MARKET_OPEN <= now.time() < US_MARKET_CLOSE
+
+
+def is_pre_market_et() -> bool:
+    """Check if it's US pre-market (8:30–9:30 AM ET)."""
+    now = get_current_et_time()
+    if now.weekday() >= 5:
+        return False
+    return US_PRE_MARKET_START <= now.time() < US_MARKET_OPEN
 
 
 def is_us_squareoff_time() -> bool:
@@ -209,143 +96,122 @@ def is_us_squareoff_time() -> bool:
     return get_current_et_time().time() >= US_SQUAREOFF
 
 
-def format_et_timestamp() -> str:
-    """Format current ET datetime as string for logs."""
-    return get_current_et_time().strftime("%Y-%m-%d %H:%M:%S ET")
-
-
-def is_market_day_ist() -> bool:
-    """Check if today is a trading day (weekday + not an NSE holiday) in IST."""
-    now_ist = get_current_ist_time()
-    if now_ist.weekday() >= 5:
-        return False
-    return not is_nse_holiday(now_ist.date())
+def is_market_day_et() -> bool:
+    """Check if today is a US trading weekday."""
+    return get_current_et_time().weekday() < 5
 
 
 def minutes_until_market_open() -> float:
-    """
-    Calculate minutes until market opens (9:15 AM IST).
-    Returns negative if market already open or closed.
-    """
-    now_ist = get_current_ist_time()
-    today = now_ist.date()
-    open_dt = datetime(today.year, today.month, today.day, 9, 15, 0, tzinfo=IST)
-    delta = (open_dt - now_ist).total_seconds() / 60
-    return delta
+    """Minutes until 9:30 AM ET open. Negative if already open or closed."""
+    now = get_current_et_time()
+    today = now.date()
+    open_dt = datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
+    return (open_dt - now).total_seconds() / 60
 
 
 def minutes_until_market_close() -> float:
-    """
-    Calculate minutes until market closes (3:30 PM IST).
-    Returns negative if already closed.
-    """
-    now_ist = get_current_ist_time()
-    today = now_ist.date()
-    close_dt = datetime(today.year, today.month, today.day, 15, 30, 0, tzinfo=IST)
-    delta = (close_dt - now_ist).total_seconds() / 60
-    return delta
+    """Minutes until 4:00 PM ET close. Negative if already closed."""
+    now = get_current_et_time()
+    today = now.date()
+    close_dt = datetime(today.year, today.month, today.day, 16, 0, 0, tzinfo=ET)
+    return (close_dt - now).total_seconds() / 60
 
 
-def get_market_open_datetime_ist() -> datetime:
-    """Get today's market open datetime in IST."""
-    now_ist = get_current_ist_time()
-    today = now_ist.date()
-    return datetime(today.year, today.month, today.day, 9, 15, 0, tzinfo=IST)
+def get_market_open_datetime_et() -> datetime:
+    """Today's 9:30 AM ET."""
+    now = get_current_et_time()
+    d = now.date()
+    return datetime(d.year, d.month, d.day, 9, 30, 0, tzinfo=ET)
 
 
-def get_market_close_datetime_ist() -> datetime:
-    """Get today's market close datetime in IST."""
-    now_ist = get_current_ist_time()
-    today = now_ist.date()
-    return datetime(today.year, today.month, today.day, 15, 30, 0, tzinfo=IST)
+def get_market_close_datetime_et() -> datetime:
+    """Today's 4:00 PM ET."""
+    now = get_current_et_time()
+    d = now.date()
+    return datetime(d.year, d.month, d.day, 16, 0, 0, tzinfo=ET)
 
 
-def get_next_market_open_ist() -> datetime:
-    """Get the next market open datetime (skips weekends)."""
-    now_ist = get_current_ist_time()
-    today = now_ist.date()
-    check_date = today
-
-    if now_ist.time() < MARKET_OPEN and now_ist.weekday() < 5:
-        # Today's market hasn't opened yet
-        return datetime(today.year, today.month, today.day, 9, 15, 0, tzinfo=IST)
-
-    # Move to next day
-    check_date += timedelta(days=1)
-    while check_date.weekday() >= 5:
-        check_date += timedelta(days=1)
-
-    return datetime(check_date.year, check_date.month, check_date.day, 9, 15, 0, tzinfo=IST)
-
-
-def is_token_refresh_time() -> bool:
-    """
-    Check if it's time for daily Groww token refresh.
-
-    Groww invalidates ALL tokens at 6:00 AM IST every day.
-    We refresh at 5:50 AM — 10 minutes BEFORE expiry — so the current
-    valid token is used to generate the next one successfully.
-    Window: 5:50–5:55 AM IST (5-minute window, any day).
-    """
-    now_ist = get_current_ist_time()
-    current = now_ist.time()
-    return time(5, 50) <= current < time(5, 55)
+def get_next_market_open_et() -> datetime:
+    """Next 9:30 AM ET open (skips weekends)."""
+    now = get_current_et_time()
+    today = now.date()
+    if now.time() < US_MARKET_OPEN and now.weekday() < 5:
+        return datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
+    check = today + timedelta(days=1)
+    while check.weekday() >= 5:
+        check += timedelta(days=1)
+    return datetime(check.year, check.month, check.day, 9, 30, 0, tzinfo=ET)
 
 
 # ============================================================
 # CANDLE TIMESTAMP UTILITIES
 # ============================================================
 
-def convert_candle_timestamps_to_ist(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Convert all candle timestamps to IST in a DataFrame.
-    Input df must have datetime index or 'timestamp'/'datetime' column.
-
-    Returns:
-        DataFrame with IST timestamps
-    """
+def convert_candle_timestamps_to_et(df: pd.DataFrame) -> pd.DataFrame:
+    """Convert candle DataFrame timestamps to ET."""
     df = df.copy()
-
     if isinstance(df.index, pd.DatetimeIndex):
         if df.index.tz is None:
             df.index = df.index.tz_localize(UTC)
-        df.index = df.index.tz_convert(IST)
+        df.index = df.index.tz_convert(ET)
     elif "timestamp" in df.columns:
         df["timestamp"] = pd.to_datetime(df["timestamp"])
         if df["timestamp"].dt.tz is None:
             df["timestamp"] = df["timestamp"].dt.tz_localize(UTC)
-        df["timestamp"] = df["timestamp"].dt.tz_convert(IST)
+        df["timestamp"] = df["timestamp"].dt.tz_convert(ET)
     elif "datetime" in df.columns:
         df["datetime"] = pd.to_datetime(df["datetime"])
         if df["datetime"].dt.tz is None:
             df["datetime"] = df["datetime"].dt.tz_localize(UTC)
-        df["datetime"] = df["datetime"].dt.tz_convert(IST)
-
+        df["datetime"] = df["datetime"].dt.tz_convert(ET)
     return df
 
 
 def filter_market_hours(df: pd.DataFrame) -> pd.DataFrame:
-    """
-    Filter DataFrame to only include candles within market hours (9:15-15:30 IST).
-    Expects IST-aware datetime index.
-    """
-    df = convert_candle_timestamps_to_ist(df)
+    """Filter DataFrame to US market hours (9:30–16:00 ET)."""
+    df = convert_candle_timestamps_to_et(df)
     if isinstance(df.index, pd.DatetimeIndex):
-        market_mask = (
-            (df.index.time >= MARKET_OPEN) &
-            (df.index.time <= MARKET_CLOSE) &
+        mask = (
+            (df.index.time >= US_MARKET_OPEN) &
+            (df.index.time <= US_MARKET_CLOSE) &
             (df.index.weekday < 5)
         )
-        return df[market_mask]
+        return df[mask]
     return df
+
+
+# ============================================================
+# IST ALIASES — kept so existing imports don't break
+# All IST calls now delegate to their ET equivalents.
+# ============================================================
+
+IST = ET   # alias — everything is ET now
+
+get_current_ist_time   = get_current_et_time
+get_current_ist_date   = get_current_et_date
+format_ist_timestamp   = format_et_timestamp
+format_ist_time_only   = format_et_time_only
+convert_to_ist         = convert_to_et
+convert_utc_to_ist     = convert_to_et
+ist_to_utc             = lambda dt: dt.astimezone(UTC) if dt.tzinfo else dt.replace(tzinfo=ET).astimezone(UTC)
+is_market_open_ist     = is_market_open_et
+is_pre_market_ist      = is_pre_market_et
+is_squareoff_time_ist  = is_us_squareoff_time
+should_force_squareoff_ist = is_us_squareoff_time
+is_market_day_ist      = is_market_day_et
+convert_candle_timestamps_to_ist = convert_candle_timestamps_to_et
+
+def is_token_refresh_time() -> bool:
+    """No-op for Alpaca (no daily token refresh needed)."""
+    return False
 
 
 # ============================================================
 # TRADING UTILITIES
 # ============================================================
 
-def round_to_tick_size(price: float, tick_size: float = 0.05) -> float:
-    """Round price to NSE tick size (default 0.05 paisa)."""
+def round_to_tick_size(price: float, tick_size: float = 0.01) -> float:
+    """Round price to tick size (default $0.01 for US stocks)."""
     return round(round(price / tick_size) * tick_size, 2)
 
 
@@ -353,80 +219,52 @@ def calculate_quantity(capital: float, price: float, risk_pct: float,
                        sl_distance: float) -> int:
     """
     Calculate position quantity based on risk percentage.
-
-    Args:
-        capital: Available capital in INR
-        price: Current stock price
-        risk_pct: Risk per trade as percentage (e.g., 0.5 for 0.5%)
-        sl_distance: Stop loss distance from entry in INR
-
-    Returns:
-        Number of shares to buy
+    capital: Available capital in USD.
+    sl_distance: Stop loss distance from entry in USD.
     """
     if sl_distance <= 0 or price <= 0:
         return 0
     risk_amount = capital * (risk_pct / 100)
     quantity = int(risk_amount / sl_distance)
-    # Ensure quantity doesn't use more than 15% of capital
     max_qty = int((capital * 0.15) / price)
     return min(quantity, max_qty)
 
 
 def calculate_pnl(entry: float, current: float, quantity: int,
                   direction: str = "BUY") -> dict:
-    """
-    Calculate P&L for a position.
-
-    Args:
-        entry: Entry price
-        current: Current/exit price
-        quantity: Number of shares
-        direction: "BUY" or "SELL"
-
-    Returns:
-        dict with pnl, pnl_pct, status
-    """
+    """Calculate P&L for a position."""
     if direction == "BUY":
         pnl = (current - entry) * quantity
         pnl_pct = ((current - entry) / entry) * 100
-    else:  # SELL/SHORT
+    else:
         pnl = (entry - current) * quantity
         pnl_pct = ((entry - current) / entry) * 100
-
     return {
         "pnl": round(pnl, 2),
         "pnl_pct": round(pnl_pct, 2),
         "status": "PROFIT" if pnl > 0 else "LOSS",
         "entry": entry,
         "current": current,
-        "quantity": quantity
+        "quantity": quantity,
     }
 
 
 def format_currency(amount: float) -> str:
-    """Format amount as Indian currency: ₹1,23,456.78"""
-    if abs(amount) >= 10000000:  # 1 crore
-        return f"₹{amount/10000000:.2f}Cr"
-    elif abs(amount) >= 100000:  # 1 lakh
-        return f"₹{amount/100000:.2f}L"
+    """Format as USD."""
+    if abs(amount) >= 1_000_000:
+        return f"${amount/1_000_000:.2f}M"
+    elif abs(amount) >= 1_000:
+        return f"${amount/1_000:.1f}k"
     else:
-        return f"₹{amount:,.2f}"
+        return f"${amount:,.2f}"
 
 
 # ============================================================
 # RETRY DECORATOR
 # ============================================================
 
-import time as time_module
-import functools
-from typing import Callable, Any
-
-
 def retry_with_backoff(max_retries: int = 4, delays: list = None):
-    """
-    Decorator for API calls with exponential backoff retry.
-    Delays: [2, 4, 8, 16] seconds by default.
-    """
+    """Decorator for API calls with exponential backoff retry."""
     if delays is None:
         delays = [2, 4, 8, 16]
 
@@ -442,14 +280,14 @@ def retry_with_backoff(max_retries: int = 4, delays: list = None):
                     if attempt < max_retries:
                         delay = delays[min(attempt, len(delays) - 1)]
                         logger.warning(
-                            f"[{format_ist_timestamp()}] {func.__name__} failed "
+                            f"[{format_et_timestamp()}] {func.__name__} failed "
                             f"(attempt {attempt+1}/{max_retries}): {e}. "
                             f"Retrying in {delay}s..."
                         )
                         time_module.sleep(delay)
                     else:
                         logger.error(
-                            f"[{format_ist_timestamp()}] {func.__name__} failed "
+                            f"[{format_et_timestamp()}] {func.__name__} failed "
                             f"after {max_retries} retries: {e}"
                         )
             raise last_exception
@@ -458,55 +296,51 @@ def retry_with_backoff(max_retries: int = 4, delays: list = None):
 
 
 # ============================================================
-# LOGGING SETUP (IST timestamps)
+# LOGGING SETUP (ET timestamps)
 # ============================================================
 
-class ISTFormatter(logging.Formatter):
-    """Custom log formatter that uses IST timestamps."""
+class ETFormatter(logging.Formatter):
+    """Custom log formatter that uses ET timestamps."""
 
     def formatTime(self, record, datefmt=None):
-        # Convert log record UTC time to IST
-        ct = datetime.fromtimestamp(record.created, tz=UTC)
-        ist_ct = ct.astimezone(IST)
+        ct = datetime.fromtimestamp(record.created, tz=UTC).astimezone(ET)
         if datefmt:
-            return ist_ct.strftime(datefmt)
-        return ist_ct.strftime("%Y-%m-%d %H:%M:%S IST")
+            return ct.strftime(datefmt)
+        return ct.strftime("%Y-%m-%d %H:%M:%S ET")
+
+
+# Keep old name as alias
+ISTFormatter = ETFormatter
 
 
 def setup_logging(log_dir: str = "logs", level: str = "INFO",
                   module_name: str = "kingtrades") -> logging.Logger:
-    """
-    Set up logging with IST timestamps.
-    All log entries show IST time regardless of server timezone.
-    """
+    """Set up logging with ET timestamps."""
     from pathlib import Path
     Path(log_dir).mkdir(parents=True, exist_ok=True)
 
     log_level = getattr(logging, level.upper(), logging.INFO)
-    today_ist = get_current_ist_date()
-    log_file = f"{log_dir}/trading_{today_ist}.log"
+    today_et = get_current_et_date()
+    log_file = f"{log_dir}/trading_{today_et}.log"
 
-    formatter = ISTFormatter(
+    formatter = ETFormatter(
         fmt="[%(asctime)s] [%(levelname)s] [%(name)s] %(message)s"
     )
 
-    # File handler
     file_handler = logging.FileHandler(log_file, encoding="utf-8")
     file_handler.setFormatter(formatter)
     file_handler.setLevel(log_level)
 
-    # Console handler
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(formatter)
     console_handler.setLevel(log_level)
 
-    # Root logger
     root_logger = logging.getLogger()
     root_logger.setLevel(log_level)
     root_logger.addHandler(file_handler)
     root_logger.addHandler(console_handler)
 
-    logger.info(f"Logging initialized. IST time: {format_ist_timestamp()}")
+    logger.info(f"Logging initialized. ET time: {format_et_timestamp()}")
     logger.info(f"Log file: {log_file}")
     return root_logger
 
@@ -516,21 +350,18 @@ def setup_logging(log_dir: str = "logs", level: str = "INFO",
 # ============================================================
 
 if __name__ == "__main__":
-    print("=== IST Timezone Utilities Test ===")
-    print(f"Current IST time: {format_ist_timestamp()}")
-    print(f"Current IST date: {get_current_ist_date()}")
-    print(f"Market open? {is_market_open_ist()}")
-    print(f"Pre-market? {is_pre_market_ist()}")
-    print(f"Market day? {is_market_day_ist()}")
+    print("=== ET Timezone Utilities Test ===")
+    print(f"Current ET time: {format_et_timestamp()}")
+    print(f"Current ET date: {get_current_et_date()}")
+    print(f"Market open? {is_market_open_et()}")
+    print(f"Pre-market? {is_pre_market_et()}")
     mins = minutes_until_market_open()
     if mins > 0:
-        print(f"Market opens in {mins:.1f} minutes (IST)")
+        print(f"Market opens in {mins:.1f} minutes (ET)")
     else:
         mins_close = minutes_until_market_close()
         if mins_close > 0:
-            print(f"Market closes in {mins_close:.1f} minutes (IST)")
+            print(f"Market closes in {mins_close:.1f} minutes (ET)")
         else:
-            print("Market is closed for today (IST)")
-    print(f"Next market open: {get_next_market_open_ist()}")
-    print(f"₹123456 formatted: {format_currency(123456)}")
-    print(f"₹1234567 formatted: {format_currency(1234567)}")
+            print("Market is closed for today (ET)")
+    print(f"$123456 formatted: {format_currency(123456)}")
