@@ -38,6 +38,12 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 IST = ZoneInfo("Asia/Kolkata")
 
+# Currency symbol — set by broker adapter ($ for Alpaca, ₹ for Groww)
+try:
+    from broker import CURRENCY_SYMBOL as _CUR
+except Exception:
+    _CUR = "₹"
+
 # ── emoji palette ───────────────────────────────────────────
 E = {
     "long":   "🟢",
@@ -165,10 +171,10 @@ def _build_candle_chart(
 
         # Legend
         patches = [
-            mpatches.Patch(color="#FFD700", label=f"Entry ₹{signal_price:.2f}"),
-            mpatches.Patch(color="#FF4444", label=f"SL ₹{stop_loss:.2f}"),
-            mpatches.Patch(color="#44FF88", label=f"T1 ₹{target_1:.2f}"),
-            mpatches.Patch(color="#00FFCC", label=f"T2 ₹{target_2:.2f}"),
+            mpatches.Patch(color="#FFD700", label=f"Entry {_CUR}{signal_price:.2f}"),
+            mpatches.Patch(color="#FF4444", label=f"SL {_CUR}{stop_loss:.2f}"),
+            mpatches.Patch(color="#44FF88", label=f"T1 {_CUR}{target_1:.2f}"),
+            mpatches.Patch(color="#00FFCC", label=f"T2 {_CUR}{target_2:.2f}"),
         ]
         ax.legend(
             handles=patches, loc="upper left", fontsize=7,
@@ -216,7 +222,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax1.axhline(0, color="#555555", linestyle="--", lw=1)
         ax1.set_facecolor("#0D1117")
         ax1.set_title("Equity Curve — Today's Trades", color="white", fontsize=11)
-        ax1.set_ylabel("Cumulative P&L (₹)", color="#CCCCCC", fontsize=9)
+        ax1.set_ylabel("Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax1.tick_params(colors="#AAAAAA")
         ax1.grid(True, color="#333333", linestyle=":", alpha=0.5)
 
@@ -225,7 +231,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax2.bar(x, pnls, color=bar_colors, width=0.7)
         ax2.axhline(0, color="#555555", linestyle="--", lw=1)
         ax2.set_facecolor("#0D1117")
-        ax2.set_ylabel("Trade P&L (₹)", color="#CCCCCC", fontsize=9)
+        ax2.set_ylabel("Trade P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax2.tick_params(colors="#AAAAAA")
         ax2.set_xticks(x)
         ax2.set_xticklabels(labels, rotation=35, color="#AAAAAA", fontsize=7)
@@ -363,13 +369,13 @@ class TelegramAlerter:
             f"{direction_emoji} *{signal.direction} SIGNAL — {signal.symbol}*\n"
             f"{grade_emoji} Grade: `{grade}` | Score: `{signal.signal_score:.0f}/100` | Size: `{size_mult:.1f}x`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['target']} *Entry:* `₹{signal.entry_price:.2f}`\n"
-            f"🛑 *Stop Loss:* `₹{signal.stop_loss:.2f}`\n"
-            f"🎯 *Target 1:* `₹{signal.target_1:.2f}`\n"
-            f"🎯 *Target 2:* `₹{signal.target_2:.2f}`\n"
+            f"{E['target']} *Entry:* `{_CUR}{signal.entry_price:.2f}`\n"
+            f"🛑 *Stop Loss:* `{_CUR}{signal.stop_loss:.2f}`\n"
+            f"🎯 *Target 1:* `{_CUR}{signal.target_1:.2f}`\n"
+            f"🎯 *Target 2:* `{_CUR}{signal.target_2:.2f}`\n"
             f"📐 *R:R:* `{signal.risk_reward:.1f}:1` | Qty: `{qty}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['money']} Risk: `₹{risk_amount:,.0f}` | T1 P&L: `₹{proj_t1:,.0f}` | T2: `₹{proj_t2:,.0f}`\n"
+            f"{E['money']} Risk: `{_CUR}{risk_amount:,.0f}` | T1 P&L: `{_CUR}{proj_t1:,.0f}` | T2: `{_CUR}{proj_t2:,.0f}`\n"
             f"📈 Patterns: `{patterns_str}`\n"
             f"⏱ MTF: `{mtf_str}`\n"
             f"📰 News: `{'Clear' if signal.news_clear else 'BLOCKED — event nearby'}`\n"
@@ -398,7 +404,7 @@ class TelegramAlerter:
         emoji = E["long"] if direction == "LONG" else E["short"]
         text = (
             f"{emoji} *ORDER FILLED — {symbol}*\n"
-            f"Direction: `{direction}` | Qty: `{qty}` | Price: `₹{price:.2f}`\n"
+            f"Direction: `{direction}` | Qty: `{qty}` | Price: `{_CUR}{price:.2f}`\n"
             f"Order ID: `{order_id}`\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
@@ -412,12 +418,12 @@ class TelegramAlerter:
                   entry: float, exit_price: float, pnl: float,
                   reason: str = "Target", order_id: str = "") -> bool:
         pnl_emoji = E["profit"] if pnl >= 0 else E["loss"]
-        pnl_str   = f"+₹{pnl:,.0f}" if pnl >= 0 else f"-₹{abs(pnl):,.0f}"
+        pnl_str   = f"+{_CUR}{pnl:,.0f}" if pnl >= 0 else f"-{_CUR}{abs(pnl):,.0f}"
         pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
         text = (
             f"{pnl_emoji} *EXIT — {symbol}*\n"
             f"Direction: `{direction}` | Qty: `{qty}`\n"
-            f"Entry: `₹{entry:.2f}` → Exit: `₹{exit_price:.2f}` (`{pct:+.2f}%`)\n"
+            f"Entry: `{_CUR}{entry:.2f}` → Exit: `{_CUR}{exit_price:.2f}` (`{pct:+.2f}%`)\n"
             f"P&L: *{pnl_str}*\n"
             f"Reason: `{reason}`\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
@@ -432,8 +438,8 @@ class TelegramAlerter:
                     sl_price: float, loss: float) -> bool:
         text = (
             f"{E['loss']} *STOP-LOSS HIT — {symbol}*\n"
-            f"Direction: `{direction}` | Entry: `₹{entry:.2f}` | SL: `₹{sl_price:.2f}`\n"
-            f"Loss: `₹{abs(loss):,.0f}`\n"
+            f"Direction: `{direction}` | Entry: `{_CUR}{entry:.2f}` | SL: `{_CUR}{sl_price:.2f}`\n"
+            f"Loss: `{_CUR}{abs(loss):,.0f}`\n"
             f"{E['warn']} Reviewing consecutive losses...\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
@@ -483,19 +489,19 @@ class TelegramAlerter:
         paused    = state.trading_paused if state else False
 
         pnl_emoji = E["profit"] if daily_pnl >= 0 else E["loss"]
-        pnl_str   = f"+₹{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-₹{abs(daily_pnl):,.0f}"
+        pnl_str   = f"+{_CUR}{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-{_CUR}{abs(daily_pnl):,.0f}"
 
         lines = [
             f"{E['chart']} *Bot Status — {format_ist_timestamp()}*",
         ]
         if balance_available is not None:
-            bal_line = f"💰 Balance: `₹{balance_available:,.2f}`"
+            bal_line = f"💰 Balance: `{_CUR}{balance_available:,.2f}`"
             if margin_used:
-                bal_line += f" | Margin Used: `₹{margin_used:,.2f}`"
+                bal_line += f" | Margin Used: `{_CUR}{margin_used:,.2f}`"
             lines.append(bal_line)
         lines += [
             f"Daily P&L: {pnl_emoji} *{pnl_str}*",
-            f"Capital: `₹{capital:,.0f}` | Trades: `{n_trades}` | Win Rate: `{wr_pct:.1f}%`",
+            f"Capital: `{_CUR}{capital:,.0f}` | Trades: `{n_trades}` | Win Rate: `{wr_pct:.1f}%`",
             f"Open Positions: `{len(positions)}` | State: `{'PAUSED' if paused else 'ACTIVE'}`",
         ]
         if positions:
@@ -506,7 +512,7 @@ class TelegramAlerter:
                 cur    = getattr(pos, "current_price", pos.entry_price)
                 lines.append(
                     f"{p_emj} `{sym}` {pos.direction} "
-                    f"₹{pos.entry_price:.2f}→₹{cur:.2f} | "
+                    f"{_CUR}{pos.entry_price:.2f}→{_CUR}{cur:.2f} | "
                     f"P&L: `{'+' if p_pnl>=0 else ''}{p_pnl:,.0f}`"
                 )
 
@@ -594,7 +600,7 @@ class TelegramAlerter:
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{bias_emoji} Day Bias: *{bias}* (score: `{bias_score:+d}`)\n"
             f"VIX: `{vix:.1f}` | Gift Nifty: `{gap_pct:+.2f}%` | "
-            f"Nifty: `₹{nifty_ltp:,.0f}` | Capital: `₹{avail_cap:,.0f}`\n"
+            f"Nifty: `{_CUR}{nifty_ltp:,.0f}` | Capital: `{_CUR}{avail_cap:,.0f}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"*Key Risks:*\n{risks_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -664,14 +670,14 @@ class TelegramAlerter:
         pnl_pct    = (daily_pnl / capital * 100) if capital > 0 else 0.0
 
         pnl_emoji  = E["trophy"] if daily_pnl > 0 else (E["loss"] if daily_pnl < 0 else E["chart"])
-        pnl_str    = (f"+₹{daily_pnl:,.0f} (+{pnl_pct:.2f}%)"
+        pnl_str    = (f"+{_CUR}{daily_pnl:,.0f} (+{pnl_pct:.2f}%)"
                       if daily_pnl >= 0
-                      else f"-₹{abs(daily_pnl):,.0f} ({pnl_pct:.2f}%)")
+                      else f"-{_CUR}{abs(daily_pnl):,.0f} ({pnl_pct:.2f}%)")
 
         best  = max(all_trades, key=lambda t: t.get("pnl", 0), default=None)
         worst = min(all_trades, key=lambda t: t.get("pnl", 0), default=None)
-        best_str  = f"{best.get('symbol','?')} `+₹{best.get('pnl',0):,.0f}`"   if best  else "—"
-        worst_str = f"{worst.get('symbol','?')} `-₹{abs(worst.get('pnl',0)):,.0f}`" if worst else "—"
+        best_str  = f"{best.get('symbol','?')} `+{_CUR}{best.get('pnl',0):,.0f}`"   if best  else "—"
+        worst_str = f"{worst.get('symbol','?')} `-{_CUR}{abs(worst.get('pnl',0)):,.0f}`" if worst else "—"
 
         # Daily target slice = 5% monthly ÷ ~22 trading days
         target_hit = (daily_pnl >= capital * 0.05 / 22) if capital > 0 else False

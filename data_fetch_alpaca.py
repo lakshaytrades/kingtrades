@@ -226,6 +226,47 @@ class AlpacaDataFetcher:
             logger.debug(f"get_ohlcv({symbol}, {interval}) failed: {e}")
             return pd.DataFrame()
 
+    def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
+        """
+        Fetch 5m / 15m / 1h OHLCV for signal_generator multi-timeframe analysis.
+        Returns same structure as GrowwDataFetcher.get_multi_timeframe_data().
+        Keys: "5m", "15m", "1h"
+        """
+        specs = [("5m", "5minute", 5), ("15m", "15minute", 10), ("1h", "1hour", 30)]
+        data: Dict[str, Optional[pd.DataFrame]] = {}
+        for key, interval, days in specs:
+            try:
+                df = self.get_ohlcv(symbol, interval=interval, lookback_days=days)
+                data[key] = df if not df.empty else None
+            except Exception as e:
+                logger.debug(f"MTF {symbol}/{key}: {e}")
+                data[key] = None
+        return data
+
+    def get_nifty_quote(self) -> Optional[Dict]:
+        """
+        For US market: return SPY (S&P500 ETF) as the market index proxy.
+        Replaces NSE Nifty 50 reference for regime / relative-strength checks.
+        """
+        try:
+            q = self.get_quote("SPY")
+            if q and q.get("ltp"):
+                return {
+                    "symbol": "SPY",
+                    "ltp":    q["ltp"],
+                    "change_pct": q.get("change_pct", 0.0),
+                }
+        except Exception as e:
+            logger.debug(f"get_nifty_quote (SPY proxy) failed: {e}")
+        return None
+
+    def get_candles(self, symbol: str, interval: str = "5m", days: int = 5) -> Optional[pd.DataFrame]:
+        """Alias matching GrowwDataFetcher.get_candles() so shared code works."""
+        interval_map = {"5m": "5minute", "15m": "15minute", "1h": "1hour", "60m": "1hour"}
+        alpaca_interval = interval_map.get(interval, interval)
+        df = self.get_ohlcv(symbol, interval=alpaca_interval, lookback_days=days)
+        return df if not df.empty else None
+
     # ─────────────────────────────────────────────────────────────────────
     # ACCOUNT BALANCE
     # ─────────────────────────────────────────────────────────────────────

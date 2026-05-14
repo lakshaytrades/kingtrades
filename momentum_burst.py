@@ -102,10 +102,25 @@ class MomentumBurstDetector:
 
     def is_burst_time(self) -> bool:
         """Only scan during burst windows: opening drive and afternoon power hour."""
-        now = get_current_ist_time()
-        h, m = now.hour, now.minute
-        opening = (9, 15) <= (h, m) <= (10, 15)
-        afternoon = (13, 30) <= (h, m) <= (14, 45)
+        try:
+            from broker import MARKET_NAME as _MN
+            is_us = "NSE" not in _MN
+        except Exception:
+            is_us = False
+
+        if is_us:
+            # US ET: opening drive 9:30–10:30, afternoon power 13:30–14:45
+            from utils import get_current_et_time
+            now = get_current_et_time()
+            h, m = now.hour, now.minute
+            opening   = (9, 30) <= (h, m) <= (10, 30)
+            afternoon = (13, 30) <= (h, m) <= (14, 45)
+        else:
+            # NSE IST: 9:15–10:15, 13:30–14:45
+            now = get_current_ist_time()
+            h, m = now.hour, now.minute
+            opening   = (9, 15) <= (h, m) <= (10, 15)
+            afternoon = (13, 30) <= (h, m) <= (14, 45)
         return opening or afternoon
 
     def scan(self, symbols: List[str], fetcher) -> List[BurstSetup]:

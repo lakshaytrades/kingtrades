@@ -637,23 +637,14 @@ class MarketRegimeDetector:
 
 class NSEKillzoneAnalyzer:
     """
-    ICT Killzones adapted for NSE India.
-    Professional traders know WHEN the big money moves — and trade only then.
+    ICT Killzones — auto-adapts for NSE (IST) or US (ET) market.
 
-    NSE Killzones (IST):
-    ─────────────────────────────────────────────────────
-    9:15–9:30   OPEN KILLZONE         ★★★★★  ORB establishment, highest volatility
-    9:30–10:00  MOMENTUM WINDOW       ★★★★☆  ORB breakout + first wave continuation
-    10:00–10:30 REVERSAL WINDOW       ★★★☆☆  First reversal after opening move
-    11:00–11:30 MID-MORNING           ★★☆☆☆  Second setup, usually weaker
-    13:00–13:30 AFTERNOON REVERSAL    ★★★☆☆  Lunch reversal — pre-RBI/news positions
-    14:00–14:30 AFTERNOON MOMENTUM    ★★★★☆  Second institutional wave (FII second batch)
-    15:00–15:20 CLOSE KILLZONE        ★★★☆☆  Pre-close positioning, expiry squeezes
-    ─────────────────────────────────────────────────────
-    DEAD ZONES (AVOID): 10:30–13:00, 13:30–14:00
+    NSE IST:  9:15 open, 15:30 close
+    US ET:    9:30 open, 16:00 close
     """
 
-    KILLZONES = [
+    # NSE killzones (IST)
+    NSE_KILLZONES = [
         {"name": "OPEN_KILLZONE",     "start": dtime(9, 15),  "end": dtime(9, 30),  "score": 20, "stars": 5},
         {"name": "MOMENTUM_WINDOW",   "start": dtime(9, 30),  "end": dtime(10, 0),  "score": 16, "stars": 4},
         {"name": "REVERSAL_WINDOW",   "start": dtime(10, 0),  "end": dtime(10, 30), "score": 10, "stars": 3},
@@ -662,23 +653,58 @@ class NSEKillzoneAnalyzer:
         {"name": "AFTERNOON_MOMENTUM","start": dtime(14, 0),  "end": dtime(14, 30), "score": 16, "stars": 4},
         {"name": "CLOSE_KILLZONE",    "start": dtime(15, 0),  "end": dtime(15, 20), "score": 10, "stars": 3},
     ]
-
-    DEAD_ZONES = [
+    NSE_DEAD_ZONES = [
         {"name": "MIDDAY_CHOP_1", "start": dtime(10, 30), "end": dtime(13, 0),  "penalty": -15},
         {"name": "MIDDAY_CHOP_2", "start": dtime(13, 30), "end": dtime(14, 0),  "penalty": -8},
     ]
 
+    # US killzones (ET) — identical structure, different times
+    US_KILLZONES = [
+        {"name": "OPEN_KILLZONE",     "start": dtime(9, 30),  "end": dtime(9, 50),  "score": 20, "stars": 5},
+        {"name": "MOMENTUM_WINDOW",   "start": dtime(9, 50),  "end": dtime(10, 30), "score": 16, "stars": 4},
+        {"name": "REVERSAL_WINDOW",   "start": dtime(10, 30), "end": dtime(11, 0),  "score": 10, "stars": 3},
+        {"name": "MID_MORNING",       "start": dtime(11, 0),  "end": dtime(11, 30), "score": 6,  "stars": 2},
+        {"name": "AFTERNOON_REVERSAL","start": dtime(13, 0),  "end": dtime(13, 30), "score": 10, "stars": 3},
+        {"name": "AFTERNOON_MOMENTUM","start": dtime(14, 0),  "end": dtime(14, 30), "score": 16, "stars": 4},
+        {"name": "CLOSE_KILLZONE",    "start": dtime(15, 30), "end": dtime(15, 55), "score": 10, "stars": 3},
+    ]
+    US_DEAD_ZONES = [
+        {"name": "MIDDAY_CHOP_1", "start": dtime(11, 30), "end": dtime(13, 0),  "penalty": -15},
+        {"name": "MIDDAY_CHOP_2", "start": dtime(13, 30), "end": dtime(14, 0),  "penalty": -8},
+    ]
+
+    # Alias for backward compat
+    KILLZONES  = NSE_KILLZONES
+    DEAD_ZONES = NSE_DEAD_ZONES
+
+    def _get_active_zones(self):
+        try:
+            from broker import MARKET_NAME as _MN
+            if "NSE" not in _MN:
+                return self.US_KILLZONES, self.US_DEAD_ZONES
+        except Exception:
+            pass
+        return self.NSE_KILLZONES, self.NSE_DEAD_ZONES
+
     def get_current_killzone(self, now_ist: datetime = None) -> Dict:
+        killzones, dead_zones = self._get_active_zones()
+        try:
+            from broker import MARKET_NAME as _MN
+            if "NSE" not in _MN:
+                from utils import get_current_et_time
+                now_ist = get_current_et_time()
+        except Exception:
+            pass
         if now_ist is None:
             now_ist = datetime.now(IST)
         current_time = now_ist.time()
 
-        for kz in self.KILLZONES:
+        for kz in killzones:
             if kz["start"] <= current_time <= kz["end"]:
                 return {"in_killzone": True, "zone": kz["name"],
                         "score_bonus": kz["score"], "stars": kz["stars"]}
 
-        for dz in self.DEAD_ZONES:
+        for dz in dead_zones:
             if dz["start"] <= current_time <= dz["end"]:
                 return {"in_killzone": False, "zone": dz["name"],
                         "score_bonus": dz["penalty"], "stars": 0}

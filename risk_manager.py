@@ -243,27 +243,51 @@ class RiskManager:
     def _get_session_multiplier(self) -> Tuple[float, str]:
         """
         Session-based position size multiplier.
-        18yr Rule: 60% of intraday P&L comes from the opening drive (9:15-10:00).
-        Midday (11:00-13:30) is a trap — algos chop retail to death.
+        NSE: Opening drive 9:15-10:00 IST is peak; midday 11-13:30 is chop.
+        US:  Opening drive 9:30-10:30 ET is peak; midday 11:30-13:30 is chop.
 
         Returns (multiplier, session_name)
         """
-        now = get_current_ist_time()
-        h, m = now.hour, now.minute
-        total_min = h * 60 + m
+        try:
+            from broker import MARKET_NAME as _mn
+            _is_us = "NSE" not in _mn
+        except Exception:
+            _is_us = False
 
-        if 555 <= total_min < 600:    # 09:15-10:00 Opening drive
-            return 1.0, "OPENING_DRIVE"
-        elif 600 <= total_min < 660:  # 10:00-11:00 Morning session
-            return 0.80, "MORNING"
-        elif 660 <= total_min < 810:  # 11:00-13:30 Midday chop
-            return 0.50, "MIDDAY_CHOP"
-        elif 810 <= total_min < 900:  # 13:30-15:00 Afternoon trend
-            return 0.80, "AFTERNOON"
-        elif 900 <= total_min < 920:  # 15:00-15:20 Closing risk
-            return 0.30, "CLOSING"
+        if _is_us:
+            from utils import get_current_et_time
+            now = get_current_et_time()
+            h, m = now.hour, now.minute
+            total_min = h * 60 + m
+            # ET thresholds — mirrors NSE opening/midday/afternoon structure
+            if 570 <= total_min < 630:    # 09:30-10:30 Opening drive
+                return 1.0, "OPENING_DRIVE"
+            elif 630 <= total_min < 690:  # 10:30-11:30 Morning session
+                return 0.80, "MORNING"
+            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop
+                return 0.50, "MIDDAY_CHOP"
+            elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend
+                return 0.80, "AFTERNOON"
+            elif 930 <= total_min < 960:  # 15:30-16:00 Closing risk
+                return 0.30, "CLOSING"
+            else:
+                return 0.0, "AFTER_HOURS"
         else:
-            return 0.0, "AFTER_HOURS"
+            now = get_current_ist_time()
+            h, m = now.hour, now.minute
+            total_min = h * 60 + m
+            if 555 <= total_min < 600:    # 09:15-10:00 Opening drive
+                return 1.0, "OPENING_DRIVE"
+            elif 600 <= total_min < 660:  # 10:00-11:00 Morning session
+                return 0.80, "MORNING"
+            elif 660 <= total_min < 810:  # 11:00-13:30 Midday chop
+                return 0.50, "MIDDAY_CHOP"
+            elif 810 <= total_min < 900:  # 13:30-15:00 Afternoon trend
+                return 0.80, "AFTERNOON"
+            elif 900 <= total_min < 920:  # 15:00-15:20 Closing risk
+                return 0.30, "CLOSING"
+            else:
+                return 0.0, "AFTER_HOURS"
 
     # --------------------------------------------------------
     # DYNAMIC KELLY CRITERION

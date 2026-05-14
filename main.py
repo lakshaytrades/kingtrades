@@ -263,54 +263,57 @@ class TradingBot:
         self.mtf_analyzer = MultiTimeframeAnalyzer()
         logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
 
-        # Initialize institutional intelligence modules
-        try:
-            from option_chain import get_option_chain_analyzer
-            self.oc_analyzer = get_option_chain_analyzer()
-            logger.info(f"[{format_ist_timestamp()}] Option Chain analyzer ready")
-        except Exception as e:
-            self.oc_analyzer = None
-            logger.warning(f"[{format_ist_timestamp()}] Option Chain init failed: {e}")
+        # NSE-only institutional modules — skip entirely for US/Alpaca
+        _nse_mode = (MARKET_NAME == "NSE")
 
-        try:
-            from fii_dii_tracker import get_fii_dii_tracker
-            self.fii_tracker = get_fii_dii_tracker()
-            logger.info(f"[{format_ist_timestamp()}] FII/DII tracker ready")
-        except Exception as e:
-            self.fii_tracker = None
-            logger.warning(f"[{format_ist_timestamp()}] FII/DII tracker init failed: {e}")
+        if _nse_mode:
+            try:
+                from option_chain import get_option_chain_analyzer
+                self.oc_analyzer = get_option_chain_analyzer()
+                logger.info(f"[{format_ist_timestamp()}] Option Chain analyzer ready")
+            except Exception as e:
+                self.oc_analyzer = None
+                logger.warning(f"[{format_ist_timestamp()}] Option Chain init failed: {e}")
 
-        try:
-            from block_deal_scanner import get_block_deal_scanner
-            self.block_deal_scanner = get_block_deal_scanner()
-            logger.info(f"[{format_ist_timestamp()}] Block deal scanner ready")
-        except Exception as e:
-            self.block_deal_scanner = None
-            logger.warning(f"[{format_ist_timestamp()}] Block deal scanner init failed: {e}")
+            try:
+                from fii_dii_tracker import get_fii_dii_tracker
+                self.fii_tracker = get_fii_dii_tracker()
+                logger.info(f"[{format_ist_timestamp()}] FII/DII tracker ready")
+            except Exception as e:
+                self.fii_tracker = None
 
-        try:
-            from sector_rotation import get_sector_rotation_engine
-            self.sector_rotation = get_sector_rotation_engine()
-            logger.info(f"[{format_ist_timestamp()}] Sector rotation engine ready")
-        except Exception as e:
-            self.sector_rotation = None
-            logger.warning(f"[{format_ist_timestamp()}] Sector rotation init failed: {e}")
+            try:
+                from block_deal_scanner import get_block_deal_scanner
+                self.block_deal_scanner = get_block_deal_scanner()
+                logger.info(f"[{format_ist_timestamp()}] Block deal scanner ready")
+            except Exception as e:
+                self.block_deal_scanner = None
 
-        try:
-            from pairs_trading import get_pairs_engine
-            self.pairs_engine = get_pairs_engine()
-            logger.info(f"[{format_ist_timestamp()}] Pairs trading engine ready")
-        except Exception as e:
-            self.pairs_engine = None
-            logger.warning(f"[{format_ist_timestamp()}] Pairs trading init failed: {e}")
+            try:
+                from sector_rotation import get_sector_rotation_engine
+                self.sector_rotation = get_sector_rotation_engine()
+                logger.info(f"[{format_ist_timestamp()}] Sector rotation engine ready")
+            except Exception as e:
+                self.sector_rotation = None
 
-        try:
-            from options_signals import get_options_signal_generator
-            self.options_signals = get_options_signal_generator(oc_analyzer=self.oc_analyzer)
-            logger.info(f"[{format_ist_timestamp()}] Options signals generator ready")
-        except Exception as e:
-            self.options_signals = None
-            logger.warning(f"[{format_ist_timestamp()}] Options signals init failed: {e}")
+            try:
+                from pairs_trading import get_pairs_engine
+                self.pairs_engine = get_pairs_engine()
+                logger.info(f"[{format_ist_timestamp()}] Pairs trading engine ready")
+            except Exception as e:
+                self.pairs_engine = None
+
+            try:
+                from options_signals import get_options_signal_generator
+                self.options_signals = get_options_signal_generator(oc_analyzer=self.oc_analyzer)
+                logger.info(f"[{format_ist_timestamp()}] Options signals generator ready")
+            except Exception as e:
+                self.options_signals = None
+        else:
+            # US/Alpaca — skip all NSE-only modules, set to None silently
+            self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
+            self.sector_rotation = self.pairs_engine = self.options_signals = None
+            logger.info(f"[{format_ist_timestamp()}] NSE-specific modules skipped ({MARKET_NAME} mode)")
 
         try:
             from orb_strategy import get_orb_strategy
