@@ -197,9 +197,8 @@ class RiskManager:
         self._available_balance = cap
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
-            f"Balance: {format_currency(cap)} × 5x leverage = "
-            f"{format_currency(cap * 5)} buying power | "
-            f"Nifty open: {nifty_open:.2f}"
+            f"Balance: {format_currency(cap)} | "
+            f"SPY open: ${nifty_open:.2f}"
         )
 
     def update_balance(self, balance: float):
@@ -207,7 +206,7 @@ class RiskManager:
         if balance <= 0:
             logger.debug(
                 f"[{format_ist_timestamp()}] update_balance: ignoring 0 — "
-                f"keeping ₹{self._available_balance:,.0f} (API may be offline)"
+                f"keeping ${self._available_balance:,.2f} (API may be offline)"
             )
             return
         self._available_balance = balance
@@ -302,7 +301,7 @@ class RiskManager:
         Half-Kelly = Kelly/2 — safer, still captures most of the edge
 
         Falls back to signal's R:R with conservative 55% estimated win rate.
-        Capped at 20% of buying power (safe for NSE intraday with 5x leverage).
+        Capped at 20% of buying power per position.
         """
         recent = self.state.closed_trades[-20:]
         if len(recent) < 5:
@@ -373,7 +372,7 @@ class RiskManager:
         Uses ATR as a 1-day volatility proxy for each position.
 
         Returns:
-          var_95:  95% 1-day Value at Risk in ₹
+          var_95:  95% 1-day Value at Risk in $
           cvar_95: Conditional VaR (expected loss beyond VaR)
           heat_pct: Portfolio heat (% of capital at risk via SL)
         """
@@ -434,7 +433,7 @@ class RiskManager:
         if sl_distance <= 0:
             return {"quantity": 0, "reason": "Invalid SL distance"}
 
-        LEVERAGE = 5.0  # Groww MIS intraday leverage
+        LEVERAGE = 1.0  # no MIS leverage for Alpaca
         buying_power = capital * LEVERAGE  # effective capital for position sizing
 
         # 1. Risk-based sizing (risk on actual capital, not leveraged)
@@ -622,7 +621,7 @@ class RiskManager:
                 remaining = position.quantity  # Exit whatever's left
                 return {
                     "action": "EXIT", "new_sl": active_sl, "exit_qty": remaining,
-                    "reason": f"{'Trailing' if position.trailing_active else 'Original'} SL hit ₹{current_price:.2f}"
+                    "reason": f"{'Trailing' if position.trailing_active else 'Original'} SL hit ${current_price:.2f}"
                 }
 
             # ── Breakeven SL: move to entry when 0.5% in profit ─
@@ -634,13 +633,13 @@ class RiskManager:
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
                     f"🛡 Breakeven SL — price up {be_trigger*100:.1f}%, "
-                    f"SL moved to entry ₹{position.entry_price:.2f} (zero risk)"
+                    f"SL moved to entry ${position.entry_price:.2f} (zero risk)"
                 )
                 return {
                     "action": "UPDATE_SL",
                     "new_sl": position.entry_price,
                     "exit_qty": 0,
-                    "reason": f"Breakeven: price +{be_trigger*100:.1f}% → SL=entry ₹{position.entry_price:.2f}"
+                    "reason": f"Breakeven: price +{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
                 }
 
             # ── T1: 50% exit at Target 1 ──────────────────────
@@ -654,7 +653,7 @@ class RiskManager:
                     "action": "PARTIAL_EXIT_T1",
                     "new_sl": position.entry_price,
                     "exit_qty": position.t1_qty,
-                    "reason": f"T1 hit ₹{position.target_1:.2f} — exit {position.t1_qty} qty (50%), SL→breakeven"
+                    "reason": f"T1 hit ${position.target_1:.2f} — exit {position.t1_qty} qty (50%), SL→breakeven"
                 }
 
             # ── T2: 30% exit at Target 2 ──────────────────────
@@ -665,20 +664,20 @@ class RiskManager:
                     return {
                         "action": "EXIT", "new_sl": current_price,
                         "exit_qty": position.t2_qty + position.runner_qty,
-                        "reason": f"T2 hit ₹{position.target_2:.2f} — exit all remaining"
+                        "reason": f"T2 hit ${position.target_2:.2f} — exit all remaining"
                     }
                 # Grade A+/A/B: activate runner trailing
                 position.trailing_active = True
                 position.trailing_stop   = current_price - trail_dist
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"T2 hit — runner trail activated ₹{position.trailing_stop:.2f}"
+                    f"T2 hit — runner trail activated ${position.trailing_stop:.2f}"
                 )
                 return {
                     "action": "PARTIAL_EXIT_T2",
                     "new_sl": position.trailing_stop,
                     "exit_qty": position.t2_qty,
-                    "reason": f"T2 hit ₹{position.target_2:.2f} — exit {position.t2_qty} qty (30%), runner active"
+                    "reason": f"T2 hit ${position.target_2:.2f} — exit {position.t2_qty} qty (30%), runner active"
                 }
 
             # ── Runner trailing stop (post-T2) ────────────────
@@ -688,13 +687,13 @@ class RiskManager:
                     position.trailing_stop = new_trail
                     return {
                         "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
-                        "reason": f"Runner trail ₹{new_trail:.2f} (grade {position.quality_grade})"
+                        "reason": f"Runner trail ${new_trail:.2f} (grade {position.quality_grade})"
                     }
                 if current_price <= position.trailing_stop:
                     return {
                         "action": "EXIT", "new_sl": position.trailing_stop,
                         "exit_qty": position.runner_qty,
-                        "reason": f"Runner trail hit ₹{current_price:.2f} — grade {position.quality_grade}"
+                        "reason": f"Runner trail hit ${current_price:.2f} — grade {position.quality_grade}"
                     }
 
             # ── Pre-T1: activate trailing if 1x ATR in profit ─
@@ -703,7 +702,7 @@ class RiskManager:
                 position.trailing_stop   = current_price - trail_dist
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"Early trail activated at ₹{position.trailing_stop:.2f}"
+                    f"Early trail activated at ${position.trailing_stop:.2f}"
                 )
 
         else:  # SHORT
@@ -714,7 +713,7 @@ class RiskManager:
             if current_price >= active_sl:
                 return {
                     "action": "EXIT", "new_sl": active_sl, "exit_qty": position.quantity,
-                    "reason": f"Short {'trailing' if position.trailing_active else 'original'} SL hit ₹{current_price:.2f}"
+                    "reason": f"Short {'trailing' if position.trailing_active else 'original'} SL hit ${current_price:.2f}"
                 }
 
             # ── Breakeven SL: move to entry when 0.5% in profit ─
@@ -726,13 +725,13 @@ class RiskManager:
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
                     f"🛡 Breakeven SL (SHORT) — price down {be_trigger*100:.1f}%, "
-                    f"SL moved to entry ₹{position.entry_price:.2f} (zero risk)"
+                    f"SL moved to entry ${position.entry_price:.2f} (zero risk)"
                 )
                 return {
                     "action": "UPDATE_SL",
                     "new_sl": position.entry_price,
                     "exit_qty": 0,
-                    "reason": f"Short breakeven: price -{be_trigger*100:.1f}% → SL=entry ₹{position.entry_price:.2f}"
+                    "reason": f"Short breakeven: price -{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
                 }
 
             # T1: 50%
@@ -744,7 +743,7 @@ class RiskManager:
                     "action": "PARTIAL_EXIT_T1",
                     "new_sl": position.entry_price,
                     "exit_qty": position.t1_qty,
-                    "reason": f"Short T1 hit ₹{position.target_1:.2f} — 50% exit, SL→breakeven"
+                    "reason": f"Short T1 hit ${position.target_1:.2f} — 50% exit, SL→breakeven"
                 }
 
             # T2: 30%
@@ -754,7 +753,7 @@ class RiskManager:
                     return {
                         "action": "EXIT", "new_sl": current_price,
                         "exit_qty": position.t2_qty + position.runner_qty,
-                        "reason": f"Short T2 hit ₹{position.target_2:.2f} — full exit (grade C)"
+                        "reason": f"Short T2 hit ${position.target_2:.2f} — full exit (grade C)"
                     }
                 position.trailing_active = True
                 position.trailing_stop   = current_price + trail_dist
@@ -762,7 +761,7 @@ class RiskManager:
                     "action": "PARTIAL_EXIT_T2",
                     "new_sl": position.trailing_stop,
                     "exit_qty": position.t2_qty,
-                    "reason": f"Short T2 hit ₹{position.target_2:.2f} — 30% exit, runner active"
+                    "reason": f"Short T2 hit ${position.target_2:.2f} — 30% exit, runner active"
                 }
 
             # Runner
@@ -772,13 +771,13 @@ class RiskManager:
                     position.trailing_stop = new_trail
                     return {
                         "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
-                        "reason": f"Short runner trail ₹{new_trail:.2f}"
+                        "reason": f"Short runner trail ${new_trail:.2f}"
                     }
                 if current_price >= position.trailing_stop:
                     return {
                         "action": "EXIT", "new_sl": position.trailing_stop,
                         "exit_qty": position.runner_qty,
-                        "reason": f"Short runner trail hit ₹{current_price:.2f}"
+                        "reason": f"Short runner trail hit ${current_price:.2f}"
                     }
 
             if not position.t1_done and not position.trailing_active and profit >= atr:
@@ -914,7 +913,7 @@ class RiskManager:
                 "action": "EXIT_NOW",
                 "reason": (
                     f"Time exit: {age_min:.0f}min, "
-                    f"only {move / t1_dist * 100:.0f}% toward T1 ₹{pos.target_1:.2f}"
+                    f"only {move / t1_dist * 100:.0f}% toward T1 ${pos.target_1:.2f}"
                 ),
             }
 
@@ -929,7 +928,7 @@ class RiskManager:
                     "new_sl": be,
                     "reason": (
                         f"Break-even: up {move:.2f} ({move / atr:.1f}× ATR) "
-                        f"→ SL moved to entry ₹{be:.2f}"
+                        f"→ SL moved to entry ${be:.2f}"
                     ),
                 }
             elif pos.direction == "SHORT" and current_sl > be:
@@ -938,7 +937,7 @@ class RiskManager:
                     "new_sl": be,
                     "reason": (
                         f"Break-even: up {move:.2f} ({move / atr:.1f}× ATR) "
-                        f"→ SL moved to entry ₹{be:.2f}"
+                        f"→ SL moved to entry ${be:.2f}"
                     ),
                 }
 
@@ -976,9 +975,9 @@ class RiskManager:
         logger.info(
             f"[{format_ist_timestamp()}] Position opened: "
             f"{position.direction} {position.symbol} x{position.quantity} "
-            f"@ ₹{position.entry_price:.2f} | "
-            f"SL: ₹{position.stop_loss:.2f} | "
-            f"T1: ₹{position.target_1:.2f}"
+            f"@ ${position.entry_price:.2f} | "
+            f"SL: ${position.stop_loss:.2f} | "
+            f"T1: ${position.target_1:.2f}"
         )
 
     def close_position(self, symbol: str, exit_price: float, reason: str = ""):

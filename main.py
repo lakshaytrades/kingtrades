@@ -314,11 +314,11 @@ class TradingBot:
             self.morning_intel = None
             logger.warning(f"[{format_ist_timestamp()}] Morning Intelligence init failed: {e}")
 
-        # Initialize Daily Profit Engine (₹5-10k target management + compounding)
+        # Initialize Daily Profit Engine ($200+ target management + compounding)
         try:
             from daily_profit_engine import get_profit_engine
             self.profit_engine = get_profit_engine()
-            logger.info(f"[{format_ist_timestamp()}] Daily Profit Engine ready (target: ₹5,000/day)")
+            logger.info(f"[{format_ist_timestamp()}] Daily Profit Engine ready (target: ${config.DAILY_PROFIT_TARGET:,.0f}/day)")
         except Exception as e:
             self.profit_engine = None
             logger.warning(f"[{format_ist_timestamp()}] Profit engine init failed: {e}")
@@ -369,8 +369,8 @@ class TradingBot:
                 f"🚀 <b>KingTrades Bot Started</b>\n"
                 f"<code>{format_ist_timestamp()}</code>\n\n"
                 f"Mode: <b>{mode}</b>\n"
-                f"Balance: <b>₹{available:,.2f}</b> | 5× MIS = <b>₹{available*5:,.0f}</b>\n"
-                f"Daily Target: <b>₹{config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
+                f"Balance: <b>${available:,.2f}</b>\n"
+                f"Daily Target: <b>${config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
                 f"Watchlist: <b>{wl_count} stocks</b>\n\n"
                 f"Strategies: MTF + SmartMoney + ProfitMaximizer\n"
                 f"Market opens at 9:15 AM IST"
@@ -460,7 +460,7 @@ class TradingBot:
         # Sync any open positions from Groww (recovery after restart)
         self._sync_positions_from_groww()
 
-        # Get Nifty opening price
+        # Get SPY opening price as market reference
         nifty_q = self.fetcher.get_nifty_quote()
         nifty_open = nifty_q.get("ltp", 0) if nifty_q else 0
 
@@ -470,18 +470,17 @@ class TradingBot:
         # Initialize Profit Engine for the day
         try:
             if self.profit_engine:
-                daily_target = float(os.getenv("DAILY_PROFIT_TARGET", "5000"))
+                daily_target = float(os.getenv("DAILY_PROFIT_TARGET", "200"))
                 self.profit_engine.initialize(available, daily_target=daily_target)
                 logger.info(
                     f"[{format_ist_timestamp()}] Profit Engine initialized | "
-                    f"Balance: ₹{available:,.0f} | Target: ₹{daily_target:,.0f} | "
-                    f"With 5× MIS: ₹{available * 5:,.0f} buying power"
+                    f"Balance: ${available:,.2f} | Target: ${daily_target:,.2f}"
                 )
                 if self.alerter:
                     self.alerter.send_text(
-                        f"💰 <b>Daily Target Set: ₹{daily_target:,.0f}</b>\n"
-                        f"Balance: ₹{available:,.0f} | 5× MIS = ₹{available*5:,.0f} buying power\n"
-                        f"🎯 Stretch: ₹{daily_target*1.5:,.0f} | Max: ₹{daily_target*2:,.0f}\n"
+                        f"💰 <b>Daily Target Set: ${daily_target:,.2f}</b>\n"
+                        f"Balance: ${available:,.2f} | Buying power: ${available:,.2f}\n"
+                        f"🎯 Stretch: ${daily_target*1.5:,.2f} | Max: ${daily_target*2:,.2f}\n"
                         f"Mode: NORMAL — Trading begins now"
                     )
         except Exception as e:
@@ -1076,9 +1075,9 @@ class TradingBot:
                                     f"Score: {bs.burst_score:.0f}/100 | "
                                     f"RVOL: {bs.rvol:.1f}x\n"
                                     f"Conditions: {', '.join(bs.conditions_met[:4])}\n"
-                                    f"Entry: ₹{bs.entry_price:.2f} | "
-                                    f"SL: ₹{bs.stop_loss:.2f} | "
-                                    f"T1: ₹{bs.target_1:.2f}"
+                                    f"Entry: ${bs.entry_price:.2f} | "
+                                    f"SL: ${bs.stop_loss:.2f} | "
+                                    f"T1: ${bs.target_1:.2f}"
                                 )
                 except Exception as e:
                     logger.debug(f"Burst scan failed: {e}")
@@ -1351,8 +1350,8 @@ class TradingBot:
                         pnl_partial = (ltp - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * exit_qty
                         logger.info(
                             f"[{format_ist_timestamp()}] {action['action']}: "
-                            f"{pos.symbol} {exit_qty}qty @ ₹{ltp:.2f} | "
-                            f"Partial P&L: ₹{pnl_partial:.0f}"
+                            f"{pos.symbol} {exit_qty}qty @ ${ltp:.2f} | "
+                            f"Partial P&L: ${pnl_partial:.2f}"
                         )
                         # Notify Profit Engine — triggers compounding activation
                         if self.profit_engine:
@@ -1368,8 +1367,8 @@ class TradingBot:
                                 logger.info(
                                     f"[{format_ist_timestamp()}] Profit Engine "
                                     f"{action['action']} recorded: "
-                                    f"₹{pnl_partial:+.0f} | Mode: {mode_msg} | "
-                                    f"Total: ₹{self.profit_engine.state.realised_pnl:+,.0f}"
+                                    f"${pnl_partial:+.2f} | Mode: {mode_msg} | "
+                                    f"Total: ${self.profit_engine.state.realised_pnl:+,.2f}"
                                 )
                             except Exception:
                                 pass
@@ -1428,8 +1427,8 @@ class TradingBot:
         logger.info(
             f"[{format_ist_timestamp()}] Weekly tracker [{week}] "
             f"Day {data['days_traded']}/5 ({day_name}): "
-            f"Today ₹{today_pnl:+,.0f} | "
-            f"Week ₹{data['net_pnl']:+,.0f} ({data['weekly_pct']:+.2f}%) | "
+            f"Today ${today_pnl:+,.2f} | "
+            f"Week ${data['net_pnl']:+,.2f} ({data['weekly_pct']:+.2f}%) | "
             f"Profitable days: {data['profitable_days']}"
         )
         # Send weekly summary on Friday EOD
@@ -1438,7 +1437,7 @@ class TradingBot:
                 self.alerter.send_text(
                     f"📊 <b>Weekly Summary</b>\n"
                     f"Week: {week}\n"
-                    f"Net P&L: ₹{data['net_pnl']:+,.0f} ({data['weekly_pct']:+.2f}%)\n"
+                    f"Net P&L: ${data['net_pnl']:+,.2f} ({data['weekly_pct']:+.2f}%)\n"
                     f"Profitable days: {data['profitable_days']}/5\n"
                     f"Target: 4/5 days 🎯"
                 )
@@ -1568,16 +1567,16 @@ class TradingBot:
 
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile REMOVED: {sym} "
-                    f"({pos.direction} {pos.quantity}@₹{pos.entry_price:.2f}) — "
-                    f"Groww shows no position (SL hit or exchange square-off)"
+                    f"({pos.direction} {pos.quantity}@${pos.entry_price:.2f}) — "
+                    f"broker shows no position (SL hit or exchange square-off)"
                 )
                 try:
                     self.alerter.send_text(
                         f"🔄 <b>Position Auto-Reconciled</b>\n"
                         f"Symbol: <b>{sym}</b>\n"
                         f"Direction: {pos.direction} | Qty: {pos.quantity}\n"
-                        f"Entry: ₹{pos.entry_price:.2f}\n"
-                        f"Removed: Groww closed position (SL hit or square-off)\n"
+                        f"Entry: ${pos.entry_price:.2f}\n"
+                        f"Removed: Broker closed position (SL hit or square-off)\n"
                         f"Time: {format_ist_timestamp()}"
                     )
                 except Exception:
@@ -1606,7 +1605,7 @@ class TradingBot:
                 self.risk_manager.state.positions[sym] = pos
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile ADDED: {sym} "
-                    f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@₹{avg:.2f}) — "
+                    f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@${avg:.2f}) — "
                     f"found in Groww but not in bot tracker"
                 )
                 try:
@@ -1614,7 +1613,7 @@ class TradingBot:
                         f"🔄 <b>Unknown Position Detected</b>\n"
                         f"Symbol: <b>{sym}</b>\n"
                         f"Direction: {'LONG' if qty > 0 else 'SHORT'} | Qty: {abs(qty)}\n"
-                        f"Avg Price: ₹{avg:.2f}\n"
+                        f"Avg Price: ${avg:.2f}\n"
                         f"Added to tracker — monitoring with 2% fallback SL."
                     )
                 except Exception:
@@ -2118,8 +2117,8 @@ class TradingBot:
                                 positions_pnl += pos_pnl
                                 icon = "🟢" if pos_pnl >= 0 else "🔴"
                                 positions_lines.append(
-                                    f"  {icon} {sym}: ₹{ltp:.1f} "
-                                    f"({pos_pnl:+,.0f})"
+                                    f"  {icon} {sym}: ${ltp:.2f} "
+                                    f"({pos_pnl:+,.2f})"
                                 )
                         except Exception:
                             pass
@@ -2129,31 +2128,31 @@ class TradingBot:
 
                 # ── Build HTML message ────────────────────────────────────
                 lines = [
-                    "💰 <b>Groww Account Balance</b>",
+                    "💰 <b>Alpaca Account Balance</b>",
                     f"🕐 {now_str}",
                     "",
                     "<b>📊 Live Funds</b>",
-                    f"  Available Cash : ₹{available:,.2f}",
-                    f"  Margin Used    : ₹{used_margin:,.2f}  ({util_pct:.1f}%)",
+                    f"  Available Cash : ${available:,.2f}",
+                    f"  Margin Used    : ${used_margin:,.2f}  ({util_pct:.1f}%)",
                 ]
                 if collateral > 0:
-                    lines.append(f"  Collateral     : ₹{collateral:,.2f}")
+                    lines.append(f"  Collateral     : ${collateral:,.2f}")
                 lines += [
-                    f"  Opening Balance: ₹{opening:,.2f}",
-                    f"  Total Net Value: ₹{total:,.2f}",
+                    f"  Opening Balance: ${opening:,.2f}",
+                    f"  Total Net Value: ${total:,.2f}",
                     "",
                     "<b>📈 Today's Trading</b>",
-                    f"  Realised P&L   : ₹{daily_pnl:+,.2f}",
+                    f"  Realised P&L   : ${daily_pnl:+,.2f}",
                 ]
                 if open_count > 0:
                     lines += [
-                        f"  Unrealised P&L : ₹{positions_pnl:+,.2f}",
-                        f"  Total P&L      : ₹{daily_pnl + positions_pnl:+,.2f}",
+                        f"  Unrealised P&L : ${positions_pnl:+,.2f}",
+                        f"  Total P&L      : ${daily_pnl + positions_pnl:+,.2f}",
                     ]
                 lines += [
                     f"  Trades Today   : {trades_done}",
                     f"  Open Positions : {open_count}",
-                    f"  Daily Loss     : {loss_pct:.2f}% of ₹{daily_loss_limit:,.0f} limit",
+                    f"  Daily Loss     : {loss_pct:.2f}% of ${daily_loss_limit:,.2f} limit",
                 ]
                 if positions_lines:
                     lines += ["", "<b>📌 Open Positions</b>"]
@@ -2162,9 +2161,9 @@ class TradingBot:
                 lines += [
                     "",
                     "<b>⚙️ Bot Config</b>",
-                    f"  Bot Capital    : ₹{compounded:,.0f}",
-                    f"  Base Capital   : ₹{config.MAX_DAILY_CAPITAL:,.0f}",
-                    f"  Daily Loss Lim : ₹{daily_loss_limit:,.0f}",
+                    f"  Bot Capital    : ${compounded:,.2f}",
+                    f"  Base Capital   : ${config.MAX_DAILY_CAPITAL:,.2f}",
+                    f"  Daily Loss Lim : ${daily_loss_limit:,.2f}",
                     f"  Live Trading   : {'✅ ON' if config.LIVE_TRADING_ENABLED else '🔒 OFF'}",
                 ]
 
@@ -2179,7 +2178,7 @@ class TradingBot:
                 elif available == 0 and not bal.get("_from_cache"):
                     lines += [
                         "",
-                        "⚠️ <i>Groww returned ₹0 — balance API may be offline outside market hours.</i>",
+                        "⚠️ <i>Alpaca returned $0 — balance API may be offline outside market hours.</i>",
                         "<i>Balance will update automatically during trading hours.</i>",
                     ]
 
@@ -2424,7 +2423,7 @@ class TradingBot:
                 if compounded != base:
                     logger.info(
                         f"[{format_ist_timestamp()}] Auto-compound: "
-                        f"base ₹{base:,.0f} → today ₹{compounded:,.0f}"
+                        f"base ${base:,.2f} → today ${compounded:,.2f}"
                     )
                 return compounded
         except Exception as e:
@@ -2450,7 +2449,7 @@ class TradingBot:
             }, indent=2))
             logger.info(
                 f"[{format_ist_timestamp()}] Capital saved: "
-                f"₹{prev:,.0f} + P&L ₹{today_pnl:+,.0f} = ₹{new_capital:,.0f}"
+                f"${prev:,.2f} + P&L ${today_pnl:+,.2f} = ${new_capital:,.2f}"
             )
         except Exception as e:
             logger.warning(f"Capital save error: {e}")
@@ -2541,8 +2540,8 @@ class TradingBot:
             lines = [f"🎯 <b>Pre-Market Top Picks</b> — {get_current_ist_time().strftime('%d %b %Y')}\n"]
             for i, (sym, chg, ltp, vol, _) in enumerate(top5, 1):
                 arrow = "📈" if chg > 0 else "📉"
-                lines.append(f"{i}. {arrow} <b>{sym}</b> ₹{ltp:.1f} ({chg:+.2f}%)")
-            lines.append("\n⏰ Market opens 9:15 AM IST — watch for breakout confirmation")
+                lines.append(f"{i}. {arrow} <b>{sym}</b> ${ltp:.2f} ({chg:+.2f}%)")
+            lines.append("\n⏰ Market opens 9:30 AM ET — watch for breakout confirmation")
             self.alerter.send_text("\n".join(lines))
             logger.info(
                 f"[{format_ist_timestamp()}] Pre-market picks sent: "
@@ -2576,12 +2575,12 @@ class TradingBot:
             if state.circuit_breaker_active:
                 status = "🔴 CIRCUIT BREAK"
             pos_symbols = ", ".join(state.positions.keys()) if state.positions else "none"
-            bal_line = f"₹{live_bal:,.0f}" if live_bal > 0 else f"₹{cap:,.0f} (cached)"
+            bal_line = f"${live_bal:,.2f}" if live_bal > 0 else f"${cap:,.2f} (cached)"
             self.alerter.send_html(
                 f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
                 f"Status: {status}\n"
                 f"Positions: {n_pos} ({pos_symbols})\n"
-                f"Day P&amp;L: ₹{pnl:+,.0f}\n"
+                f"Day P&amp;L: ${pnl:+,.2f}\n"
                 f"Available: {bal_line}"
             )
         except Exception as e:
