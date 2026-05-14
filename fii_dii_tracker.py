@@ -169,14 +169,12 @@ class FIIDIITracker:
     """
 
     def __init__(self):
-        self._session    = requests.Session()
-        self._session.headers.update(NSE_HEADERS)
+        # Disabled for US/Alpaca mode — NSE FII/DII data not applicable
         self._session_ok = False
         self._cache:     Dict[str, FIIDIIFlow] = {}
         self._last_fetch: Optional[datetime]   = None
         self._db_path    = DB_PATH
-        self._init_db()
-        self._init_session()
+        logger.debug("FIIDIITracker: disabled (US market mode)")
 
     # ──────────────────────────────────────────────────────
     # SETUP
@@ -240,10 +238,11 @@ class FIIDIITracker:
         return elapsed >= CACHE_TTL_MINUTES
 
     def get_today_flow(self, force_refresh: bool = False) -> Optional[FIIDIIFlow]:
-        """
-        Fetch today's FII/DII provisional data from NSE.
-        NSE publishes provisional data during market hours (~11 AM, 3:30 PM IST).
-        """
+        """Disabled in US/Alpaca mode — returns None immediately."""
+        return None
+
+    def _get_today_flow_nse(self, force_refresh: bool = False) -> Optional[FIIDIIFlow]:
+        """Original NSE fetch (kept but not called in US mode)."""
         today_str = str(get_current_ist_date())
 
         # Return cache if fresh
@@ -412,9 +411,12 @@ class FIIDIITracker:
     # BIAS ENGINE
     # ──────────────────────────────────────────────────────
 
-    def get_flow_bias(self) -> FlowBias:
-        """
-        Compute multi-day FII/DII flow momentum bias.
+    def get_flow_bias(self) -> "FlowBias":
+        """Disabled in US/Alpaca mode — returns neutral bias."""
+        return FlowBias(bias="NEUTRAL", score=0, today_flow=None, rolling_5d=0, trend="NEUTRAL")
+
+    def _get_flow_bias_nse(self) -> "FlowBias":
+        """Original NSE flow bias (kept but not called in US mode).
 
         18yr rule: Don't just look at today's flow.
         3 consecutive days of FII selling = trend. 1 day = noise.

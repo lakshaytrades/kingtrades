@@ -108,10 +108,8 @@ class SectorRotationEngine:
             return None
 
     def _nse_ticker(self, symbol: str) -> str:
-        """Convert plain NSE symbol to Yahoo Finance ticker (appends .NS)."""
-        if "^" in symbol or "." in symbol:
-            return symbol
-        return f"{symbol}.NS"
+        """Return Yahoo Finance ticker for US symbol (no suffix needed)."""
+        return symbol
 
     def _calc_rsi(self, closes: "np.ndarray", period: int = 14) -> float:
         """Wilder RSI on a 1-D numpy array of close prices. Returns 50.0 if insufficient data."""

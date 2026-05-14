@@ -144,18 +144,18 @@ class OptionsSignalGenerator:
 
     def _analyze_nifty(self) -> Optional[OptionsSignal]:
         return self._analyze_index(
-            symbol="NIFTY",
-            yf_ticker="^NSEI",
-            strike_round=50,
+            symbol="SPY",
+            yf_ticker="SPY",
+            strike_round=1,
             max_premium=self.MAX_PREMIUM_NIFTY,
             lot_size=self.NIFTY_LOT_SIZE,
         )
 
     def _analyze_banknifty(self) -> Optional[OptionsSignal]:
         return self._analyze_index(
-            symbol="BANKNIFTY",
-            yf_ticker="^NSEBANK",
-            strike_round=100,
+            symbol="QQQ",
+            yf_ticker="QQQ",
+            strike_round=1,
             max_premium=self.MAX_PREMIUM_BANKNIFTY,
             lot_size=self.BANKNIFTY_LOT_SIZE,
         )
