@@ -1,73 +1,78 @@
 """
-news_filter.py — NSE Momentum Groww AI Bot
-News/Sentiment Filter — Economic Calendar + NewsAPI
+news_filter.py — US Momentum Alpaca AI Bot
+News/Sentiment Filter — Economic Calendar + Earnings Avoidance
 
 Skips signals 30 minutes before/after:
-- RBI policy decisions
-- GDP / CPI releases
-- Nifty50 component earnings
-- Any high-impact market events
+- Fed/FOMC decisions, CPI, NFP, GDP releases
+- Individual stock earnings dates (via yfinance)
+- Any high-impact US market events
 
-Sources: NewsAPI, economic calendar RSS feeds
+Sources: NewsAPI, yfinance earnings calendar
 """
 
 import logging
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
 from zoneinfo import ZoneInfo
 
 import requests
-import feedparser
 
 from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
-# High-impact keywords that trigger blackout
+# High-impact US market keywords that trigger blackout
 HIGH_IMPACT_KEYWORDS = [
-    "rbi", "monetary policy", "repo rate", "cpi", "gdp", "inflation",
-    "election", "union budget", "sebi", "circuit breaker", "market halt",
-    "fed rate", "federal reserve", "us jobs", "nonfarm", "quantitative",
-    "credit policy", "msci", "ftse rebalance", "index rebalance",
-    "earnings results", "quarterly results", "q1 results", "q2 results",
-    "q3 results", "q4 results", "board meeting dividend",
+    "federal reserve", "fomc", "fed rate", "interest rate decision",
+    "cpi", "consumer price index", "inflation data",
+    "nonfarm payroll", "nfp", "jobs report", "unemployment",
+    "gdp", "gross domestic product",
+    "pce", "personal consumption",
+    "earnings beat", "earnings miss", "quarterly earnings", "eps results",
+    "circuit breaker", "market halt", "trading halt",
+    "sec investigation", "fraud", "accounting restatement",
+    "index rebalance", "msci rebalance",
+    "us treasury", "debt ceiling", "government shutdown",
 ]
 
-# Economic calendar RSS feeds (free sources)
+# US economic calendar RSS feeds
 CALENDAR_FEEDS = [
-    "https://www.goodreturns.in/rss/news.xml",
-    "https://economictimes.indiatimes.com/markets/rssfeeds/1977021501.cms",
+    "https://feeds.marketwatch.com/marketwatch/topstories/",
+    "https://www.investing.com/rss/news_25.rss",  # economic calendar
 ]
+
+# Earnings blackout window (days before/after earnings)
+EARNINGS_BUFFER_DAYS = 1
 
 
 class NewsFilter:
     """
-    Filters out trading signals near high-impact news events.
-    Uses NewsAPI for real-time sentiment and RSS for calendar.
+    Filters trading signals near high-impact US market events.
+    Checks Fed calendar, earnings dates, and real-time news sentiment.
     """
 
     def __init__(self, news_api_key: str = "", blackout_minutes: int = 30):
         self.api_key = news_api_key
         self.blackout_minutes = blackout_minutes
         self._event_cache: List[Dict] = []
-        self._cache_refreshed: Optional[datetime] = None
+        self._earnings_cache: Dict[str, Optional[date]] = {}  # symbol → next earnings date
         self._sentiment_cache: Dict[str, Dict] = {}
-        self._last_refresh_ist: Optional[datetime] = None
+        self._last_refresh: Optional[datetime] = None
 
     def is_safe_to_trade(self, symbol: str = "") -> bool:
         """
-        Check if it's safe to trade right now.
-        Returns False if within blackout period of any high-impact event.
+        Returns False if within blackout window of a high-impact event
+        or within 1 day of the symbol's earnings date.
         """
         now = get_current_ist_time()
 
         # Refresh events every 30 minutes
-        if (self._last_refresh_ist is None or
-                (now - self._last_refresh_ist).total_seconds() > 1800):
+        if (self._last_refresh is None or
+                (now - self._last_refresh).total_seconds() > 1800):
             self._refresh_events()
 
-        # Check if any event is within blackout window
+        # Check macro event blackout
         for event in self._event_cache:
             event_time = event.get("time")
             if not event_time:
@@ -75,55 +80,100 @@ class NewsFilter:
             time_diff = abs((now - event_time).total_seconds() / 60)
             if time_diff <= self.blackout_minutes:
                 logger.warning(
-                    f"[{format_ist_timestamp()}] 🚫 NEWS BLACKOUT: "
-                    f"'{event['title'][:60]}' in {time_diff:.0f} min window"
+                    f"[{format_ist_timestamp()}] NEWS BLACKOUT: "
+                    f"'{event['title'][:60]}' within {time_diff:.0f} min window"
                 )
                 return False
 
-        # Check symbol-specific sentiment
+        # Check earnings blackout for this symbol
         if symbol:
+            if self._near_earnings(symbol):
+                logger.warning(
+                    f"[{format_ist_timestamp()}] {symbol}: near earnings date — skipping"
+                )
+                return False
+
             sentiment = self.get_symbol_sentiment(symbol)
             if sentiment.get("strong_negative"):
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: strong negative news — caution"
                 )
-                # Don't block but warn (return True but log)
 
         return True
 
+    def _near_earnings(self, symbol: str) -> bool:
+        """Check if symbol has earnings within EARNINGS_BUFFER_DAYS."""
+        if symbol not in self._earnings_cache:
+            self._earnings_cache[symbol] = self._fetch_next_earnings(symbol)
+        earnings_date = self._earnings_cache.get(symbol)
+        if earnings_date is None:
+            return False
+        today = get_current_ist_time().date()
+        days_away = abs((earnings_date - today).days)
+        return days_away <= EARNINGS_BUFFER_DAYS
+
+    def _fetch_next_earnings(self, symbol: str) -> Optional[date]:
+        """Fetch next earnings date via yfinance."""
+        try:
+            import yfinance as yf
+            tk = yf.Ticker(symbol)
+            cal = tk.calendar
+            if cal is None:
+                return None
+            # calendar can be a dict or DataFrame
+            if hasattr(cal, "to_dict"):
+                cal = cal.to_dict()
+            earnings_dt = None
+            if isinstance(cal, dict):
+                ed = cal.get("Earnings Date") or cal.get("earnings_date")
+                if ed:
+                    if hasattr(ed, "__iter__") and not isinstance(ed, str):
+                        ed = list(ed)[0]
+                    if hasattr(ed, "date"):
+                        earnings_dt = ed.date()
+                    elif isinstance(ed, str):
+                        earnings_dt = date.fromisoformat(ed[:10])
+            return earnings_dt
+        except Exception as e:
+            logger.debug(f"Earnings fetch {symbol}: {e}")
+            return None
+
     def _refresh_events(self):
-        """Refresh event cache from RSS feeds and NewsAPI."""
+        """Refresh US macro event cache from RSS and NewsAPI."""
         self._event_cache = []
-        self._last_refresh_ist = get_current_ist_time()
+        self._last_refresh = get_current_ist_time()
 
-        # 1. Parse RSS economic calendars
-        for feed_url in CALENDAR_FEEDS:
-            try:
-                feed = feedparser.parse(feed_url)
-                for entry in feed.entries[:20]:
-                    title = entry.get("title", "").lower()
-                    if any(kw in title for kw in HIGH_IMPACT_KEYWORDS):
-                        # Try to parse published time
-                        pub = entry.get("published_parsed")
-                        if pub:
-                            from time import mktime
-                            dt = datetime.fromtimestamp(mktime(pub), tz=IST)
-                        else:
-                            dt = get_current_ist_time()
-                        self._event_cache.append({
-                            "title": entry.get("title", ""),
-                            "time": dt,
-                            "source": "RSS",
-                        })
-            except Exception as e:
-                logger.debug(f"RSS feed error ({feed_url}): {e}")
+        # 1. RSS feeds
+        try:
+            import feedparser
+            for feed_url in CALENDAR_FEEDS:
+                try:
+                    feed = feedparser.parse(feed_url)
+                    for entry in feed.entries[:20]:
+                        title = entry.get("title", "").lower()
+                        if any(kw in title for kw in HIGH_IMPACT_KEYWORDS):
+                            pub = entry.get("published_parsed")
+                            if pub:
+                                from time import mktime
+                                dt = datetime.fromtimestamp(mktime(pub), tz=ET)
+                            else:
+                                dt = get_current_ist_time()
+                            self._event_cache.append({
+                                "title": entry.get("title", ""),
+                                "time": dt,
+                                "source": "RSS",
+                            })
+                except Exception as e:
+                    logger.debug(f"RSS feed error ({feed_url}): {e}")
+        except ImportError:
+            pass
 
-        # 2. NewsAPI for recent high-impact financial news
+        # 2. NewsAPI
         if self.api_key:
             try:
                 url = "https://newsapi.org/v2/everything"
                 params = {
-                    "q": "RBI OR budget OR GDP OR CPI OR NSE OR Sensex",
+                    "q": "Fed OR FOMC OR CPI OR NFP OR earnings OR GDP",
                     "language": "en",
                     "sortBy": "publishedAt",
                     "pageSize": 20,
@@ -131,15 +181,14 @@ class NewsFilter:
                 }
                 resp = requests.get(url, params=params, timeout=5)
                 if resp.status_code == 200:
-                    articles = resp.json().get("articles", [])
-                    for art in articles:
+                    for art in resp.json().get("articles", []):
                         title = (art.get("title") or "").lower()
                         if any(kw in title for kw in HIGH_IMPACT_KEYWORDS):
                             pub_str = art.get("publishedAt", "")
                             try:
                                 pub_dt = datetime.fromisoformat(
                                     pub_str.replace("Z", "+00:00")
-                                ).astimezone(IST)
+                                ).astimezone(ET)
                             except Exception:
                                 pub_dt = get_current_ist_time()
                             self._event_cache.append({
@@ -158,17 +207,15 @@ class NewsFilter:
 
     def get_symbol_sentiment(self, symbol: str) -> Dict:
         """
-        Get basic sentiment score for a symbol from recent news.
+        Sentiment score for a US stock from recent news.
         Returns: {"score": float, "positive": bool, "strong_negative": bool}
         """
         if not self.api_key:
             return {"score": 0, "positive": False, "strong_negative": False}
 
-        # Check cache (5 minute TTL)
         if symbol in self._sentiment_cache:
             cached = self._sentiment_cache[symbol]
-            age = (get_current_ist_time() - cached["cached_at"]).total_seconds()
-            if age < 300:
+            if (get_current_ist_time() - cached["cached_at"]).total_seconds() < 300:
                 return cached
 
         try:
@@ -188,12 +235,11 @@ class NewsFilter:
             if not articles:
                 return {"score": 0, "positive": False, "strong_negative": False}
 
-            # Simple keyword-based sentiment
             positive_words = ["surge", "rally", "gain", "buy", "bullish", "upgrade",
-                              "target raised", "beat", "outperform", "strong", "profit"]
+                              "beat", "outperform", "strong", "profit", "record high"]
             negative_words = ["fall", "drop", "loss", "sell", "bearish", "downgrade",
-                              "target cut", "miss", "underperform", "weak", "fraud",
-                              "penalty", "fine", "scam", "investigation"]
+                              "miss", "underperform", "weak", "fraud", "investigation",
+                              "penalty", "fine", "layoff", "recall", "lawsuit"]
 
             pos_count = neg_count = 0
             for art in articles:
@@ -218,14 +264,14 @@ class NewsFilter:
             logger.debug(f"Sentiment fetch error for {symbol}: {e}")
             return {"score": 0, "positive": False, "strong_negative": False}
 
-    def get_nifty_sentiment_score(self) -> float:
-        """Get overall market sentiment score (-1 to +1)."""
+    def get_market_sentiment_score(self) -> float:
+        """Get overall US market sentiment score (-1 to +1) from SPY/market news."""
         try:
             if not self.api_key:
                 return 0.0
             url = "https://newsapi.org/v2/everything"
             params = {
-                "q": "Nifty50 Sensex India stock market",
+                "q": "S&P500 Nasdaq stock market Wall Street",
                 "language": "en",
                 "sortBy": "publishedAt",
                 "pageSize": 15,
@@ -235,10 +281,10 @@ class NewsFilter:
             if resp.status_code != 200:
                 return 0.0
             articles = resp.json().get("articles", [])
-            positive_words = ["surge", "rally", "gain", "bullish", "up", "rise",
-                              "breakout", "all-time high", "record"]
-            negative_words = ["fall", "drop", "crash", "bearish", "down", "decline",
-                              "selloff", "fear", "uncertainty"]
+            positive_words = ["surge", "rally", "gain", "bullish", "rise",
+                              "breakout", "all-time high", "record", "recovery"]
+            negative_words = ["fall", "drop", "crash", "bearish", "decline",
+                              "selloff", "fear", "uncertainty", "recession"]
             pos = neg = 0
             for art in articles:
                 text = ((art.get("title") or "") + " " +
@@ -246,8 +292,14 @@ class NewsFilter:
                 pos += sum(1 for w in positive_words if w in text)
                 neg += sum(1 for w in negative_words if w in text)
             total = pos + neg
-            if total == 0:
-                return 0.0
-            return round((pos - neg) / total, 2)
+            return round((pos - neg) / total, 2) if total else 0.0
         except Exception:
             return 0.0
+
+    # backward-compat alias
+    def get_nifty_sentiment_score(self) -> float:
+        return self.get_market_sentiment_score()
+
+    def clear_earnings_cache(self):
+        """Clear earnings cache — call at start of each new trading day."""
+        self._earnings_cache.clear()

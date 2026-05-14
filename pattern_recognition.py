@@ -598,6 +598,9 @@ class PatternRecognizer:
             self.detect_vwap_band_signal,
             self.detect_poc_reaction,
             self.detect_rvol_confirmation,
+            # ── Gap strategies ────────────────────────────────────────────
+            self.detect_gap_and_go,
+            self.detect_gap_fill,
         ]
 
         for detector in detectors:
@@ -2980,6 +2983,75 @@ class PatternRecognizer:
     # HARMONIC + SMART MONEY INTEGRATION
     # ─────────────────────────────────────────────────────────
 
+    def detect_gap_and_go(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Gap & Go: stock gaps up/down at open and first bar continues in gap direction.
+        High-probability US intraday momentum pattern — trade WITH the gap.
+        """
+        if len(df) < 3:
+            return None
+        try:
+            prev_close = float(df["close"].iloc[-3])
+            open_price = float(df["open"].iloc[-2])   # first bar of session proxy
+            first_close = float(df["close"].iloc[-2])
+            gap_pct = (open_price - prev_close) / prev_close * 100
+
+            if gap_pct > 0.75 and first_close > open_price:   # Gap up + bullish first bar
+                conf = min(70 + abs(gap_pct) * 5, 90)
+                return PatternResult(
+                    "Gap & Go Long",
+                    "LONG",
+                    round(conf),
+                    f"Gap up {gap_pct:+.1f}% at open — first bar confirms momentum, trade long"
+                )
+            elif gap_pct < -0.75 and first_close < open_price:  # Gap down + bearish first bar
+                conf = min(70 + abs(gap_pct) * 5, 90)
+                return PatternResult(
+                    "Gap & Go Short",
+                    "SHORT",
+                    round(conf),
+                    f"Gap down {gap_pct:+.1f}% at open — first bar confirms momentum, trade short"
+                )
+        except Exception:
+            pass
+        return None
+
+    def detect_gap_fill(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Gap Fill: stock gaps up but first bar fails (closes below open) or vice versa.
+        Mean-reversion play — price tends to fill the gap back to prior close.
+        """
+        if len(df) < 3:
+            return None
+        try:
+            prev_close = float(df["close"].iloc[-3])
+            open_price = float(df["open"].iloc[-2])
+            first_close = float(df["close"].iloc[-2])
+            current    = float(df["close"].iloc[-1])
+            gap_pct = (open_price - prev_close) / prev_close * 100
+
+            # Gap up but first bar fails → fill down toward prev close
+            if gap_pct > 1.0 and first_close < open_price * 0.998 and current < first_close:
+                conf = min(65 + abs(gap_pct) * 4, 85)
+                return PatternResult(
+                    "Gap Fill Short",
+                    "SHORT",
+                    round(conf),
+                    f"Gap up {gap_pct:+.1f}% failed — expect fill toward ${prev_close:.2f}"
+                )
+            # Gap down but first bar fails → fill up toward prev close
+            elif gap_pct < -1.0 and first_close > open_price * 1.002 and current > first_close:
+                conf = min(65 + abs(gap_pct) * 4, 85)
+                return PatternResult(
+                    "Gap Fill Long",
+                    "LONG",
+                    round(conf),
+                    f"Gap down {gap_pct:+.1f}% failed — expect fill toward ${prev_close:.2f}"
+                )
+        except Exception:
+            pass
+        return None
+
     def _run_harmonic_patterns(self, df: pd.DataFrame) -> List[PatternResult]:
         """Run harmonic pattern detector and convert results."""
         results = []
@@ -3058,6 +3130,7 @@ class PatternRecognizer:
             "ADX Trend Long", "ADX Trend Short",
             "Ichimoku Bull", "Ichimoku Bear",
             "RVOL Momentum Confirmed",
+            "Gap & Go Long", "Gap & Go Short",
         }
 
         # ADX quality filter: choppy = reduce weights, trending = boost
@@ -3076,7 +3149,7 @@ class PatternRecognizer:
             elif p.direction == "SHORT":
                 short_score += p.confidence * weight
 
-        # Indicator confluence
+        # ── Indicator confluence scoring ──────────────────────────────────
         # RSI
         if ind.rsi < 35:
             long_score += 15
@@ -3095,12 +3168,18 @@ class PatternRecognizer:
         elif ind.ema9 < ind.ema21 < ind.ema50:
             short_score += 12
 
-        # Volume confirmation
-        if ind.volume_ratio >= 2.0:
-            if long_score > short_score:
-                long_score += 10
+        # Volume confirmation (RVOL preferred; fall back to volume_ratio)
+        rvol = getattr(ind, "rvol", ind.volume_ratio)
+        if rvol >= 2.0:
+            if long_score >= short_score:
+                long_score += 12
             else:
-                short_score += 10
+                short_score += 12
+        elif rvol >= 1.5:
+            if long_score >= short_score:
+                long_score += 6
+            else:
+                short_score += 6
 
         # Supertrend
         if ind.supertrend_dir == 1:
@@ -3108,9 +3187,86 @@ class PatternRecognizer:
         else:
             short_score += 8
 
-        # ADX trend strength
+        # ADX trend strength + DI direction
         if ind.adx > 25:
-            if ind.plus_di > ind.minus_di:
+            plus_di  = getattr(ind, "adx_plus_di",  getattr(ind, "plus_di",  0))
+            minus_di = getattr(ind, "adx_minus_di", getattr(ind, "minus_di", 0))
+            if plus_di > minus_di:
+                long_score += 10
+            else:
+                short_score += 10
+
+        # StochRSI
+        stoch_k = getattr(ind, "stoch_rsi_k", 50)
+        if stoch_k < 25:
+            long_score += 8
+        elif stoch_k > 75:
+            short_score += 8
+
+        # CCI
+        cci = getattr(ind, "cci", 0)
+        if cci < -100:
+            long_score += 7
+        elif cci > 100:
+            short_score += 7
+
+        # Williams %R
+        wr = getattr(ind, "williams_r", -50)
+        if wr > -20:
+            short_score += 6
+        elif wr < -80:
+            long_score += 6
+
+        # Ichimoku cloud position
+        tenkan   = getattr(ind, "ichimoku_tenkan",   0)
+        kijun    = getattr(ind, "ichimoku_kijun",    0)
+        senkou_a = getattr(ind, "ichimoku_senkou_a", 0)
+        senkou_b = getattr(ind, "ichimoku_senkou_b", 0)
+        if tenkan and kijun and senkou_a and senkou_b:
+            cloud_top = max(senkou_a, senkou_b)
+            cloud_bot = min(senkou_a, senkou_b)
+            close_px  = tenkan  # proxy for current price vicinity
+            if close_px > cloud_top and tenkan > kijun:
+                long_score += 10
+            elif close_px < cloud_bot and tenkan < kijun:
+                short_score += 10
+
+        # BB %B extremes (mean-reversion or breakout confirmation)
+        bb_pb = getattr(ind, "bb_pct_b", 0.5)
+        if bb_pb > 1.0:
+            short_score += 6   # above upper band = extended
+        elif bb_pb < 0.0:
+            long_score += 6    # below lower band = oversold
+
+        # Pivot point proximity
+        pp  = getattr(ind, "pivot_pp", 0)
+        r1  = getattr(ind, "pivot_r1", 0)
+        s1  = getattr(ind, "pivot_s1", 0)
+        if pp and r1 and s1:
+            plus_di  = getattr(ind, "adx_plus_di",  getattr(ind, "plus_di",  0))
+            minus_di = getattr(ind, "adx_minus_di", getattr(ind, "minus_di", 0))
+            if plus_di > minus_di:    # bullish bias
+                long_score += 5   # trending above PP
+            else:
+                short_score += 5
+
+        # ── High-confluence multi-factor bonus ────────────────────────────
+        # FVG/OB + High RVOL + ADX rising = institutional momentum setup
+        elite_names = {p.name for p in patterns}
+        has_fvg_ob  = bool({"Bullish FVG","Bullish Order Block","Breaker Block Bullish"} & elite_names)
+        has_fvg_ob_s = bool({"Bearish FVG","Bearish Order Block","Breaker Block Bearish"} & elite_names)
+        adx_rising  = ind.adx > 25
+        high_rvol   = rvol >= 1.8
+
+        if has_fvg_ob and adx_rising and high_rvol:
+            long_score += 18   # top-tier confluence bonus
+        if has_fvg_ob_s and adx_rising and high_rvol:
+            short_score += 18
+
+        # Kill zone timing bonus (NY Open or London Close)
+        has_kz = any("Kill Zone" in p.name for p in patterns)
+        if has_kz:
+            if long_score >= short_score:
                 long_score += 8
             else:
                 short_score += 8
