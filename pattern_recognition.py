@@ -284,6 +284,18 @@ class PatternRecognizer:
             self.detect_kicker_pattern,
             self.detect_abandoned_baby,
             self.detect_symmetrical_triangle,
+            # ── Professional candlestick continuations ────────────────────
+            self.detect_belt_hold,
+            self.detect_rising_three_methods,
+            self.detect_falling_three_methods,
+            self.detect_upside_tasuki_gap,
+            self.detect_downside_tasuki_gap,
+            self.detect_on_neck,
+            self.detect_mat_hold,
+            self.detect_two_crows,
+            self.detect_homing_pigeon,
+            self.detect_matching_low,
+            self.detect_counterattack_lines,
         ]
 
         for detector in detectors:
@@ -293,6 +305,16 @@ class PatternRecognizer:
                     patterns.append(result)
             except Exception as e:
                 logger.debug(f"Pattern detector {detector.__name__} error: {e}")
+
+        # Harmonic patterns (Gartley, Butterfly, Bat, Crab, ABCD, OTE, Three Drives)
+        for p in self._run_harmonic_patterns(df):
+            if p.confidence >= 55:
+                patterns.append(p)
+
+        # Institutional / Smart Money patterns (Wyckoff, ICT, Liquidity Sweep, etc.)
+        for p in self._run_smart_money_advanced(df):
+            if p.confidence >= 58:
+                patterns.append(p)
 
         # Compute composite score
         score = self._compute_composite_score(patterns, ind)
@@ -1639,6 +1661,314 @@ class PatternRecognizer:
             )
         return None
 
+    # ─────────────────────────────────────────────────────────
+    # MORE CANDLESTICK PATTERNS
+    # ─────────────────────────────────────────────────────────
+
+    def detect_belt_hold(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Belt Hold: Long body with no shadow on the opening side.
+        Bullish Belt Hold: opens at low (no lower shadow), closes near high.
+        Bearish Belt Hold: opens at high (no upper shadow), closes near low.
+        """
+        if len(df) < 2:
+            return None
+        c = df.iloc[-1]
+        body = abs(c["close"] - c["open"])
+        rng  = c["high"] - c["low"]
+        if rng <= 0 or body / rng < 0.7:
+            return None
+
+        # Bullish: open = low (no lower shadow)
+        if c["close"] > c["open"] and (c["open"] - c["low"]) / rng < 0.03:
+            conf = 58 + ind.volume_ratio * 5
+            if ind.rsi < 45:
+                conf += 8
+            return PatternResult("Bullish Belt Hold", "LONG", min(conf, 80),
+                                 "Belt Hold: opens at low, strong bull body")
+
+        # Bearish: open = high (no upper shadow)
+        if c["close"] < c["open"] and (c["high"] - c["open"]) / rng < 0.03:
+            conf = 58 + ind.volume_ratio * 5
+            if ind.rsi > 55:
+                conf += 8
+            return PatternResult("Bearish Belt Hold", "SHORT", min(conf, 80),
+                                 "Belt Hold: opens at high, strong bear body")
+        return None
+
+    def detect_rising_three_methods(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Rising Three Methods: Long bullish candle, 3 small declining bars within
+        the range, then strong bullish close above bar-1. Bullish continuation.
+        """
+        if len(df) < 5:
+            return None
+        c1, c2, c3, c4, c5 = df.iloc[-5], df.iloc[-4], df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        # First: big bull candle
+        if c1["close"] <= c1["open"]:
+            return None
+        big_body = c1["close"] - c1["open"]
+
+        # Middle 3: small candles within c1 range
+        for c in [c2, c3, c4]:
+            if c["high"] > c1["high"] * 1.001 or c["low"] < c1["low"] * 0.999:
+                return None
+        # Middle 3 trend slightly down or flat
+        if c4["close"] >= c1["close"] or c2["close"] <= c1["open"]:
+            return None
+
+        # Final: strong bull close above c1's close
+        if c5["close"] <= c1["close"]:
+            return None
+
+        conf = 68 + ind.volume_ratio * 5
+        return PatternResult("Rising Three Methods", "LONG", min(conf, 85),
+                             "Bullish continuation: 3-bar consolidation within bull range → breakout")
+
+    def detect_falling_three_methods(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Falling Three Methods: Long bearish candle, 3 small rising bars within
+        range, then strong bearish close below bar-1. Bearish continuation.
+        """
+        if len(df) < 5:
+            return None
+        c1, c2, c3, c4, c5 = df.iloc[-5], df.iloc[-4], df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        if c1["close"] >= c1["open"]:
+            return None
+        for c in [c2, c3, c4]:
+            if c["high"] > c1["high"] * 1.001 or c["low"] < c1["low"] * 0.999:
+                return None
+        if c4["close"] <= c1["close"] or c2["close"] >= c1["open"]:
+            return None
+        if c5["close"] >= c1["close"]:
+            return None
+
+        conf = 68 + ind.volume_ratio * 5
+        return PatternResult("Falling Three Methods", "SHORT", min(conf, 85),
+                             "Bearish continuation: 3-bar bounce within bear range → breakdown")
+
+    def detect_upside_tasuki_gap(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Upside Tasuki Gap: gap-up bull candle, second bull candle, third bear candle
+        that PARTIALLY fills the gap but doesn't close it. Bullish continuation.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        # Gap up between c1 and c2
+        gap_up = c2["open"] > c1["high"]
+        if not gap_up:
+            return None
+        if c2["close"] <= c2["open"]:  # c2 must be bullish
+            return None
+        if c3["close"] >= c3["open"]:  # c3 must be bearish
+            return None
+        # c3 partially fills gap but doesn't close it
+        if c3["close"] <= c1["high"]:  # closed into the gap — invalid
+            return None
+
+        conf = 62 + ind.volume_ratio * 4
+        return PatternResult("Upside Tasuki Gap", "LONG", min(conf, 78),
+                             "Tasuki gap: partial gap fill → bulls still in control")
+
+    def detect_downside_tasuki_gap(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Downside Tasuki Gap: gap-down bear candle, second bear candle, third bull
+        candle that partially fills the gap. Bearish continuation.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        gap_down = c2["open"] < c1["low"]
+        if not gap_down:
+            return None
+        if c2["close"] >= c2["open"]:
+            return None
+        if c3["close"] <= c3["open"]:
+            return None
+        if c3["close"] >= c1["low"]:
+            return None
+
+        conf = 62 + ind.volume_ratio * 4
+        return PatternResult("Downside Tasuki Gap", "SHORT", min(conf, 78),
+                             "Downside Tasuki gap: partial fill → bears still in control")
+
+    def detect_on_neck(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        On-Neck: Bear candle, then bull candle that closes near previous low.
+        Bears still in control — bearish continuation.
+        """
+        if len(df) < 2:
+            return None
+        c1, c2 = df.iloc[-2], df.iloc[-1]
+
+        if c1["close"] >= c1["open"]:
+            return None
+        if c2["close"] <= c2["open"]:
+            return None
+        # c2 close near c1 low (within 0.1%)
+        near_c1_low = abs(c2["close"] - c1["low"]) / max(c1["low"], 0.01) < 0.001
+        if not near_c1_low:
+            return None
+
+        conf = 58 + (5 if ind.rsi > 55 else 0)
+        return PatternResult("On Neck (Bearish)", "SHORT", conf,
+                             "On-neck: bull candle closes at prior low — bears in control")
+
+    def detect_mat_hold(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Mat Hold: Like rising three methods but the first candle is huge (marubozu),
+        and middle candles stay within the upper half of bar 1. Very bullish.
+        """
+        if len(df) < 5:
+            return None
+        c1, c2, c3, c4, c5 = df.iloc[-5], df.iloc[-4], df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        body1 = c1["close"] - c1["open"]
+        rng1  = c1["high"] - c1["low"]
+        if body1 <= 0 or rng1 <= 0 or body1 / rng1 < 0.75:
+            return None
+
+        # Middle candles gap up and stay in upper portion
+        mid_low   = min(c2["low"], c3["low"], c4["low"])
+        bar1_mid  = (c1["open"] + c1["close"]) / 2
+        if mid_low < bar1_mid:
+            return None
+
+        # Final candle breaks out strongly
+        if c5["close"] <= c1["close"]:
+            return None
+        if c5["close"] <= c5["open"]:
+            return None
+
+        conf = 70 + ind.volume_ratio * 5
+        return PatternResult("Mat Hold (Bullish)", "LONG", min(conf, 88),
+                             "Mat Hold: massive bull body, consolidation in upper half → breakout")
+
+    def detect_two_crows(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Two Crows: Uptrend, gap-up bearish candle, second gap-up bearish candle
+        that engulfs the first bear. Bearish reversal warning.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        if c1["close"] <= c1["open"]:  # c1 must be bull
+            return None
+        if c2["close"] >= c2["open"] or c2["open"] <= c1["close"]:  # c2 bears, gaps up
+            return None
+        if c3["close"] >= c3["open"]:  # c3 must be bearish
+            return None
+        if c3["open"] <= c2["open"] or c3["close"] >= c2["open"]:  # c3 engulfs c2
+            return None
+
+        conf = 62 + (8 if ind.rsi > 60 else 0)
+        return PatternResult("Two Crows (Bearish)", "SHORT", min(conf, 80),
+                             "Two Crows: sequential bearish engulfment after gap-up — reversal warning")
+
+    def detect_homing_pigeon(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Homing Pigeon: Two bearish candles where c2 is inside c1.
+        Similar to inside bar but both bearish. Bullish reversal.
+        Bears losing momentum.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2 = df.iloc[-2], df.iloc[-1]
+
+        if c1["close"] >= c1["open"] or c2["close"] >= c2["open"]:
+            return None
+        # c2 inside c1 body
+        if not (c2["open"] <= c1["open"] and c2["close"] >= c1["close"]):
+            return None
+        body2 = abs(c2["close"] - c2["open"])
+        body1 = abs(c1["close"] - c1["open"])
+        if body2 >= body1 * 0.6:
+            return None  # c2 should be noticeably smaller
+
+        conf = 60 + (8 if ind.rsi < 40 else 0)
+        return PatternResult("Homing Pigeon (Bullish)", "LONG", min(conf, 75),
+                             "Homing Pigeon: bear momentum fading — second smaller bear inside first")
+
+    def detect_matching_low(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Matching Low: Two consecutive candles with almost identical lows.
+        Strong support level — bulls defend this price. Bullish reversal.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2 = df.iloc[-2], df.iloc[-1]
+
+        # Both bearish (or c2 can be neutral)
+        diff = abs(c2["low"] - c1["low"]) / max(c1["low"], 0.01) * 100
+        if diff > 0.05:
+            return None
+
+        # In downtrend
+        if len(df) >= 8 and df["close"].values[-8] < df["close"].values[-3]:
+            return None
+
+        conf = 62 + (8 if ind.rsi < 40 else 0)
+        return PatternResult("Matching Low (Support)", "LONG", min(conf, 78),
+                             f"Matching Low: identical lows at ${c1['low']:.2f} — strong support")
+
+    def detect_counterattack_lines(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Counterattack: After strong directional candle, opposite candle
+        opens with gap but closes AT SAME price. Reversal signal.
+        """
+        if len(df) < 2:
+            return None
+        c1, c2 = df.iloc[-2], df.iloc[-1]
+
+        close_match = abs(c2["close"] - c1["close"]) / max(c1["close"], 0.01) * 100 < 0.05
+
+        # Bullish counterattack: c1 bearish, c2 gaps down then recovers to c1 close
+        if c1["close"] < c1["open"] and c2["close"] > c2["open"] and close_match:
+            conf = 62 + (8 if ind.rsi < 40 else 0)
+            return PatternResult("Bullish Counterattack", "LONG", min(conf, 78),
+                                 "Counterattack: bulls recover entire bear day — momentum reversal")
+
+        # Bearish counterattack
+        if c1["close"] > c1["open"] and c2["close"] < c2["open"] and close_match:
+            conf = 62 + (8 if ind.rsi > 60 else 0)
+            return PatternResult("Bearish Counterattack", "SHORT", min(conf, 78),
+                                 "Counterattack: bears recover entire bull day — momentum reversal")
+        return None
+
+    # ─────────────────────────────────────────────────────────
+    # HARMONIC + SMART MONEY INTEGRATION
+    # ─────────────────────────────────────────────────────────
+
+    def _run_harmonic_patterns(self, df: pd.DataFrame) -> List[PatternResult]:
+        """Run harmonic pattern detector and convert results."""
+        results = []
+        try:
+            from harmonic_patterns import get_harmonic_detector
+            hd = get_harmonic_detector()
+            for hr in hd.scan_all(df):
+                results.append(hr.to_pattern_result())
+        except Exception as e:
+            logger.debug(f"Harmonic patterns failed: {e}")
+        return results
+
+    def _run_smart_money_advanced(self, df: pd.DataFrame) -> List[PatternResult]:
+        """Run institutional smart money detector."""
+        results = []
+        try:
+            from smart_money_advanced import get_smart_money_scanner
+            scanner = get_smart_money_scanner()
+            current_price = float(df["close"].values[-1]) if len(df) else 0
+            results = scanner.scan(df, current_price=current_price)
+        except Exception as e:
+            logger.debug(f"Smart money advanced failed: {e}")
+        return results
+
     # --------------------------------------------------------
     # COMPOSITE SCORE
     # --------------------------------------------------------
@@ -1669,6 +1999,20 @@ class PatternRecognizer:
             "Bullish Kicker", "Bearish Kicker",
             "Ascending Triangle", "Descending Triangle",
             "Three Inside Up", "Three Inside Down",
+            # Harmonic patterns (high-precision institutional levels)
+            "Bat Bullish", "Bat Bearish",
+            "Gartley Bullish (222)", "Gartley Bearish (222)",
+            "Butterfly Bullish", "Butterfly Bearish",
+            "Crab Bullish", "Crab Bearish",
+            "OTE Bullish (ICT)", "OTE Bearish (ICT)",
+            "Three Drives Bullish", "Three Drives Bearish",
+            # Smart money institutional patterns
+            "Bullish Liquidity Sweep", "Bearish Liquidity Sweep",
+            "Wyckoff Spring (Bullish)", "Wyckoff Upthrust (Bearish)",
+            "Wyckoff Accumulation Base", "Wyckoff Distribution Top",
+            "Power of 3 — Bullish Distribution", "Power of 3 — Bearish Distribution",
+            "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
+            "Mat Hold (Bullish)",
         }
 
         # Pattern scores
