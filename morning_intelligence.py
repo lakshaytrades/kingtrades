@@ -222,7 +222,7 @@ class MorningIntelligence:
         logger.info(
             f"[{format_ist_timestamp()}] DayThesis complete: "
             f"{market_bias}({bias_score:+d}) {trading_mode} "
-            f"Nifty={nifty_low:.0f}–{nifty_high:.0f} "
+            f"SPY=${spy_low:.2f}–${spy_high:.2f} "
             f"VIX={vix:.1f}"
         )
         return thesis

@@ -62,15 +62,15 @@ _DATA_DIR.mkdir(parents=True, exist_ok=True)
 
 @dataclass
 class ProfitEngineConfig:
-    # Daily targets (₹)
-    daily_target:          float = 5_000.0
-    daily_stretch_target:  float = 7_500.0
-    daily_max_target:      float = 10_000.0
+    # Daily targets ($)
+    daily_target:          float = 200.0
+    daily_stretch_target:  float = 300.0
+    daily_max_target:      float = 500.0
 
-    # Loss stops (₹ absolute loss = STOP)
-    daily_loss_limit:      float = 3_000.0   # Hard stop — no new entries
-    caution_loss:          float = 1_000.0   # Switch to A-grade only
-    defensive_loss:        float = 2_000.0   # Switch to A+ only, 60% size
+    # Loss stops ($ absolute loss = STOP)
+    daily_loss_limit:      float = 100.0   # Hard stop — no new entries
+    caution_loss:          float = 25.0    # Switch to A-grade only
+    defensive_loss:        float = 50.0    # Switch to A+ only, 60% size
 
     # Capital deployment (% of available capital per trade)
     a_plus_capital_pct:    float = 25.0      # A+ setup
@@ -82,8 +82,8 @@ class ProfitEngineConfig:
     compound_bonus_pct:    float = 20.0      # After T1 hit: 20% bigger next trade
     win_streak_bonus_pct:  float = 10.0      # Per-trade bonus during win streak (cap 3)
 
-    # MIS leverage (Groww gives 5× on NSE equity intraday)
-    mis_leverage:          float = 5.0
+    # Leverage (Alpaca paper — no margin leverage by default)
+    mis_leverage:          float = 1.0
 
     # Min signal scores by mode
     score_normal:          float = 68.0
@@ -99,19 +99,19 @@ class ProfitEngineConfig:
 class TradingMode:
     AGGRESSIVE  = "AGGRESSIVE"   # Morning, winning, below target
     NORMAL      = "NORMAL"       # Standard mode
-    CAUTION     = "CAUTION"      # -₹1k loss — A grade minimum
-    PROTECTION  = "PROTECTION"   # Target hit ₹5k — A+ only
-    LOCK        = "LOCK"         # ₹7.5k hit — 60% size, A+ only
-    DEFENSIVE   = "DEFENSIVE"    # -₹2k loss — A+ only, 60% size
-    STOP        = "STOP"         # ₹10k hit OR -₹3k loss — no new entries
+    CAUTION     = "CAUTION"      # -$25 loss — A grade minimum
+    PROTECTION  = "PROTECTION"   # Target hit $200 — A+ only
+    LOCK        = "LOCK"         # $300 hit — 60% size, A+ only
+    DEFENSIVE   = "DEFENSIVE"    # -$50 loss — A+ only, 60% size
+    STOP        = "STOP"         # $500 hit OR -$100 loss — no new entries
 
     DESCRIPTIONS = {
         AGGRESSIVE: "🚀 AGGRESSIVE — Full size, hot streak",
         NORMAL:     "✅ NORMAL — Standard risk",
-        CAUTION:    "⚠️ CAUTION — A-grade minimum (down ₹1k)",
+        CAUTION:    "⚠️ CAUTION — A-grade minimum (down $25)",
         PROTECTION: "🛡️ PROTECTION — Target hit! A+ only, banking profits",
-        LOCK:       "🔒 LOCK — ₹7.5k secured, 60% size only",
-        DEFENSIVE:  "🔴 DEFENSIVE — A+ only, down ₹2k",
+        LOCK:       "🔒 LOCK — $300 secured, 60% size only",
+        DEFENSIVE:  "🔴 DEFENSIVE — A+ only, down $50",
         STOP:       "🛑 STOP — Daily limit reached. No new trades.",
     }
 
@@ -191,7 +191,7 @@ class DailyProfitEngine:
     def initialize(
         self,
         available_balance: float,
-        daily_target: float = 5_000.0,
+        daily_target: float = 200.0,
     ) -> None:
         """Call once at 9:15 AM market open."""
         today = get_current_ist_time().strftime("%Y-%m-%d")
@@ -207,15 +207,15 @@ class DailyProfitEngine:
             self.state = saved
             logger.info(
                 f"[{format_ist_timestamp()}] ProfitEngine: loaded today's state "
-                f"P&L=₹{self.state.realised_pnl:,.0f} mode={self.state.mode}"
+                f"P&L=${self.state.realised_pnl:,.2f} mode={self.state.mode}"
             )
         else:
             self.state = IntradayState(date=today)
             logger.info(
                 f"[{format_ist_timestamp()}] ProfitEngine: fresh day | "
-                f"Balance: ₹{available_balance:,.0f} | "
-                f"Target: ₹{daily_target:,.0f} | "
-                f"With 5× MIS: ₹{available_balance * 5:,.0f} buying power"
+                f"Balance: ${available_balance:,.2f} | "
+                f"Target: ${daily_target:,.2f} | "
+                f"Buying power: ${available_balance:,.2f}"
             )
         self._update_mode()
 
@@ -244,8 +244,8 @@ class DailyProfitEngine:
         Accounts for current mode, compounding bonus, and win streak.
 
         Returns DeploymentPlan with:
-          - capital_rupees: how much ₹ to allocate (incl. MIS leverage factor)
-          - effective_buying_power: capital × 5x MIS
+          - capital_rupees: how much $ to allocate from account balance
+          - effective_buying_power: capital (no leverage)
           - blocked: True if mode says STOP trading
           - reason: explanation
         """
@@ -293,14 +293,14 @@ class DailyProfitEngine:
         final_pct = base_pct * total_mult / 100.0
         final_pct = max(0.04, min(final_pct, 0.35))  # 4%–35% hard limits
 
-        capital_rupees = self._available_balance * final_pct
-        # Minimum trade: ₹5,000 (can't buy 0.1 shares — need at least 1)
-        capital_rupees = max(capital_rupees, 5_000.0)
+        capital_usd = self._available_balance * final_pct
+        # Minimum trade: $10
+        capital_usd = max(capital_usd, 10.0)
 
-        buying_power = capital_rupees * self.cfg.mis_leverage
+        buying_power = capital_usd * self.cfg.mis_leverage
 
         return DeploymentPlan(
-            capital_rupees=round(capital_rupees, 2),
+            capital_rupees=round(capital_usd, 2),
             effective_buying_power=round(buying_power, 2),
             blocked=False,
             base_pct=base_pct,
@@ -311,7 +311,7 @@ class DailyProfitEngine:
             reason=(
                 f"Grade {quality_grade} | Mode {self.state.mode} | "
                 f"Base {base_pct:.0f}% × {total_mult:.2f}x mult = "
-                f"₹{capital_rupees:,.0f} (₹{buying_power:,.0f} with 5× MIS)"
+                f"${capital_usd:,.2f}"
             )
         )
 
@@ -329,7 +329,7 @@ class DailyProfitEngine:
             self.state.compounding_bonus = 1 + self.cfg.compound_bonus_pct / 100
             logger.info(
                 f"[{format_ist_timestamp()}] COMPOUNDING ACTIVATED — "
-                f"T1 profit ₹{profit:,.0f} | Next trades +{self.cfg.compound_bonus_pct:.0f}% size"
+                f"T1 profit ${profit:,.2f} | Next trades +{self.cfg.compound_bonus_pct:.0f}% size"
             )
         self._update_mode()
         self._save_state()
@@ -382,10 +382,10 @@ class DailyProfitEngine:
 
         return (
             f"💰 *Daily P&L Engine*\n\n"
-            f"Realised: `₹{s.realised_pnl:+,.0f}`\n"
-            f"Unrealised: `₹{s.unrealised_pnl:+,.0f}`\n"
-            f"Total: `₹{s.total_pnl:+,.0f}`\n\n"
-            f"Target: `₹{target:,.0f}` ({pct:.0f}%)\n"
+            f"Realised: `${s.realised_pnl:+,.2f}`\n"
+            f"Unrealised: `${s.unrealised_pnl:+,.2f}`\n"
+            f"Total: `${s.total_pnl:+,.2f}`\n\n"
+            f"Target: `${target:,.2f}` ({pct:.0f}%)\n"
             f"{progress_bar}\n\n"
             f"Mode: {mode_desc}\n"
             f"Trades: {s.trades_taken} | W/L: {s.winning_trades}/{s.losing_trades}\n"
@@ -447,7 +447,7 @@ class DailyProfitEngine:
         if self.state.mode != prev_mode:
             logger.info(
                 f"[{format_ist_timestamp()}] MODE CHANGE: {prev_mode} → {self.state.mode} "
-                f"| P&L: ₹{pnl:+,.0f} | "
+                f"| P&L: ${pnl:+,.2f} | "
                 + TradingMode.DESCRIPTIONS.get(self.state.mode, "")
             )
 
@@ -477,7 +477,7 @@ class DailyProfitEngine:
         pnl = self.state.realised_pnl
         pct = pnl / self._daily_target * 100 if self._daily_target > 0 else 0
         logger.info(
-            f"[{format_ist_timestamp()}] P&L: ₹{pnl:+,.0f} ({pct:.0f}% of ₹{self._daily_target:,.0f} target) "
+            f"[{format_ist_timestamp()}] P&L: ${pnl:+,.2f} ({pct:.0f}% of ${self._daily_target:,.2f} target) "
             f"| Mode: {self.state.mode} | W/L: {self.state.winning_trades}/{self.state.losing_trades} "
             f"| Compound: {'ON' if self.state.compounding_active else 'off'}"
         )

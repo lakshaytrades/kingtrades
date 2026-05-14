@@ -26,7 +26,7 @@ import logging
 from datetime import date
 from typing import Dict, Optional, Tuple
 
-from utils import get_current_ist_date, get_current_ist_time, MARKET_OPEN
+from utils import get_current_ist_date, get_current_ist_time, US_MARKET_OPEN as MARKET_OPEN
 
 logger = logging.getLogger(__name__)
 

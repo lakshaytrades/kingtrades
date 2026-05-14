@@ -668,7 +668,7 @@ class TradingBot:
         dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
-            f"Balance: {available} | Nifty: {nifty_open} | "
+            f"Balance: ${available:,.2f} | SPY: ${nifty_open:,.2f} | "
             f"Watchlist: {len(watchlist)} stocks\n"
             f"  DOW mode: {dow_name} | Size: {dow_mult:.0%} | "
             f"Min score: {dow_min:.0f} | Max trades: {dow_max}"
