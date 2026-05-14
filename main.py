@@ -134,9 +134,9 @@ class TradingBot:
 
     def initialize(self) -> bool:
         """Initialize all bot components. Returns True if ready."""
-        logger.info(f"[{format_ist_timestamp()}] 🚀 NSE Momentum Bot initializing...")
+        logger.info(f"[{format_ist_timestamp()}] 🚀 US Momentum Bot initializing...")
         logger.info(f"[{format_ist_timestamp()}] Server time: {datetime.now(IST).astimezone(ZoneInfo('UTC'))} UTC")
-        logger.info(f"[{format_ist_timestamp()}] IST time: {format_ist_timestamp()}")
+        logger.info(f"[{format_ist_timestamp()}] ET time: {format_ist_timestamp()}")
 
         # Validate config
         issues = config.validate_config()
@@ -147,8 +147,8 @@ class TradingBot:
         if config.LIVE_TRADING_ENABLED:
             logger.warning(
                 f"[{format_ist_timestamp()}] ⚡⚡⚡ LIVE TRADING ENABLED ⚡⚡⚡\n"
-                "REAL ORDERS WILL BE PLACED ON GROWW. "
-                "Capital: " + str(config.MAX_DAILY_CAPITAL)
+                "REAL ORDERS WILL BE PLACED VIA ALPACA. "
+                "Capital: $" + str(config.MAX_DAILY_CAPITAL)
             )
         else:
             logger.info(f"[{format_ist_timestamp()}] 🔒 DRY RUN MODE — No real orders")
@@ -2626,10 +2626,10 @@ def main():
     )
 
     logger.info("=" * 60)
-    logger.info("  NSE MOMENTUM GROWW AI BOT")
+    logger.info("  US MOMENTUM ALPACA AI BOT")
     logger.info("  ⚠️  REAL MONEY — LIVE TRADING BOT")
-    logger.info(f"  Server: UK (UTC) | Trading: IST (Asia/Kolkata)")
-    logger.info(f"  IST Time: {format_ist_timestamp()}")
+    logger.info(f"  Broker: NYSE/NASDAQ | Mode: ALPACA")
+    logger.info(f"  ET Time: {format_ist_timestamp()}")
     logger.info(f"  Live Trading: {'⚡ ENABLED' if config.LIVE_TRADING_ENABLED else '🔒 DISABLED'}")
     logger.info("=" * 60)
 

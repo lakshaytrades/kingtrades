@@ -211,46 +211,37 @@ class ContinuousLearner:
             self._task_calendar_refresh
         ))
 
-        # US market snapshot (US markets open ~9:30 PM IST)
+        # Overnight / EOD analysis — after US market close (4:30 PM ET)
         self.tasks.append(ScheduledTask(
-            "US Market Snapshot", 22, 0,
-            self._task_us_snapshot
+            "Overnight Analysis", 16, 30,
+            self._task_overnight_analysis,
+            weekdays=[0,1,2,3,4]
         ))
 
-        # Overnight analysis — after US markets close (~2 AM IST)
+        # Alpaca auth check — once per morning before market open (Mon-Fri 9:00 ET)
         self.tasks.append(ScheduledTask(
-            "Overnight Analysis", 1, 30,
-            self._task_overnight_analysis
+            "Morning Auth Check", 9, 0,
+            self._task_token_refresh,
+            weekdays=[0, 1, 2, 3, 4],
         ))
 
-        # ── Groww Cloud token refresh cascade (keys reset at 6 AM IST) ──────
-        # Try at 6:05, 6:20, 6:40, 7:00, 8:00 — stop as soon as one succeeds
-        for h, m in [(6, 5), (6, 20), (6, 40), (7, 0), (8, 0)]:
-            self.tasks.append(ScheduledTask(
-                f"Token Refresh {h:02d}:{m:02d}",
-                h, m,
-                self._task_token_refresh,
-                weekdays=[0, 1, 2, 3, 4],
-                run_on_holidays=True,   # Refresh even on holidays — token still expires
-            ))
-
-        # Asian markets + Gift Nifty fetch (Mon-Fri)
+        # SPY pre-market fetch (Mon-Fri 8:00 ET)
         self.tasks.append(ScheduledTask(
-            "Asian Markets Fetch", 6, 30,
+            "SPY Pre-Market Fetch", 8, 0,
             self._task_asian_markets,
             weekdays=[0,1,2,3,4]
         ))
 
-        # Pre-market intelligence (Mon-Fri)
+        # Pre-market intelligence (Mon-Fri 8:30 ET)
         self.tasks.append(ScheduledTask(
-            "Pre-Market Intelligence", 8, 0,
+            "Pre-Market Intelligence", 8, 30,
             self._task_premarket_intel,
             weekdays=[0,1,2,3,4]
         ))
 
-        # Morning brief to Telegram (Mon-Fri)
+        # Morning brief to Telegram (Mon-Fri 9:00 ET — just before open)
         self.tasks.append(ScheduledTask(
-            "Morning Brief", 8, 30,
+            "Morning Brief", 9, 0,
             self._task_morning_brief,
             weekdays=[0,1,2,3,4]
         ))
@@ -479,11 +470,11 @@ class ContinuousLearner:
             )
 
     def _task_asian_markets(self):
-        """Refresh Asian market data (runs at 6:30 AM IST after Asian open)."""
+        """Refresh SPY pre-market gap data (runs at 8:00 AM ET before US open)."""
         overnight = self._modules.get("overnight")
         if overnight:
-            overnight._fetch_gift_nifty()
-            logger.info(f"[{format_ist_timestamp()}] Asian markets fetched")
+            overnight._fetch_spy_gap()
+            logger.info(f"[{format_ist_timestamp()}] SPY pre-market data fetched")
 
     def _task_premarket_intel(self):
         """Full pre-market intelligence combining all overnight data."""
@@ -491,7 +482,7 @@ class ContinuousLearner:
         ai        = self._modules.get("ai")
         if not overnight:
             return
-        # Re-run to get latest Gift Nifty (if not run overnight)
+        # Re-run to get latest SPY gap data (if not run yet today)
         if not overnight._today_analysis:
             overnight.run(ai_brain=ai)
         logger.info(
@@ -665,8 +656,8 @@ def main():
     import config
     setup_logging(config.LOG_DIR, config.LOG_LEVEL)
     logger.info("=" * 55)
-    logger.info("  NSE BOT — Continuous Learner (24/7 Mode)")
-    logger.info(f"  IST: {format_ist_timestamp()}")
+    logger.info("  US MOMENTUM BOT — Continuous Learner (24/7 Mode)")
+    logger.info(f"  ET: {format_ist_timestamp()}")
     logger.info("=" * 55)
 
     learner = ContinuousLearner()

@@ -49,16 +49,16 @@ class DayThesis:
     bias_score:       int            # -100 to +100
     trading_mode:     str            # "AGGRESSIVE", "NORMAL", "CAUTIOUS", "DEFENSIVE"
     size_multiplier:  float          # 1.2=AGGRESSIVE, 1.0=NORMAL, 0.7=CAUTIOUS, 0.5=DEFENSIVE
-    nifty_range_low:  float          # Expected Nifty low (VIX-based + gift nifty adj)
-    nifty_range_high: float          # Expected Nifty high
+    spy_range_low:    float          # Expected SPY low (VIX-based + gap adj)
+    spy_range_high:   float          # Expected SPY high
     hot_sectors:      List[str]      # Top 3 sectors to trade
     avoid_sectors:    List[str]      # Bottom 2 sectors to avoid
     top_watchlist:    List[str]      # Top 5 stocks
-    key_risks:        List[str]      # e.g. ["RBI rate decision at 10AM"]
-    fii_bias:         str            # "BUYING", "SELLING", "NEUTRAL"
+    key_risks:        List[str]      # e.g. ["Fed decision at 2PM ET"]
+    fii_bias:         str            # "BUYING", "SELLING", "NEUTRAL" (institutional flow)
     oc_bias:          str            # "BULLISH", "BEARISH", "NEUTRAL"
     vix:              float
-    gift_nifty_change: float         # % change
+    spy_gap_change:   float          # SPY pre-market gap %
     summary:          str            # 2-sentence human-readable summary
     rl_status:        str = ""       # RL brain status line (optional)
 
@@ -84,8 +84,8 @@ SCORE_FII_STRONG_BUY   = +20   # FII net > 1000 Cr
 SCORE_FII_STRONG_SELL  = -20   # FII net < -1000 Cr
 SCORE_OC_BULLISH       = +15
 SCORE_OC_BEARISH       = -15
-SCORE_GIFT_UP          = +15   # gift_nifty_change > +0.5%
-SCORE_GIFT_DOWN        = -15   # gift_nifty_change < -0.5%
+SCORE_SPY_GAP_UP       = +15   # spy_gap_change > +0.5%
+SCORE_SPY_GAP_DOWN     = -15   # spy_gap_change < -0.5%
 SCORE_VIX_LOW          = +10   # VIX < 14
 SCORE_VIX_HIGH         = -10   # VIX > 22
 SCORE_SECTOR_HOT       = +10   # at least one HOT sector
@@ -148,10 +148,10 @@ class MorningIntelligence:
         logger.info(f"[{format_ist_timestamp()}] OC score={oc_score:+d} bias={oc_bias} PCR={pcr:.2f}")
 
         # ── 3. Overnight / global cues ────────────────────────
-        overnight_score, vix, gift_nifty_change, nifty_prev = self._score_overnight()
+        overnight_score, vix, spy_gap_change, spy_prev = self._score_overnight()
         logger.info(
             f"[{format_ist_timestamp()}] Overnight score={overnight_score:+d} "
-            f"VIX={vix:.1f} GiftNifty={gift_nifty_change:+.2f}% NiftyPrev={nifty_prev:.0f}"
+            f"VIX={vix:.1f} SPY_gap={spy_gap_change:+.2f}% SPYPrev=${spy_prev:.2f}"
         )
 
         # ── 4. Events / risk ──────────────────────────────────
@@ -192,7 +192,7 @@ class MorningIntelligence:
         )
 
         # ── 9. Nifty range ────────────────────────────────────
-        nifty_low, nifty_high = self._get_nifty_range(nifty_prev, vix, gift_nifty_change)
+        spy_low, spy_high = self._get_nifty_range(spy_prev, vix, spy_gap_change)
 
         # ── 10. RL brain status ───────────────────────────────
         rl_status = self._get_rl_status()
@@ -204,8 +204,8 @@ class MorningIntelligence:
             bias_score=bias_score,
             trading_mode=trading_mode,
             size_multiplier=size_multiplier,
-            nifty_range_low=round(nifty_low, 0),
-            nifty_range_high=round(nifty_high, 0),
+            spy_range_low=round(spy_low, 2),
+            spy_range_high=round(spy_high, 2),
             hot_sectors=hot_sectors,
             avoid_sectors=avoid_sectors,
             top_watchlist=top_watchlist,
@@ -213,7 +213,7 @@ class MorningIntelligence:
             fii_bias=fii_bias,
             oc_bias=oc_bias,
             vix=round(vix, 1),
-            gift_nifty_change=round(gift_nifty_change, 2),
+            spy_gap_change=round(spy_gap_change, 2),
             summary="",
             rl_status=rl_status,
         )
@@ -251,7 +251,7 @@ class MorningIntelligence:
 
         fii_emoji = "🟢" if thesis.fii_bias == "BUYING" else ("🔴" if thesis.fii_bias == "SELLING" else "🟡")
         oc_emoji  = "🟢" if thesis.oc_bias  == "BULLISH" else ("🔴" if thesis.oc_bias  == "BEARISH" else "🟡")
-        gift_sign = "+" if thesis.gift_nifty_change >= 0 else ""
+        gap_sign = "+" if thesis.spy_gap_change >= 0 else ""
 
         # Format sectors
         hot_str   = "  " + "  ".join(
@@ -307,12 +307,12 @@ class MorningIntelligence:
             f"{sep}\n"
             f"📊 Market Bias: {bias_emoji} <b>{thesis.market_bias}</b> (score: {thesis.bias_score:+d})\n"
             f"{mode_emoji} Mode: <b>{thesis.trading_mode}</b> ({thesis.size_multiplier}x size)\n"
-            f"📈 Nifty Range: <b>{thesis.nifty_range_low:,.0f} – {thesis.nifty_range_high:,.0f}</b>"
+            f"📈 SPY Range: <b>${thesis.spy_range_low:,.2f} – ${thesis.spy_range_high:,.2f}</b>"
             f" (VIX: {thesis.vix})\n"
             f"\n"
-            f"💰 FII: {fii_emoji} <b>{thesis.fii_bias}</b>\n"
-            f"🔗 Option Chain: {oc_emoji} <b>{thesis.oc_bias}</b>\n"
-            f"🌍 Gift Nifty: <b>{gift_sign}{thesis.gift_nifty_change:.2f}%</b>\n"
+            f"💰 Inst. Flow: {fii_emoji} <b>{thesis.fii_bias}</b>\n"
+            f"🔗 Options Flow: {oc_emoji} <b>{thesis.oc_bias}</b>\n"
+            f"🌍 SPY Gap: <b>{gap_sign}{thesis.spy_gap_change:.2f}%</b>\n"
             f"\n"
             f"🔥 <b>Hot Sectors (trade these):</b>\n{hot_str}\n"
             f"\n"
@@ -440,40 +440,39 @@ class MorningIntelligence:
 
     def _score_overnight(self) -> Tuple[int, float, float, float]:
         """
-        Returns (score, vix, gift_nifty_change_pct, nifty_prev_close).
-        Gift Nifty > +0.5%: +15 | < -0.5%: -15
+        Returns (score, vix, spy_gap_pct, spy_prev_close).
+        SPY gap > +0.5%: +15 | < -0.5%: -15
         VIX < 14: +10 | VIX > 22: -10
         """
-        default_vix    = 15.0
-        default_gift   = 0.0
-        default_nifty  = 22000.0  # fallback Nifty level
+        default_vix  = 15.0
+        default_gap  = 0.0
+        default_spy  = 500.0  # fallback SPY price
 
         if self._overnight is None:
-            return 0, default_vix, default_gift, default_nifty
+            return 0, default_vix, default_gap, default_spy
 
         try:
-            # If overnight analysis not yet run, trigger it
             if self._overnight._today_analysis is None:
                 self._overnight.run()
 
-            analysis       = self._overnight._today_analysis or {}
-            vix_data       = analysis.get("vix", {})
-            gift_data      = analysis.get("gift_nifty", {})
+            analysis  = self._overnight._today_analysis or {}
+            vix_data  = analysis.get("vix", {})
+            spy_data  = analysis.get("spy_gap", {})
 
-            vix            = float(vix_data.get("vix", default_vix))
-            gift_pct       = float(gift_data.get("gap_pct", default_gift))
-            nifty_prev     = float(gift_data.get("prev_close", default_nifty))
+            vix       = float(vix_data.get("vix",       default_vix))
+            gap_pct   = float(spy_data.get("gap_pct",   default_gap))
+            spy_prev  = float(spy_data.get("prev_close", default_spy))
 
             score = 0
 
-            # Gift Nifty direction
-            if gift_pct > 0.5:
-                score += SCORE_GIFT_UP
-            elif gift_pct > 0.2:
+            # SPY gap direction
+            if gap_pct > 0.5:
+                score += SCORE_SPY_GAP_UP
+            elif gap_pct > 0.2:
                 score += 8
-            elif gift_pct < -0.5:
-                score += SCORE_GIFT_DOWN  # negative
-            elif gift_pct < -0.2:
+            elif gap_pct < -0.5:
+                score += SCORE_SPY_GAP_DOWN  # negative
+            elif gap_pct < -0.2:
                 score -= 8
 
             # VIX
@@ -486,11 +485,11 @@ class MorningIntelligence:
             elif vix > 18:
                 score -= 5
 
-            return score, vix, gift_pct, nifty_prev
+            return score, vix, gap_pct, spy_prev
 
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Overnight scoring failed: {e}")
-            return 0, default_vix, default_gift, default_nifty
+            return 0, default_vix, default_gap, default_spy
 
     def _get_events_risk(self) -> Tuple[List[str], int]:
         """
@@ -562,31 +561,29 @@ class MorningIntelligence:
 
     def _get_nifty_range(
         self,
-        nifty_prev: float,
+        spy_prev: float,
         vix: float,
-        gift_nifty_change: float = 0.0,
+        spy_gap_change: float = 0.0,
     ) -> Tuple[float, float]:
         """
-        VIX-based daily range estimate (industry standard).
+        VIX-based daily range estimate for SPY (industry standard).
         1-sigma daily move = VIX / (sqrt(252) * 100)
-        Adjusted for Gift Nifty direction.
+        Adjusted for SPY pre-market gap direction.
         """
-        if nifty_prev <= 0:
-            nifty_prev = 22000.0
+        if spy_prev <= 0:
+            spy_prev = 500.0
 
-        # 1-sigma daily move in percent
-        daily_move_pct = vix / (16 * math.sqrt(252)) * 100  # as per spec formula
+        daily_move_pct = vix / (16 * math.sqrt(252)) * 100
 
-        nifty_range_low  = nifty_prev * (1 - daily_move_pct / 100)
-        nifty_range_high = nifty_prev * (1 + daily_move_pct / 100)
+        range_low  = spy_prev * (1 - daily_move_pct / 100)
+        range_high = spy_prev * (1 + daily_move_pct / 100)
 
-        # Adjust for Gift Nifty direction
-        if gift_nifty_change > 0:
-            nifty_range_high *= (1 + gift_nifty_change / 200)
-        elif gift_nifty_change < 0:
-            nifty_range_low  *= (1 + gift_nifty_change / 200)  # gift is negative → lowers low
+        if spy_gap_change > 0:
+            range_high *= (1 + spy_gap_change / 200)
+        elif spy_gap_change < 0:
+            range_low  *= (1 + spy_gap_change / 200)
 
-        return nifty_range_low, nifty_range_high
+        return range_low, range_high
 
     def _determine_mode(
         self,
@@ -774,10 +771,10 @@ class MorningIntelligence:
         elif thesis.oc_bias == "BEARISH":
             drivers.append(f"bearish OC (PCR {pcr:.2f})")
 
-        if thesis.gift_nifty_change > 0.5:
-            drivers.append(f"Gift Nifty gap up {thesis.gift_nifty_change:+.2f}%")
-        elif thesis.gift_nifty_change < -0.5:
-            drivers.append(f"Gift Nifty gap down {thesis.gift_nifty_change:+.2f}%")
+        if thesis.spy_gap_change > 0.5:
+            drivers.append(f"SPY gap up {thesis.spy_gap_change:+.2f}%")
+        elif thesis.spy_gap_change < -0.5:
+            drivers.append(f"SPY gap down {thesis.spy_gap_change:+.2f}%")
 
         if thesis.hot_sectors:
             drivers.append(f"{thesis.hot_sectors[0]} leading")
@@ -936,9 +933,9 @@ if __name__ == "__main__":
     print(f"Date:          {thesis.date}")
     print(f"Market Bias:   {thesis.market_bias} (score: {thesis.bias_score:+d})")
     print(f"Trading Mode:  {thesis.trading_mode} ({thesis.size_multiplier}x)")
-    print(f"Nifty Range:   {thesis.nifty_range_low:,.0f} – {thesis.nifty_range_high:,.0f}")
+    print(f"SPY Range:     ${thesis.spy_range_low:,.2f} – ${thesis.spy_range_high:,.2f}")
     print(f"VIX:           {thesis.vix}")
-    print(f"Gift Nifty:    {thesis.gift_nifty_change:+.2f}%")
+    print(f"SPY Gap:       {thesis.spy_gap_change:+.2f}%")
     print(f"FII Bias:      {thesis.fii_bias}")
     print(f"OC Bias:       {thesis.oc_bias}")
     print(f"Hot Sectors:   {thesis.hot_sectors}")

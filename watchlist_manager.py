@@ -1,17 +1,17 @@
 """
-watchlist_manager.py — NSE Momentum Groww AI Bot
-Dynamic NSE Stock Selection — Scans for Best Momentum Candidates
+watchlist_manager.py — US Momentum Alpaca AI Bot
+Dynamic US Stock Selection — Scans for Best Momentum Candidates
 
 18yr Rule: "Don't trade 100 stocks. Find the 5-10 that are ALIVE today.
 Momentum clusters. Where money flows, more money follows."
 
 Features:
-- 200+ stock universe (Nifty50 + Nifty100 + select mid-caps)
-- Pre-market momentum scan at 9:00 AM IST
+- 100+ stock universe (S&P 500 core + Nasdaq momentum + high-beta)
+- Pre-market momentum scan at 9:00 AM ET
 - Sector strength ranking — trade leaders not laggards
-- ADR filter (min 1.5% daily range for intraday viability)
-- Volume filter (today's vol vs 20-day average)
-- Relative strength vs Nifty50
+- ADR filter (min 1.0% daily range for intraday viability)
+- Volume filter (today's vol vs average)
+- Relative strength vs SPY
 - Auto-removes symbols from blacklist (from self-learning)
 """
 
@@ -27,47 +27,47 @@ from utils import format_ist_timestamp, get_current_ist_time, get_current_ist_da
 import config
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
 
 # -----------------------------------------------------------
-# FULL LIQUID UNIVERSE (NSE — high volume / intraday friendly)
+# FULL LIQUID UNIVERSE (NYSE/NASDAQ — high volume / intraday)
 # -----------------------------------------------------------
 LIQUID_UNIVERSE = [
-    # Nifty 50 core
-    "RELIANCE","TCS","INFY","HDFCBANK","ICICIBANK","SBIN","BHARTIARTL",
-    "ITC","KOTAKBANK","LT","WIPRO","HCLTECH","AXISBANK","MARUTI","SUNPHARMA",
-    "TATAMOTORS","BAJFINANCE","ADANIENT","ULTRACEMCO","TITAN","ASIANPAINT",
-    "POWERGRID","NTPC","HINDUNILVR","ONGC","JSWSTEEL","TATASTEEL",
-    "INDUSINDBK","BAJAJFINSV","TECHM","NESTLEIND","CIPLA","DIVISLAB",
-    "DRREDDY","EICHERMOT","APOLLOHOSP","COALINDIA","BPCL","HEROMOTOCO",
-    "BRITANNIA","GRASIM","TATACONSUM","HINDALCO","UPL","ADANIPORTS",
-    "SHREECEM","LTIM","HDFCLIFE","SBILIFE","PIDILITIND",
-    # High-momentum mid-caps
-    "ZOMATO","DMART","NYKAA","POLICYBZR","PAYTM","IRCTC","HAL",
-    "BEL","BHEL","SAIL","IDBI","BANDHANBNK","MUTHOOTFIN","MANAPPURAM",
-    "RECLTD","PFC","IRFC","NMDC","NATIONALUM","HINDCOPPER",
-    "TATAPOWER","ADANIGREEN","ADANITRANS","TORNTPOWER","CESC",
-    "VOLTAS","HAVELLS","CROMPTON","DIXON","AMBER","POLYCAB",
-    "MINDTREE","MPHASIS","COFORGE","PERSISTENT","SONACOMS",
-    "JUBLFOOD","WESTLIFE","DEVYANI","SAPPHIRE",
-    "BALKRISIND","APOLLOTYRE","MRF","CEATLTD",
-    "TRENT","SHOPERSTOP","ABFRL","MANYAVAR",
-    "SRF","DEEPAKNTR","TATACHEM","GNFC",
-    "BANKBARODA","UNIONBANK","PNB","CANBK","FEDERALBNK",
+    # Mega-cap tech (deepest liquidity, daily momentum movers)
+    "AAPL","MSFT","NVDA","AMZN","GOOGL","GOOG","META","TSLA",
+    "AMD","NFLX","ADBE","CRM","ORCL","INTC","QCOM","MU",
+    "AVGO","TXN","AMAT","LRCX","KLAC","MRVL","ON","MPWR",
+    # High-beta momentum / meme stocks
+    "COIN","HOOD","MSTR","PLTR","RBLX","SNAP","UBER","LYFT",
+    "RIVN","LCID","NIO","SOFI","UPST","AFRM","OPEN","OPENDOOR",
+    "ARM","SMCI","IONQ","QUBT","RGTI",
+    # ETFs — best for scalping (most liquid instruments)
+    "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","UVXY",
+    "XLK","XLF","XLE","XLV","XLY","XLRE",
+    # Financials & Banks
+    "JPM","GS","MS","BAC","WFC","C","BLK","SCHW","V","MA","PYPL",
+    # Energy & Commodities
+    "XOM","CVX","OXY","COP","SLB","HAL","MPC","PSX",
+    # Healthcare & Biotech
+    "UNH","JNJ","LLY","PFE","MRNA","BNTX","ABBV","BMY",
+    "AMGN","GILD","BIIB","REGN","VRTX","DXCM",
+    # Consumer & Retail
+    "AMZN","WMT","TGT","COST","HD","LOW","MCD","SBUX",
+    # Industrial & Defense
+    "BA","LMT","RTX","NOC","GD","CAT","DE","GE",
 ]
 
-# Sector mapping (simplified)
+# Sector mapping (US market)
 SECTOR_MAP = {
-    "IT":        ["TCS","INFY","WIPRO","HCLTECH","TECHM","LTIM","MPHASIS","COFORGE","PERSISTENT"],
-    "BANKING":   ["HDFCBANK","ICICIBANK","SBIN","KOTAKBANK","AXISBANK","INDUSINDBK","BANDHANBNK","FEDERALBNK"],
-    "PHARMA":    ["SUNPHARMA","CIPLA","DRREDDY","DIVISLAB","APOLLOHOSP"],
-    "AUTO":      ["MARUTI","TATAMOTORS","EICHERMOT","HEROMOTOCO","BAJAJFINSV","BALKRISIND","MRF"],
-    "ENERGY":    ["RELIANCE","ONGC","BPCL","TATAPOWER","ADANIGREEN","NTPC","POWERGRID","COALINDIA"],
-    "METALS":    ["TATASTEEL","JSWSTEEL","HINDALCO","SAIL","NMDC","NATIONALUM","HINDCOPPER"],
-    "FMCG":      ["ITC","HINDUNILVR","NESTLEIND","BRITANNIA","TATACONSUM","DABUR"],
-    "REALTY":    ["DLF","GODREJPROP","PRESTIGE","OBEROIRLTY"],
-    "FINANCE":   ["BAJFINANCE","HDFCLIFE","SBILIFE","MUTHOOTFIN","MANAPPURAM","PFC","RECLTD"],
-    "INFRA":     ["LT","ADANIPORTS","HAL","BEL","BHEL","IRFC"],
+    "TECH":       ["AAPL","MSFT","NVDA","AMD","INTC","QCOM","MU","AVGO","ADBE","CRM","ORCL"],
+    "AI_SEMI":    ["NVDA","AMD","AVGO","AMAT","LRCX","KLAC","MU","MRVL","ARM","SMCI"],
+    "FINTECH":    ["COIN","HOOD","SOFI","UPST","AFRM","PYPL","V","MA","SQ"],
+    "BANKS":      ["JPM","GS","MS","BAC","WFC","C","BLK","SCHW"],
+    "ENERGY":     ["XOM","CVX","OXY","COP","SLB","HAL","MPC","PSX"],
+    "HEALTHCARE": ["UNH","LLY","PFE","MRNA","ABBV","BMY","AMGN","GILD","REGN","VRTX"],
+    "CONSUMER":   ["AMZN","WMT","TGT","COST","HD","MCD","SBUX","TSLA"],
+    "DEFENSE":    ["LMT","RTX","NOC","GD","BA"],
+    "ETF":        ["SPY","QQQ","IWM","TQQQ","XLK","XLF","XLE"],
+    "HIGH_BETA":  ["MSTR","PLTR","COIN","RIVN","NIO","SOFI","RBLX","SNAP"],
 }
 
 
@@ -137,7 +137,7 @@ class WatchlistManager:
                     scores.append(score)
             except Exception as e:
                 logger.debug(f"Score failed {symbol}: {e}")
-            # Throttle: 5 requests per 2s to stay within Groww rate limits
+            # Throttle: 5 requests per 2s to stay within Alpaca rate limits
             if i % 5 == 4:
                 _time.sleep(2.0)
 
@@ -175,11 +175,11 @@ class WatchlistManager:
             high        = float(quote.get("high", ltp))
             low         = float(quote.get("low", ltp))
 
-            # ADR check — must be above 1.5% for intraday viability
+            # ADR check — must be above 0.8% for intraday viability
             intraday_range_pct = (high - low) / low * 100 if low > 0 else 0
 
-            # Price filter: ₹50–₹5000 (outside this is difficult to trade)
-            if ltp < 50 or ltp > 8000:
+            # Price filter: $1–$10000
+            if ltp < 1 or ltp > 10000:
                 return None
 
             # Momentum score
@@ -193,12 +193,12 @@ class WatchlistManager:
             # 2. Intraday range (are we getting movement today?)
             score += intraday_range_pct * 5
 
-            # 3. Volume factor — above 1M shares = liquid
-            if volume > 1_000_000:
+            # 3. Volume factor — above 500K shares = liquid for US stocks
+            if volume > 500_000:
                 score += 15
-            elif volume > 500_000:
+            elif volume > 100_000:
                 score += 8
-            elif volume < 100_000:
+            elif volume < 50_000:
                 score -= 20  # Too illiquid
 
             # 4. Price momentum strength
@@ -208,9 +208,9 @@ class WatchlistManager:
                 score += 10
 
             tradeable = (
-                intraday_range_pct >= 0.8 and   # Some movement today
-                volume >= 100_000 and             # Minimum liquidity
-                ltp >= 50                         # Price filter
+                intraday_range_pct >= 0.5 and   # Some movement today
+                volume >= 50_000 and             # Minimum liquidity
+                ltp >= 1                         # Price filter
             )
 
             return {
@@ -270,30 +270,30 @@ class WatchlistManager:
     def calculate_relative_strength(
         self,
         stock_change_pct: float,
-        nifty_change_pct: float,
+        spy_change_pct: float,
     ) -> float:
         """
-        Relative strength = stock return - Nifty return.
-        Positive = outperforming Nifty (strong stock).
+        Relative strength = stock return - SPY return.
+        Positive = outperforming SPY (strong stock).
         18yr rule: "Buy the strongest stock in the strongest sector.
-        Never buy a stock weaker than Nifty in a weak market."
+        Never buy a stock weaker than SPY in a weak market."
         """
-        return stock_change_pct - nifty_change_pct
+        return stock_change_pct - spy_change_pct
 
     def filter_by_relative_strength(
         self,
         symbols: List[str],
         data_fetcher,
-        nifty_change_pct: float,
+        spy_change_pct: float,
         min_rs: float = 0.3,
     ) -> List[str]:
-        """Keep only stocks outperforming Nifty by at least min_rs%."""
+        """Keep only stocks outperforming SPY by at least min_rs%."""
         strong = []
         for sym in symbols:
             try:
                 q = data_fetcher.get_quote(sym)
                 if q:
-                    rs = self.calculate_relative_strength(q.get("change_pct", 0), nifty_change_pct)
+                    rs = self.calculate_relative_strength(q.get("change_pct", 0), spy_change_pct)
                     if rs >= min_rs:
                         strong.append(sym)
             except Exception:
@@ -311,7 +311,7 @@ class WatchlistManager:
             arrow = "🟢" if s["change_pct"] >= 0 else "🔴"
             lines.append(
                 f"{i}. {arrow} {s['symbol']:12s} "
-                f"₹{s['ltp']:,.0f}  {s['change_pct']:+.1f}%  "
+                f"${s['ltp']:,.2f}  {s['change_pct']:+.1f}%  "
                 f"Vol:{s['volume']//1000:.0f}K  "
                 f"Score:{s['momentum_score']:.0f}"
             )

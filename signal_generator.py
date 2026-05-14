@@ -666,11 +666,13 @@ class SignalGenerator:
             return 0.0
 
     def _minutes_since_open(self) -> float:
-        """Minutes elapsed since 9:15 AM IST market open (0.0 before open)."""
+        """Minutes elapsed since 9:30 AM ET market open (0.0 before open)."""
         from datetime import datetime as _dt
-        now_ist = get_current_ist_time()
-        market_open = _dt(now_ist.year, now_ist.month, now_ist.day, 9, 15, 0, tzinfo=IST)
-        return max(0.0, (now_ist - market_open).total_seconds() / 60)
+        from zoneinfo import ZoneInfo as _ZI
+        now_et = get_current_ist_time()  # alias returns ET
+        ET = _ZI("America/New_York")
+        market_open = _dt(now_et.year, now_et.month, now_et.day, 9, 30, 0, tzinfo=ET)
+        return max(0.0, (now_et - market_open).total_seconds() / 60)
 
     # --------------------------------------------------------
     # PROFIT MAXIMIZER ENHANCEMENT
