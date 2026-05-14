@@ -763,3 +763,74 @@ class TelegramAlerter:
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
+
+    # --------------------------------------------------------
+    # OPTIONS ALERTS
+    # --------------------------------------------------------
+
+    def send_options_entry_alert(self, pos) -> bool:
+        """Alert for new options position entry."""
+        try:
+            direction_emoji = "📈" if "CALL" in pos.direction else "📉"
+            text = (
+                f"{direction_emoji} *OPTIONS ENTRY*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Underlying: `{pos.underlying}`\n"
+                f"Contract:   `{pos.opt_symbol}`\n"
+                f"Type:       `{pos.direction}`\n"
+                f"Qty:        `{pos.contracts}` contract(s)\n"
+                f"Premium:    `{_CUR}{pos.entry_premium:.2f}` per contract\n"
+                f"Total Cost: `{_CUR}{pos.entry_premium * pos.contracts * 100:.0f}`\n"
+                f"DTE:        `{pos.dte}` day(s)\n"
+                f"Stop:       `{_CUR}{pos.entry_premium * 0.55:.2f}` (−45%)\n"
+                f"Target 1:   `{_CUR}{pos.entry_premium * 1.80:.2f}` (+80%)\n"
+                f"Target 2:   `{_CUR}{pos.entry_premium * 2.50:.2f}` (+150%)\n"
+                f"{E['clock']} `{format_ist_timestamp()}`"
+            )
+            return self._send(text)
+        except Exception as e:
+            logger.debug(f"send_options_entry_alert: {e}")
+            return False
+
+    def send_options_exit_alert(self, pos, exit_premium: float, reason: str) -> bool:
+        """Alert for options position exit with P&L."""
+        try:
+            if pos.entry_premium > 0:
+                pnl_pct = (exit_premium - pos.entry_premium) / pos.entry_premium * 100
+            else:
+                pnl_pct = 0.0
+            pnl_usd = (exit_premium - pos.entry_premium) * pos.contracts * 100
+            emoji = E["profit"] if pnl_usd >= 0 else E["loss"]
+            text = (
+                f"{emoji} *OPTIONS EXIT — {reason}*\n"
+                f"━━━━━━━━━━━━━━━━━━━━\n"
+                f"Contract:  `{pos.opt_symbol}`\n"
+                f"Entry:     `{_CUR}{pos.entry_premium:.2f}`\n"
+                f"Exit:      `{_CUR}{exit_premium:.2f}`\n"
+                f"P&L:       `{_CUR}{pnl_usd:+.0f}` ({pnl_pct:+.1f}%)\n"
+                f"Contracts: `{pos.contracts}×100`\n"
+                f"{E['clock']} `{format_ist_timestamp()}`"
+            )
+            return self._send(text)
+        except Exception as e:
+            logger.debug(f"send_options_exit_alert: {e}")
+            return False
+
+    def send_options_uoa_alert(self, uoa_list: list) -> bool:
+        """Alert for unusual options activity detected."""
+        if not uoa_list:
+            return False
+        try:
+            lines = ["🔍 *Unusual Options Activity*\n━━━━━━━━━━━━━━━━━━━━"]
+            for u in uoa_list[:5]:
+                lines.append(
+                    f"• `{u['symbol']}` {u['type'].upper()} "
+                    f"strike={_CUR}{u['strike']:.0f} "
+                    f"vol/OI={u['vol_oi']:.1f}× "
+                    f"dte={u['dte']}d"
+                )
+            lines.append(f"{E['clock']} `{format_ist_timestamp()}`")
+            return self._send("\n".join(lines))
+        except Exception as e:
+            logger.debug(f"send_options_uoa_alert: {e}")
+            return False

@@ -108,6 +108,7 @@ class TradingBot:
         self.profit_engine = None       # Daily profit target + compounding engine
         self.elite_brain   = None       # 12-module signal fusion (Grand Slam detector)
         self.burst_detector = None      # Explosive momentum burst scanner
+        self.options_scalper = None     # US options scalping engine (Alpaca only)
         self._last_trade_date = ""
         self._overnight_run_today = False
 
@@ -314,6 +315,19 @@ class TradingBot:
             self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
             self.sector_rotation = self.pairs_engine = self.options_signals = None
             logger.info(f"[{format_ist_timestamp()}] NSE-specific modules skipped ({MARKET_NAME} mode)")
+
+        # Options Scalping Engine (US market only — Alpaca options)
+        self.options_scalper = None
+        if MARKET_NAME != "NSE":
+            try:
+                from options_scalping import get_options_scalping_engine
+                self.options_scalper = get_options_scalping_engine(
+                    live_enabled=config.LIVE_TRADING_ENABLED
+                )
+                logger.info(f"[{format_ist_timestamp()}] Options Scalping Engine ready (live={config.LIVE_TRADING_ENABLED})")
+            except Exception as e:
+                self.options_scalper = None
+                logger.warning(f"[{format_ist_timestamp()}] Options scalping init failed: {e}")
 
         try:
             from orb_strategy import get_orb_strategy
@@ -1226,6 +1240,48 @@ class TradingBot:
                     except Exception as e:
                         logger.warning(f"Alert failed: {e}")
 
+                    # ── Options scalping piggyback on strong stock signals ──
+                    if self.options_scalper and result.success:
+                        try:
+                            bal = self.fetcher.get_account_balance()
+                            avail = bal.get("available", 0)
+                            opt_action = self.options_scalper.evaluate_stock_signal(
+                                symbol           = signal.symbol,
+                                direction        = signal.direction,
+                                signal_score     = signal.signal_score,
+                                entry_price      = signal.entry_price,
+                                available_capital= avail,
+                                patterns         = [p.name for p in getattr(signal, "patterns_list", [])],
+                            )
+                            if opt_action:
+                                self.options_scalper.execute_options_signal(opt_action)
+                        except Exception as _oe:
+                            logger.debug(f"Options piggyback failed for {signal.symbol}: {_oe}")
+
+            # ── Standalone UOA scan (every 15 min) ────────────────────────
+            if self.options_scalper:
+                try:
+                    bal   = self.fetcher.get_account_balance()
+                    avail = bal.get("available", 0)
+                    uoa_signals = self.options_scalper.scan_unusual_activity(
+                        symbols           = list(watchlist) if 'watchlist' in dir() else [],
+                        available_capital = avail,
+                    )
+                    if uoa_signals:
+                        try:
+                            self.alerter.send_options_uoa_alert(
+                                [{"symbol": s["underlying"], "type": "CALL" if "CALL" in s["direction"] else "PUT",
+                                  "strike": s["contract"].strike, "vol_oi": s.get("uoa_ratio", 0),
+                                  "dte": s["dte"]}
+                                 for s in uoa_signals]
+                            )
+                        except Exception:
+                            pass
+                        for uoa in uoa_signals[:2]:  # max 2 UOA trades per scan
+                            self.options_scalper.execute_options_signal(uoa)
+                except Exception as _uoa_e:
+                    logger.debug(f"UOA scan error: {_uoa_e}")
+
             # Print dashboard periodically
             if get_current_ist_time().minute % 15 == 0:
                 self.dashboard.print_live_dashboard(self.risk_manager)
@@ -1618,10 +1674,17 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _do_eod_squareoff(self):
-        """Force square-off all positions at 3:20 PM IST."""
+        """Force square-off all positions at 3:20 PM IST / 3:50 PM ET."""
         if not self.eod_done:
-            logger.warning(f"[{format_ist_timestamp()}] 🔴 EOD SQUARE-OFF (3:20 PM IST)")
-            self.executor.square_off_all("EOD automatic square-off 3:20 PM IST")
+            logger.warning(f"[{format_ist_timestamp()}] 🔴 EOD SQUARE-OFF")
+            self.executor.square_off_all("EOD automatic square-off")
+            # Also close all options positions
+            if self.options_scalper:
+                try:
+                    self.options_scalper.close_all()
+                    logger.info(f"[{format_ist_timestamp()}] Options positions closed (EOD)")
+                except Exception as e:
+                    logger.warning(f"[{format_ist_timestamp()}] Options EOD close failed: {e}")
             self.eod_done = True
 
     def _do_eod_shutdown(self):
@@ -2027,6 +2090,11 @@ class TradingBot:
             self.risk_manager.emergency_stop()
             self.alerter.send_kill_alert()
             self.executor.square_off_all("KILL SWITCH by Telegram /kill")
+            if self.options_scalper:
+                try:
+                    self.options_scalper.close_all()
+                except Exception:
+                    pass
 
         async def cmd_status(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):

@@ -176,8 +176,26 @@ DEFAULT_WATCHLIST = [
     "MUTHOOTFIN", "CHOLAFIN", "BAJAJFINSV", "SBICARD", "HDFCLIFE",
 ]  # 55 stocks — 2.75× more opportunities than before
 
-# Daily profit target (₹) for DailyProfitEngine
-DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "5000"))
+# Daily profit target ($) for DailyProfitEngine — $200/day minimum target
+DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "200"))
+
+# ============================================================
+# OPTIONS SCALPING — US Alpaca Markets
+# ============================================================
+OPTIONS_ENABLED:                bool  = os.getenv("OPTIONS_ENABLED", "True").lower() in ("true", "1", "yes")
+OPTIONS_MIN_STOCK_SCORE:        float = float(os.getenv("OPTIONS_MIN_STOCK_SCORE", "70"))
+OPTIONS_MAX_POSITIONS:          int   = int(os.getenv("OPTIONS_MAX_POSITIONS", "3"))
+OPTIONS_MAX_PREMIUM_PCT:        float = float(os.getenv("OPTIONS_MAX_PREMIUM_PCT", "1.2"))  # % of capital per trade
+OPTIONS_MAX_CONTRACTS:          int   = int(os.getenv("OPTIONS_MAX_CONTRACTS", "5"))
+OPTIONS_PREFERRED_DTE:          int   = int(os.getenv("OPTIONS_PREFERRED_DTE", "1"))  # 0DTE=0, weekly=1-5
+OPTIONS_STOP_PCT:               float = float(os.getenv("OPTIONS_STOP_PCT", "45"))    # exit at 45% loss
+OPTIONS_TARGET1_PCT:            float = float(os.getenv("OPTIONS_TARGET1_PCT", "80")) # T1 at 80% gain
+OPTIONS_TARGET2_PCT:            float = float(os.getenv("OPTIONS_TARGET2_PCT", "150")) # T2 at 150% gain
+OPTIONS_MAX_IV_RANK:            float = float(os.getenv("OPTIONS_MAX_IV_RANK", "65")) # skip if IV rank > 65%
+OPTIONS_MIN_DELTA:              float = float(os.getenv("OPTIONS_MIN_DELTA", "0.25"))
+OPTIONS_MAX_SPREAD_PCT:         float = float(os.getenv("OPTIONS_MAX_SPREAD_PCT", "18"))
+UOA_SCAN_ENABLED:               bool  = os.getenv("UOA_SCAN_ENABLED", "True").lower() in ("true", "1", "yes")
+UOA_VOL_OI_THRESHOLD:           float = float(os.getenv("UOA_VOL_OI_THRESHOLD", "2.5"))
 
 CUSTOM_WATCHLIST_STR = os.getenv("CUSTOM_WATCHLIST", "")
 WATCHLIST = (

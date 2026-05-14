@@ -269,6 +269,21 @@ class PatternRecognizer:
             self.detect_double_bottom_top,
             self.detect_market_structure_break,
             self.detect_ema_stack,
+            # ── Advanced chart patterns ───────────────────────────────────
+            self.detect_cup_and_handle,
+            self.detect_inverse_head_shoulders,
+            self.detect_head_and_shoulders,
+            self.detect_rising_wedge,
+            self.detect_falling_wedge,
+            self.detect_ascending_triangle,
+            self.detect_descending_triangle,
+            self.detect_tweezer_tops,
+            self.detect_tweezer_bottoms,
+            self.detect_three_inside_up,
+            self.detect_three_inside_down,
+            self.detect_kicker_pattern,
+            self.detect_abandoned_baby,
+            self.detect_symmetrical_triangle,
         ]
 
         for detector in detectors:
@@ -1109,6 +1124,522 @@ class PatternRecognizer:
         return None
 
     # --------------------------------------------------------
+    # ADDITIONAL PATTERNS (Cup&Handle, H&S, Wedge, Triangle, etc.)
+    # --------------------------------------------------------
+
+    def detect_cup_and_handle(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Cup and Handle: U-shaped consolidation followed by a small pullback handle,
+        then breakout above the cup rim. One of the most reliable bullish continuations.
+        Needs 30+ bars.
+        """
+        if len(df) < 35:
+            return None
+        closes = df["close"].values
+        highs  = df["high"].values
+
+        # Rim = highest high in last 35 bars (left and right of cup)
+        rim  = max(highs[-35:-20])          # left side
+        cup_low = min(closes[-30:-10])       # cup bottom
+        right_rim = max(highs[-15:-5])       # right side
+
+        if cup_low <= 0 or rim <= 0:
+            return None
+
+        depth = (rim - cup_low) / rim * 100
+        symmetry = abs(right_rim - rim) / rim * 100
+
+        # Valid cup: 5-30% depth, right rim close to left rim
+        if not (5 <= depth <= 30 and symmetry < 5):
+            return None
+
+        # Handle: small pullback then close near rim
+        handle_low = min(closes[-8:-2])
+        current    = closes[-1]
+        handle_depth = (right_rim - handle_low) / right_rim * 100
+
+        if not (1 <= handle_depth <= 10):
+            return None
+
+        # Breakout: current price breaks above rim
+        if current < rim * 0.99:
+            return None
+
+        confidence = min(65 + ind.volume_ratio * 5 + max(0, 20 - depth), 90)
+        return PatternResult(
+            "Cup and Handle", "LONG", confidence,
+            f"C&H breakout: cup={depth:.1f}% deep, handle={handle_depth:.1f}%, "
+            f"vol={ind.volume_ratio:.1f}x"
+        )
+
+    def detect_inverse_head_shoulders(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Inverse Head & Shoulders: three troughs, middle trough (head) lowest.
+        Major bullish reversal pattern. Neckline break = entry.
+        """
+        if len(df) < 40:
+            return None
+        lows   = df["low"].values
+        closes = df["close"].values
+
+        # Find three local lows in the last 40 bars
+        def local_min(arr, start, end, window=5):
+            best_val = arr[start + window]
+            best_idx = start + window
+            for i in range(start + window, end - window):
+                if arr[i] == min(arr[i-window:i+window+1]):
+                    if arr[i] < best_val:
+                        best_val, best_idx = arr[i], i
+            return best_idx, best_val
+
+        n   = len(lows)
+        lb  = n - 40
+        ls_idx, ls = local_min(lows, lb,      lb + 15)
+        hd_idx, hd = local_min(lows, lb + 12, lb + 28)
+        rs_idx, rs = local_min(lows, lb + 25, n - 3)
+
+        if not (hd < ls and hd < rs):   # head must be lowest
+            return None
+
+        shoulder_sym = abs(ls - rs) / max(ls, 0.01) * 100
+        if shoulder_sym > 8:            # shoulders should be similar height
+            return None
+
+        neckline = (lows[ls_idx] + lows[rs_idx]) / 2 * 1.01
+        if closes[-1] < neckline:       # must break above neckline
+            return None
+
+        depth = (neckline - hd) / neckline * 100
+        confidence = min(68 + depth * 1.5 + ind.volume_ratio * 3, 92)
+        return PatternResult(
+            "Inverse Head & Shoulders", "LONG", confidence,
+            f"IH&S breakout: head={depth:.1f}% below neckline, "
+            f"shoulder_sym={shoulder_sym:.1f}%"
+        )
+
+    def detect_head_and_shoulders(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Head & Shoulders: three peaks, middle peak (head) highest.
+        Classic bearish reversal. Neckline break below = entry.
+        """
+        if len(df) < 40:
+            return None
+        highs  = df["high"].values
+        closes = df["close"].values
+
+        def local_max(arr, start, end, window=5):
+            best_val = arr[start + window]
+            best_idx = start + window
+            for i in range(start + window, end - window):
+                if arr[i] == max(arr[i-window:i+window+1]):
+                    if arr[i] > best_val:
+                        best_val, best_idx = arr[i], i
+            return best_idx, best_val
+
+        n   = len(highs)
+        lb  = n - 40
+        ls_idx, ls = local_max(highs, lb,      lb + 15)
+        hd_idx, hd = local_max(highs, lb + 12, lb + 28)
+        rs_idx, rs = local_max(highs, lb + 25, n - 3)
+
+        if not (hd > ls and hd > rs):
+            return None
+
+        shoulder_sym = abs(ls - rs) / max(ls, 0.01) * 100
+        if shoulder_sym > 8:
+            return None
+
+        neckline = (highs[ls_idx] + highs[rs_idx]) / 2 * 0.99
+        if closes[-1] > neckline:
+            return None
+
+        depth = (hd - neckline) / neckline * 100
+        confidence = min(68 + depth * 1.5 + ind.volume_ratio * 3, 92)
+        return PatternResult(
+            "Head & Shoulders", "SHORT", confidence,
+            f"H&S breakdown: head={depth:.1f}% above neckline"
+        )
+
+    def detect_rising_wedge(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Rising Wedge: price rises but range compresses (bearish divergence).
+        Both highs and lows trending up, but converging — often precedes reversal.
+        """
+        if len(df) < 20:
+            return None
+        highs  = df["high"].values[-20:]
+        lows   = df["low"].values[-20:]
+        closes = df["close"].values[-20:]
+
+        # Linear regression slopes for highs and lows
+        x      = list(range(20))
+        hi_slope = (highs[-1] - highs[0]) / 19
+        lo_slope = (lows[-1]  - lows[0])  / 19
+
+        # Both trending up, but lows rising faster (converging wedge)
+        if not (hi_slope > 0 and lo_slope > 0 and lo_slope > hi_slope * 0.5):
+            return None
+
+        # Convergence: upper - lower channel narrowing
+        range_start = highs[0]  - lows[0]
+        range_end   = highs[-1] - lows[-1]
+        if range_end >= range_start:
+            return None   # must be compressing
+
+        compression = (range_start - range_end) / max(range_start, 0.01) * 100
+        if compression < 15:
+            return None
+
+        # RSI divergence: price up but RSI not making new highs = extra confirmation
+        confidence = 58 + compression * 0.3
+        if ind.rsi > 60:
+            confidence += 8
+        confidence = min(confidence, 85)
+
+        return PatternResult(
+            "Rising Wedge (Bearish)", "SHORT", confidence,
+            f"Rising wedge: range compressed {compression:.1f}%, "
+            f"RSI={ind.rsi:.0f}"
+        )
+
+    def detect_falling_wedge(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Falling Wedge: price falls but range compresses (bullish setup).
+        Both highs and lows trending down, but converging — spring-loaded reversal.
+        """
+        if len(df) < 20:
+            return None
+        highs  = df["high"].values[-20:]
+        lows   = df["low"].values[-20:]
+        closes = df["close"].values[-20:]
+
+        hi_slope = (highs[-1] - highs[0]) / 19
+        lo_slope = (lows[-1]  - lows[0])  / 19
+
+        if not (hi_slope < 0 and lo_slope < 0 and lo_slope < hi_slope * 0.5):
+            return None
+
+        range_start = highs[0]  - lows[0]
+        range_end   = highs[-1] - lows[-1]
+        if range_end >= range_start:
+            return None
+
+        compression = (range_start - range_end) / max(range_start, 0.01) * 100
+        if compression < 15:
+            return None
+
+        # Bullish signal: last close near the upper trendline
+        if closes[-1] < lows[-1] + (highs[-1] - lows[-1]) * 0.5:
+            return None
+
+        confidence = 60 + compression * 0.3
+        if ind.rsi < 45:
+            confidence += 8
+        confidence = min(confidence, 88)
+
+        return PatternResult(
+            "Falling Wedge (Bullish)", "LONG", confidence,
+            f"Falling wedge: range compressed {compression:.1f}% — coiled spring"
+        )
+
+    def detect_ascending_triangle(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Ascending Triangle: flat resistance + rising lows → bullish breakout.
+        High-probability pattern when accompanied by volume surge on breakout.
+        """
+        if len(df) < 25:
+            return None
+        highs  = df["high"].values[-25:]
+        lows   = df["low"].values[-25:]
+        closes = df["close"].values
+
+        # Flat resistance: recent highs within 0.5%
+        resistance = max(highs)
+        high_spread = (max(highs[-15:]) - min(highs[-15:])) / max(resistance, 0.01) * 100
+        if high_spread > 1.5:
+            return None
+
+        # Rising lows: low of last 5 bars > low of first 5 bars
+        early_low = min(lows[:10])
+        late_low  = min(lows[-10:])
+        if late_low <= early_low * 1.005:
+            return None
+
+        # Breakout: current close above resistance
+        if closes[-1] < resistance * 0.998:
+            return None
+
+        confidence = min(65 + ind.volume_ratio * 6, 88)
+        return PatternResult(
+            "Ascending Triangle", "LONG", confidence,
+            f"Ascending triangle breakout above ${resistance:.2f} "
+            f"vol={ind.volume_ratio:.1f}x"
+        )
+
+    def detect_descending_triangle(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Descending Triangle: flat support + falling highs → bearish breakdown.
+        """
+        if len(df) < 25:
+            return None
+        highs  = df["high"].values[-25:]
+        lows   = df["low"].values[-25:]
+        closes = df["close"].values
+
+        support   = min(lows)
+        low_spread = (max(lows[-15:]) - min(lows[-15:])) / max(abs(support), 0.01) * 100
+        if low_spread > 1.5:
+            return None
+
+        early_high = max(highs[:10])
+        late_high  = max(highs[-10:])
+        if late_high >= early_high * 0.995:
+            return None
+
+        if closes[-1] > support * 1.002:
+            return None
+
+        confidence = min(63 + ind.volume_ratio * 5, 85)
+        return PatternResult(
+            "Descending Triangle", "SHORT", confidence,
+            f"Descending triangle breakdown below ${support:.2f}"
+        )
+
+    def detect_tweezer_tops(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Tweezer Tops: two candles with almost identical highs after an uptrend.
+        Signals rejection at a level — bearish reversal.
+        """
+        if len(df) < 5:
+            return None
+        prev, curr = df.iloc[-2], df.iloc[-1]
+
+        # Highs within 0.15%
+        high_diff = abs(curr["high"] - prev["high"]) / max(prev["high"], 0.01) * 100
+        if high_diff > 0.15:
+            return None
+
+        # At least one candle bearish
+        if not (curr["close"] < curr["open"] or prev["close"] < prev["open"]):
+            return None
+
+        # In uptrend (recent lows rising)
+        if len(df) >= 10:
+            recent_lows = df["low"].values[-10:]
+            if recent_lows[-1] < recent_lows[0]:
+                return None
+
+        confidence = 58 + (0.15 - high_diff) * 100
+        if ind.rsi > 65:
+            confidence += 8
+        confidence = min(confidence, 80)
+        return PatternResult(
+            "Tweezer Tops", "SHORT", confidence,
+            f"Tweezer tops: dual rejection at ${curr['high']:.2f}"
+        )
+
+    def detect_tweezer_bottoms(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Tweezer Bottoms: two candles with almost identical lows after a downtrend.
+        Signals support holding — bullish reversal.
+        """
+        if len(df) < 5:
+            return None
+        prev, curr = df.iloc[-2], df.iloc[-1]
+
+        low_diff = abs(curr["low"] - prev["low"]) / max(abs(prev["low"]), 0.01) * 100
+        if low_diff > 0.15:
+            return None
+
+        if not (curr["close"] > curr["open"] or prev["close"] > prev["open"]):
+            return None
+
+        if len(df) >= 10:
+            recent_highs = df["high"].values[-10:]
+            if recent_highs[-1] > recent_highs[0]:
+                return None
+
+        confidence = 58 + (0.15 - low_diff) * 100
+        if ind.rsi < 40:
+            confidence += 8
+        confidence = min(confidence, 80)
+        return PatternResult(
+            "Tweezer Bottoms", "LONG", confidence,
+            f"Tweezer bottoms: dual support at ${curr['low']:.2f}"
+        )
+
+    def detect_three_inside_up(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Three Inside Up: bearish candle → smaller bullish inside bar →
+        strong bullish close above bar-1's open. Reliable reversal.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        # Bar 1: bearish
+        if c1["close"] >= c1["open"]:
+            return None
+        # Bar 2: bullish inside bar
+        if not (c2["close"] > c2["open"] and c2["high"] < c1["open"] and c2["low"] > c1["close"]):
+            return None
+        # Bar 3: bullish close above bar 1 open
+        if c3["close"] <= c1["open"]:
+            return None
+
+        confidence = 62 + ind.volume_ratio * 5
+        if ind.rsi < 45:
+            confidence += 8
+        confidence = min(confidence, 85)
+        return PatternResult(
+            "Three Inside Up", "LONG", confidence,
+            "Three inside up: bearish engulfed, bullish continuation confirmed"
+        )
+
+    def detect_three_inside_down(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Three Inside Down: bullish candle → smaller bearish inside bar →
+        strong bearish close below bar-1's open. Reliable reversal.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        if c1["close"] <= c1["open"]:
+            return None
+        if not (c2["close"] < c2["open"] and c2["high"] < c1["close"] and c2["low"] > c1["open"]):
+            return None
+        if c3["close"] >= c1["open"]:
+            return None
+
+        confidence = 62 + ind.volume_ratio * 5
+        if ind.rsi > 55:
+            confidence += 8
+        confidence = min(confidence, 85)
+        return PatternResult(
+            "Three Inside Down", "SHORT", confidence,
+            "Three inside down: bullish engulfed, bearish continuation confirmed"
+        )
+
+    def detect_kicker_pattern(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Kicker: two candles where bar 2 opens at or above bar 1's open (bullish)
+        or at or below bar 1's open (bearish), with a gap showing sentiment shift.
+        One of the most powerful reversal signals.
+        """
+        if len(df) < 3:
+            return None
+        prev, curr = df.iloc[-2], df.iloc[-1]
+
+        # Bullish kicker: prev bearish, curr gaps up and closes well above
+        if (prev["close"] < prev["open"] and
+                curr["open"] >= prev["open"] * 0.998 and
+                curr["close"] > curr["open"]):
+            gap_pct = (curr["open"] - prev["open"]) / max(prev["open"], 0.01) * 100
+            body_pct = (curr["close"] - curr["open"]) / max(curr["open"], 0.01) * 100
+            if body_pct >= 0.3:
+                confidence = min(72 + gap_pct * 5 + ind.volume_ratio * 4, 92)
+                return PatternResult(
+                    "Bullish Kicker", "LONG", confidence,
+                    f"Bullish kicker: gap up {gap_pct:.2f}%, strong bull body {body_pct:.2f}%"
+                )
+
+        # Bearish kicker: prev bullish, curr gaps down
+        if (prev["close"] > prev["open"] and
+                curr["open"] <= prev["open"] * 1.002 and
+                curr["close"] < curr["open"]):
+            gap_pct = (prev["open"] - curr["open"]) / max(prev["open"], 0.01) * 100
+            body_pct = (curr["open"] - curr["close"]) / max(curr["open"], 0.01) * 100
+            if body_pct >= 0.3:
+                confidence = min(72 + gap_pct * 5 + ind.volume_ratio * 4, 92)
+                return PatternResult(
+                    "Bearish Kicker", "SHORT", confidence,
+                    f"Bearish kicker: gap down {gap_pct:.2f}%, strong bear body {body_pct:.2f}%"
+                )
+        return None
+
+    def detect_abandoned_baby(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Abandoned Baby: doji with gap on both sides = extreme reversal signal.
+        Bullish: downtrend, gap-down doji, gap-up bullish close.
+        """
+        if len(df) < 3:
+            return None
+        c1, c2, c3 = df.iloc[-3], df.iloc[-2], df.iloc[-1]
+
+        body2 = abs(c2["close"] - c2["open"])
+        range2 = c2["high"] - c2["low"]
+        is_doji = range2 > 0 and body2 / range2 < 0.1
+
+        if not is_doji:
+            return None
+
+        # Bullish: c1 bearish, gap-down doji, gap-up bullish c3
+        if (c1["close"] < c1["open"] and
+                c2["high"] < c1["low"] and
+                c3["low"] > c2["high"] and
+                c3["close"] > c3["open"]):
+            confidence = min(78 + ind.volume_ratio * 5, 93)
+            return PatternResult(
+                "Bullish Abandoned Baby", "LONG", confidence,
+                "Abandoned baby: gap-down doji + gap-up reversal — extreme bull signal"
+            )
+
+        # Bearish: c1 bullish, gap-up doji, gap-down bearish c3
+        if (c1["close"] > c1["open"] and
+                c2["low"] > c1["high"] and
+                c3["high"] < c2["low"] and
+                c3["close"] < c3["open"]):
+            confidence = min(78 + ind.volume_ratio * 5, 93)
+            return PatternResult(
+                "Bearish Abandoned Baby", "SHORT", confidence,
+                "Abandoned baby: gap-up doji + gap-down reversal — extreme bear signal"
+            )
+        return None
+
+    def detect_symmetrical_triangle(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Symmetrical Triangle: converging highs and lows — coiled spring.
+        Breakout direction follows the prevailing trend (trade with momentum).
+        """
+        if len(df) < 20:
+            return None
+        highs  = df["high"].values[-20:]
+        lows   = df["low"].values[-20:]
+        closes = df["close"].values
+
+        hi_slope = (highs[-1] - highs[0]) / 19
+        lo_slope = (lows[-1]  - lows[0])  / 19
+
+        # Highs falling, lows rising (converging)
+        if not (hi_slope < 0 and lo_slope > 0):
+            return None
+
+        compression = ((highs[0] - lows[0]) - (highs[-1] - lows[-1])) / max(highs[0] - lows[0], 0.01) * 100
+        if compression < 20:
+            return None
+
+        # Breakout direction
+        mid = (highs[-1] + lows[-1]) / 2
+        curr = closes[-1]
+
+        if curr > highs[-1] * 0.998:
+            direction  = "LONG"
+            confidence = min(62 + compression * 0.3 + ind.volume_ratio * 5, 85)
+            return PatternResult(
+                "Symmetrical Triangle (Bullish Breakout)", direction, confidence,
+                f"Symmetrical triangle breakout: compression {compression:.1f}%"
+            )
+        elif curr < lows[-1] * 1.002:
+            direction  = "SHORT"
+            confidence = min(62 + compression * 0.3 + ind.volume_ratio * 5, 85)
+            return PatternResult(
+                "Symmetrical Triangle (Bearish Breakdown)", direction, confidence,
+                f"Symmetrical triangle breakdown: compression {compression:.1f}%"
+            )
+        return None
+
+    # --------------------------------------------------------
     # COMPOSITE SCORE
     # --------------------------------------------------------
 
@@ -1131,6 +1662,13 @@ class PatternRecognizer:
             "Full EMA Stack Bullish", "Full EMA Stack Bearish",
             "Double Bottom", "Double Top",
             "Heikin Ashi Bull Trend", "Heikin Ashi Bear Trend",
+            # Advanced patterns (equally high confidence)
+            "Cup and Handle",
+            "Inverse Head & Shoulders", "Head & Shoulders",
+            "Bullish Abandoned Baby", "Bearish Abandoned Baby",
+            "Bullish Kicker", "Bearish Kicker",
+            "Ascending Triangle", "Descending Triangle",
+            "Three Inside Up", "Three Inside Down",
         }
 
         # Pattern scores
