@@ -42,7 +42,7 @@ IST = ZoneInfo("Asia/Kolkata")
 try:
     from broker import CURRENCY_SYMBOL as _CUR
 except Exception:
-    _CUR = "₹"
+    _CUR = "$"
 
 # ── emoji palette ───────────────────────────────────────────
 E = {
@@ -543,7 +543,7 @@ class TelegramAlerter:
     def send_squareoff_warning(self, positions) -> bool:
         n = len(positions) if hasattr(positions, "__len__") else 0
         text = (
-            f"{E['warn']} *SQUARE-OFF WARNING — 3:20 PM IST*\n"
+            f"{E['warn']} *SQUARE-OFF WARNING — 3:50 PM ET*\n"
             f"`{n}` open position(s) will be force-closed at market price.\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
@@ -575,13 +575,13 @@ class TelegramAlerter:
             bias_score = brief.get("bias_score", 0)
             vix_data   = brief.get("vix", {})
             vix        = vix_data.get("vix", 0) if isinstance(vix_data, dict) else 0
-            gift_data  = brief.get("gift_nifty", {})
-            gap_pct    = gift_data.get("gap_pct", 0) if isinstance(gift_data, dict) else 0
+            spy_data   = brief.get("spy_gap", {})
+            gap_pct    = spy_data.get("gap_pct", 0) if isinstance(spy_data, dict) else 0
             risks      = brief.get("key_risks", [])
             ai_thesis  = brief.get("ai_thesis", "")
             watchlist  = brief.get("top_watchlist", [])
             avail_cap  = available or brief.get("available_capital", 0)
-            nifty_ltp  = nifty_open or brief.get("nifty_open", 0)
+            nifty_ltp  = nifty_open or brief.get("spy_open", 0)
         else:
             # Legacy: send_morning_brief(watchlist_list, available_float, nifty_open_float)
             watchlist  = brief_or_watchlist or []
@@ -599,8 +599,8 @@ class TelegramAlerter:
             f"{E['rocket']} *MORNING BRIEF — {format_ist_timestamp()}*\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"{bias_emoji} Day Bias: *{bias}* (score: `{bias_score:+d}`)\n"
-            f"VIX: `{vix:.1f}` | Gift Nifty: `{gap_pct:+.2f}%` | "
-            f"Nifty: `{_CUR}{nifty_ltp:,.0f}` | Capital: `{_CUR}{avail_cap:,.0f}`\n"
+            f"VIX: `{vix:.1f}` | SPY Gap: `{gap_pct:+.2f}%` | "
+            f"SPY: `{_CUR}{nifty_ltp:,.2f}` | Capital: `{_CUR}{avail_cap:,.0f}`\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
             f"*Key Risks:*\n{risks_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
@@ -707,8 +707,8 @@ class TelegramAlerter:
         emoji  = E["profit"] if success else E["loss"]
         status = "succeeded" if success else "FAILED — using previous token"
         text = (
-            f"{emoji} *Groww Token Refresh {status.split()[0].capitalize()}*\n"
-            f"Method: `{method}` | Status: `{status}`\n"
+            f"{emoji} *Alpaca Auth {status.split()[0].capitalize()}*\n"
+            f"Status: `{status}`\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
