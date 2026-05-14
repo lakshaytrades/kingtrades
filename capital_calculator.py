@@ -243,7 +243,7 @@ def generate_full_report(starting_capital: float = 500.0) -> str:
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"💰 KingTrades — Capital Projection",
         f"   Starting Capital: ${starting_capital:,.0f}",
-        f"   Leverage (Alpaca): 4× = ${starting_capital * 4:,.0f} buying power",
+        f"   Buying power: ${starting_capital:,.0f} (no margin leverage)",
         f"   Risk per trade: 1% = ${starting_capital * 0.01:.2f}",
         f"   Options premium budget: 5% = ${starting_capital * 0.05:.2f}/trade",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
@@ -284,7 +284,7 @@ def generate_full_report(starting_capital: float = 500.0) -> str:
         "  3. Only trade: SPY, QQQ, AAPL, NVDA, AMD, TSLA",
         "     (tight spreads, high liquidity — critical for small account)",
         "  4. Daily loss limit = $10 (2% of $500) → bot stops new entries",
-        "  5. Use 4× Alpaca leverage — treat it as $2,000",
+        "  5. Trade within account equity — no margin leverage",
         "  6. At $1,000 capital: risk $10/trade, premium $50/trade",
         "  7. Compound everything — never withdraw until $5,000+",
         "",
@@ -333,7 +333,7 @@ def get_telegram_summary(capital: float = 500.0) -> str:
     """Short version for Telegram message (fits in one message)."""
     risk   = capital * 0.01
     opts   = capital * 0.05
-    bp     = capital * 4
+    bp     = capital * 1
 
     cons  = CONSERVATIVE.daily_expected_pnl(capital, 1.0)
     mod   = MODERATE.daily_expected_pnl(capital, 1.0)
@@ -353,7 +353,7 @@ def get_telegram_summary(capital: float = 500.0) -> str:
     return (
         f"💰 *${capital:.0f} Account Projection*\n"
         f"━━━━━━━━━━━━━━━━━━━━\n"
-        f"Buying power: `${bp:,.0f}` (4× Alpaca margin)\n"
+        f"Buying power: `${bp:,.0f}` (Alpaca paper equity)\n"
         f"Risk/trade:   `${risk:.2f}` (1% stock)\n"
         f"Options max:  `${opts:.2f}` (5% per trade)\n"
         f"⚠️ PDT rule: max 3 day-trades per 5 days under $25k\n"

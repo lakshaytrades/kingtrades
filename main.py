@@ -373,7 +373,7 @@ class TradingBot:
                 f"Daily Target: <b>${config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
                 f"Watchlist: <b>{wl_count} stocks</b>\n\n"
                 f"Strategies: MTF + SmartMoney + ProfitMaximizer\n"
-                f"Market opens at 9:15 AM IST"
+                f"Market opens at 9:30 AM ET"
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
@@ -436,7 +436,7 @@ class TradingBot:
             return False
 
     def initialize_market_day(self):
-        """Called once at market open each day (9:15 AM IST)."""
+        """Called once at market open each day (9:30 AM ET)."""
         if self._day_initialized:
             return
 
@@ -726,7 +726,7 @@ class TradingBot:
                         f"[{format_ist_timestamp()}] 📅 New trading day: {today_str}"
                     )
 
-                # Overnight analysis at 8:00 AM IST (before market)
+                # Overnight analysis at 8:00 AM ET (before market)
                 if (now_ist.hour == 8 and now_ist.minute < 5
                         and not self._overnight_run_today):
                     self._run_overnight_analysis()
@@ -913,7 +913,7 @@ class TradingBot:
                         self.alerter.send_html(
                             f"📊 <b>Market Scan — No Signals</b>\n"
                             f"Scanned {len(watchlist)} stocks at "
-                            f"{now_ist.strftime('%H:%M')} IST\n"
+                            f"{now_ist.strftime('%H:%M')} ET\n"
                             f"Min score required: {dow_min:.0f} | Day: {day_name}\n"
                             f"<i>Bot is running — waiting for quality setups</i>"
                         )
@@ -1014,7 +1014,7 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Block deal rescan failed: {e}")
 
-            # 4f. Opening Range Breakout (9:31–9:45 AM IST only)
+            # 4f. Opening Range Breakout (9:31–9:45 AM ET only)
             if self.orb_strategy and self.orb_strategy.is_orb_time():
                 try:
                     orb_setups = self.orb_strategy.scan_symbols(watchlist, self.fetcher)
@@ -1033,7 +1033,7 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"ORB scan failed: {e}")
 
-            # 4g. Scalping engine (9:15–10:00 AM and 13:30–14:30 IST)
+            # 4g. Scalping engine (9:30–10:00 AM and 13:30–14:30 ET)
             if self.scalping_engine and self.scalping_engine.is_scalp_time():
                 try:
                     nifty_chg = 0.0
@@ -1695,7 +1695,7 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _run_overnight_analysis(self):
-        """Run global market analysis at 8:00 AM IST. Sets day's trading bias."""
+        """Run global market analysis at 8:00 AM ET. Sets day's trading bias."""
         logger.info(f"[{format_ist_timestamp()}] Running overnight intelligence...")
         try:
             if self.overnight:
@@ -1731,10 +1731,10 @@ class TradingBot:
 
     def _run_premarket_health_check(self, today_str: str = ""):
         """
-        Runs at 7:00 AM IST — 2 hours before market open, 1.5 before login.
+        Runs at 7:00 AM ET — 2 hours before market open, 1.5 before login.
 
         Checks everything, auto-fixes what it can, sends Telegram report.
-        If unfixable, sends specific instructions so you can act by 9:15 AM.
+        If unfixable, sends specific instructions so you can act by 9:30 AM.
         """
         logger.info(f"[{format_ist_timestamp()}] 🔍 Pre-market health check ({MARKET_NAME})...")
         issues   = []
@@ -2173,7 +2173,7 @@ class TradingBot:
                     lines += [
                         "",
                         f"⚠️ <i>Live balance unavailable — showing cached data from {age:.0f} min ago.</i>",
-                        "<i>Groww balance API is only active during market hours (9:15 AM–3:30 PM IST).</i>",
+                        "<i>Alpaca balance API is only active during market hours (9:30 AM–4:00 PM ET).</i>",
                     ]
                 elif available == 0 and not bal.get("_from_cache"):
                     lines += [
@@ -2348,7 +2348,7 @@ class TradingBot:
     def _apply_eod_trained_params(self) -> None:
         """
         Load yesterday's walk-forward optimized params and apply to live trading.
-        Called once at startup and again each morning at 9:00 AM IST.
+        Called once at startup and again each morning at 9:00 AM ET.
 
         Updates:
           config.ATR_SL_MULTIPLIER   → better stop-loss distance
@@ -2502,7 +2502,7 @@ class TradingBot:
 
     def _send_premarket_scan(self):
         """
-        At 9:05 AM IST: scan full watchlist for the top 5 high-momentum
+        At 9:25 AM ET: scan full watchlist for the top 5 high-momentum
         setups and send a 'Today's Top Picks' Telegram alert.
         """
         if not self.signal_gen or not self.alerter:

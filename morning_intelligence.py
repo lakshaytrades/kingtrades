@@ -813,7 +813,7 @@ class MorningIntelligence:
                 )
             else:
                 action = (
-                    f"Normal mode — wait for ORB (9:15-9:30) to confirm direction. "
+                    f"Normal mode — wait for ORB (9:30-9:45) to confirm direction. "
                     f"Trade only high-confidence setups (score > 75)."
                 )
 
