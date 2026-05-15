@@ -478,8 +478,10 @@ class HighAccuracyFilter:
             "WEAK_TREND_UP":     ("BUY",  0.8),
             "WEAK_TREND_DOWN":   ("SELL", 0.8),
             "HIGH_VOLATILITY":   ("BOTH", 0.6),
+            "MIDDAY_CHOP":       ("BOTH", 0.6),   # Reduced size, not blocked
+            "RANGING":           ("BOTH", 0.5),   # Very small size, not blocked
         }
-        blocked = {"RANGING", "LOW_VOLATILITY", "MIDDAY_CHOP"}
+        blocked = {"LOW_VOLATILITY"}
 
         if regime in blocked:
             return False, 0.0
@@ -504,7 +506,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 60:
+        if alignment_score < 35:
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
@@ -512,10 +514,10 @@ class HighAccuracyFilter:
         return True, alignment_score
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
-        """Require 2.0x volume — institutional participation threshold."""
-        if volume_ratio < 2.0:
+        """Require 1.5x volume — confirmed participation threshold."""
+        if volume_ratio < 1.5:
             return False, 0
-        bonus = min((volume_ratio - 2.0) * 5, 10)
+        bonus = min((volume_ratio - 1.5) * 4, 10)
         return True, bonus
 
     def _check_pattern_quality(
@@ -559,15 +561,16 @@ class HighAccuracyFilter:
 
     def _check_adx(self, adx: float) -> Tuple[bool, str]:
         """
-        Gate 12: ADX > 20 confirms directional trend exists.
-        ADX ≤ 20 = choppy/ranging market — momentum strategies fail.
+        Gate 12: ADX > 15 confirms directional trend exists.
+        ADX = 0 means data unavailable — fail open (don't block on missing data).
         """
-        if adx >= 20:
+        if adx == 0:
+            return True, ""   # Data unavailable — fail open
+        if adx >= 15:
             return True, ""
         return False, (
-            f"ADX {adx:.0f} ≤ 20 — market is choppy/ranging. "
-            "Momentum strategies require ADX > 20. "
-            "Wait for directional trend to develop."
+            f"ADX {adx:.0f} < 15 — market is choppy/ranging. "
+            "Momentum strategies require ADX > 15."
         )
 
     def _check_spy_alignment(

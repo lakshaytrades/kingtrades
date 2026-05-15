@@ -260,11 +260,16 @@ class SignalGenerator:
 
             # 3. Multi-timeframe alignment
             alignment = self._check_mtf_alignment(score_5m, score_15m, score_1h)
+            if dir_5m := score_5m.get("direction", "NEUTRAL"):
+                pass  # keep direction for fallback below
             if not alignment["aligned"]:
-                logger.debug(f"{symbol}: MTF not aligned — skipping")
-                return None
+                if config.REQUIRE_MTF_ALIGNMENT or dir_5m == "NEUTRAL":
+                    logger.debug(f"{symbol}: MTF not aligned — skipping")
+                    return None
+                # MTF alignment not required — continue with 5m direction, apply penalty later
+                logger.debug(f"{symbol}: MTF partial alignment {alignment['score']:.0f} — proceeding with penalty")
 
-            direction = alignment["direction"]
+            direction = alignment["direction"] if alignment["aligned"] else dir_5m
 
             # 4. News filter
             news_clear = True
@@ -758,7 +763,7 @@ class SignalGenerator:
         else:
             alignment_score -= 15  # 1h opposing means counter-trend — risky
 
-        aligned = alignment_score >= 70  # Raised: 50→70 — require strong HTF alignment
+        aligned = alignment_score >= 55  # 5m+15m NEUTRAL+1h NEUTRAL = 60 passes; 5m alone = 35+15+10=60 passes
 
         return {
             "aligned": aligned,

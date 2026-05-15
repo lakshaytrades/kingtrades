@@ -307,8 +307,8 @@ class TestHighAccuracyFilterGates(unittest.TestCase):
 
     # ------------------------------------------------------------------
     def test_rejects_low_volume_ratio(self):
-        """Filter rejects a signal when volume_ratio is below 2.0."""
-        result = self._eval(volume_ratio=1.5)
+        """Filter rejects a signal when volume_ratio is below the 1.5x threshold."""
+        result = self._eval(volume_ratio=1.0)
         self.assertFalse(result.passed)
         self.assertIn("VOLUME", " ".join(result.gates_failed))
 
@@ -333,8 +333,8 @@ class TestHighAccuracyFilterGates(unittest.TestCase):
         self.assertIn(result.quality_grade, ("A+", "A", "B"))
 
     def test_rejects_when_adx_below_threshold(self):
-        """Filter rejects when ADX < 20 (choppy/ranging market)."""
-        result = self._eval(adx=15.0)
+        """Filter rejects when ADX < 15 (choppy/ranging market)."""
+        result = self._eval(adx=10.0)
         self.assertFalse(result.passed)
         self.assertTrue(
             any("ADX" in g for g in result.gates_failed),
