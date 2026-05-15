@@ -1,15 +1,15 @@
 """
-risk_manager.py — NSE Momentum Groww AI Bot
+risk_manager.py — US Momentum Alpaca AI Bot
 ATR-Based Risk Management Engine
 
-⚠️ WARNING: This bot places REAL orders with REAL money on Groww.
+⚠️ WARNING: This bot places REAL orders with REAL money on Alpaca.
 All risk parameters from config.py — never hardcode limits.
 
 Features:
 - Per-trade risk: 0.5–1% of capital (ATR-based SL)
-- Trailing stop: activates at 1x ATR profit, trails 0.5x ATR
+- Trailing stop: activates at 1x ATR profit, trails ATR or previous swing low
 - Daily loss limit circuit breaker (2% of capital)
-- Nifty circuit breaker (pause if Nifty moves >2%)
+- SPY circuit breaker (pause if SPY moves >2%)
 - Consecutive loss pause (3 losses → 30min pause)
 - Position sizing via Kelly Criterion (capped at 10%)
 - Auto balance check before every trade
@@ -59,6 +59,7 @@ class Position:
     t2_done: bool = False
     breakeven_done: bool = False     # True once SL moved to entry (0.5% profit)
     size_multiplier: float = 1.0     # From HighAccuracyFilter
+    price_history: list = field(default_factory=list)  # Rolling 20 bars for swing detection
 
     def __post_init__(self):
         if not self.entry_time:
@@ -680,14 +681,30 @@ class RiskManager:
                     "reason": f"T2 hit ${position.target_2:.2f} — exit {position.t2_qty} qty (30%), runner active"
                 }
 
-            # ── Runner trailing stop (post-T2) ────────────────
+            # ── Runner trailing stop (post-T2): ATR trail OR swing low ──────
             if position.trailing_active and position.t2_done:
-                new_trail = position.max_price - trail_dist
+                # Track price history for swing-low detection (rolling 20 bars)
+                position.price_history.append(current_price)
+                if len(position.price_history) > 20:
+                    position.price_history.pop(0)
+
+                atr_trail = position.max_price - trail_dist
+
+                # Swing low: lowest low in last 5 bars of history (if enough data)
+                swing_trail = 0.0
+                if len(position.price_history) >= 5:
+                    swing_low = min(position.price_history[-5:])
+                    swing_trail = swing_low - atr * 0.1   # tiny buffer below swing low
+
+                # Use tighter of ATR trail or swing-low trail (whichever is higher)
+                new_trail = max(atr_trail, swing_trail) if swing_trail > 0 else atr_trail
+
                 if new_trail > position.trailing_stop:
                     position.trailing_stop = new_trail
+                    trail_source = "swing-low" if swing_trail > atr_trail else "ATR"
                     return {
                         "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
-                        "reason": f"Runner trail ${new_trail:.2f} (grade {position.quality_grade})"
+                        "reason": f"Runner trail ({trail_source}) ${new_trail:.2f} (grade {position.quality_grade})"
                     }
                 if current_price <= position.trailing_stop:
                     return {

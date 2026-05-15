@@ -102,9 +102,9 @@ class TradingBot:
         self.block_deal_scanner = None  # Institutional block/bulk deal scanner
         self.sector_rotation = None     # Sector momentum rotation engine
         self.pairs_engine = None        # Pairs trading (midday arbitrage)
-        self.options_signals = None     # Nifty/BankNifty CE/PE signals
-        self.orb_strategy = None        # Opening Range Breakout (9:15-9:45 AM)
-        self.scalping_engine = None     # Opening drive scalper (9:15-10:00 AM)
+        self.options_signals = None     # US equity options signals (disabled)
+        self.orb_strategy = None        # Opening Range Breakout (9:30-9:45 AM ET)
+        self.scalping_engine = None     # Opening drive scalper (9:30-10:00 AM ET)
         self.morning_intel = None       # Morning intelligence — day thesis + mode
         self.profit_engine = None       # Daily profit target + compounding engine
         self.elite_brain   = None       # 12-module signal fusion (Grand Slam detector)
@@ -153,7 +153,7 @@ class TradingBot:
         else:
             logger.info(f"[{format_ist_timestamp()}] 🔒 DRY RUN MODE — No real orders")
 
-        # Initialize broker auth (Alpaca: just validates API keys; Groww: TOTP)
+        # Initialize broker auth (Alpaca: validates API keys, no TOTP needed)
         logger.info(f"[{format_ist_timestamp()}] Broker: {MARKET_NAME}")
         self.fetcher = _broker_get_fetcher()
 
@@ -386,7 +386,7 @@ class TradingBot:
 
     def _api_health_check(self) -> bool:
         """
-        Verify Groww API is responding before starting the trading session.
+        Verify Alpaca API is responding before starting the trading session.
         Prevents silent failures where orders appear to place but don't execute.
 
         Returns True if API is healthy, False if there's a connectivity issue.
@@ -431,7 +431,7 @@ class TradingBot:
             if self.alerter:
                 self.alerter.send_text(
                     f"🚨 API HEALTH FAIL at market open: {e}\n"
-                    "Check Groww connectivity and token."
+                    "Check Alpaca connectivity and API keys."
                 )
             return False
 
@@ -451,21 +451,21 @@ class TradingBot:
             )
             # Not fatal — allow the day to proceed but alert was sent
 
-        # Get live balance from Groww; fall back to auto-compounded capital
+        # Get live balance from Alpaca; fall back to auto-compounded capital
         balance_info = self.fetcher.get_account_balance()
         available = balance_info.get("available", 0)
         if available == 0:
             available = self._load_compounded_capital()
 
-        # Sync any open positions from Groww (recovery after restart)
+        # Sync any open positions from Alpaca (recovery after restart)
         self._sync_positions_from_groww()
 
         # Get SPY opening price as market reference
-        nifty_q = self.fetcher.get_nifty_quote()
-        nifty_open = nifty_q.get("ltp", 0) if nifty_q else 0
+        spy_q = self.fetcher.get_nifty_quote()
+        spy_open = spy_q.get("ltp", 0) if spy_q else 0
 
         # Initialize risk manager for the day
-        self.risk_manager.initialize_day(available, nifty_open)
+        self.risk_manager.initialize_day(available, spy_open)
 
         # Initialize Profit Engine for the day
         try:
@@ -622,11 +622,11 @@ class TradingBot:
                 except Exception as e:
                     logger.warning(f"Morning intelligence failed: {e}")
                     # Fallback to basic morning brief
-                    self.alerter.send_morning_brief(watchlist, available, nifty_open,
+                    self.alerter.send_morning_brief(watchlist, available, spy_open,
                                                     oc_summary=oc_summary, fii_summary=fii_summary)
             else:
                 self.alerter.send_morning_brief(
-                    watchlist, available, nifty_open,
+                    watchlist, available, spy_open,
                     oc_summary=oc_summary,
                     fii_summary=fii_summary,
                 )
@@ -667,7 +667,7 @@ class TradingBot:
         dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
         logger.info(
             f"[{format_ist_timestamp()}] Day initialized | "
-            f"Balance: ${available:,.2f} | SPY: ${nifty_open:,.2f} | "
+            f"Balance: ${available:,.2f} | SPY: ${spy_open:,.2f} | "
             f"Watchlist: {len(watchlist)} stocks\n"
             f"  DOW mode: {dow_name} | Size: {dow_mult:.0%} | "
             f"Min score: {dow_min:.0f} | Max trades: {dow_max}"
@@ -808,7 +808,7 @@ class TradingBot:
         One full scan cycle:
         1. Auto-heal any crashed modules
         2. Update all open positions (trailing stops, SL hits)
-        3. Check Nifty circuit breaker
+        3. Check SPY/market circuit breaker
         4. Calendar & VIX blackout check
         5. Scan watchlist for new signals
         6. Execute valid signals
@@ -829,10 +829,10 @@ class TradingBot:
                 logger.debug(f"[{format_ist_timestamp()}] Weekly target hit — locked to A+ only")
                 return
 
-            # 2. Check Nifty circuit
-            nifty_q = self.fetcher.get_nifty_quote()
-            if nifty_q:
-                self.risk_manager.check_nifty_circuit(nifty_q.get("ltp", 0))
+            # 2. Check SPY circuit breaker
+            spy_q = self.fetcher.get_nifty_quote()
+            if spy_q:
+                self.risk_manager.check_nifty_circuit(spy_q.get("ltp", 0))
 
             # 3. Economic calendar blackout check
             if self.calendar:
@@ -1036,11 +1036,11 @@ class TradingBot:
             # 4g. Scalping engine (9:30–10:00 AM and 13:30–14:30 ET)
             if self.scalping_engine and self.scalping_engine.is_scalp_time():
                 try:
-                    nifty_chg = 0.0
-                    if nifty_q:
-                        nifty_chg = nifty_q.get("change_pct", 0.0)
+                    spy_chg = 0.0
+                    if spy_q:
+                        spy_chg = spy_q.get("change_pct", 0.0)
                     scalp_signals = self.scalping_engine.scan(
-                        watchlist, self.fetcher, nifty_change_pct=nifty_chg
+                        watchlist, self.fetcher, nifty_change_pct=spy_chg
                     )
                     for ss in scalp_signals:
                         if self.alerter:
@@ -1058,7 +1058,7 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Scalping scan failed: {e}")
 
-            # 4h. Momentum Burst Detector (opening 9:15-10:15 + afternoon 13:30-14:45)
+            # 4h. Momentum Burst Detector (opening 9:30-10:30 ET + afternoon 13:00-14:30 ET)
             if self.burst_detector and self.burst_detector.is_burst_time():
                 try:
                     burst_setups = self.burst_detector.scan(watchlist[:20], self.fetcher)
@@ -2204,7 +2204,7 @@ class TradingBot:
                 except Exception as _ce:
                     logger.debug(f"capital_calculator error: {_ce}")
 
-                # Also show NSE compounded growth if available
+                # Also show US market compounded growth if available
                 if not custom_capital:
                     data = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
                     base = config.MAX_DAILY_CAPITAL

@@ -419,16 +419,33 @@ class SignalGenerator:
             # 8. Build signal using filter's final score and size
             # Apply smart money regime multiplier on top of filter's size
             regime_mult = sm_score.regime_multiplier if sm_score is not None else 1.0
-            # Score-based sizing: selective leverage only on 90+ score setups
-            score_size_mult = 1.0
-            if ai_score >= 90:
-                score_size_mult = 1.3   # Elite conviction: scale up (Grok: 90+ only)
+
+            # ── Score-based sizing (aggressive tiers for 70% return target) ──
+            # Tier 1: 95–100  Elite setup + catalyst → 2.0x (max risk per trade still capped at config)
+            # Tier 2: 90–94   High conviction          → 1.5x
+            # Tier 3: 85–89   Good setup               → 1.2x
+            # Tier 4: 75–84   Normal                   → 1.0x
+            # Tier 5: <75     Weak (below min anyway)  → 0.7x
+            if ai_score >= 95:
+                score_size_mult = 2.0   # Elite: earnings catalyst + RVOL + ICT confluence
+            elif ai_score >= 90:
+                score_size_mult = 1.5   # High conviction
+            elif ai_score >= 85:
+                score_size_mult = 1.2   # Good setup
             elif ai_score >= 75:
                 score_size_mult = 1.0   # Normal
-            elif ai_score >= 65:
-                score_size_mult = 0.75  # Below threshold: reduce
             else:
-                score_size_mult = 0.5   # Weak signal: half size
+                score_size_mult = 0.7   # Weak
+
+            # Earnings catalyst with RVOL surge → extra 0.3x on top (capped at 2.0)
+            try:
+                from catalyst_scanner import get_catalyst_scanner
+                cat = get_catalyst_scanner()._cache.get(symbol, {})
+                if cat.get("has_catalyst") and cat.get("boost", 0) >= 20:
+                    score_size_mult = min(2.0, score_size_mult + 0.3)
+            except Exception:
+                pass
+
             combined_size = round(filter_result.size_multiplier * regime_mult * score_size_mult, 2)
             signal = self._build_signal(
                 symbol=symbol,
@@ -464,10 +481,24 @@ class SignalGenerator:
         Concurrent watchlist scan using ThreadPoolExecutor.
 
         Performance: 30 symbols × ~4s each → 120s sequential vs ~20s concurrent.
-        Rate-limit safe: max 6 workers (Groww allows ~10 req/s).
+        Pre-market gap plays are promoted to the front of the queue for first-mover advantage.
         """
         # Refresh FII/DII + OC + FII futures once per cycle (not per symbol)
         self.refresh_institutional_context()
+
+        # Pre-market gap scanner: promote high-conviction gap plays
+        try:
+            from premarket_scanner import get_premarket_scanner
+            pm_priority = get_premarket_scanner().get_priority_symbols(symbols, top_n=5)
+            if pm_priority:
+                # Reorder: gap plays first, then the rest
+                rest = [s for s in symbols if s not in pm_priority]
+                symbols = pm_priority + rest
+                logger.info(
+                    f"[{format_ist_timestamp()}] PreMarket priority: {pm_priority}"
+                )
+        except Exception:
+            pass
 
         signals: List[TradeSignal] = []
         errors  = 0
@@ -1056,7 +1087,7 @@ class SignalGenerator:
 
         rationale = (
             f"Grade {quality_grade} | MTF: {mtf_str} | "
-            f"RS vs Nifty: {rs:+.1f}% | "
+            f"RS vs SPY: {rs:+.1f}% | "
             f"Volume: {ind.volume_ratio:.1f}x | "
             f"RSI: {ind.rsi:.0f} | "
             f"MACD: {'▲' if ind.macd_hist > 0 else '▼'} | "

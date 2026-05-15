@@ -81,7 +81,7 @@ MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
 ATR_SL_MULTIPLIER: float = 1.4
-ATR_TP_MULTIPLIER: float = 2.8
+ATR_TP_MULTIPLIER: float = 3.0   # T2 = exact 1:3 R:R (Grok spec)
 ATR_TRAIL_MULTIPLIER: float = 0.8
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
