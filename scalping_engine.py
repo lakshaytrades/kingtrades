@@ -10,7 +10,7 @@ import pandas as pd
 from utils import get_current_ist_time, format_ist_timestamp
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
 # Session windows (IST)
 _OPENING_DRIVE_START = time(9, 15)
@@ -266,7 +266,7 @@ class ScalpingEngine:
     ) -> Tuple[bool, str]:
         now_ist = get_current_ist_time()
         if entry_time.tzinfo is None:
-            entry_time = entry_time.replace(tzinfo=IST)
+            entry_time = entry_time.replace(tzinfo=ET)
 
         elapsed_minutes = (now_ist - entry_time).total_seconds() / 60
 
@@ -301,7 +301,7 @@ class ScalpingEngine:
         now_ist = get_current_ist_time()
         stale = [
             sym for sym, entry_time in self._active_scalps.items()
-            if (now_ist - (entry_time if entry_time.tzinfo else entry_time.replace(tzinfo=IST))
+            if (now_ist - (entry_time if entry_time.tzinfo else entry_time.replace(tzinfo=ET))
                 ).total_seconds() / 60 >= self.MAX_HOLD_MINUTES
         ]
         for sym in stale:

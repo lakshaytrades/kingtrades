@@ -967,8 +967,15 @@ class TradingBot:
                 if not health["healthy"]:
                     logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain pause: {health['reason']}")
                     return
-                if health.get("score_override") and self.signal_gen:
-                    self.signal_gen.min_score = health["score_override"]
+
+            # Apply effective score threshold: DOW is the floor, brain can raise above it
+            if self.signal_gen:
+                brain_score = (
+                    self.adaptive_brain._state.current_min_score
+                    if hasattr(self, "adaptive_brain") and self.adaptive_brain
+                    else dow_min
+                )
+                self.signal_gen.min_score = max(dow_min, brain_score)
 
             signals = self.signal_gen.scan_watchlist(
                 symbols=watchlist,

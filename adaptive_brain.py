@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 88.0    # Never go below this
-MIN_SCORE_CEIL   = 98.0    # Never above this
-DEFAULT_SCORE    = 90.0
+MIN_SCORE_FLOOR  = 72.0    # Never go below this (DOW Wednesday/Tuesday floor)
+MIN_SCORE_CEIL   = 92.0    # Never above this (reachable ceiling)
+DEFAULT_SCORE    = 78.0    # Day-start score (matches Friday DOW_MIN_SCORE)
 
 
 @dataclass
@@ -243,11 +243,11 @@ class AdaptiveBrain:
             overall_wr = results.win_rate
             if overall_wr >= 60:
                 self._state.current_min_score = max(
-                    88.0, self._state.current_min_score - 2
+                    MIN_SCORE_FLOOR, self._state.current_min_score - 2
                 )
             elif overall_wr < 50:
                 self._state.current_min_score = min(
-                    98.0, self._state.current_min_score + 3
+                    MIN_SCORE_CEIL, self._state.current_min_score + 3
                 )
 
             logger.info(
@@ -269,8 +269,8 @@ class AdaptiveBrain:
         # ── Streak-based score adaptation ─────────────────────────────────
         if s.consecutive_losses >= 3:
             # 3 losses in a row — raise bar hard, reduce size
-            new_score = min(s.current_min_score + 5.0, MIN_SCORE_CEIL)
-            new_size  = max(s.size_multiplier * 0.6, 0.4)
+            new_score = min(s.current_min_score + 4.0, MIN_SCORE_CEIL)
+            new_size  = max(s.size_multiplier * 0.7, 0.5)
             if new_score != s.current_min_score or new_size != s.size_multiplier:
                 s.current_min_score = new_score
                 s.size_multiplier   = new_size
@@ -278,37 +278,48 @@ class AdaptiveBrain:
 
         elif s.consecutive_losses == 2:
             # 2 losses — raise score, hold size
-            new_score = min(s.current_min_score + 3.0, MIN_SCORE_CEIL)
+            new_score = min(s.current_min_score + 2.0, MIN_SCORE_CEIL)
             if new_score != s.current_min_score:
                 s.current_min_score = new_score
                 msg.append(f"2 loss streak → score↑{new_score:.0f}")
 
-        elif s.consecutive_wins >= 3:
-            # 3 wins — confidence, restore size slightly
-            new_size = min(s.size_multiplier * 1.1, 1.5)
-            if new_size != s.size_multiplier:
-                s.size_multiplier = new_size
-                msg.append(f"3 win streak → size↑{new_size:.1f}x")
-
         elif s.consecutive_wins >= 5:
-            # 5 wins — can soften score slightly (still above floor)
-            new_score = max(s.current_min_score - 1.0, DEFAULT_SCORE)
+            # 5+ wins — confidence, soften score and restore size
+            new_score = max(s.current_min_score - 3.0, MIN_SCORE_FLOOR)
+            new_size  = min(s.size_multiplier * 1.15, 1.5)
             s.current_min_score = new_score
-            msg.append(f"5 win streak → slight score adjust {new_score:.0f}")
+            s.size_multiplier   = new_size
+            msg.append(f"5 win streak → score↓{new_score:.0f} size↑{new_size:.1f}x")
+
+        elif s.consecutive_wins >= 3:
+            # 3 wins — restore score toward default, increase size
+            new_score = max(s.current_min_score - 2.0, DEFAULT_SCORE)
+            new_size  = min(s.size_multiplier * 1.1, 1.3)
+            if new_score != s.current_min_score or new_size != s.size_multiplier:
+                s.current_min_score = new_score
+                s.size_multiplier   = new_size
+                msg.append(f"3 win streak → score↓{new_score:.0f} size↑{new_size:.1f}x")
+
+        elif s.consecutive_wins >= 1:
+            # Any win after a loss streak — start recovering immediately
+            new_score = max(s.current_min_score - 3.0, DEFAULT_SCORE)
+            if new_score != s.current_min_score:
+                s.current_min_score = new_score
+                msg.append(f"win after losses → score↓{new_score:.0f} (recovering)")
 
         # ── Day P&L protection ────────────────────────────────────────────
         if s.day_capital > 0:
             day_pct = (s.day_pnl / s.day_capital) * 100
 
             if day_pct <= -1.5:
-                s.current_min_score = min(95.0, MIN_SCORE_CEIL)
+                s.current_min_score = MIN_SCORE_CEIL  # Max tightness
                 s.size_multiplier   = 0.5
-                msg.append(f"Day P&L {day_pct:.1f}% → defensive mode score=95 size=0.5x")
+                msg.append(f"Day P&L {day_pct:.1f}% → defensive mode score={MIN_SCORE_CEIL:.0f} size=0.5x")
 
             elif day_pct <= -1.0:
-                s.current_min_score = max(s.current_min_score, 93.0)
+                s.current_min_score = max(s.current_min_score, DEFAULT_SCORE + 5.0)
                 s.size_multiplier   = max(s.size_multiplier * 0.7, 0.5)
-                msg.append(f"Day P&L {day_pct:.1f}% → raising bar score≥93")
+                msg.append(f"Day P&L {day_pct:.1f}% → raising bar score≥{s.current_min_score:.0f}")
 
             elif day_pct >= 2.0:
                 # Locking profit — reduce risk

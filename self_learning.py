@@ -165,11 +165,11 @@ class SelfLearningEngine:
         wr = self._win_rate(df)
         if wr < 45:
             # Poor win rate — raise the bar
-            self.config.min_signal_score = min(self.config.min_signal_score + 3.0, 98.0)
+            self.config.min_signal_score = min(self.config.min_signal_score + 3.0, 92.0)
             logger.info(f"[{format_ist_timestamp()}] Low win rate {wr:.1f}% → raising min score to {self.config.min_signal_score}")
         elif wr > 65:
-            # Good win rate — can slightly loosen (floor 88 — never below institutional standard)
-            self.config.min_signal_score = max(self.config.min_signal_score - 1.0, 88.0)
+            # Good win rate — can loosen slightly toward the DOW floor
+            self.config.min_signal_score = max(self.config.min_signal_score - 1.0, 72.0)
             logger.info(f"[{format_ist_timestamp()}] Good win rate {wr:.1f}% → min score {self.config.min_signal_score}")
 
     def _adapt_pattern_weights(self, df: pd.DataFrame):
@@ -312,7 +312,7 @@ class SelfLearningEngine:
             current = self.config.min_signal_score
             # Move slowly toward optimal
             new_score = current * 0.8 + practical_min * 0.2
-            self.config.min_signal_score = round(max(min(new_score, 98), 88), 1)
+            self.config.min_signal_score = round(max(min(new_score, 92), 72), 1)
 
     # -------------------------------------------------------
     # QUERY HELPERS

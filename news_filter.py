@@ -165,8 +165,8 @@ class NewsFilter:
                             })
                 except Exception as e:
                     logger.debug(f"RSS feed error ({feed_url}): {e}")
-        except ImportError:
-            pass
+        except ImportError as _e:
+            logger.debug(f"[suppressed] feedparser not installed: {_e}")
 
         # 2. NewsAPI
         if self.api_key:

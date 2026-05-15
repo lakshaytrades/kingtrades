@@ -2,26 +2,26 @@
   "date": "2026-05-15",
   "consecutive_wins": 1,
   "consecutive_losses": 0,
-  "day_pnl": 290.0,
+  "day_pnl": -100.0,
   "day_capital": 0.0,
   "trades_today": 7,
   "wins_today": 2,
-  "current_min_score": 98.0,
-  "size_multiplier": 0.6,
+  "current_min_score": 85.0,
+  "size_multiplier": 0.5,
   "paused": false,
   "pause_reason": "",
   "pattern_today": {
     "ORB_BREAKOUT": [
       false,
-      false,
       true,
+      false,
       false,
       false,
       false,
       true
     ]
   },
-  "last_update": "2026-05-15 09:16:56 ET",
+  "last_update": "2026-05-15 13:39:39 ET",
   "pattern_boosts": {},
   "disabled_patterns": []
 }

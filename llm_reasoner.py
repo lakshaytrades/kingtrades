@@ -78,8 +78,8 @@ Be decisive. Don't overthink. Answer in under 2 seconds mentally."""
                 self._enabled = True
                 logger.info(f"[{format_ist_timestamp()}] LLMReasoner: Claude API ready")
                 return
-        except ImportError:
-            pass
+        except ImportError as _e:
+            logger.debug(f"[suppressed] anthropic not installed: {_e}")
 
         # Fallback: try Gemini via google-generativeai
         try:
@@ -92,8 +92,8 @@ Be decisive. Don't overthink. Answer in under 2 seconds mentally."""
                 self._use_gemini   = True
                 logger.info(f"[{format_ist_timestamp()}] LLMReasoner: Gemini API ready")
                 return
-        except ImportError:
-            pass
+        except ImportError as _e:
+            logger.debug(f"[suppressed] google-generativeai not installed: {_e}")
 
         logger.info(f"[{format_ist_timestamp()}] LLMReasoner: No API key — running without LLM gate")
 

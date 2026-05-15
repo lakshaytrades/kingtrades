@@ -136,11 +136,13 @@ class TestAdaptiveBrain(unittest.TestCase):
         self.assertEqual(self.brain._state.consecutive_losses, 1)
 
     def test_three_losses_raises_min_score(self):
-        """Three consecutive losses should tighten min_score."""
-        initial = self._get_min_score()
+        """Three consecutive losses should tighten min_score (up to MIN_SCORE_CEIL)."""
+        from adaptive_brain import MIN_SCORE_CEIL
+        self.brain._state.current_min_score = 78.0  # Start at a tradeable level
         for _ in range(3):
             self.brain.record_trade(self._make_outcome(win=False, pnl=-100.0))
-        self.assertGreaterEqual(self._get_min_score(), initial)
+        self.assertGreater(self._get_min_score(), 78.0)
+        self.assertLessEqual(self._get_min_score(), MIN_SCORE_CEIL)
 
     def test_day_reset_clears_pnl(self):
         """reset_day() resets daily P&L and streak counters."""
@@ -150,18 +152,19 @@ class TestAdaptiveBrain(unittest.TestCase):
         self.assertEqual(self.brain._state.day_pnl, 0.0)
         self.assertEqual(self.brain._state.consecutive_losses, 0)
 
-    def test_min_score_never_exceeds_98(self):
-        """min_score is capped at 98 regardless of adaptive adjustments."""
-        self.brain._state.current_min_score = 98.0
-        self.brain.record_trade(self._make_outcome(win=True, pnl=500.0))
-        self.assertLessEqual(self._get_min_score(), 98.0)
+    def test_min_score_never_exceeds_ceil(self):
+        """min_score is capped at MIN_SCORE_CEIL regardless of adaptive adjustments."""
+        from adaptive_brain import MIN_SCORE_CEIL
+        self.brain._state.current_min_score = MIN_SCORE_CEIL
+        self.brain.record_trade(self._make_outcome(win=False, pnl=-100.0))
+        self.assertLessEqual(self._get_min_score(), MIN_SCORE_CEIL)
 
-    def test_min_score_never_drops_below_88(self):
-        """min_score floor is 88 even after consecutive losses."""
+    def test_min_score_never_drops_below_floor(self):
+        """min_score floor is MIN_SCORE_FLOOR regardless of consecutive wins."""
         from adaptive_brain import MIN_SCORE_FLOOR
         self.brain._state.current_min_score = MIN_SCORE_FLOOR
-        # Even on a loss, should never go below floor
-        self.brain.record_trade(self._make_outcome(win=False, pnl=-10.0))
+        # Even on a win, should never go below floor
+        self.brain.record_trade(self._make_outcome(win=True, pnl=200.0))
         self.assertGreaterEqual(self._get_min_score(), MIN_SCORE_FLOOR)
 
 

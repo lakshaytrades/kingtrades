@@ -27,7 +27,7 @@ import config as _config
 from utils import format_ist_timestamp, get_current_ist_time, format_currency
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
 
 @dataclass
@@ -854,14 +854,14 @@ class RiskManager:
             entry_str = pos.entry_time[:19]   # trim trailing " IST" or zone suffix
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
                 try:
-                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=IST)
+                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=ET)
                     return max(0.0, (now - entry_dt).total_seconds() / 60)
                 except ValueError:
                     continue
             # ISO fallback
             entry_dt = datetime.fromisoformat(pos.entry_time)
             if entry_dt.tzinfo is None:
-                entry_dt = entry_dt.replace(tzinfo=IST)
+                entry_dt = entry_dt.replace(tzinfo=ET)
             return max(0.0, (now - entry_dt).total_seconds() / 60)
         except Exception:
             return 0.0
