@@ -1069,15 +1069,15 @@ class RiskManager:
     # CIRCUIT BREAKERS
     # --------------------------------------------------------
 
-    def check_nifty_circuit(self, nifty_current: float):
-        """Pause new entries if Nifty moves >2% from open."""
+    def check_nifty_circuit(self, spy_current: float):
+        """Pause new entries if SPY moves >2% from open."""
         if self.state.nifty_open == 0:
             return
-        nifty_move = abs((nifty_current - self.state.nifty_open) / self.state.nifty_open) * 100
-        if nifty_move >= self.nifty_circuit_pct:
-            direction = "UP" if nifty_current > self.state.nifty_open else "DOWN"
+        spy_move = abs((spy_current - self.state.nifty_open) / self.state.nifty_open) * 100
+        if spy_move >= self.nifty_circuit_pct:
+            direction = "UP" if spy_current > self.state.nifty_open else "DOWN"
             self._trigger_circuit_breaker(
-                f"Nifty moved {nifty_move:.1f}% {direction} from open"
+                f"SPY moved {spy_move:.1f}% {direction} from open — circuit breaker"
             )
 
     def _trigger_circuit_breaker(self, reason: str):

@@ -103,8 +103,8 @@ class PerformanceDashboard:
             ax1.fill_between(dates, cum_pnl, alpha=0.15, color=color)
             ax1.axhline(0, color="#8b949e", linewidth=0.8, linestyle="--")
             ax1.set_title("Cumulative P&L Equity Curve", color="white", fontsize=13, pad=10)
-            ax1.set_ylabel("₹ P&L", color="white")
-            ax1.yaxis.set_major_formatter(lambda x, p: f"₹{x:,.0f}")
+            ax1.set_ylabel("$ P&L", color="white")
+            ax1.yaxis.set_major_formatter(lambda x, p: f"${x:,.0f}")
 
             # Daily bars
             daily = df["daily_pnl"]
@@ -112,7 +112,7 @@ class PerformanceDashboard:
             ax2.bar(dates, daily, color=colors_bar, width=0.6)
             ax2.axhline(0, color="#8b949e", linewidth=0.8, linestyle="--")
             ax2.set_title("Daily P&L", color="white", fontsize=11, pad=8)
-            ax2.set_ylabel("₹ P&L", color="white")
+            ax2.set_ylabel("$ P&L", color="white")
 
             plt.tight_layout(pad=2)
             path = save_path or str(CHART_DIR / f"equity_{get_current_ist_date()}.png")
@@ -230,7 +230,7 @@ class PerformanceDashboard:
                 f"{row['pattern_name']:<30} "
                 f"{row['total_trades']:>6} "
                 f"{row['win_rate']:>5.1f}% "
-                f"₹{row['avg_pnl']:>9.0f}"
+                f"${row['avg_pnl']:>9.0f}"
             )
 
     # -------------------------------------------------------
@@ -249,11 +249,11 @@ class PerformanceDashboard:
         print(f"{'Symbol':<12} {'Dir':>5} {'Qty':>5} {'Entry':>8} {'CMP':>8} {'P&L':>10} {'SL':>8}")
         print("-" * 65)
         for pos in positions:
-            pnl_str = f"₹{pos.pnl:+.0f}"
+            pnl_str = f"${pos.pnl:+.0f}"
             print(
                 f"{pos.symbol:<12} {pos.direction:>5} {pos.quantity:>5} "
-                f"₹{pos.entry_price:>7.1f} ₹{pos.current_price:>7.1f} "
-                f"{pnl_str:>10} ₹{pos.active_sl:>7.1f}"
+                f"${pos.entry_price:>7.1f} ${pos.current_price:>7.1f} "
+                f"{pnl_str:>10} ${pos.active_sl:>7.1f}"
             )
         total_pnl = sum(p.pnl for p in positions)
-        print(f"\nTotal Open P&L: ₹{total_pnl:+.0f}")
+        print(f"\nTotal Open P&L: ${total_pnl:+.0f}")

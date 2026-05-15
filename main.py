@@ -879,6 +879,9 @@ class TradingBot:
                 logger.info(f"[{format_ist_timestamp()}] Max positions ({config.MAX_POSITIONS}) reached — no new entries")
                 return
 
+            if spy_q and self.signal_gen:
+                self.signal_gen.update_nifty_change(spy_q.get("change_pct", 0.0))
+
             signals = self.signal_gen.scan_watchlist(
                 symbols=watchlist,
                 max_signals=min(max_new, 3)  # Max 3 new signals per cycle

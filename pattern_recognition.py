@@ -868,7 +868,7 @@ class PatternRecognizer:
             breakout_pct = ((curr_close - recent_high) / recent_high) * 100
             confidence = min(60 + breakout_pct * 10 + (ind.volume_ratio - 1) * 15, 92)
             return PatternResult("Resistance Breakout", "LONG", confidence,
-                                 f"Breakout above ₹{recent_high:.2f} with {ind.volume_ratio:.1f}x volume")
+                                 f"Breakout above ${recent_high:.2f} with {ind.volume_ratio:.1f}x volume")
         return None
 
     def detect_breakdown(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -881,7 +881,7 @@ class PatternRecognizer:
             breakdown_pct = ((recent_low - curr_close) / recent_low) * 100
             confidence = min(60 + breakdown_pct * 10 + (ind.volume_ratio - 1) * 15, 92)
             return PatternResult("Support Breakdown", "SHORT", confidence,
-                                 f"Breakdown below ₹{recent_low:.2f} with {ind.volume_ratio:.1f}x volume")
+                                 f"Breakdown below ${recent_low:.2f} with {ind.volume_ratio:.1f}x volume")
         return None
 
     def detect_flag_pattern(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -943,7 +943,7 @@ class PatternRecognizer:
             if dev_pct < 0.5:  # Not too far above VWAP yet
                 confidence = 70 + (ind.volume_ratio - 1) * 10
                 return PatternResult("VWAP Bounce", "LONG", min(confidence, 85),
-                                     f"Price bouncing above VWAP ₹{ind.vwap:.2f}")
+                                     f"Price bouncing above VWAP ${ind.vwap:.2f}")
         return None
 
     def detect_vwap_breakdown(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -956,7 +956,7 @@ class PatternRecognizer:
                 curr["close"] < curr["open"]):
             confidence = 70 + (ind.volume_ratio - 1) * 10
             return PatternResult("VWAP Breakdown", "SHORT", min(confidence, 85),
-                                 f"Price broke below VWAP ₹{ind.vwap:.2f}")
+                                 f"Price broke below VWAP ${ind.vwap:.2f}")
         return None
 
     def detect_volume_surge_breakout(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -1083,10 +1083,10 @@ class PatternRecognizer:
         curr = df.iloc[-1]
         if curr["close"] > orb_high * 1.001 and ind.volume_ratio >= 1.5:
             return PatternResult("ORB Bullish Breakout", "LONG", 80,
-                                 f"ORB breakout above ₹{orb_high:.2f} with {ind.volume_ratio:.1f}x volume")
+                                 f"ORB breakout above ${orb_high:.2f} with {ind.volume_ratio:.1f}x volume")
         if curr["close"] < orb_low * 0.999 and ind.volume_ratio >= 1.5:
             return PatternResult("ORB Bearish Breakdown", "SHORT", 80,
-                                 f"ORB breakdown below ₹{orb_low:.2f} with {ind.volume_ratio:.1f}x volume")
+                                 f"ORB breakdown below ${orb_low:.2f} with {ind.volume_ratio:.1f}x volume")
         return None
 
     # --------------------------------------------------------
@@ -1118,7 +1118,7 @@ class PatternRecognizer:
             if ind.ema9 > ind.ema21 and ind.supertrend_dir == 1:
                 confidence = min(confidence + 10, 90)
             return PatternResult("Bullish FVG", "LONG", confidence,
-                                 f"Bullish Fair Value Gap: ₹{c1['high']:.2f}–₹{c3['low']:.2f} "
+                                 f"Bullish Fair Value Gap: ${c1['high']:.2f}–${c3['low']:.2f} "
                                  f"({'price in gap' if in_gap else 'approaching gap'})")
 
         # Bearish FVG: candle 3 high < candle 1 low (downside imbalance)
@@ -1132,7 +1132,7 @@ class PatternRecognizer:
             if ind.ema9 < ind.ema21 and ind.supertrend_dir == -1:
                 confidence = min(confidence + 10, 90)
             return PatternResult("Bearish FVG", "SHORT", confidence,
-                                 f"Bearish Fair Value Gap: ₹{c3['high']:.2f}–₹{c1['low']:.2f} "
+                                 f"Bearish Fair Value Gap: ${c3['high']:.2f}–${c1['low']:.2f} "
                                  f"({'price in gap' if in_gap else 'approaching gap'})")
         return None
 
@@ -1170,7 +1170,7 @@ class PatternRecognizer:
             if ob_low * 0.997 <= curr_close <= ob_high * 1.003:
                 confidence = 80 + min((ind.volume_ratio - 1) * 5, 10)
                 return PatternResult("Bullish Order Block", "LONG", min(confidence, 92),
-                                     f"Institutional OB zone ₹{ob_low:.2f}–₹{ob_high:.2f} "
+                                     f"Institutional OB zone ${ob_low:.2f}–${ob_high:.2f} "
                                      f"— price returning to buy zone")
 
         # Scan for bearish OB: last bullish candle before 3+ candle bear move
@@ -1192,7 +1192,7 @@ class PatternRecognizer:
             if ob_low * 0.997 <= curr_close <= ob_high * 1.003:
                 confidence = 80 + min((ind.volume_ratio - 1) * 5, 10)
                 return PatternResult("Bearish Order Block", "SHORT", min(confidence, 92),
-                                     f"Institutional OB zone ₹{ob_low:.2f}–₹{ob_high:.2f} "
+                                     f"Institutional OB zone ${ob_low:.2f}–${ob_high:.2f} "
                                      f"— price returning to sell zone")
         return None
 
@@ -1314,8 +1314,8 @@ class PatternRecognizer:
                 confidence = 78 + (ind.volume_ratio - 1) * 5
                 confidence = min(confidence + (5 if ind.rsi < 50 else 0), 90)
                 return PatternResult("Double Bottom", "LONG", confidence,
-                                     f"W-pattern: two bottoms near ₹{min(low1,low2):.2f}, "
-                                     f"breakout above neckline ₹{neckline:.2f}")
+                                     f"W-pattern: two bottoms near ${min(low1,low2):.2f}, "
+                                     f"breakout above neckline ${neckline:.2f}")
 
         # Double Top
         highs = df["high"].iloc[-30:]
@@ -1340,8 +1340,8 @@ class PatternRecognizer:
                     confidence = 78 + (ind.volume_ratio - 1) * 5
                     confidence = min(confidence + (5 if ind.rsi > 50 else 0), 90)
                     return PatternResult("Double Top", "SHORT", confidence,
-                                        f"M-pattern: two tops near ₹{max(high1,high2):.2f}, "
-                                        f"break below neckline ₹{neckline:.2f}")
+                                        f"M-pattern: two tops near ${max(high1,high2):.2f}, "
+                                        f"break below neckline ${neckline:.2f}")
         return None
 
     def detect_market_structure_break(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -1384,12 +1384,12 @@ class PatternRecognizer:
                     confidence = min(confidence + 7, 92)
                     return PatternResult("BOS — Higher High (Trend Continues)", "LONG",
                                         confidence,
-                                        f"Break of Structure: new HH above ₹{last_swing_high:.2f} "
+                                        f"Break of Structure: new HH above ${last_swing_high:.2f} "
                                         f"with {ind.volume_ratio:.1f}x volume")
                 else:
                     return PatternResult("ChoCH — Bullish Reversal", "LONG",
                                         confidence,
-                                        f"Change of Character: broke above ₹{last_swing_high:.2f} "
+                                        f"Change of Character: broke above ${last_swing_high:.2f} "
                                         f"— downtrend reversing")
 
         if len(swing_lows) >= 2:
@@ -1401,12 +1401,12 @@ class PatternRecognizer:
                     confidence = min(confidence + 7, 92)
                     return PatternResult("BOS — Lower Low (Trend Continues)", "SHORT",
                                         confidence,
-                                        f"Break of Structure: new LL below ₹{last_swing_low:.2f} "
+                                        f"Break of Structure: new LL below ${last_swing_low:.2f} "
                                         f"with {ind.volume_ratio:.1f}x volume")
                 else:
                     return PatternResult("ChoCH — Bearish Reversal", "SHORT",
                                         confidence,
-                                        f"Change of Character: broke below ₹{last_swing_low:.2f} "
+                                        f"Change of Character: broke below ${last_swing_low:.2f} "
                                         f"— uptrend reversing")
         return None
 
