@@ -517,6 +517,49 @@ class AlpacaExecutor:
             logger.warning(f"[{format_ist_timestamp()}] modify_stop_loss({symbol}, {new_sl:.2f}) failed: {e}")
             return False
 
+    def place_stop_order(
+        self,
+        symbol:     str,
+        qty:        int,
+        stop_price: float,
+        direction:  str,   # entry direction: "LONG" or "SHORT"
+    ) -> str:
+        """
+        Place a broker-side stop order so SL is enforced even if the bot crashes.
+        LONG entry → SELL STOP at stop_price (sell if price drops to SL).
+        SHORT entry → BUY STOP at stop_price (buy to cover if price rises to SL).
+        Returns Alpaca order ID on success, empty string on failure.
+        """
+        if not self.live_enabled:
+            logger.debug(f"place_stop_order({symbol}): paper mode — stop tracked in memory only")
+            return ""
+        try:
+            from alpaca.trading.requests import StopOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
+
+            stop_side = OrderSide.SELL if direction == "LONG" else OrderSide.BUY
+            trading_client = self._auth.get_trading_client()
+            req = StopOrderRequest(
+                symbol        = symbol,
+                qty           = qty,
+                side          = stop_side,
+                type          = OrderType.STOP,
+                time_in_force = TimeInForce.DAY,
+                stop_price    = round(stop_price, 2),
+            )
+            order = trading_client.submit_order(req)
+            order_id = str(order.id)
+            logger.info(
+                f"[{format_ist_timestamp()}] STOP ORDER placed: {symbol} {stop_side.value} "
+                f"qty={qty} @ ${stop_price:.2f} | order_id={order_id}"
+            )
+            return order_id
+        except Exception as e:
+            logger.warning(
+                f"[{format_ist_timestamp()}] place_stop_order({symbol}, {stop_price:.2f}): {e}"
+            )
+            return ""
+
     # ─────────────────────────────────────────────────────────────────────
     # INTERNAL HELPERS
     # ─────────────────────────────────────────────────────────────────────

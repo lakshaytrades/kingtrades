@@ -716,9 +716,10 @@ class HighAccuracyFilter:
     def _check_short_eligibility(self, symbol: str) -> Tuple[bool, str]:
         """Gate 10: SHORT signals — verify stock is shortable on Alpaca."""
         try:
-            from execution_alpaca import AlpacaExecutor
-            exec_ = AlpacaExecutor()
-            if hasattr(exec_, 'is_shortable') and not exec_.is_shortable(symbol):
+            from auth_alpaca import get_auth_manager
+            trading_client = get_auth_manager().get_trading_client()
+            asset = trading_client.get_asset(symbol)
+            if not asset.shortable:
                 return False, (
                     f"{symbol} is not shortable on Alpaca. "
                     "Cannot place SHORT — signal converted to SKIP."

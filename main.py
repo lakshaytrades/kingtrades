@@ -1334,6 +1334,18 @@ class TradingBot:
                     except Exception as _pe:
                         logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
 
+                    # Place broker-side stop order (SL enforced even if bot crashes)
+                    try:
+                        sl_order_id = self.executor.place_stop_order(
+                            signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                        )
+                        if sl_order_id:
+                            pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                            if pos_ref:
+                                pos_ref.sl_order_id = sl_order_id
+                    except Exception as _se:
+                        logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
+
                     # Send Telegram alert with chart
                     try:
                         df_5m = self.fetcher.get_today_candles(signal.symbol)
@@ -1471,7 +1483,7 @@ class TradingBot:
                                     was_partial=pos.t1_done  # avoid double-counting T1
                                 )
                             except Exception as _e:
-                                logger.debug(f"[suppressed] {_e}")
+                                logger.warning(f"profit_engine.record_trade_closed failed ({pos.symbol}): {_e}")
                         # Record outcome in Elite Brain for adaptive weight learning
                         if self.elite_brain:
                             try:
@@ -1549,14 +1561,14 @@ class TradingBot:
                                     f"Total: ${self.profit_engine.state.realised_pnl:+,.2f}"
                                 )
                             except Exception as _e:
-                                logger.debug(f"[suppressed] {_e}")
+                                logger.warning(f"profit_engine partial-exit record failed ({pos.symbol}): {_e}")
                         try:
                             self.alerter.send_exit_alert(
                                 pos.symbol, pos.direction, pos.entry_price,
                                 ltp, exit_qty, pnl_partial, action["reason"]
                             )
                         except Exception as _e:
-                            logger.debug(f"[suppressed] {_e}")
+                            logger.warning(f"send_exit_alert failed ({pos.symbol}): {_e}")
 
                 elif action["action"] == "UPDATE_SL":
                     self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
@@ -1741,7 +1753,7 @@ class TradingBot:
                     self.risk_manager.state.daily_pnl += pnl
                     self.risk_manager.state.available_capital += ltp * pos.quantity
                 except Exception as _e:
-                    logger.debug(f"[suppressed] {_e}")
+                    logger.warning(f"Reconcile P&L update failed ({sym}): {_e}")
 
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile REMOVED: {sym} "
@@ -2224,7 +2236,7 @@ class TradingBot:
                 try:
                     self.options_scalper.close_all()
                 except Exception as _e:
-                    logger.debug(f"[suppressed] {_e}")
+                    logger.warning(f"options_scalper.close_all() failed during /kill: {_e}")
 
         async def cmd_status(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
@@ -2236,7 +2248,7 @@ class TradingBot:
                 used_margin = bal.get("used_margin", 0)
                 self.alerter.send_status(self.risk_manager, balance_available=available, margin_used=used_margin)
             except Exception as _e:
-                logger.debug(f"[suppressed] {_e}")
+                logger.warning(f"cmd_status balance fetch failed: {_e}")
                 self.alerter.send_status(self.risk_manager)
 
         async def cmd_pause(update, context):
@@ -2406,6 +2418,12 @@ class TradingBot:
         # ── Retry loop — handles Render deployment overlap ───────────────
         max_retries = 15
         retry_delay = 20  # seconds; old instance usually dies within 30s
+
+        # Wait until the trading engine is fully initialized before handling commands.
+        # _telegram_listener starts in a background thread before self.running = True,
+        # so incoming /kill or /status commands would hit uninitialized risk_manager.
+        while not self.running:
+            await asyncio.sleep(0.1)
 
         # Kill any stale polling session from previous deployment before starting
         try:

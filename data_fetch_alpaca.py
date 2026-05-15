@@ -72,11 +72,66 @@ class AlpacaDataFetcher:
     BALANCE_CACHE_TTL = 30   # seconds before re-fetching balance
 
     def __init__(self):
-        self._auth          = get_auth_manager()
-        self._balance_cache: Dict = {}
-        self._balance_ts: float   = 0.0
-        self._quote_cache:  Dict  = {}
-        self._quote_ts:     Dict  = {}
+        self._auth              = get_auth_manager()
+        self._balance_cache:    Dict  = {}
+        self._balance_ts:       float = 0.0
+        self._quote_cache:      Dict  = {}
+        self._quote_ts:         Dict  = {}
+        self._prev_close_cache: Dict  = {}   # symbol → prev-day close price
+        self._prev_close_date:  str   = ""   # cache is valid only for this calendar date
+
+    # ─────────────────────────────────────────────────────────────────────
+    # PREV-CLOSE CACHE
+    # ─────────────────────────────────────────────────────────────────────
+
+    def _get_prev_close(self, symbol: str) -> float:
+        """
+        Returns yesterday's official closing price for the symbol.
+        Uses the last fully completed daily bar (bars[-2] when today's session
+        is open, bars[-1] pre-market / after yesterday's close).
+
+        Result is cached per-symbol for the entire trading day and reset at midnight.
+        Falls back to 0 (caller must guard division by zero) on any API error.
+        """
+        from datetime import date as _date
+        today_str = str(_date.today())
+
+        if self._prev_close_date != today_str:
+            self._prev_close_cache.clear()
+            self._prev_close_date = today_str
+
+        if symbol in self._prev_close_cache:
+            return self._prev_close_cache[symbol]
+
+        try:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame
+            from datetime import datetime as _dt, timedelta as _td
+
+            data_client = self._auth.get_data_client()
+            start = _dt.now(ET) - _td(days=7)   # fetch last 7 calendar days (~5 trading days)
+            req = StockBarsRequest(
+                symbol_or_symbols=symbol,
+                timeframe=TimeFrame.Day,
+                start=start,
+            )
+            bars_resp = data_client.get_stock_bars(req)
+            bars = bars_resp[symbol] if symbol in bars_resp else []
+
+            if len(bars) >= 2:
+                prev_close = float(bars[-2].close)   # second-to-last bar = yesterday
+            elif len(bars) == 1:
+                prev_close = float(bars[-1].close)   # only one bar available
+            else:
+                logger.debug(f"_get_prev_close({symbol}): no daily bars returned")
+                return 0.0
+
+            self._prev_close_cache[symbol] = prev_close
+            return prev_close
+
+        except Exception as _e:
+            logger.debug(f"_get_prev_close({symbol}): {_e}")
+            return 0.0
 
     # ─────────────────────────────────────────────────────────────────────
     # QUOTES
@@ -105,9 +160,17 @@ class AlpacaDataFetcher:
             q   = quote_data[symbol]
             b   = bar_data[symbol]
             mid = (q.ask_price + q.bid_price) / 2
+            ltp = float(q.ask_price or mid)
+
+            prev_close = self._get_prev_close(symbol)
+            if prev_close > 0:
+                change_pct = round((ltp - prev_close) / prev_close * 100, 2)
+            else:
+                # Fallback: intra-bar change when prev_close unavailable
+                change_pct = round((float(b.close) - float(b.open)) / max(float(b.open), 0.01) * 100, 2)
 
             result = {
-                "ltp":        float(q.ask_price or mid),
+                "ltp":        ltp,
                 "bid":        float(q.bid_price),
                 "ask":        float(q.ask_price),
                 "volume":     int(b.volume),
@@ -115,7 +178,8 @@ class AlpacaDataFetcher:
                 "high":       float(b.high),
                 "low":        float(b.low),
                 "close":      float(b.close),
-                "change_pct": round((float(b.close) - float(b.open)) / max(float(b.open), 0.01) * 100, 2),
+                "prev_close": prev_close,
+                "change_pct": change_pct,
                 "symbol":     symbol,
             }
             self._quote_cache[symbol] = result
@@ -183,12 +247,18 @@ class AlpacaDataFetcher:
 
             result = []
             for sym, bar in bars.items():
-                chg = round((float(bar.close) - float(bar.open)) / max(float(bar.open), 0.01) * 100, 2)
+                ltp_bar    = float(bar.close)
+                prev_c     = self._get_prev_close(sym)
+                if prev_c > 0:
+                    chg = round((ltp_bar - prev_c) / prev_c * 100, 2)
+                else:
+                    chg = round((ltp_bar - float(bar.open)) / max(float(bar.open), 0.01) * 100, 2)
                 result.append({
                     "symbol":     sym,
-                    "ltp":        float(bar.close),
+                    "ltp":        ltp_bar,
                     "volume":     int(bar.volume),
                     "change_pct": chg,
+                    "prev_close": prev_c,
                     "open":       float(bar.open),
                     "high":       float(bar.high),
                     "low":        float(bar.low),
