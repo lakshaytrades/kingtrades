@@ -291,11 +291,8 @@ class AlpacaExecutor:
             f"[{result.order_type}] order_id={result.order_id}"
         )
 
-        try:
-            from alerts_telegram import get_alert_manager
-            get_alert_manager().send_entry_alert(signal, result.fill_price, quantity)
-        except Exception as e:
-            logger.debug(f"Entry alert failed: {e}")
+        # Note: entry alert is sent by main.py's _trading_cycle after add_position()
+        # Duplicate alert removed to avoid double-sending.
 
         return result
 
@@ -377,22 +374,24 @@ class AlpacaExecutor:
 
     def place_exit_order(
         self,
-        symbol:      str,
-        quantity:    int,
-        direction:   str,   # original entry direction (LONG/SHORT)
-        reason:      str = "EXIT",
-        limit_price: Optional[float] = None,
+        symbol:           str,
+        quantity:         int,
+        direction:        str,   # original entry direction (LONG/SHORT)
+        reason:           str = "EXIT",
+        limit_price:      Optional[float] = None,
+        use_market_order: bool = False,
     ) -> OrderResult:
         """
         Close a position. direction is the ENTRY direction.
         LONG entry → sell to close. SHORT entry → buy to cover.
+        use_market_order=True forces MARKET order (bypasses limit attempt).
         """
         if not self.live_enabled:
             return OrderResult(False, message="Live trading disabled")
 
         exit_side = "SHORT" if direction == "LONG" else "LONG"
 
-        if limit_price:
+        if limit_price and not use_market_order:
             result = self._submit_order(symbol, quantity, exit_side, "LIMIT", limit_price)
             if result.success:
                 filled = self._wait_for_fill(result.order_id, wait=10)
@@ -452,6 +451,71 @@ class AlpacaExecutor:
 
     def get_open_positions(self) -> List:
         return get_data_fetcher().get_positions()
+
+    def modify_stop_loss(self, symbol: str, new_sl: float) -> bool:
+        """
+        Update the stop-loss for an open position.
+        Finds any open stop order for the symbol, cancels it, and places a new one.
+        Falls back to no-op in paper mode (SL is tracked in memory by risk_manager).
+        """
+        if not self.live_enabled:
+            logger.debug(f"modify_stop_loss({symbol}, {new_sl:.2f}): paper mode — SL updated in memory only")
+            return True
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import GetOrdersRequest, StopOrderRequest
+            from alpaca.trading.enums import OrderSide, TimeInForce, QueryOrderStatus
+            import os
+
+            api_key    = os.getenv("ALPACA_API_KEY", "")
+            api_secret = os.getenv("ALPACA_SECRET_KEY", "")
+            paper      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+            trading_client = TradingClient(api_key, api_secret, paper=paper)
+
+            # Find open stop orders for the symbol
+            open_orders = trading_client.get_orders(
+                GetOrdersRequest(status=QueryOrderStatus.OPEN, symbols=[symbol])
+            )
+            for order in open_orders:
+                order_type = str(order.type).lower()
+                if "stop" in order_type:
+                    try:
+                        trading_client.cancel_order_by_id(str(order.id))
+                        logger.debug(f"modify_stop_loss: cancelled old stop order {order.id} for {symbol}")
+                    except Exception as _ce:
+                        logger.debug(f"modify_stop_loss: cancel failed {order.id}: {_ce}")
+
+            # Determine side and qty from position
+            from alpaca.trading.enums import OrderType
+            positions = trading_client.get_all_positions()
+            pos_side = None
+            pos_qty  = 0
+            for p in positions:
+                if p.symbol == symbol:
+                    pos_side = str(p.side.value).lower()
+                    pos_qty  = abs(int(p.qty))
+                    break
+
+            if pos_side is None or pos_qty == 0:
+                logger.debug(f"modify_stop_loss: no open position found for {symbol}")
+                return False
+
+            # Stop order side is opposite to position side (sell stop for long, buy stop for short)
+            stop_side = OrderSide.SELL if pos_side == "long" else OrderSide.BUY
+            req = StopOrderRequest(
+                symbol        = symbol,
+                qty           = pos_qty,
+                side          = stop_side,
+                type          = OrderType.STOP,
+                time_in_force = TimeInForce.DAY,
+                stop_price    = round(new_sl, 2),
+            )
+            trading_client.submit_order(req)
+            logger.info(f"[{format_ist_timestamp()}] modify_stop_loss: {symbol} new SL=${new_sl:.2f}")
+            return True
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] modify_stop_loss({symbol}, {new_sl:.2f}) failed: {e}")
+            return False
 
     # ─────────────────────────────────────────────────────────────────────
     # INTERNAL HELPERS

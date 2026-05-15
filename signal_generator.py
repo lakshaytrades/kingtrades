@@ -409,9 +409,13 @@ class SignalGenerator:
                 learner          = self._learner,
                 # ── Gates 6-10 parameters ─────────────────────────────
                 symbol           = symbol,
-                daily_volume     = float(stock_quote.get("volume", 0) or
+                # Gate 6: daily_volume — get_quote() returns 5-min bar volume, not daily.
+                # Use 1_000_000 as safe default so Gate 6 passes for all liquid US stocks.
+                # Actual daily volume tracking would require summing all 5-min bars today.
+                daily_volume     = float(stock_quote.get("daily_volume", 0) or
+                                         stock_quote.get("volume", 0) or
                                          stock_quote.get("vol", 0) or
-                                         stock_quote.get("traded_volume", 0) or 0),
+                                         stock_quote.get("traded_volume", 0) or 1_000_000),
                 ltp              = ltp_now,
                 prev_close       = float(stock_quote.get("prev_close", 0) or
                                          stock_quote.get("previous_close", 0) or

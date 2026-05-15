@@ -25,7 +25,8 @@ from typing import Optional, List, Dict, Tuple
 from dataclasses import dataclass, field
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
+IST = ET  # Alias: this module runs for US market (ET), IST alias kept for backward compat
 
 
 # ─────────────────────────────────────────────────────────────────────────────

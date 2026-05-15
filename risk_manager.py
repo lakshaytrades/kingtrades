@@ -334,21 +334,57 @@ class RiskManager:
     # SECTOR CORRELATION GUARD
     # --------------------------------------------------------
 
+    # Simple US sector map (replaces archived nse_data.get_sector)
+    _US_SECTOR_MAP: Dict[str, str] = {
+        # Semiconductors
+        "NVDA": "SEMICONDUCTORS", "AMD": "SEMICONDUCTORS", "INTC": "SEMICONDUCTORS",
+        "QCOM": "SEMICONDUCTORS", "AVGO": "SEMICONDUCTORS", "MU": "SEMICONDUCTORS",
+        "AMAT": "SEMICONDUCTORS", "KLAC": "SEMICONDUCTORS", "LRCX": "SEMICONDUCTORS",
+        "SOXX": "SEMICONDUCTORS",
+        # Tech
+        "AAPL": "TECH", "MSFT": "TECH", "GOOGL": "TECH", "GOOG": "TECH",
+        "META": "TECH", "AMZN": "TECH", "NFLX": "TECH", "CRM": "TECH",
+        "ADBE": "TECH", "NOW": "TECH", "SNOW": "TECH", "PLTR": "TECH",
+        "SHOP": "TECH", "RBLX": "TECH", "U": "TECH",
+        "XLK": "TECH", "QQQ": "INDEX", "SPY": "INDEX", "IWM": "INDEX",
+        # Financials
+        "JPM": "FINANCIALS", "GS": "FINANCIALS", "MS": "FINANCIALS",
+        "BAC": "FINANCIALS", "C": "FINANCIALS", "WFC": "FINANCIALS",
+        "BLK": "FINANCIALS", "SCHW": "FINANCIALS", "XLF": "FINANCIALS",
+        # Energy
+        "XOM": "ENERGY", "CVX": "ENERGY", "COP": "ENERGY",
+        "SLB": "ENERGY", "XLE": "ENERGY",
+        # EVs / Clean Energy
+        "TSLA": "EV", "RIVN": "EV", "LCID": "EV", "NIO": "EV",
+        # Biotech / Healthcare
+        "MRNA": "BIOTECH", "BNTX": "BIOTECH", "ARKG": "BIOTECH",
+        "JNJ": "HEALTHCARE", "PFE": "HEALTHCARE", "UNH": "HEALTHCARE",
+        # Consumer Discretionary
+        "AMZN": "CONSUMER", "TGT": "CONSUMER", "WMT": "CONSUMER",
+        # Crypto / Fintech
+        "COIN": "CRYPTO_FINTECH", "MSTR": "CRYPTO_FINTECH",
+        "SOFI": "FINTECH", "AFRM": "FINTECH", "UPST": "FINTECH",
+    }
+
+    @classmethod
+    def _get_sector(cls, symbol: str) -> str:
+        """Return US sector for a symbol, or 'OTHER' if unknown."""
+        return cls._US_SECTOR_MAP.get(symbol.upper(), "OTHER")
+
     def _check_sector_correlation(self, symbol: str) -> Dict:
         """
         Prevent more than 2 open positions in the same sector.
         18yr Rule: "Sector correlation kills diversification. 3 bank stocks
-        in a bank rout = 3× the loss."
+        in a bank rout = 3x the loss."
         """
         try:
-            from nse_data import get_sector
-            sector = get_sector(symbol)
+            sector = self._get_sector(symbol)
             if sector == "OTHER":
                 return {"allowed": True, "reason": "Unknown sector — allowing"}
 
             same_sector = [
                 s for s in self.state.positions
-                if get_sector(s) == sector
+                if self._get_sector(s) == sector
             ]
             max_per_sector = getattr(_config, "MAX_POSITIONS_PER_SECTOR", 2)
             if len(same_sector) >= max_per_sector:

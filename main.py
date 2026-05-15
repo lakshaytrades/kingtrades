@@ -939,6 +939,24 @@ class TradingBot:
             if spy_q and self.signal_gen:
                 self.signal_gen.update_nifty_change(spy_q.get("change_pct", 0.0))
 
+            # 4b. Apply day-of-week minimum score BEFORE scanning
+            dow = now_ist.weekday()
+            dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
+            dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
+            if self.signal_gen:
+                brain_score = (
+                    self.adaptive_brain._state.current_min_score
+                    if hasattr(self, "adaptive_brain") and self.adaptive_brain
+                    else dow_min
+                )
+                self.signal_gen.min_score = max(dow_min, brain_score)
+            if self.risk_manager.state.daily_trades >= dow_max_trades:
+                logger.info(
+                    f"[{format_ist_timestamp()}] DOW max trades "
+                    f"({dow_max_trades}) reached for {['Mon','Tue','Wed','Thu','Fri'][dow]}"
+                )
+                return
+
             # SystemHealthChecker: pre-scan safety gate
             if hasattr(self, "health_checker") and self.health_checker:
                 try:
@@ -1002,25 +1020,6 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Mean-reversion scan error: {e}")
 
-            # 4b. Apply day-of-week minimum score filter
-            dow = now_ist.weekday()
-            dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
-            dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
-
-            # Apply effective score threshold: DOW is the floor, brain can raise above it
-            if self.signal_gen:
-                brain_score = (
-                    self.adaptive_brain._state.current_min_score
-                    if hasattr(self, "adaptive_brain") and self.adaptive_brain
-                    else dow_min
-                )
-                self.signal_gen.min_score = max(dow_min, brain_score)
-            if self.risk_manager.state.daily_trades >= dow_max_trades:
-                logger.info(
-                    f"[{format_ist_timestamp()}] DOW max trades "
-                    f"({dow_max_trades}) reached for {['Mon','Tue','Wed','Thu','Fri'][dow]}"
-                )
-                return
             before_filter = len(signals)
             signals = [s for s in signals if s.signal_score >= dow_min]
             if self._weekly_mode == "PROTECT":
@@ -1720,11 +1719,11 @@ class TradingBot:
             if groww_raw is None:
                 return
 
-            # Build set of symbols Groww actually holds (non-zero quantity)
+            # Build set of symbols Alpaca actually holds (non-zero quantity)
             groww_syms: set = {
                 str(p.get("symbol", ""))
                 for p in groww_raw
-                if int(p.get("quantity", 0)) != 0
+                if int(p.get("qty", 0)) != 0
             }
             bot_syms: set = set(self.risk_manager.state.positions.keys())
 
@@ -1766,7 +1765,7 @@ class TradingBot:
                 raw = next((p for p in groww_raw if str(p.get("symbol", "")) == sym), None)
                 if not raw:
                     continue
-                qty = int(raw.get("quantity", 0))
+                qty = int(raw.get("qty", 0))
                 avg = float(raw.get("avg_price", 0))
                 if qty == 0 or avg == 0:
                     continue
@@ -1777,9 +1776,10 @@ class TradingBot:
                     quantity=abs(qty),
                     entry_price=avg,
                     stop_loss=avg * 0.98,   # 2% fallback SL until ATR calc
-                    target1=avg * 1.02,
-                    target2=avg * 1.04,
-                    entry_time=get_current_ist_time(),
+                    target_1=avg * 1.02,
+                    target_2=avg * 1.04,
+                    atr=avg * 0.01,
+                    entry_time=format_ist_timestamp(),
                 )
                 self.risk_manager.state.positions[sym] = pos
                 logger.warning(
@@ -2651,7 +2651,7 @@ class TradingBot:
             synced = 0
             for p in positions:
                 sym = p.get("symbol", "")
-                qty = int(p.get("quantity", 0))
+                qty = int(p.get("qty", 0))
                 avg = float(p.get("avg_price", 0))
                 if not sym or qty == 0:
                     continue
@@ -2663,9 +2663,10 @@ class TradingBot:
                         quantity=abs(qty),
                         entry_price=avg,
                         stop_loss=avg * 0.98,
-                        target1=avg * 1.02,
-                        target2=avg * 1.04,
-                        entry_time=get_current_et_time(),
+                        target_1=avg * 1.02,
+                        target_2=avg * 1.04,
+                        atr=avg * 0.01,
+                        entry_time=format_ist_timestamp(),
                     )
                     self.risk_manager.state.positions[sym] = pos
                     synced += 1

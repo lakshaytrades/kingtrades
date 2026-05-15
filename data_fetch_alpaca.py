@@ -332,9 +332,26 @@ class AlpacaDataFetcher:
             equity        = float(account.equity)
             initial_margin= float(account.initial_margin or 0)
 
+            import os as _os
+            paper = _os.getenv("ALPACA_PAPER", "true").lower() != "false"
+            # Paper accounts and non-PDT accounts have 1x buying power (equity = real capital).
+            # Live PDT-qualified accounts report buying_power at 4x margin — divide to get real capital.
+            # Use non_marginable_buying_power if available, else equity for paper, buying_power/4 for live.
+            non_margin_bp = float(getattr(account, "non_marginable_buying_power", 0) or 0)
+            if paper:
+                # Paper: Alpaca reports buying_power as 2x for paper accounts (or just equity)
+                # Use equity as the safe available capital measure
+                available = round(equity, 2)
+            elif non_margin_bp > 0 and non_margin_bp < buying_power * 0.6:
+                # Live non-PDT or cash account: use non-marginable BP directly
+                available = round(non_margin_bp, 2)
+            else:
+                # Live PDT 4x margin account
+                available = round(buying_power / 4, 2)
+
             result = {
-                "available":    round(buying_power / 4, 2),   # real capital (4x leverage)
-                "buying_power": round(buying_power, 2),        # actual 4x power
+                "available":    available,
+                "buying_power": round(buying_power, 2),
                 "used_margin":  round(initial_margin, 2),
                 "total":        round(equity, 2),
                 "_from_cache":  False,
@@ -344,7 +361,8 @@ class AlpacaDataFetcher:
             self._balance_ts    = now
             logger.debug(
                 f"[{format_ist_timestamp()}] Balance: equity=${equity:,.0f} | "
-                f"buying_power=${buying_power:,.0f} (4x)"
+                f"available=${available:,.0f} | buying_power=${buying_power:,.0f} "
+                f"({'paper' if paper else '4x margin'})"
             )
             return result
 

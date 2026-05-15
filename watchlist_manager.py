@@ -38,7 +38,7 @@ LIQUID_UNIVERSE = [
     "AVGO","TXN","AMAT","LRCX","KLAC","MRVL","ON","MPWR",
     # High-beta momentum / meme stocks
     "COIN","HOOD","MSTR","PLTR","RBLX","SNAP","UBER","LYFT",
-    "RIVN","LCID","NIO","SOFI","UPST","AFRM","OPEN","OPENDOOR",
+    "RIVN","LCID","NIO","SOFI","UPST","AFRM","OPEN",
     "ARM","SMCI","IONQ","QUBT","RGTI",
     # ETFs — best for scalping (most liquid instruments)
     "SPY","QQQ","IWM","TQQQ","SQQQ","SPXL","SPXS","UVXY",
