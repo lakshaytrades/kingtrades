@@ -492,8 +492,8 @@ class EliteBrain:
     def _save_weights(self):
         try:
             Path(self.WEIGHTS_FILE).write_text(json.dumps(self._weights, indent=2))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -996,8 +996,8 @@ class TradingBot:
                             f"Min score required: {dow_min:.0f} | Day: {day_name}\n"
                             f"<i>Bot is running — waiting for quality setups</i>"
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
 
             # 4c. NSE options signals — disabled (Alpaca mode)
             if self.options_signals:
@@ -1238,8 +1238,8 @@ class TradingBot:
                         signal.size_multiplier * fii_mult * overnight_mult * _dir_mult, 2
                     )
                     signal.size_multiplier = max(0.25, min(signal.size_multiplier, 2.0))
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
                 # 5c. Portfolio Heat Guard — sector concentration + correlation check
                 try:
@@ -1307,8 +1307,8 @@ class TradingBot:
                                   "dte": s["dte"]}
                                  for s in uoa_signals]
                             )
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"[suppressed] {_e}")
                         for uoa in uoa_signals[:2]:  # max 2 UOA trades per scan
                             self.options_scalper.execute_options_signal(uoa)
                 except Exception as _uoa_e:
@@ -1343,8 +1343,8 @@ class TradingBot:
                     df_today = self.fetcher.get_today_candles(pos.symbol, interval="5m")
                     if df_today is not None and len(df_today) >= 2:
                         recent_candles = df_today.tail(3).to_dict("records")
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
                 health = self.risk_manager.check_position_health(pos, ltp, recent_candles)
 
@@ -1401,16 +1401,16 @@ class TradingBot:
                                     pos.symbol, pnl,
                                     was_partial=pos.t1_done  # avoid double-counting T1
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                logger.debug(f"[suppressed] {_e}")
                         # Record outcome in Elite Brain for adaptive weight learning
                         if self.elite_brain:
                             try:
                                 _eb_votes = getattr(pos, "_elite_module_votes", {})
                                 if _eb_votes:
                                     self.elite_brain.record_trade_outcome(_eb_votes, won=pnl > 0)
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                logger.debug(f"[suppressed] {_e}")
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                             try:
@@ -1467,15 +1467,15 @@ class TradingBot:
                                     f"${pnl_partial:+.2f} | Mode: {mode_msg} | "
                                     f"Total: ${self.profit_engine.state.realised_pnl:+,.2f}"
                                 )
-                            except Exception:
-                                pass
+                            except Exception as _e:
+                                logger.debug(f"[suppressed] {_e}")
                         try:
                             self.alerter.send_exit_alert(
                                 pos.symbol, pos.direction, pos.entry_price,
                                 ltp, exit_qty, pnl_partial, action["reason"]
                             )
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"[suppressed] {_e}")
 
                 elif action["action"] == "UPDATE_SL":
                     self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
@@ -1492,8 +1492,8 @@ class TradingBot:
         try:
             if self._weekly_pnl_file.exists():
                 return json.loads(self._weekly_pnl_file.read_text())
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return {"week": "", "net_pnl": 0.0, "days_traded": 0, "profitable_days": 0}
 
     def _save_weekly_pnl(self, data: dict) -> None:
@@ -1538,8 +1538,8 @@ class TradingBot:
                     f"Profitable days: {data['profitable_days']}/5\n"
                     f"Target: 4/5 days 🎯"
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
     def _update_weekly_mode(self) -> None:
         """
@@ -1659,8 +1659,8 @@ class TradingBot:
                           else (pos.entry_price - ltp) * pos.quantity
                     self.risk_manager.state.daily_pnl += pnl
                     self.risk_manager.state.available_capital += ltp * pos.quantity
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile REMOVED: {sym} "
@@ -1676,8 +1676,8 @@ class TradingBot:
                         f"Removed: Broker closed position (SL hit or square-off)\n"
                         f"Time: {format_ist_timestamp()}"
                     )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
             # ── Case 2: unknown positions (Groww has, bot doesn't) ───────────
             for sym in list(groww_syms - bot_syms):
@@ -1713,8 +1713,8 @@ class TradingBot:
                         f"Avg Price: ${avg:.2f}\n"
                         f"Added to tracker — monitoring with 2% fallback SL."
                     )
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Position reconciliation error: {e}")
@@ -1860,7 +1860,8 @@ class TradingBot:
             api_url = "https://api.alpaca.markets" if MARKET_NAME != "NSE" else "https://api.groww.in"
             r = _req.get(api_url, timeout=5)
             logger.info(f"[{format_ist_timestamp()}] ✅ {MARKET_NAME} API reachable (HTTP {r.status_code})")
-        except Exception:
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
             issues.append(f"⚠️ Cannot reach {MARKET_NAME} API — check VPS internet")
 
         # ── 3. Memory check ───────────────────────────────────────────────
@@ -1869,8 +1870,8 @@ class TradingBot:
             mem_mb = resource.getrusage(resource.RUSAGE_SELF).ru_maxrss / 1024
             if mem_mb > 800:
                 issues.append(f"⚠️ High memory: {mem_mb:.0f} MB — consider restart")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Build Telegram report ─────────────────────────────────────────
         now_str = get_current_ist_time().strftime("%d %b %Y")
@@ -2054,7 +2055,8 @@ class TradingBot:
                     score = abs(chg) * 10 + (1 if vol > 500000 else 0)
                     if abs(chg) >= 0.2:
                         picks.append((sym, chg, ltp, vol, score))
-                except Exception:
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
                     continue
 
             picks.sort(key=lambda x: x[4], reverse=True)
@@ -2139,8 +2141,8 @@ class TradingBot:
             if self.options_scalper:
                 try:
                     self.options_scalper.close_all()
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
         async def cmd_status(update, context):
             if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
@@ -2151,7 +2153,8 @@ class TradingBot:
                 available = bal.get("available", 0)
                 used_margin = bal.get("used_margin", 0)
                 self.alerter.send_status(self.risk_manager, balance_available=available, margin_used=used_margin)
-            except Exception:
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
                 self.alerter.send_status(self.risk_manager)
 
         async def cmd_pause(update, context):
@@ -2217,8 +2220,8 @@ class TradingBot:
                                     f"  {icon} {sym}: ${ltp:.2f} "
                                     f"({pos_pnl:+,.2f})"
                                 )
-                        except Exception:
-                            pass
+                        except Exception as _e:
+                            logger.debug(f"[suppressed] {_e}")
 
                 # ── Margin utilisation % ─────────────────────────────────
                 util_pct = (used_margin / total * 100) if total > 0 else 0
@@ -2419,8 +2422,8 @@ class TradingBot:
                 if app:
                     try:
                         await app.shutdown()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
                 await asyncio.sleep(retry_delay)
                 retry_delay = min(int(retry_delay * 1.5), 120)
 
@@ -2429,8 +2432,8 @@ class TradingBot:
                 if app:
                     try:
                         await app.shutdown()
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
                 return
 
         logger.error(
@@ -2495,8 +2498,8 @@ class TradingBot:
                     f"OOS Sharpe: {params.get('sharpe', 0):.2f}  "
                     f"WR: {params.get('win_rate', 0):.1f}%"
                 )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] EOD param load failed: {e}")
 
@@ -2628,7 +2631,8 @@ class TradingBot:
                     score = abs(chg) * 10 + (1 if vol > 500000 else 0)
                     if abs(chg) >= 0.3:  # Only stocks moving
                         picks.append((sym, chg, ltp, vol, score))
-                except Exception:
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
                     continue
             picks.sort(key=lambda x: x[4], reverse=True)
             top5 = picks[:5]
@@ -2709,8 +2713,8 @@ class TradingBot:
             try:
                 bal_info = self.fetcher.get_account_balance() if self.fetcher else {}
                 live_bal = bal_info.get("available", 0) if bal_info else 0
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
             status = "🟢 TRADING" if not state.trading_paused else "⏸ PAUSED"
             if state.circuit_breaker_active:
                 status = "🔴 CIRCUIT BREAK"
@@ -2769,8 +2773,8 @@ def main():
         from adaptive_brain import auto_update_code
         update_msg = auto_update_code()
         logger.info(f"[{format_ist_timestamp()}] {update_msg}")
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[suppressed] {_e}")
 
     logger.info("=" * 60)
     logger.info("  US MOMENTUM ALPACA AI BOT")

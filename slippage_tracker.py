@@ -180,8 +180,8 @@ class SlippageTracker:
                 ).fetchone()
             if row and row[1]:
                 return row[0] or 0.0, row[1]
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return 0.0, 0
 
     def format_daily_report(self) -> str:

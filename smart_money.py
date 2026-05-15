@@ -682,8 +682,8 @@ class NSEKillzoneAnalyzer:
             from broker import MARKET_NAME as _MN
             if "NSE" not in _MN:
                 return self.US_KILLZONES, self.US_DEAD_ZONES
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return self.NSE_KILLZONES, self.NSE_DEAD_ZONES
 
     def get_current_killzone(self, now_ist: datetime = None) -> Dict:
@@ -693,8 +693,8 @@ class NSEKillzoneAnalyzer:
             if "NSE" not in _MN:
                 from utils import get_current_et_time
                 now_ist = get_current_et_time()
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         if now_ist is None:
             now_ist = datetime.now(IST)
         current_time = now_ist.time()
@@ -1076,8 +1076,8 @@ class SmartMoneyEnhancer:
                 regime = self.regime.detect(df)
                 if not regime.tradeable:
                     return False, regime.description
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         return True, "Market tradeable"
 
 

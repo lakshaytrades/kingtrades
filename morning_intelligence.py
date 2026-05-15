@@ -713,8 +713,8 @@ class MorningIntelligence:
                         if sector in hot_set:
                             candidates.append(sym)
                             seen.add(sym)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
 
         # Fill remaining from base watchlist
         for sym in base_watchlist:

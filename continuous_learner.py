@@ -296,8 +296,8 @@ class ContinuousLearner:
         if alerter:
             try:
                 alerter.send_text(learner.get_learning_summary())
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
     def _task_ai_eod_review(self):
         """Ask AI to review today's trades and extract lessons."""
@@ -355,8 +355,8 @@ class ContinuousLearner:
             )
             try:
                 alerter.send_text(lesson_text)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
     def _task_eod_self_training(self):
         """
@@ -429,8 +429,8 @@ class ContinuousLearner:
         if alerter:
             try:
                 alerter.send_text(f"📊 Weekly Review\n{review[:1000]}")
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
     def _task_calendar_refresh(self):
         """Refresh economic calendar from web."""
@@ -444,11 +444,12 @@ class ContinuousLearner:
     def _task_us_snapshot(self):
         """Log US market opening direction (9:30 PM IST = 9:00 AM ET)."""
         try:
-            import yfinance as yf
-            spy = yf.download("SPY", period="1d", interval="5m", progress=False, auto_adjust=True)
-            if not spy.empty:
-                latest = float(spy["Close"].iloc[-1])
-                first  = float(spy["Close"].iloc[0])
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            spy = fetcher.get_ohlcv("SPY", interval="5minute", lookback_days=1)
+            if spy is not None and not spy.empty:
+                latest = float(spy["close"].iloc[-1])
+                first  = float(spy["close"].iloc[0])
                 chg    = (latest - first) / first * 100
                 logger.info(
                     f"[{format_ist_timestamp()}] US snapshot: "
@@ -563,8 +564,8 @@ class ContinuousLearner:
                             f"🔑 <b>Groww Token Refreshed</b> — {format_ist_timestamp()}\n"
                             f"Ready for today's trading session."
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
 
             elif success and new_token == old_token:
                 # Same token returned — may be using cached env token; still mark success
@@ -584,8 +585,8 @@ class ContinuousLearner:
                             f"⚠️ <b>Token Refresh Failed</b> — {format_ist_timestamp()}\n"
                             f"Will retry. Check GROWW_TOTP_SECRET in /opt/kingtrades/.env"
                         )
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
 
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Token refresh task error: {e}")

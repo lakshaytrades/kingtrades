@@ -468,14 +468,21 @@ def get_spy_qqq_regime(adx: float = 0.0) -> Dict:
         result["aggressive_allowed"] = result.get("bullish_regime", True) and adx > 20
         return result
     try:
-        import yfinance as yf
-        data = yf.download(["SPY", "QQQ"], period="252d", interval="1d",
-                           auto_adjust=True, progress=False)
-        closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
-        spy_price = float(closes["SPY"].iloc[-1])
-        qqq_price = float(closes["QQQ"].iloc[-1])
-        spy_200ma = float(closes["SPY"].rolling(200).mean().iloc[-1])
-        qqq_200ma = float(closes["QQQ"].rolling(200).mean().iloc[-1])
+        from data_fetch_alpaca import get_data_fetcher
+        import numpy as np
+        fetcher = get_data_fetcher()
+        spy_df = fetcher.get_ohlcv("SPY", interval="day", lookback_days=252)
+        qqq_df = fetcher.get_ohlcv("QQQ", interval="day", lookback_days=252)
+        if spy_df is None or len(spy_df) < 200:
+            raise ValueError("Insufficient SPY daily data")
+        if qqq_df is None or len(qqq_df) < 200:
+            raise ValueError("Insufficient QQQ daily data")
+        spy_closes = spy_df["close"].values.astype(float)
+        qqq_closes = qqq_df["close"].values.astype(float)
+        spy_price = float(spy_closes[-1])
+        qqq_price = float(qqq_closes[-1])
+        spy_200ma = float(np.mean(spy_closes[-200:]))
+        qqq_200ma = float(np.mean(qqq_closes[-200:]))
         spy_above = spy_price > spy_200ma
         qqq_above = qqq_price > qqq_200ma
         result = {
@@ -489,7 +496,7 @@ def get_spy_qqq_regime(adx: float = 0.0) -> Dict:
             "qqq_price":          round(qqq_price, 2),
         }
         _SPY_QQQ_REGIME_CACHE = result
-        _SPY_QQQ_REGIME_TIME  = now
+        _SPY_QQQ_REGIME_TIME = now
         logging.getLogger(__name__).info(
             f"SPY/QQQ regime: SPY ${spy_price:.2f} {'>' if spy_above else '<'} "
             f"200MA ${spy_200ma:.2f} | QQQ ${qqq_price:.2f} {'>' if qqq_above else '<'} "
@@ -499,12 +506,7 @@ def get_spy_qqq_regime(adx: float = 0.0) -> Dict:
     except Exception as e:
         logging.getLogger(__name__).warning(f"SPY/QQQ regime check failed: {e}")
         return {
-            "bullish_regime":    True,
-            "aggressive_allowed": True,
-            "spy_above_200ma":   True,
-            "qqq_above_200ma":   True,
-            "spy_200ma": 0,
-            "qqq_200ma": 0,
-            "spy_price": 0,
-            "qqq_price": 0,
+            "bullish_regime": True, "aggressive_allowed": True,
+            "spy_above_200ma": True, "qqq_above_200ma": True,
+            "spy_200ma": 0, "qqq_200ma": 0, "spy_price": 0, "qqq_price": 0,
         }

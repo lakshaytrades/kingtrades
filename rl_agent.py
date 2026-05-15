@@ -306,14 +306,14 @@ class TradeMemory:
         try:
             if MEMORY_FILE.exists():
                 self.entries = json.loads(MEMORY_FILE.read_text())
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
     def _save(self):
         try:
             MEMORY_FILE.write_text(json.dumps(self.entries[-self.max_entries:]))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -524,15 +524,15 @@ class RLAgent:
             ep_file = Path("data/rl_epsilon.json")
             if ep_file.exists():
                 return float(json.loads(ep_file.read_text()).get("epsilon", 0.3))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return 0.30   # Start with 30% exploration
 
     def _save_epsilon(self):
         try:
             Path("data/rl_epsilon.json").write_text(json.dumps({"epsilon": self.epsilon}))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
     @property
     def status(self) -> dict:

@@ -306,8 +306,8 @@ class MarketDataStore:
             try:
                 corr = df["return_pct"].corr(nifty_rets.tail(len(df)))
                 correlations.append((sym, corr))
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         correlations.sort(key=lambda x: abs(x[1]), reverse=True)
         return [sym for sym, _ in correlations[:top_n]]
 
@@ -356,8 +356,8 @@ class MarketDataStore:
                         "return_pct":  q.get("change_pct", 0),
                     })
                     results["symbols"].append(symbol)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
         logger.info(
             f"[{format_ist_timestamp()}] Data store updated: "

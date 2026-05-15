@@ -382,8 +382,8 @@ Format as JSON list of: {{finding, type, confidence, impact, action}}
             if isinstance(findings, list):
                 self._save_insight("pattern_discoveries", {"findings": findings})
                 return findings
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return []
 
     # --------------------------------------------------------
@@ -443,8 +443,8 @@ Flag any red flags. Be direct.
                 with open(path) as f:
                     data = json.load(f)
                 return data[-1] if isinstance(data, list) else data
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         return None
 
 

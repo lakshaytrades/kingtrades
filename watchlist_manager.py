@@ -305,8 +305,8 @@ class WatchlistManager:
                     rs = self.calculate_relative_strength(q.get("change_pct", 0), spy_change_pct)
                     if rs >= min_rs:
                         strong.append(sym)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         return strong if strong else symbols[:10]
 
     # -------------------------------------------------------
@@ -322,29 +322,35 @@ class WatchlistManager:
                 (now - self._rs_rank_time).total_seconds() < 3600):
             return self._rs_rank_cache[:top_n]
         try:
-            import yfinance as yf
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
             universe = list(LIQUID_UNIVERSE)[:80]  # cap to avoid timeout
-            tickers = universe + ["SPY", "QQQ"]
-            data = yf.download(tickers, period="6mo", interval="1d",
-                               auto_adjust=True, progress=False, threads=True)
-            closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
-            spy_ret_1m = (closes["SPY"].iloc[-1] / closes["SPY"].iloc[-21] - 1) * 100
-            spy_ret_3m = (closes["SPY"].iloc[-1] / closes["SPY"].iloc[-63] - 1) * 100
+
+            # Fetch SPY baseline
+            spy_df = fetcher.get_ohlcv("SPY", interval="day", lookback_days=130)
+            if spy_df is None or len(spy_df) < 63:
+                return list(LIQUID_UNIVERSE)[:top_n]
+            spy_closes = spy_df["close"].values.astype(float)
+            spy_ret_1m = (spy_closes[-1] / spy_closes[-21] - 1) * 100
+            spy_ret_3m = (spy_closes[-1] / spy_closes[-63] - 1) * 100
+
             scores = []
             for sym in universe:
                 try:
-                    s = closes[sym].dropna()
-                    if len(s) < 63:
+                    df = fetcher.get_ohlcv(sym, interval="day", lookback_days=130)
+                    if df is None or len(df) < 63:
                         continue
-                    ret_1m = (s.iloc[-1] / s.iloc[-21] - 1) * 100
-                    ret_3m = (s.iloc[-1] / s.iloc[-63] - 1) * 100
-                    high_52w = s.rolling(252).max().iloc[-1]
-                    ath_pct  = (s.iloc[-1] / high_52w - 1) * 100  # 0 = at high, negative = below
-                    rs_1m = ret_1m - float(spy_ret_1m)
-                    rs_3m = ret_3m - float(spy_ret_3m)
-                    mom   = 0.4 * rs_1m + 0.4 * rs_3m + 0.2 * (ath_pct + 50) / 50 * 10
+                    s = df["close"].values.astype(float)
+                    ret_1m = (s[-1] / s[-21] - 1) * 100
+                    ret_3m = (s[-1] / s[-63] - 1) * 100
+                    high_52w = float(np.max(s[-min(252, len(s)):]))
+                    ath_pct = (s[-1] / high_52w - 1) * 100 if high_52w > 0 else 0
+                    rs_1m = ret_1m - spy_ret_1m
+                    rs_3m = ret_3m - spy_ret_3m
+                    mom = 0.4 * rs_1m + 0.4 * rs_3m + 0.2 * (ath_pct + 50) / 50 * 10
                     scores.append((sym, round(mom, 2)))
-                except Exception:
+                except Exception as exc:
+                    logger.debug(f"RS score {sym}: {exc}")
                     continue
             scores.sort(key=lambda x: x[1], reverse=True)
             ranked = [s[0] for s in scores]
@@ -363,48 +369,39 @@ class WatchlistManager:
     def scan_low_float_runners(self, min_rvol: float = 3.0, max_float_m: float = 100.0) -> List[Dict]:
         """Scan for low-float high-RVOL momentum runners (US gap-and-go candidates)."""
         try:
-            import yfinance as yf
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
             universe = list(LIQUID_UNIVERSE)[:60]
-            data = yf.download(universe, period="25d", interval="1d",
-                               auto_adjust=True, progress=False, threads=True)
-            closes = data["Close"] if "Close" in data.columns else data.xs("Close", axis=1, level=0)
-            volumes = data["Volume"] if "Volume" in data.columns else data.xs("Volume", axis=1, level=0)
-            opens = data["Open"] if "Open" in data.columns else data.xs("Open", axis=1, level=0)
             runners = []
             for sym in universe:
                 try:
-                    c = closes[sym].dropna()
-                    v = volumes[sym].dropna()
-                    o = opens[sym].dropna()
-                    if len(c) < 21 or len(v) < 21:
+                    df = fetcher.get_ohlcv(sym, interval="day", lookback_days=27)
+                    if df is None or len(df) < 21:
                         continue
-                    prev_close = float(c.iloc[-2])
-                    today_open = float(o.iloc[-1])
-                    today_vol  = float(v.iloc[-1])
-                    avg_vol_20 = float(v.iloc[-21:-1].mean())
+                    c = df["close"].values.astype(float)
+                    v = df["volume"].values.astype(float)
+                    o = df["open"].values.astype(float)
+                    prev_close = c[-2]
+                    today_open = o[-1]
+                    today_vol  = v[-1]
+                    avg_vol_20 = float(np.mean(v[-21:-1])) if len(v) >= 21 else 0.0
                     gap_pct    = (today_open - prev_close) / prev_close * 100
                     rvol       = today_vol / avg_vol_20 if avg_vol_20 > 0 else 0
                     if rvol < min_rvol or gap_pct < 0.5:
                         continue
-                    # Float check via yfinance info (cached per symbol)
-                    if sym not in self._float_cache:
-                        try:
-                            info = yf.Ticker(sym).info
-                            float_shares = info.get("floatShares", info.get("sharesOutstanding", 0))
-                            self._float_cache[sym] = float_shares / 1e6  # convert to millions
-                        except Exception:
-                            self._float_cache[sym] = 9999  # unknown = skip
-                    float_m = self._float_cache.get(sym, 9999)
-                    if float_m > max_float_m:
+                    # Float check not available via Alpaca — use large float assumption
+                    float_m = self._float_cache.get(sym, 999)
+                    if float_m > max_float_m and float_m != 999:
                         continue
                     runners.append({
                         "symbol":     sym,
                         "gap_pct":    round(gap_pct, 2),
                         "rvol":       round(rvol, 1),
                         "float_m":    round(float_m, 1),
-                        "prev_close": round(prev_close, 2),
+                        "prev_close": round(float(prev_close), 2),
                     })
-                except Exception:
+                except Exception as exc:
+                    logger.debug(f"Low-float {sym}: {exc}")
                     continue
             runners.sort(key=lambda x: x["rvol"], reverse=True)
             if runners:

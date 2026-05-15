@@ -94,16 +94,21 @@ class SectorRotationEngine:
     # ------------------------------------------------------------------
 
     def _fetch_yf_history(self, ticker: str, period: str = "1mo") -> Optional[object]:
-        """Download yfinance history. Returns DataFrame or None on failure."""
+        """Fetch daily history via Alpaca. Returns DataFrame or None on failure."""
         try:
-            import yfinance as yf
-            df = yf.download(ticker, period=period, progress=False, auto_adjust=True)
+            from data_fetch_alpaca import get_data_fetcher
+            period_days = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 370}.get(period, 35)
+            fetcher = get_data_fetcher()
+            df = fetcher.get_ohlcv(ticker, interval="day", lookback_days=period_days)
             if df is None or df.empty:
                 return None
+            # Rename to match expected column convention
+            df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
+                                     "close": "Close", "volume": "Volume"})
             return df
         except Exception as exc:
             logger.debug(
-                f"[{format_ist_timestamp()}] yfinance download failed for {ticker}: {exc}"
+                f"[{format_ist_timestamp()}] Alpaca fetch failed for {ticker}: {exc}"
             )
             return None
 

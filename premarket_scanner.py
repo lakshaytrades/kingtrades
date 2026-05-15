@@ -63,23 +63,24 @@ class PremarketScanner:
 
         results = []
         try:
-            import yfinance as yf
+            from data_fetch_alpaca import get_data_fetcher
             from catalyst_scanner import get_catalyst_scanner
+            fetcher     = get_data_fetcher()
             cat_scanner = get_catalyst_scanner()
 
-            tickers = yf.Tickers(" ".join(symbols))
             for sym in symbols:
                 try:
-                    tk = tickers.tickers.get(sym)
-                    if tk is None:
-                        tk = yf.Ticker(sym)
-                    info = tk.fast_info
-                    if info is None:
+                    # Previous close from yesterday's daily bar
+                    daily_df = fetcher.get_ohlcv(sym, interval="day", lookback_days=3)
+                    if daily_df is None or len(daily_df) < 2:
                         continue
+                    prev_close = float(daily_df["close"].iloc[-2])
 
-                    prev_close = float(getattr(info, "previous_close", 0) or 0)
-                    pm_price   = float(getattr(info, "pre_market_price", 0) or
-                                       getattr(info, "last_price", 0) or 0)
+                    # Current price (pre-market or regular quote)
+                    quote = fetcher.get_quote(sym)
+                    if not quote:
+                        continue
+                    pm_price = float(quote.get("ltp", 0) or 0)
                     if prev_close <= 0 or pm_price <= 0:
                         continue
 
@@ -87,7 +88,7 @@ class PremarketScanner:
                     if abs(gap_pct) < MIN_GAP_PCT:
                         continue
 
-                    pm_vol = int(getattr(info, "three_month_average_volume", 0) or 0)
+                    pm_vol = int(quote.get("volume", 0) or 0)
 
                     # Score calculation
                     score = 0.0

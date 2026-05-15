@@ -359,8 +359,8 @@ class RiskManager:
                         f"{sector} ({', '.join(same_sector)})"
                     ),
                 }
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return {"allowed": True, "reason": "Sector check passed"}
 
     # --------------------------------------------------------
@@ -459,8 +459,8 @@ class RiskManager:
                 if daily_vol_pct > 0:
                     vol_mult = min(max(target_vol / daily_vol_pct, 0.4), 1.5)
             quantity = max(1, int(quantity * vol_mult))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # 3. Session multiplier (reduce during midday, closing)
         sess_mult, session = self._get_session_multiplier()
@@ -1009,8 +1009,8 @@ class RiskManager:
                             "action": "EXIT_NOW",
                             "reason": "2 consecutive bullish candles — short momentum fading",
                         }
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
         return {"action": "HOLD", "reason": "Trade health OK"}
 

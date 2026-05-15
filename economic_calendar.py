@@ -197,8 +197,8 @@ class EconomicCalendar:
                         f"Event blackout: {ev['event']} "
                         f"({window}min window around {ev['time_ist']} IST)"
                     )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         return False, ""
 
     def is_fno_expiry_today(self) -> bool:

@@ -356,8 +356,8 @@ class TradeJournal:
             d["mtf_aligned"] = bool(d.get("mtf_aligned", 0))
             try:
                 records.append(TradeRecord(**d))
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         return records
 
 

@@ -512,8 +512,8 @@ class TechnicalIndicators:
                     nearest_lvn = min(lvn_levels, key=lambda p: abs(p - current_price))
                     ind.lvn_nearest = float(nearest_lvn)
                     ind.at_lvn = abs(nearest_lvn - current_price) / max(current_price, 1) < 0.003
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Money Flow Index (MFI 14) ─────────────────────────────────────
         try:
@@ -536,8 +536,8 @@ class TechnicalIndicators:
                     ind.mfi = 100 - 100 / (1 + pos_mf / neg_mf)
                 else:
                     ind.mfi = 100.0
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Chaikin Money Flow (CMF 20) ───────────────────────────────────
         try:
@@ -549,8 +549,8 @@ class TechnicalIndicators:
                 hl = h - l
                 clv = np.where(hl > 0, ((c - l) - (h - c)) / hl, 0.0)
                 ind.cmf = float((clv * v).sum() / max(v.sum(), 1))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Anchored VWAP (to today's open bar) ──────────────────────────
         try:
@@ -558,8 +558,8 @@ class TechnicalIndicators:
                 v = df["volume"].values.astype(float)
                 tp = (df["high"].values + df["low"].values + df["close"].values) / 3
                 ind.anchored_vwap = float((tp * v).sum() / max(v.sum(), 1))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Central Pivot Range (CPR) ─────────────────────────────────────
         try:
@@ -574,8 +574,8 @@ class TechnicalIndicators:
                 ind.cpr_bottom = round(min(bc, tc), 4)
                 ind.at_cpr = (ind.cpr_bottom * 0.998 <= current_price
                                <= ind.cpr_top * 1.002)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── NR4 / NR7 (Narrow Range setups — volatility contraction) ─────
         try:
@@ -584,8 +584,8 @@ class TechnicalIndicators:
                 cur_range = ranges[-1]
                 ind.nr4 = bool(cur_range == min(ranges[-4:]))
                 ind.nr7 = bool(cur_range == min(ranges[-7:]))
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Equal Highs / Equal Lows (liquidity pools) ───────────────────
         try:
@@ -597,8 +597,8 @@ class TechnicalIndicators:
                 ind.eqh = sum(1 for h in highs[:-1] if abs(h - top_h) <= tol) >= 2
                 bot_l = lows[-1]
                 ind.eql = sum(1 for lo in lows[:-1] if abs(lo - bot_l) <= tol) >= 2
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         # ── Market internals breadth score ───────────────────────────────
         try:
@@ -3148,8 +3148,8 @@ class PatternRecognizer:
                     round(conf),
                     f"Gap down {gap_pct:+.1f}% at open — first bar confirms momentum, trade short"
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return None
 
     def detect_gap_fill(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -3184,8 +3184,8 @@ class PatternRecognizer:
                     round(conf),
                     f"Gap down {gap_pct:+.1f}% failed — expect fill toward ${prev_close:.2f}"
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return None
 
     def _run_harmonic_patterns(self, df: pd.DataFrame) -> List[PatternResult]:
@@ -3255,8 +3255,8 @@ class PatternRecognizer:
                     "SMT Divergence Bullish", "LONG", 72,
                     "Price near low but OBV diverging — institutional accumulation signal"
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
         return None
 
     # --------------------------------------------------------

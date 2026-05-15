@@ -48,8 +48,8 @@ class OvernightAnalyzer:
                 with open(self._cache_path) as f:
                     self._today_analysis = json.load(f)
                 logger.info(f"[{format_et_timestamp()}] Loaded cached overnight analysis")
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
     def run_analysis(self, ai_brain=None) -> Dict:
         """Run full pre-market analysis and return structured result."""
@@ -199,8 +199,8 @@ class OvernightAnalyzer:
         try:
             with open(self._cache_path, "w") as f:
                 json.dump(result, f, indent=2, default=str)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         self._log_summary(result)
         return result
@@ -271,8 +271,8 @@ class OvernightAnalyzer:
                         result["gap_pct"] = round(
                             (float(price) - result["prev_close"]) / result["prev_close"] * 100, 2
                         )
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
         except Exception as e:
             logger.debug(f"SPY gap fetch failed: {e}")
         return result
@@ -291,8 +291,8 @@ class OvernightAnalyzer:
                         last = float(data["Close"].iloc[-1])
                         result[f"{name}_price"]  = round(last, 2)
                         result[f"{name}_change"] = round((last - prev) / prev * 100, 2)
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
         except ImportError:
             pass
         return result

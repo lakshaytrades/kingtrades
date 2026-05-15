@@ -309,7 +309,7 @@ class MarketInternals:
     def _sector_breadth(self) -> Tuple[int, int, int, Dict[str, str]]:
         """
         For each of the 11 SPDR sector ETFs:
-          - Fetch last 20 × 5-min bars via yfinance
+          - Fetch last 20 × 5-min bars via Alpaca
           - Compute EMA9 and EMA21
           - Score: +1 (bullish) if EMA9 > EMA21 AND close > EMA9
                    -1 (bearish) if EMA9 < EMA21 AND close < EMA9
@@ -318,9 +318,10 @@ class MarketInternals:
         Returns (sector_score, bullish_count, bearish_count, labels_dict)
         """
         try:
-            import yfinance as yf
-        except ImportError:
-            logger.warning("yfinance not installed — sector breadth unavailable")
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+        except Exception as exc:
+            logger.warning(f"Alpaca data fetcher unavailable — sector breadth skipped: {exc}")
             return 0, 0, 0, {}
 
         sector_score = 0
@@ -330,7 +331,8 @@ class MarketInternals:
 
         for etf in SECTORS:
             try:
-                label, score = self._score_sector_etf(yf, etf)
+                df = fetcher.get_ohlcv(etf, interval="5minute", lookback_days=1)
+                label, score = self._score_sector_etf(df, etf)
                 labels[etf] = label
                 sector_score += score
                 if score == 1:
@@ -343,20 +345,18 @@ class MarketInternals:
 
         return sector_score, bullish_count, bearish_count, labels
 
-    def _score_sector_etf(self, yf, symbol: str) -> Tuple[str, int]:
+    def _score_sector_etf(self, df: pd.DataFrame, symbol: str) -> Tuple[str, int]:
         """
-        Fetch 5-min bars for *symbol* and score it -1 / 0 / +1.
+        Score a sector ETF DataFrame -1 / 0 / +1.
+
+        df is an OHLCV DataFrame with lowercase columns (open, high, low, close,
+        volume) as returned by data_fetch_alpaca fetcher.get_ohlcv().
         Returns (label_str, score_int).
         """
-        ticker = yf.Ticker(symbol)
-        # period="1d" with interval="5m" gives ~78 bars for a full session;
-        # we only need the last 20, so trim after fetching.
-        hist = ticker.history(period="1d", interval="5m")
-
-        if hist is None or hist.empty or len(hist) < 10:
+        if df is None or df.empty or len(df) < 10:
             return "NEUTRAL", 0
 
-        closes = hist["Close"].values.astype(float)
+        closes = df["close"].values.astype(float)
 
         # Trim to last 20 bars
         closes = closes[-20:]
@@ -384,7 +384,7 @@ class MarketInternals:
 
     def _spy_momentum(self) -> int:
         """
-        SPY momentum score using Alpaca bars (falls back to yfinance).
+        SPY momentum score using Alpaca bars.
 
         Bar score:
           3 consecutive green bars → +2
@@ -404,21 +404,7 @@ class MarketInternals:
             if df is not None and not df.empty and len(df) >= 3:
                 return self._score_spy_df(df)
         except Exception as exc:
-            logger.debug(f"SPY momentum via Alpaca failed: {exc} — trying yfinance")
-
-        # yfinance fallback
-        try:
-            import yfinance as yf
-            ticker = yf.Ticker("SPY")
-            hist = ticker.history(period="1d", interval="5m")
-            if hist is not None and not hist.empty and len(hist) >= 3:
-                df = hist.rename(columns={
-                    "Open": "open", "High": "high",
-                    "Low": "low", "Close": "close", "Volume": "volume",
-                })
-                return self._score_spy_df(df)
-        except Exception as exc:
-            logger.debug(f"SPY momentum via yfinance also failed: {exc}")
+            logger.debug(f"SPY momentum via Alpaca failed: {exc}")
 
         return 0  # neutral fallback
 
@@ -450,41 +436,42 @@ class MarketInternals:
 
     def _volatility_regime(self) -> bool:
         """
-        Returns True if a fear spike is detected (UVXY 5-day change > 10%).
-        Uses yfinance fast_info for a lightweight quote.
+        Returns True if a fear spike is detected in UVXY.
+
+        Checks two conditions via Alpaca daily bars (lookback_days=7):
+          - Single-day change > UVXY_FEAR_THRESHOLD (10%)
+          - 5-day change > UVXY_FEAR_THRESHOLD (10%)
+
+        Returns False on any data error.
         """
         try:
-            import yfinance as yf
-            ticker = yf.Ticker("UVXY")
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            df = fetcher.get_ohlcv("UVXY", interval="day", lookback_days=7)
 
-            # fast_info is cheap; get previous close + current price
-            info = ticker.fast_info
-            current_price = getattr(info, "last_price", None)
-            prev_close    = getattr(info, "previous_close", None)
+            if df is None or df.empty or len(df) < 2:
+                logger.debug("UVXY: insufficient daily bars for volatility check")
+                return False
 
-            if current_price and prev_close and prev_close > 0:
-                # Use single-day change as a proxy when 5-day history is costly
-                day_change_pct = (current_price - prev_close) / prev_close * 100.0
-                if day_change_pct > UVXY_FEAR_THRESHOLD:
-                    logger.info(
-                        f"[{format_ist_timestamp()}] UVXY fear spike: "
-                        f"{day_change_pct:.1f}% day change"
-                    )
-                    return True
+            closes = df["close"].values.astype(float)
 
-            # Also check 5-day historical change for a broader picture
-            hist = ticker.history(period="5d", interval="1d")
-            if hist is not None and len(hist) >= 2:
-                price_5d_ago = float(hist["Close"].iloc[0])
-                price_now    = float(hist["Close"].iloc[-1])
-                if price_5d_ago > 0:
-                    change_5d = (price_now - price_5d_ago) / price_5d_ago * 100.0
-                    if change_5d > UVXY_FEAR_THRESHOLD:
-                        logger.info(
-                            f"[{format_ist_timestamp()}] UVXY 5-day fear spike: "
-                            f"{change_5d:.1f}%"
-                        )
-                        return True
+            # Single-day change: last close vs second-to-last close
+            day_change_pct = (closes[-1] - closes[-2]) / closes[-2] * 100.0
+            if day_change_pct > UVXY_FEAR_THRESHOLD:
+                logger.info(
+                    f"[{format_ist_timestamp()}] UVXY fear spike: "
+                    f"{day_change_pct:.1f}% day change"
+                )
+                return True
+
+            # 5-day change: last close vs oldest available close
+            change_5d = (closes[-1] - closes[0]) / closes[0] * 100.0
+            if change_5d > UVXY_FEAR_THRESHOLD:
+                logger.info(
+                    f"[{format_ist_timestamp()}] UVXY 5-day fear spike: "
+                    f"{change_5d:.1f}%"
+                )
+                return True
 
         except Exception as exc:
             logger.debug(f"UVXY volatility check failed: {exc}")
@@ -506,18 +493,19 @@ class MarketInternals:
            0  otherwise (mixed)
         """
         try:
-            import yfinance as yf
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
 
             proxies = ["SPY", "QQQ", "DIA"]
             above_sma: Dict[str, bool] = {}
 
             for sym in proxies:
                 try:
-                    ticker = yf.Ticker(sym)
-                    hist = ticker.history(period="30d", interval="1d")
-                    if hist is None or len(hist) < 20:
+                    df = fetcher.get_ohlcv(sym, interval="day", lookback_days=30)
+                    if df is None or len(df) < 20:
+                        logger.debug(f"AD proxy {sym}: insufficient daily bars (got {len(df) if df is not None else 0})")
                         continue
-                    closes  = hist["Close"].values.astype(float)
+                    closes  = df["close"].values.astype(float)
                     sma20   = float(np.mean(closes[-20:]))
                     last_px = float(closes[-1])
                     above_sma[sym] = last_px > sma20

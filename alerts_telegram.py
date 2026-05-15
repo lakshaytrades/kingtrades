@@ -41,7 +41,8 @@ IST = ZoneInfo("Asia/Kolkata")
 # Currency symbol — set by broker adapter ($ for Alpaca, ₹ for Groww)
 try:
     from broker import CURRENCY_SYMBOL as _CUR
-except Exception:
+except Exception as _e:
+    print(f"[suppressed] {_e}")
     _CUR = "$"
 
 # ── emoji palette ───────────────────────────────────────────

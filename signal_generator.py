@@ -274,8 +274,8 @@ class SignalGenerator:
                     if not news_clear:
                         logger.info(f"[{format_ist_timestamp()}] {symbol}: news blackout — skipping")
                         return None
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
             # 5. Relative strength vs Nifty
             rs = self._get_relative_strength(symbol)
@@ -452,8 +452,8 @@ class SignalGenerator:
                 cat = get_catalyst_scanner()._cache.get(symbol, {})
                 if cat.get("has_catalyst") and cat.get("boost", 0) >= 20:
                     score_size_mult = min(2.0, score_size_mult + 0.3)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
             combined_size = round(filter_result.size_multiplier * regime_mult * score_size_mult, 2)
 
@@ -473,8 +473,8 @@ class SignalGenerator:
                 # Adjust size by breadth quality
                 combined_size = round(combined_size * internals.get_size_multiplier(direction), 2)
                 ind.breadth_score = breadth["breadth_score"]
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
             # ── LLM Reasoning Gate (95+ score only) ──────────────────────────
             if filter_result.final_score >= 95:
@@ -564,8 +564,8 @@ class SignalGenerator:
                 logger.info(
                     f"[{format_ist_timestamp()}] PreMarket priority: {pm_priority}"
                 )
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         signals: List[TradeSignal] = []
         errors  = 0
@@ -814,15 +814,16 @@ class SignalGenerator:
 
         result: Optional[float] = 0.0
         try:
-            import yfinance as yf
-            hist = yf.Ticker(symbol).history(period="60d", interval="1d")
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            hist = fetcher.get_ohlcv(symbol, interval="day", lookback_days=65)
             if hist is None or len(hist) < 21:
                 self._daily_htf_cache[cache_key] = {"val": 0.0, "ts": get_current_ist_time()}
                 return 0.0
 
-            closes = hist["Close"]
-            highs  = hist["High"]
-            lows   = hist["Low"]
+            closes = hist["close"]
+            highs  = hist["high"]
+            lows   = hist["low"]
             sma20  = closes.rolling(20).mean().iloc[-1]
             price  = float(closes.iloc[-1])
 

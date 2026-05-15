@@ -190,8 +190,8 @@ class AlpacaOptionsExecutor:
         try:
             from alerts_telegram import get_alert_manager
             get_alert_manager().send_options_entry_alert(pos)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
         return result
 
@@ -258,8 +258,8 @@ class AlpacaOptionsExecutor:
                     try:
                         from alerts_telegram import get_alert_manager
                         get_alert_manager().send_options_exit_alert(pos, result.fill_premium, reason)
-                    except Exception:
-                        pass
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
                     del self._positions[opt_symbol]
                 else:
                     pos.contracts = remaining
@@ -472,8 +472,8 @@ class AlpacaOptionsExecutor:
         try:
             trading_client = self._auth.get_trading_client()
             trading_client.cancel_order_by_id(order_id)
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
 
 # ─────────────────────────────────────────────────────────────────────────────

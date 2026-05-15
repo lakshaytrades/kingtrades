@@ -113,7 +113,8 @@ class BacktestEngine:
             # Find entry candle in df
             try:
                 entry_idx = df.index.searchsorted(sig["timestamp"])
-            except Exception:
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
                 continue
 
             if entry_idx >= len(df) - 5:
@@ -320,8 +321,8 @@ class BacktestEngine:
                         session_stats["midday"]["trades"].append(t["net_pnl"])
                     elif 810 <= tot < 920:         # 13:30-15:20
                         session_stats["afternoon"]["trades"].append(t["net_pnl"])
-                except Exception:
-                    pass
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
 
         sessions: Dict[str, Dict] = {}
         for name, info in session_stats.items():
@@ -588,7 +589,8 @@ class EODSelfTrainer:
                 try:
                     from pattern_recognition import TechnicalIndicators
                     df = TechnicalIndicators().compute(df)
-                except Exception:
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
                     continue
 
                 # Walk-forward optimization
@@ -888,31 +890,23 @@ class BenchmarkComparator:
         initial_capital:  float = 100000,
         period_days:      int   = 180,
     ) -> Dict:
-        try:
-            import yfinance as yf
-        except ImportError:
-            return {"error": "yfinance not installed"}
-
         if not strategy_trades:
             return {"error": "No trades to compare"}
 
-        # Fetch Nifty50 data for same period
+        # Fetch SPY data for same period via Alpaca (benchmark = S&P 500)
         try:
-            end_date   = get_current_ist_time()
-            start_date = end_date - timedelta(days=period_days + 10)
-            nifty = yf.download(
-                "^NSEI", start=start_date.strftime("%Y-%m-%d"),
-                end=end_date.strftime("%Y-%m-%d"),
-                progress=False, auto_adjust=True,
-            )
-            if nifty.empty:
-                return {"error": "Could not fetch Nifty data"}
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            spy_df = fetcher.get_ohlcv("SPY", interval="day", lookback_days=period_days + 10)
+            if spy_df is None or spy_df.empty:
+                return {"error": "Could not fetch SPY benchmark data"}
+            nifty = spy_df  # same variable name to keep downstream code unchanged
         except Exception as e:
-            return {"error": f"Nifty fetch failed: {e}"}
+            return {"error": f"SPY benchmark fetch failed: {e}"}
 
-        # Benchmark: buy-and-hold Nifty
-        nifty_start = float(nifty["Close"].iloc[0])
-        nifty_end   = float(nifty["Close"].iloc[-1])
+        # Benchmark: buy-and-hold SPY
+        nifty_start = float(nifty["close"].iloc[0])
+        nifty_end   = float(nifty["close"].iloc[-1])
         bm_return   = (nifty_end - nifty_start) / nifty_start * 100
 
         # Strategy equity curve
@@ -920,8 +914,8 @@ class BenchmarkComparator:
         strat_pnls  = [t["net_pnl"] for t in strategy_trades]
         strat_return = sum(strat_pnls) / initial_capital * 100
 
-        # Nifty daily returns
-        nifty_daily = nifty["Close"].pct_change().dropna().values
+        # SPY daily returns
+        nifty_daily = nifty["close"].pct_change().dropna().values
         # Strategy daily P&L approximation
         strat_daily = np.array(strat_pnls)
 

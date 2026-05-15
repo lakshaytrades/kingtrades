@@ -20,13 +20,111 @@ Short selling:
 import logging
 import time as _time
 from dataclasses import dataclass, field
-from typing import List, Optional
+from typing import Dict, List, Optional
 
 from auth_alpaca import get_auth_manager
 from data_fetch_alpaca import get_data_fetcher
 from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
+
+
+class SlippageModel:
+    """
+    Estimates realistic fill price vs theoretical mid-price.
+
+    For live paper-to-live transition accuracy: models spread cost + market impact.
+    Used to estimate P&L more accurately during paper trading.
+    """
+
+    # Typical half-spread as % of price by liquidity tier
+    SPREAD_TIERS = {
+        "mega":   0.01,   # AAPL, MSFT, NVDA — 1 cent spread on $100+ stock = ~0.01%
+        "large":  0.03,   # SPY, QQQ components — ~3bps
+        "mid":    0.08,   # Mid-caps — ~8bps
+        "small":  0.20,   # Small-caps — ~20bps
+    }
+
+    MEGA_CAP = {"AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA", "BRK.B", "SPY", "QQQ"}
+    LARGE_CAP = {"AMD", "NFLX", "COIN", "UBER", "SHOP", "PLTR", "JPM", "GS", "XOM", "CVX",
+                 "BA", "CAT", "XLK", "XLF", "XLE", "XLY", "XLI"}
+
+    def estimate_slippage_pct(self, symbol: str, quantity: int, price: float,
+                               direction: str = "BUY") -> float:
+        """
+        Returns estimated total slippage as % of trade value.
+
+        Components:
+          1. Half-spread: cost of crossing bid-ask
+          2. Market impact: price movement from our own order (scales with size)
+        """
+        if price <= 0 or quantity <= 0:
+            return 0.0
+
+        # Spread component
+        if symbol in self.MEGA_CAP:
+            tier = "mega"
+        elif symbol in self.LARGE_CAP:
+            tier = "large"
+        else:
+            tier = "mid"
+
+        half_spread_pct = self.SPREAD_TIERS[tier]
+
+        # Market impact component: sqrt model — small orders have little impact
+        trade_value = quantity * price
+        # Assume 1M shares ADV for mega, 500K for large, 200K for mid
+        adv_shares = {"mega": 5_000_000, "large": 1_000_000, "mid": 300_000}[tier]
+        participation = quantity / adv_shares
+        impact_pct = 0.10 * (participation ** 0.5) * 100  # Almgren-Chriss simplified
+
+        total_slippage_pct = half_spread_pct + impact_pct
+        return round(min(total_slippage_pct, 0.5), 4)  # cap at 50bps
+
+    def adjust_expected_pnl(self, symbol: str, quantity: int, entry: float,
+                             target: float, sl: float, direction: str = "LONG") -> Dict:
+        """
+        Returns realistic P&L estimates accounting for slippage on entry and exit.
+        """
+        entry_slip = self.estimate_slippage_pct(symbol, quantity, entry, "BUY" if direction == "LONG" else "SELL")
+        exit_slip  = self.estimate_slippage_pct(symbol, quantity, target, "SELL" if direction == "LONG" else "BUY")
+        sl_slip    = self.estimate_slippage_pct(symbol, quantity, sl, "SELL" if direction == "LONG" else "BUY")
+
+        slip_cost_entry = entry * entry_slip / 100
+        slip_cost_exit  = target * exit_slip / 100
+        slip_cost_sl    = sl * sl_slip / 100
+
+        if direction == "LONG":
+            real_entry  = entry + slip_cost_entry
+            real_target = target - slip_cost_exit
+            real_sl     = sl + slip_cost_sl
+        else:
+            real_entry  = entry - slip_cost_entry
+            real_target = target + slip_cost_exit
+            real_sl     = sl - slip_cost_sl
+
+        gross_profit = abs(real_target - real_entry) * quantity
+        gross_loss   = abs(real_entry - real_sl) * quantity
+
+        return {
+            "real_entry":     round(real_entry, 4),
+            "real_target":    round(real_target, 4),
+            "real_sl":        round(real_sl, 4),
+            "gross_profit":   round(gross_profit, 2),
+            "gross_loss":     round(gross_loss, 2),
+            "rr_after_slip":  round(gross_profit / gross_loss, 2) if gross_loss > 0 else 0,
+            "total_slip_pct": round(entry_slip + exit_slip, 4),
+        }
+
+
+# Singleton
+_slippage_model: Optional["SlippageModel"] = None
+
+def get_slippage_model() -> "SlippageModel":
+    global _slippage_model
+    if _slippage_model is None:
+        _slippage_model = SlippageModel()
+    return _slippage_model
 
 
 @dataclass

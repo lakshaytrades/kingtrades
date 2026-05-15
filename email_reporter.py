@@ -268,8 +268,8 @@ def send_alert(subject: str, body: str) -> None:
 </div></body></html>"""
         _send_email(to_addr, f"[KingTrades] {subject}", html, body)
 
-    except Exception:
-        pass  # Never block trading for an alert failure
+    except Exception as _e:
+        logger.debug(f"[suppressed] {_e}")  # Never block trading for an alert failure
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -356,8 +356,8 @@ def send_eod_reports(journal=None, risk_manager=None, login_ok: bool = True) -> 
         try:
             capital   = risk_manager.daily_starting_capital
             total_pnl = risk_manager.state.daily_pnl
-        except Exception:
-            pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] {_e}")
 
     # Pull trade log from journal (SQLite)
     if journal:
@@ -400,8 +400,8 @@ def send_eod_reports(journal=None, risk_manager=None, login_ok: bool = True) -> 
     try:
         Path("data").mkdir(exist_ok=True)
         Path(f"data/report_{today}.json").write_text(json.dumps(data, indent=2))
-    except Exception:
-        pass
+    except Exception as _e:
+        logger.debug(f"[suppressed] {_e}")
 
     # Send
     email_ok   = send_email_report(data)

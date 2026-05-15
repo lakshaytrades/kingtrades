@@ -254,7 +254,8 @@ class VolumeProfileAnalyzer:
                 vol_per_bin    = v / n_bins_covered
                 for b in range(lo_bin, hi_bin + 1):
                     bin_volume[b] += vol_per_bin
-            except Exception:
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
                 continue
 
         total_volume = float(bin_volume.sum())

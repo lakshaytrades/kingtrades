@@ -196,8 +196,8 @@ Respond ONLY with JSON: {{"verdict": "GO"|"NO_GO"|"REDUCE_SIZE", "reason": "..."
         finally:
             try:
                 _signal.alarm(0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
     def get_stats(self) -> str:
         if self._calls == 0:

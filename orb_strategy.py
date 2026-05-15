@@ -300,28 +300,21 @@ class ORBStrategy:
     def _fetch_5m_data(self, symbol: str, data_fetcher) -> Optional[pd.DataFrame]:
         if data_fetcher is not None and hasattr(data_fetcher, "get_ohlcv"):
             try:
-                df = data_fetcher.get_ohlcv(symbol, interval="5m", days=1)
+                df = data_fetcher.get_ohlcv(symbol, interval="5minute", lookback_days=1)
                 if df is not None and not df.empty:
                     return df
             except Exception as e:
                 logger.debug(f"Alpaca fetch failed for {symbol}: {e}")
 
+        # Fallback: try via data_fetch_alpaca singleton
         try:
-            import yfinance as yf
-            df = yf.download(
-                symbol,
-                period="1d",
-                interval="5m",
-                progress=False,
-                auto_adjust=True,
-            )
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            df = fetcher.get_ohlcv(symbol, interval="5minute", lookback_days=1)
             if df is not None and not df.empty:
-                if isinstance(df.columns, __import__('pandas').MultiIndex):
-                    df.columns = df.columns.droplevel(1)
-                df.columns = [c.lower() for c in df.columns]
                 return df
         except Exception as e:
-            logger.debug(f"yfinance fetch failed for {symbol}: {e}")
+            logger.debug(f"Alpaca singleton fetch failed for {symbol}: {e}")
 
         return None
 

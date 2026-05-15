@@ -250,22 +250,22 @@ class AlpacaOptionsData:
                 if q:
                     bid  = float(q.bid_price or 0)
                     ask  = float(q.ask_price or 0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
             try:
                 t = snap.latest_trade
                 if t:
                     last = float(t.price or 0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
             try:
                 volume = int(snap.day.volume or 0) if snap.day else 0
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
             try:
                 oi = int(snap.open_interest or 0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
             mid = (bid + ask) / 2 if (bid + ask) > 0 else last
 
@@ -278,12 +278,12 @@ class AlpacaOptionsData:
                     gamma = float(g.gamma or 0)
                     theta = float(g.theta or 0)
                     vega  = float(g.vega  or 0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
             try:
                 iv = float(snap.implied_volatility or 0)
-            except Exception:
-                pass
+            except Exception as _e:
+                logger.debug(f"[suppressed] {_e}")
 
             return OptionContract(
                 symbol        = opt_sym,
