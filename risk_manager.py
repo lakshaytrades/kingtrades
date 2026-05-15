@@ -415,6 +415,7 @@ class RiskManager:
         win_rate_estimate: float = 0.55,
         size_multiplier: float = 1.0,
         signal_rr: float = 2.0,    # Signal's reward:risk — feeds dynamic Kelly
+        atr: float = 0.0,          # ATR for volatility targeting
     ) -> Dict:
         """
         Multi-layer position sizing:
@@ -447,6 +448,19 @@ class RiskManager:
 
         # More conservative of the two
         quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
+
+        # 2b. Volatility targeting — scale down in high-vol, scale up in low-vol
+        # Target: 1% daily vol per position. If stock is more volatile, reduce size.
+        try:
+            vol_mult = 1.0
+            if atr > 0 and entry_price > 0:
+                daily_vol_pct = (atr / entry_price) * 100   # ATR as % of price
+                target_vol    = 1.0                          # 1% target daily vol
+                if daily_vol_pct > 0:
+                    vol_mult = min(max(target_vol / daily_vol_pct, 0.4), 1.5)
+            quantity = max(1, int(quantity * vol_mult))
+        except Exception:
+            pass
 
         # 3. Session multiplier (reduce during midday, closing)
         sess_mult, session = self._get_session_multiplier()

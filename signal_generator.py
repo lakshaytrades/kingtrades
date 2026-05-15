@@ -456,6 +456,63 @@ class SignalGenerator:
                 pass
 
             combined_size = round(filter_result.size_multiplier * regime_mult * score_size_mult, 2)
+
+            # ── Market Internals Gate ─────────────────────────────────────────
+            # Check sector breadth before executing — never fight whole market
+            try:
+                from market_internals import get_market_internals
+                internals   = get_market_internals()
+                breadth     = internals.get_breadth()
+                breadth_ok, breadth_reason = (
+                    internals.is_long_ok()  if direction == "LONG"
+                    else internals.is_short_ok()
+                )
+                if not breadth_ok:
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: INTERNALS BLOCK — {breadth_reason}")
+                    return None
+                # Adjust size by breadth quality
+                combined_size = round(combined_size * internals.get_size_multiplier(direction), 2)
+                ind.breadth_score = breadth["breadth_score"]
+            except Exception:
+                pass
+
+            # ── LLM Reasoning Gate (95+ score only) ──────────────────────────
+            if filter_result.final_score >= 95:
+                try:
+                    from llm_reasoner import get_llm_reasoner
+                    rr = abs(ind.atr * 3.0) / max(abs(ind.atr * 1.4), 0.01)
+                    summary = {
+                        "symbol":       symbol,
+                        "direction":    direction,
+                        "score":        filter_result.final_score,
+                        "grade":        filter_result.quality_grade,
+                        "entry":        ltp_now,
+                        "sl":           ltp_now - ind.atr * 1.4 if direction == "LONG" else ltp_now + ind.atr * 1.4,
+                        "t1":           ltp_now + ind.atr * 2.0 if direction == "LONG" else ltp_now - ind.atr * 2.0,
+                        "t2":           ltp_now + ind.atr * 3.0 if direction == "LONG" else ltp_now - ind.atr * 3.0,
+                        "rr_ratio":     rr,
+                        "patterns":     pattern_names[:5],
+                        "rsi":          ind.rsi,
+                        "macd_bull":    ind.macd > 0,
+                        "adx":          ind.adx,
+                        "volume_ratio": ind.volume_ratio,
+                        "above_vwap":   ltp_now > ind.vwap if ind.vwap > 0 else True,
+                        "spy_change":   self._nifty_change_pct,
+                        "regime":       alignment.get("regime", ""),
+                        "time_et":      get_current_ist_time().strftime("%H:%M"),
+                        "catalyst":     getattr(ind, "catalyst_reason", ""),
+                        "breadth_score": ind.breadth_score,
+                    }
+                    verdict, reason, conf = get_llm_reasoner().evaluate(summary)
+                    if verdict == "NO_GO":
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: LLM NO_GO — {reason}")
+                        return None
+                    elif verdict == "REDUCE_SIZE":
+                        combined_size = round(combined_size * 0.5, 2)
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: LLM REDUCE — {reason}")
+                except Exception as e:
+                    logger.debug(f"LLM gate error: {e}")
+
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,
@@ -476,6 +533,7 @@ class SignalGenerator:
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ SIGNAL: {direction} {symbol} "
                 f"| Score: {filter_result.final_score:.0f} | Entry: ${signal.entry_price:.2f}"
+                f"| Breadth: {ind.breadth_score:.0f}/100"
             )
             return signal
 

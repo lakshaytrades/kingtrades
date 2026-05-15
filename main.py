@@ -934,6 +934,35 @@ class TradingBot:
                 max_signals=min(max_new, 3)  # Max 3 new signals per cycle
             )
 
+            # 4a2. Mean-reversion engine — runs in RANGING/CHOPPY regimes
+            # When momentum fails, reversion fills the gap
+            if not signals:
+                try:
+                    from mean_reversion import get_mean_reversion_engine
+                    from market_regime import get_market_regime
+                    mr_engine = get_mean_reversion_engine()
+                    regime_obj = get_market_regime()
+                    current_regime = getattr(regime_obj, "current_regime", "UNKNOWN")
+                    if current_regime in ("RANGING", "LOW_VOLATILITY", "MIDDAY_CHOP", "HIGH_VOLATILITY"):
+                        mr_signals = mr_engine.scan(watchlist[:10], self.fetcher, current_regime)
+                        if mr_signals:
+                            # Convert MeanReversionSignal → TradeSignal format
+                            from signal_generator import TradeSignal
+                            for mrs in mr_signals[:2]:
+                                ts = TradeSignal(
+                                    symbol=mrs.symbol, direction=mrs.direction,
+                                    entry_price=mrs.entry_price, stop_loss=mrs.stop_loss,
+                                    target_1=mrs.target_1, target_2=mrs.target_2,
+                                    signal_score=mrs.score, quality_grade="B",
+                                    size_multiplier=0.7,  # Conservative for reversion
+                                    reason=f"[REVERSION] {mrs.reason}",
+                                    strategy=mrs.strategy,
+                                )
+                                signals.append(ts)
+                            logger.info(f"[{format_ist_timestamp()}] Mean-reversion: {len(mr_signals)} setups in {current_regime} regime")
+                except Exception as e:
+                    logger.debug(f"Mean-reversion scan error: {e}")
+
             # 4b. Apply day-of-week minimum score filter
             dow = now_ist.weekday()
             dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)

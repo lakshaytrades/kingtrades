@@ -106,6 +106,18 @@ class IndicatorSet:
     lvn_nearest: float = 0.0    # nearest Low Volume Node price level
     at_hvn: bool = False         # price within 0.3% of nearest HVN
     at_lvn: bool = False         # price within 0.3% of nearest LVN
+    # ── New: missing institutional indicators ─────────────────────────────
+    mfi:           float = 50.0  # Money Flow Index (14)
+    cmf:           float = 0.0   # Chaikin Money Flow (20)
+    anchored_vwap: float = 0.0   # VWAP anchored to today's open
+    at_cpr:        bool  = False  # Price near Central Pivot Range
+    cpr_top:       float = 0.0   # CPR top (BC)
+    cpr_bottom:    float = 0.0   # CPR bottom (TC)
+    nr4:           bool  = False  # Narrowest range of last 4 bars
+    nr7:           bool  = False  # Narrowest range of last 7 bars
+    eqh:           bool  = False  # Equal highs (liquidity above)
+    eql:           bool  = False  # Equal lows (liquidity below)
+    breadth_score: float = 50.0  # Market internals breadth (0-100)
 
 
 class TechnicalIndicators:
@@ -502,6 +514,98 @@ class TechnicalIndicators:
                     ind.at_lvn = abs(nearest_lvn - current_price) / max(current_price, 1) < 0.003
         except Exception:
             pass
+
+        # ── Money Flow Index (MFI 14) ─────────────────────────────────────
+        try:
+            if len(df) >= 15 and "high" in df.columns and "volume" in df.columns:
+                h = df["high"].values
+                l = df["low"].values
+                c = df["close"].values
+                v = df["volume"].values.astype(float)
+                tp = (h + l + c) / 3
+                rmf = tp * v
+                pos_mf = neg_mf = 0.0
+                for i in range(1, 15):
+                    idx = len(tp) - 14 + i - 1
+                    if idx > 0:
+                        if tp[idx] > tp[idx - 1]:
+                            pos_mf += rmf[idx]
+                        elif tp[idx] < tp[idx - 1]:
+                            neg_mf += rmf[idx]
+                if neg_mf > 0:
+                    ind.mfi = 100 - 100 / (1 + pos_mf / neg_mf)
+                else:
+                    ind.mfi = 100.0
+        except Exception:
+            pass
+
+        # ── Chaikin Money Flow (CMF 20) ───────────────────────────────────
+        try:
+            if len(df) >= 20 and "volume" in df.columns:
+                h = df["high"].values[-20:]
+                l = df["low"].values[-20:]
+                c = df["close"].values[-20:]
+                v = df["volume"].values[-20:].astype(float)
+                hl = h - l
+                clv = np.where(hl > 0, ((c - l) - (h - c)) / hl, 0.0)
+                ind.cmf = float((clv * v).sum() / max(v.sum(), 1))
+        except Exception:
+            pass
+
+        # ── Anchored VWAP (to today's open bar) ──────────────────────────
+        try:
+            if len(df) >= 2 and "volume" in df.columns:
+                v = df["volume"].values.astype(float)
+                tp = (df["high"].values + df["low"].values + df["close"].values) / 3
+                ind.anchored_vwap = float((tp * v).sum() / max(v.sum(), 1))
+        except Exception:
+            pass
+
+        # ── Central Pivot Range (CPR) ─────────────────────────────────────
+        try:
+            if len(df) >= 2:
+                ph = float(df["high"].iloc[-2])
+                pl = float(df["low"].iloc[-2])
+                pc = float(df["close"].iloc[-2])
+                pp  = (ph + pl + pc) / 3
+                bc  = (ph + pl) / 2        # Bottom Central
+                tc  = (pp - bc) + pp       # Top Central = mirror of BC around PP
+                ind.cpr_top    = round(max(bc, tc), 4)
+                ind.cpr_bottom = round(min(bc, tc), 4)
+                ind.at_cpr = (ind.cpr_bottom * 0.998 <= current_price
+                               <= ind.cpr_top * 1.002)
+        except Exception:
+            pass
+
+        # ── NR4 / NR7 (Narrow Range setups — volatility contraction) ─────
+        try:
+            if len(df) >= 7:
+                ranges = (df["high"] - df["low"]).values
+                cur_range = ranges[-1]
+                ind.nr4 = bool(cur_range == min(ranges[-4:]))
+                ind.nr7 = bool(cur_range == min(ranges[-7:]))
+        except Exception:
+            pass
+
+        # ── Equal Highs / Equal Lows (liquidity pools) ───────────────────
+        try:
+            if len(df) >= 10:
+                highs = df["high"].values[-10:]
+                lows  = df["low"].values[-10:]
+                tol   = current_price * 0.001   # 0.1% tolerance
+                top_h = highs[-1]
+                ind.eqh = sum(1 for h in highs[:-1] if abs(h - top_h) <= tol) >= 2
+                bot_l = lows[-1]
+                ind.eql = sum(1 for lo in lows[:-1] if abs(lo - bot_l) <= tol) >= 2
+        except Exception:
+            pass
+
+        # ── Market internals breadth score ───────────────────────────────
+        try:
+            from market_internals import get_market_internals
+            ind.breadth_score = get_market_internals().get_breadth()["breadth_score"]
+        except Exception:
+            ind.breadth_score = 50.0
 
         return ind
 
