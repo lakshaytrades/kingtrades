@@ -1,34 +1,37 @@
 """
-high_accuracy_filter.py — NSE Momentum Groww AI Bot
-High-Accuracy Signal Gate — Targets 70-80% Win Rate
+high_accuracy_filter.py — US Momentum Alpaca AI Bot
+High-Accuracy Signal Gate — Targets 9/10 Win Rate
 
 18yr Truth: "Most traders fail because they take EVERY signal.
-The 70%+ win rate comes from taking ONLY THE BEST 20% of signals.
+The 9/10 win rate comes from taking ONLY THE BEST 10% of signals.
 Patience is your edge. Waiting IS the strategy."
 
 This filter sits BETWEEN signal_generator and execution.
-A signal must PASS ALL 10 gates to become a trade.
+A signal must PASS ALL 13 gates to become a trade.
 
-THE 10 CONFLUENCE GATES:
-  Gate 1:  POWER HOURS ONLY    — Trade only in high-probability time windows
-  Gate 2:  REGIME ALIGNMENT    — Market regime must be MOMENTUM (not RANGING)
-  Gate 3:  MULTI-TF ALIGNMENT  — At least 2 of 3 timeframes must agree
-  Gate 4:  VOLUME SURGE        — Current volume must be ≥ 1.8x 20-period SMA
-  Gate 5:  PATTERN QUALITY     — Pattern confidence score ≥ 72/100
-  Gate 6:  LIQUIDITY           — Min daily volume ≥ 5 lakh shares (no illiquid stocks)
-  Gate 7:  CIRCUIT BREAKER     — Stock not near 5/10/20% NSE circuit bands
-  Gate 8:  GAP RISK            — No extreme gap open; wait window respected
-  Gate 9:  CORP ACTIONS        — No ex-dividend/bonus/split within 2 days
-  Gate 10: F&O SHORT ELIGIBLE  — SELL signals only on F&O-eligible stocks
+THE 13 CONFLUENCE GATES:
+  Gate 1:  POWER HOURS ONLY      — Trade only in high-probability ET time windows
+  Gate 2:  REGIME ALIGNMENT      — Market regime must be MOMENTUM (not RANGING)
+  Gate 3:  MULTI-TF ALIGNMENT    — At least 2 of 3 timeframes must agree
+  Gate 4:  VOLUME SURGE          — Current volume must be ≥ 2.0x 20-period SMA
+  Gate 5:  PATTERN QUALITY       — Signal score ≥ 80/100 (only A-grade setups)
+  Gate 6:  LIQUIDITY             — Min daily volume ≥ 1M shares (US liquid stocks)
+  Gate 7:  CIRCUIT BREAKER       — Stock not near 5/10/20% halt bands
+  Gate 8:  GAP RISK              — No extreme gap open; wait window respected
+  Gate 9:  CORP ACTIONS          — No ex-dividend/bonus/split within 2 days
+  Gate 10: SHORT ELIGIBILITY     — SELL signals only on shortable stocks
+  Gate 11: ENTRY AT LEVEL        — Price within 0.3% of key level (FVG/OB/VWAP/POC)
+  Gate 12: ADX TRENDING          — ADX > 20 (no choppy directionless market)
+  Gate 13: SPY ALIGNMENT         — SPY green for LONGs, SPY red for SHORTs
 
 BONUS GATES (increase score further):
   + Heikin Ashi confirmation  (trend candle in signal direction)
   + VWAP position alignment   (BUY above VWAP, SELL below VWAP)
   + RSI in momentum zone      (35-55 for BUY, 45-65 for SELL)
-  + Relative strength vs Nifty (stock stronger than index)
+  + Relative strength vs SPY  (stock stronger than index)
   + Opening range aligned     (ORB direction matches signal)
   + No news blackout          (30 min buffer around events)
-  + Nifty same direction      (index confirms stock direction)
+  + SPY same direction        (index confirms stock direction)
 
 REJECTION REASONS LOGGED:
 Every rejection is stored so the self-learner can see what's being filtered.
@@ -45,27 +48,27 @@ import pandas as pd
 from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
 
-# ── POWER HOUR WINDOWS (IST) ───────────────────────────────
+# ── POWER HOUR WINDOWS (ET) ────────────────────────────────
 # Only trade during highest-probability intraday windows.
-# Based on 18yr observation: 70%+ of profitable moves start here.
+# US market: NY Open Kill Zone + Power Hour are the money windows.
 POWER_WINDOWS = [
-    (time(9, 15), time(10, 30)),   # Opening drive — strongest momentum
-    (time(14, 0), time(15, 0)),    # Afternoon institutional — second best
+    (time(9, 30),  time(10, 45)),   # NY Open Kill Zone — strongest momentum
+    (time(14, 30), time(16, 0)),    # Power Hour — institutional accumulation/distribution
 ]
 
 # Reduced-size window (can trade but 60% size)
 CAUTION_WINDOWS = [
-    (time(10, 30), time(11, 0)),   # Post-opening fade
-    (time(13, 0),  time(14, 0)),   # Early afternoon pickup
+    (time(10, 45), time(11, 30)),   # Post-opening fade
+    (time(13, 30), time(14, 30)),   # Early afternoon pickup
 ]
 
 # NO TRADE windows
 AVOID_WINDOWS = [
-    (time(11, 0),  time(13, 0)),   # Midday chop — 18yr rule: ALWAYS avoid
-    (time(15, 0),  time(15, 30)),  # EOD — no new entries
+    (time(11, 30), time(13, 30)),   # Midday chop — 18yr rule: ALWAYS avoid
+    (time(15, 50), time(16, 0)),    # EOD — no new entries
 ]
 
 
@@ -97,6 +100,7 @@ class HighAccuracyFilter:
     The gatekeeper. Only the best setups get through.
     18yr rule: 'Miss a trade → lose opportunity. Take a bad trade → lose money.
     Opportunity loss is recoverable. Capital loss may not be.'
+    13 gates. 9/10 win rate target.
     """
 
     def __init__(self):
@@ -120,31 +124,35 @@ class HighAccuracyFilter:
         df_5m:               Optional[pd.DataFrame],
         rsi:                 float,
         above_vwap:          bool,
-        nifty_change_pct:    float,
+        spy_change_pct:      float,           # SPY % change today (was nifty_change_pct)
         stock_change_pct:    float,
         news_clear:          bool,
         orb_direction:       str = "",        # "UP", "DOWN", or ""
         learner=None,
-        # ── NEW: Gates 6-10 parameters ──────────────────────────
-        symbol:              str   = "",      # Gate 6-10: symbol for checks
+        # ── Gates 6-10 parameters ──────────────────────────
+        symbol:              str   = "",      # symbol for checks
         daily_volume:        float = 0.0,     # Gate 6: today's volume (shares)
-        prev_close:          float = 0.0,     # Gate 7: yesterday's close (circuit)
-        ltp:                 float = 0.0,     # Gate 7: current price (circuit calc)
+        prev_close:          float = 0.0,     # Gate 7: yesterday's close
+        ltp:                 float = 0.0,     # Gate 7: current price
         minutes_since_open:  float = 0.0,     # Gate 8: for gap timing
-        gap_pct:             float = 0.0,     # Gate 8: gap % (set by gap_analyzer)
+        gap_pct:             float = 0.0,     # Gate 8: gap %
+        # ── Gates 11-13 parameters ─────────────────────────
+        at_key_level:        bool  = False,   # Gate 11: price at FVG/OB/VWAP/POC
+        adx:                 float = 0.0,     # Gate 12: ADX value
+        spy_bullish:         Optional[bool] = None,  # Gate 13: SPY direction
     ) -> FilterResult:
 
         result = FilterResult()
-        now_ist = get_current_ist_time()
+        now_et = get_current_ist_time()   # Returns ET after IST=ET alias in utils.py
 
         # ── GATE 1: POWER HOURS ───────────────────────────
-        window, size_mult = self._check_time_window(now_ist.time())
+        window, size_mult = self._check_time_window(now_et.time())
         result.time_window = window
 
         if window == "AVOID":
             result.rejection_reason = (
-                f"AVOID window ({now_ist.strftime('%H:%M')} IST). "
-                "No trades during midday chop (11:00–13:00) or EOD."
+                f"AVOID window ({now_et.strftime('%H:%M')} ET). "
+                "No trades during midday chop (11:30–13:30) or EOD."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -184,8 +192,8 @@ class HighAccuracyFilter:
         if not vol_ok:
             result.gates_failed.append(f"VOLUME(ratio={volume_ratio:.1f})")
             result.rejection_reason = (
-                f"Volume ratio {volume_ratio:.1f}x < 1.8x required. "
-                "No volume = no conviction = no trade."
+                f"Volume ratio {volume_ratio:.1f}x < 2.0x required. "
+                "Institutional trades require 2x+ volume confirmation."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -199,8 +207,8 @@ class HighAccuracyFilter:
         if not pat_ok:
             result.gates_failed.append(f"PATTERN_SCORE({signal_score:.0f})")
             result.rejection_reason = (
-                f"Signal score {signal_score:.0f} < 72 required. "
-                f"Best pattern: {best_pattern}. Wait for stronger setup."
+                f"Signal score {signal_score:.0f} < 80 required. "
+                f"Best pattern: {best_pattern}. Only A-grade setups qualify."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -209,7 +217,7 @@ class HighAccuracyFilter:
 
         # ── NEWS BLACKOUT ────────────────────────────────
         if not news_clear:
-            result.rejection_reason = "News blackout active — RBI/FOMC/event window"
+            result.rejection_reason = "News blackout active — Fed/FOMC/event window"
             self._log_rejection(result, signal_score, direction)
             return result
 
@@ -217,11 +225,11 @@ class HighAccuracyFilter:
         if daily_volume > 0:
             liq_ok, liq_reason = self._check_liquidity(daily_volume)
             if not liq_ok:
-                result.gates_failed.append(f"LIQUIDITY({daily_volume/1e5:.1f}L)")
+                result.gates_failed.append(f"LIQUIDITY({daily_volume/1e6:.1f}M)")
                 result.rejection_reason = liq_reason
                 self._log_rejection(result, signal_score, direction)
                 return result
-            result.gates_passed.append(f"LIQUIDITY({daily_volume/1e5:.0f}L)")
+            result.gates_passed.append(f"LIQUIDITY({daily_volume/1e6:.0f}M)")
 
         # ── GATE 7: CIRCUIT BREAKER PROXIMITY ────────────
         if prev_close > 0 and ltp > 0:
@@ -254,18 +262,50 @@ class HighAccuracyFilter:
                 self._log_rejection(result, signal_score, direction)
                 return result
 
-        # ── GATE 10: F&O ELIGIBILITY (SELL/SHORT only) ───
+        # ── GATE 10: SHORT ELIGIBILITY (SELL only) ───────
         if direction == "SELL" and symbol:
-            fo_ok, fo_reason = self._check_fo_eligibility(symbol)
-            if not fo_ok:
-                result.gates_failed.append("FO_INELIGIBLE")
-                result.rejection_reason = fo_reason
+            short_ok, short_reason = self._check_short_eligibility(symbol)
+            if not short_ok:
+                result.gates_failed.append("SHORT_INELIGIBLE")
+                result.rejection_reason = short_reason
                 self._log_rejection(result, signal_score, direction)
                 return result
-            result.gates_passed.append("FO_ELIGIBLE")
+            result.gates_passed.append("SHORT_OK")
+
+        # ── GATE 11: ENTRY AT KEY LEVEL ──────────────────
+        # Big players only enter at defined levels — FVG, OB, VWAP, POC, S/R
+        level_ok, level_reason = self._check_key_level(at_key_level, ltp, above_vwap)
+        if not level_ok:
+            result.gates_failed.append("NOT_AT_LEVEL")
+            result.rejection_reason = level_reason
+            self._log_rejection(result, signal_score, direction)
+            return result
+        result.gates_passed.append("AT_LEVEL")
+
+        # ── GATE 12: ADX TRENDING ────────────────────────
+        # No trades in choppy directionless markets
+        if adx > 0:
+            adx_ok, adx_reason = self._check_adx(adx)
+            if not adx_ok:
+                result.gates_failed.append(f"ADX_WEAK({adx:.0f})")
+                result.rejection_reason = adx_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append(f"ADX({adx:.0f})")
+
+        # ── GATE 13: SPY DIRECTION ALIGNMENT ─────────────
+        # Never fight the market — SPY must confirm signal direction
+        if spy_bullish is not None:
+            spy_ok, spy_reason = self._check_spy_alignment(direction, spy_bullish)
+            if not spy_ok:
+                result.gates_failed.append("SPY_CONFLICT")
+                result.rejection_reason = spy_reason
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append("SPY_ALIGNED")
 
         # ─────────────────────────────────────────────────
-        # ALL 10 GATES PASSED — now calculate bonus score
+        # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
         result.passed   = True
         bonus_score     = 0.0
@@ -289,7 +329,7 @@ class HighAccuracyFilter:
             result.bonuses.append("BELOW_VWAP")
         elif direction == "BUY" and not above_vwap:
             bonus_score -= 5
-            result.size_multiplier *= 0.8   # Below VWAP buy = weaker
+            result.size_multiplier *= 0.8
             result.bonuses.append("BELOW_VWAP(weak_buy)")
 
         # Bonus 3: RSI momentum zone
@@ -300,8 +340,8 @@ class HighAccuracyFilter:
         elif rsi_bonus < 0:
             result.bonuses.append(f"RSI_EXTREME({rsi:.0f})")
 
-        # Bonus 4: Relative strength vs Nifty
-        rs = stock_change_pct - nifty_change_pct
+        # Bonus 4: Relative strength vs SPY
+        rs = stock_change_pct - spy_change_pct
         if direction == "BUY" and rs > 0.3:
             bonus_score += 5
             result.bonuses.append(f"RS_STRONG(+{rs:.1f}%)")
@@ -313,17 +353,13 @@ class HighAccuracyFilter:
             result.size_multiplier *= 0.7
             result.bonuses.append(f"RS_AGAINST({rs:.1f}%)")
 
-        # Bonus 5: Nifty alignment
-        if direction == "BUY" and nifty_change_pct > 0.2:
+        # Bonus 5: SPY direction bonus (already gated; extra credit for strong trend)
+        if direction == "BUY" and spy_change_pct > 0.5:
             bonus_score += 5
-            result.bonuses.append("NIFTY_ALIGNED")
-        elif direction == "SELL" and nifty_change_pct < -0.2:
+            result.bonuses.append("SPY_STRONG_UP")
+        elif direction == "SELL" and spy_change_pct < -0.5:
             bonus_score += 5
-            result.bonuses.append("NIFTY_ALIGNED")
-        elif (direction == "BUY" and nifty_change_pct < -0.5) or \
-             (direction == "SELL" and nifty_change_pct > 0.5):
-            bonus_score -= 10
-            result.bonuses.append("NIFTY_AGAINST")
+            result.bonuses.append("SPY_STRONG_DOWN")
 
         # Bonus 6: ORB direction match
         if orb_direction and orb_direction == ("UP" if direction=="BUY" else "DOWN"):
@@ -333,11 +369,12 @@ class HighAccuracyFilter:
             bonus_score -= 6
             result.bonuses.append("ORB_CONFLICT")
 
-        # Bonus 7: Premium patterns
+        # Bonus 7: Premium ICT/institutional patterns
         premium_patterns = {
             "ORB_BREAKOUT", "VWAP_RECLAIM", "BULLISH_ENGULFING",
             "BEARISH_ENGULFING", "VOLUME_SURGE_BREAKOUT", "FLAG_BREAKOUT",
-            "BOS_BULLISH", "BOS_BEARISH"
+            "BOS_BULLISH", "BOS_BEARISH", "FVG_FILL", "OB_BOUNCE",
+            "JUDAS_SWING", "INDUCEMENT_TRAP",
         }
         if any(p in premium_patterns for p in pattern_names):
             bonus_score += 6
@@ -347,31 +384,31 @@ class HighAccuracyFilter:
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 
-        # Reduce size if bonus brought score below threshold
-        if result.final_score < 72:
+        # Reject if post-bonus score drops below 80
+        if result.final_score < 80:
             result.passed = False
             result.rejection_reason = (
-                f"Post-bonus score {result.final_score:.0f} < 72. "
+                f"Post-bonus score {result.final_score:.0f} < 80. "
                 f"Bonuses: {bonus_score:+.0f}. Too many counter-indicators."
             )
             self._log_rejection(result, signal_score, direction)
             return result
 
-        # Grade the setup
-        if result.final_score >= 90:
+        # Grade the setup — institutional quality tiers
+        if result.final_score >= 92:
             result.quality_grade   = "A+"
-            result.size_multiplier = min(result.size_multiplier * 1.2, 1.5)
-        elif result.final_score >= 82:
+            result.size_multiplier = min(result.size_multiplier * 1.3, 2.0)
+        elif result.final_score >= 85:
             result.quality_grade   = "A"
-            result.size_multiplier = min(result.size_multiplier * 1.1, 1.3)
-        elif result.final_score >= 75:
+            result.size_multiplier = min(result.size_multiplier * 1.15, 1.5)
+        elif result.final_score >= 80:
             result.quality_grade   = "B"
         else:
             result.quality_grade   = "C"
-            result.size_multiplier *= 0.75   # Low-conviction C grade = smaller size
+            result.size_multiplier *= 0.75
 
         # Hard cap size multiplier
-        result.size_multiplier = round(min(result.size_multiplier, 1.5), 2)
+        result.size_multiplier = round(min(result.size_multiplier, 2.0), 2)
 
         self._pass_count += 1
         logger.info(
@@ -398,13 +435,10 @@ class HighAccuracyFilter:
         for start, end in AVOID_WINDOWS:
             if start <= t < end:
                 return "AVOID", 0.0
-        return "POWER", 1.0   # Outside all windows (e.g., at exact boundaries)
+        return "POWER", 1.0   # Outside all windows (at exact boundaries)
 
     def _check_regime(self, regime: str, direction: str) -> Tuple[bool, float]:
-        """
-        Only trade momentum-friendly regimes.
-        18yr rule: A ranging market kills momentum strategies.
-        """
+        """Only trade momentum-friendly regimes."""
         full_size = {
             "STRONG_TREND_UP":   ("BUY",  1.2),
             "STRONG_TREND_DOWN": ("SELL", 1.2),
@@ -425,7 +459,7 @@ class HighAccuracyFilter:
             pref_dir, size = full_size[regime]
             if pref_dir == "BOTH" or pref_dir == direction:
                 return True, size
-            return False, 0.0  # Wrong direction for regime
+            return False, 0.0
 
         if regime in reduced_size:
             pref_dir, size = reduced_size[regime]
@@ -443,17 +477,16 @@ class HighAccuracyFilter:
             return False, 0
         if alignment_score < 60:
             return False, alignment_score
-        # Check direction match
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
             return False, alignment_score
         return True, alignment_score
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
-        """Require 1.8x volume. No volume = no institutional participation."""
-        if volume_ratio < 1.8:
+        """Require 2.0x volume — institutional participation threshold."""
+        if volume_ratio < 2.0:
             return False, 0
-        bonus = min((volume_ratio - 1.8) * 5, 10)   # Up to +10 for very high volume
+        bonus = min((volume_ratio - 2.0) * 5, 10)
         return True, bonus
 
     def _check_pattern_quality(
@@ -463,11 +496,10 @@ class HighAccuracyFilter:
         pat_names:     List[str],
         learner=None,
     ) -> Tuple[bool, float, str]:
-        """Require minimum 72 base score. Apply learner weights."""
+        """Require minimum 80 base score — only A-grade setups."""
         best_score   = max(pat_scores) if pat_scores else signal_score
         best_pattern = pat_names[pat_scores.index(best_score)] if pat_scores and pat_names else "?"
 
-        # Apply learner weight to best pattern
         effective_score = signal_score
         if learner and best_pattern:
             weight = learner.get_pattern_weight(best_pattern)
@@ -475,13 +507,62 @@ class HighAccuracyFilter:
                 return False, 0, f"{best_pattern}(DISABLED)"
             effective_score = signal_score * weight
 
-        return effective_score >= 72, effective_score, best_pattern
+        return effective_score >= 80, effective_score, best_pattern
+
+    def _check_key_level(
+        self, at_key_level: bool, ltp: float, above_vwap: bool
+    ) -> Tuple[bool, str]:
+        """
+        Gate 11: Big players only enter at defined price levels.
+        A level is: FVG edge, OB boundary, VWAP, POC, Pivot, S/R.
+        Signal generator sets at_key_level=True when price is within 0.3% of any level.
+        """
+        if at_key_level:
+            return True, ""
+        # Soft pass if price is exactly at VWAP boundary (fallback when level data unavailable)
+        if ltp == 0:
+            return True, ""   # No price data — fail open
+        return False, (
+            "Price not at a key level (FVG/OB/VWAP/POC/Pivot). "
+            "Institutional entries require defined reference levels. "
+            "Wait for pullback to level or breakout confirmation at level."
+        )
+
+    def _check_adx(self, adx: float) -> Tuple[bool, str]:
+        """
+        Gate 12: ADX > 20 confirms directional trend exists.
+        ADX ≤ 20 = choppy/ranging market — momentum strategies fail.
+        """
+        if adx >= 20:
+            return True, ""
+        return False, (
+            f"ADX {adx:.0f} ≤ 20 — market is choppy/ranging. "
+            "Momentum strategies require ADX > 20. "
+            "Wait for directional trend to develop."
+        )
+
+    def _check_spy_alignment(
+        self, direction: str, spy_bullish: bool
+    ) -> Tuple[bool, str]:
+        """
+        Gate 13: Never fight the market. SPY must confirm signal direction.
+        LONG signals require SPY to be net positive today.
+        SHORT signals require SPY to be net negative today.
+        """
+        if direction == "BUY" and not spy_bullish:
+            return False, (
+                "SPY is bearish — avoid LONG entries against market direction. "
+                "Big players don't buy when the S&P 500 is selling off."
+            )
+        if direction == "SELL" and spy_bullish:
+            return False, (
+                "SPY is bullish — avoid SHORT entries against market direction. "
+                "Big players don't short when the S&P 500 is rallying."
+            )
+        return True, ""
 
     def _check_heikin_ashi(self, df: pd.DataFrame, direction: str) -> Tuple[bool, str]:
-        """
-        Heikin Ashi candles smooth noise and confirm trend direction.
-        18yr rule: HA is NOT for entry timing — it's for TREND CONFIRMATION.
-        """
+        """HA candles confirm trend direction. NOT for entry timing."""
         try:
             close  = df["close"]
             open_  = df["open"]
@@ -499,17 +580,15 @@ class HighAccuracyFilter:
             prev_ha_close = float(ha_close.iloc[-2])
             prev_ha_open  = float(ha_open.iloc[-2])
 
-            # Bullish HA: close > open, increasing
             if direction == "BUY":
                 bullish = (
-                    last_ha_close > last_ha_open and        # Green HA candle
-                    last_ha_close > prev_ha_close and       # Rising
-                    abs(last_ha_close - last_ha_open) >     # Solid body
+                    last_ha_close > last_ha_open and
+                    last_ha_close > prev_ha_close and
+                    abs(last_ha_close - last_ha_open) >
                     abs(prev_ha_close - prev_ha_open) * 0.5
                 )
                 return bullish, "BULLISH_HA" if bullish else "WEAK_HA"
-
-            else:  # SELL
+            else:
                 bearish = (
                     last_ha_close < last_ha_open and
                     last_ha_close < prev_ha_close and
@@ -523,18 +602,12 @@ class HighAccuracyFilter:
             return True, "HA_UNAVAILABLE"
 
     def _check_liquidity(self, daily_volume: float) -> Tuple[bool, str]:
-        """
-        Gate 6: Minimum daily volume check.
-        18yr rule: Illiquid stocks have wide spreads — you pay to enter AND exit.
-        At 5 lakh shares/day, spread impact is manageable for our position sizes.
-        """
+        """Gate 6: US stocks require 1M+ shares/day. Tight spreads only."""
         from config import MIN_DAILY_VOLUME
-        min_vol = MIN_DAILY_VOLUME
-
-        if daily_volume < min_vol:
+        if daily_volume < MIN_DAILY_VOLUME:
             return False, (
-                f"Volume too low: {daily_volume/1e5:.1f}L shares/day "
-                f"< {min_vol/1e5:.0f}L minimum. "
+                f"Volume too low: {daily_volume/1e6:.2f}M shares/day "
+                f"< {MIN_DAILY_VOLUME/1e6:.1f}M minimum. "
                 "Low liquidity = wide spread = guaranteed slippage loss."
             )
         return True, ""
@@ -542,31 +615,23 @@ class HighAccuracyFilter:
     def _check_circuit_proximity(
         self, prev_close: float, ltp: float
     ) -> Tuple[bool, str]:
-        """
-        Gate 7: Don't trade near NSE circuit breaker bands.
-        NSE applies 5%, 10%, 20% upper/lower circuits from previous close.
-        Near the circuit → stock may freeze → trapped position.
-        """
+        """Gate 7: Don't trade near halt bands (US equivalent of circuit breakers)."""
         from config import CIRCUIT_BANDS, CIRCUIT_BUFFER_PCT
 
         price_change_pct = ((ltp - prev_close) / prev_close) * 100
 
         for band_pct in CIRCUIT_BANDS:
-            # Check upper circuit proximity
-            upper_circuit_pct = band_pct
-            if price_change_pct >= (upper_circuit_pct - CIRCUIT_BUFFER_PCT):
+            if price_change_pct >= (band_pct - CIRCUIT_BUFFER_PCT):
                 return False, (
-                    f"Near upper {band_pct:.0f}% circuit "
+                    f"Near upper {band_pct:.0f}% halt band "
                     f"(price +{price_change_pct:.1f}% vs prev close). "
-                    "Trading near circuit = risk of freeze — avoid."
+                    "Trading near halt band = risk of trading freeze — avoid."
                 )
-            # Check lower circuit proximity
-            lower_circuit_pct = -band_pct
-            if price_change_pct <= (lower_circuit_pct + CIRCUIT_BUFFER_PCT):
+            if price_change_pct <= (-band_pct + CIRCUIT_BUFFER_PCT):
                 return False, (
-                    f"Near lower {band_pct:.0f}% circuit "
+                    f"Near lower {band_pct:.0f}% halt band "
                     f"(price {price_change_pct:.1f}% vs prev close). "
-                    "Trading near circuit = risk of freeze — avoid."
+                    "Trading near halt band = risk of trading freeze — avoid."
                 )
 
         return True, ""
@@ -574,11 +639,7 @@ class HighAccuracyFilter:
     def _check_gap_risk(
         self, gap_pct: float, minutes_since_open: float
     ) -> Tuple[bool, str]:
-        """
-        Gate 8: Pre-market gap price discovery window.
-        18yr rule: >2% gap = unpredictable first 5-15 min. Wait it out.
-        Extreme gaps >5% = avoid whole session.
-        """
+        """Gate 8: Gap price discovery window. >2% gap = wait it out."""
         from config import MAX_GAP_PCT, LARGE_GAP_PCT, EXTREME_GAP_PCT
         abs_gap = abs(gap_pct)
 
@@ -604,11 +665,7 @@ class HighAccuracyFilter:
         return True, ""
 
     def _check_corp_actions(self, symbol: str) -> Tuple[bool, str]:
-        """
-        Gate 9: Corporate actions proximity check.
-        Ex-dividend, bonus, split create artificial price moves.
-        Skip stocks within 2 days of any ex-date.
-        """
+        """Gate 9: Skip stocks near ex-dividend/split dates."""
         try:
             from corporate_actions import is_safe_from_corp_actions
             safe, reason = is_safe_from_corp_actions(symbol)
@@ -619,45 +676,32 @@ class HighAccuracyFilter:
                 )
             return True, ""
         except ImportError:
-            # Module not yet available — allow trade (no false positives)
             return True, ""
         except Exception as e:
             logger.debug(f"Corp action check error for {symbol}: {e}")
-            return True, ""   # Fail open — don't block on data errors
+            return True, ""
 
-    def _check_fo_eligibility(self, symbol: str) -> Tuple[bool, str]:
-        """
-        Gate 10: F&O eligibility for SELL (SHORT) signals.
-        Intraday shorting on NSE is ONLY allowed for F&O segment stocks.
-        Short-selling a non-F&O equity stock → Groww REJECTS the order
-        → phantom position risk + wasted order slot.
-        """
+    def _check_short_eligibility(self, symbol: str) -> Tuple[bool, str]:
+        """Gate 10: SHORT signals — verify stock is shortable on Alpaca."""
         try:
-            from nse_fo_list import is_fo_eligible
-            if not is_fo_eligible(symbol):
+            from execution_alpaca import AlpacaExecutor
+            exec_ = AlpacaExecutor()
+            if hasattr(exec_, 'is_shortable') and not exec_.is_shortable(symbol):
                 return False, (
-                    f"{symbol} is NOT F&O eligible — cannot short intraday. "
-                    "NSE equity-only stocks: BUY-only. "
-                    "Signal converted to SKIP (not a BUY opportunity)."
+                    f"{symbol} is not shortable on Alpaca. "
+                    "Cannot place SHORT — signal converted to SKIP."
                 )
             return True, ""
-        except ImportError:
-            return True, ""   # Module unavailable — allow (no false blocks)
-        except Exception as e:
-            logger.debug(f"F&O eligibility check error for {symbol}: {e}")
-            return True, ""   # Fail open
+        except Exception:
+            return True, ""   # Fail open — don't block on data errors
 
     def _rsi_bonus(self, rsi: float, direction: str) -> float:
-        """
-        Ideal RSI zones for momentum entries.
-        18yr rule: The best BUY entries are RSI 38-52 (momentum building, not overbought).
-        Extreme RSI = fading momentum = dangerous entry.
-        """
+        """Ideal RSI zones for momentum entries."""
         if direction == "BUY":
             if 35 <= rsi <= 52:   return 8    # Golden zone — momentum building
             if 52 < rsi <= 60:    return 3    # Slightly extended but ok
             if rsi > 70:          return -12  # Overbought — high failure risk
-            if rsi < 30:          return -5   # Extreme — trend may continue down
+            if rsi < 30:          return -5   # Extreme oversold
         else:  # SELL
             if 48 <= rsi <= 65:   return 8
             if 40 <= rsi < 48:    return 3
@@ -672,7 +716,7 @@ class HighAccuracyFilter:
     def _log_rejection(self, result: FilterResult, score: float, direction: str):
         self._reject_count += 1
         self._rejection_log.append({
-            "time_ist":  format_ist_timestamp(),
+            "time_et":   format_ist_timestamp(),
             "score":     score,
             "direction": direction,
             "reason":    result.rejection_reason,

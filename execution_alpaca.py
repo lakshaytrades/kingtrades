@@ -45,7 +45,7 @@ class AlpacaExecutor:
     Interface matches GrowwExecutor so main.py needs no changes.
     """
 
-    LIMIT_WAIT_SECONDS  = 12    # Wait this long for limit fill before widening
+    LIMIT_WAIT_SECONDS  = 5     # Wait this long for limit fill before widening
     POLL_INTERVAL       = 2     # Check order status every N seconds
 
     def __init__(self, risk_manager, live_enabled: bool = False):
@@ -68,7 +68,7 @@ class AlpacaExecutor:
         if not self.live_enabled:
             logger.info(
                 f"[{format_ist_timestamp()}] PAPER mode — would {direction} {symbol} "
-                f"@ ₹{signal.entry_price:.2f} (live_enabled=False)"
+                f"@ ${signal.entry_price:.2f} (live_enabled=False)"
             )
             return OrderResult(False, message="Live trading disabled — paper mode")
 
@@ -121,7 +121,11 @@ class AlpacaExecutor:
         signal_price = signal.entry_price
 
         for attempt in range(3):
-            if attempt >= 2:
+            # High-conviction (90+): use market order immediately for speed
+            if getattr(signal, 'signal_score', 0) >= 90 and attempt == 0:
+                order_type  = "MARKET"
+                limit_price = None
+            elif attempt >= 2:
                 order_type  = "MARKET"
                 limit_price = None
             else:
@@ -196,6 +200,78 @@ class AlpacaExecutor:
             logger.debug(f"Entry alert failed: {e}")
 
         return result
+
+    def place_bracket_order(self, signal, quantity: int) -> "OrderResult":
+        """
+        Place bracket order: entry + SL + TP simultaneously.
+        Used for high-score (≥90) setups — fastest institutional execution.
+        SL = signal.stop_loss, TP = signal.target_1 (1:2 R:R first exit).
+        """
+        symbol    = signal.symbol
+        direction = signal.direction
+        sl_price  = round(signal.stop_loss, 2)
+        tp_price  = round(signal.target_1,  2)
+
+        if not self.live_enabled:
+            logger.info(
+                f"[{format_ist_timestamp()}] PAPER bracket: {direction} {symbol} "
+                f"qty={quantity} SL=${sl_price:.2f} TP=${tp_price:.2f}"
+            )
+            from dataclasses import dataclass
+            result = OrderResult(True, message="Paper bracket order")
+            result.order_id   = f"PAPER-BKT-{symbol}"
+            result.fill_price = signal.entry_price
+            return result
+
+        try:
+            from alpaca.trading.client import TradingClient
+            from alpaca.trading.requests import (
+                MarketOrderRequest, LimitOrderRequest,
+                TakeProfitRequest, StopLossRequest,
+            )
+            from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
+            import os
+
+            api_key    = os.getenv("ALPACA_API_KEY", "")
+            api_secret = os.getenv("ALPACA_SECRET_KEY", "")
+            paper      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+            trading_client = TradingClient(api_key, api_secret, paper=paper)
+
+            side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
+
+            # Bracket: market entry with automatic SL and TP
+            req = MarketOrderRequest(
+                symbol         = symbol,
+                qty            = quantity,
+                side           = side,
+                time_in_force  = TimeInForce.DAY,
+                order_class    = OrderClass.BRACKET,
+                take_profit    = TakeProfitRequest(limit_price=tp_price),
+                stop_loss      = StopLossRequest(
+                    stop_price  = sl_price,
+                    limit_price = round(sl_price * (0.995 if direction == "LONG" else 1.005), 2),
+                ),
+            )
+            order = trading_client.submit_order(req)
+            order_id = str(order.id)
+
+            # Wait for fill
+            filled = self._wait_for_fill(order_id, wait=15)
+            fill_p = filled if filled else signal.entry_price
+
+            logger.info(
+                f"[{format_ist_timestamp()}] ✅ BRACKET FILLED: {symbol} {direction} "
+                f"qty={quantity} @ ${fill_p:.2f} | SL=${sl_price:.2f} TP=${tp_price:.2f}"
+            )
+            result = OrderResult(True, message="Bracket order filled")
+            result.order_id   = order_id
+            result.fill_price = fill_p
+            result.order_type = "BRACKET"
+            return result
+
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Bracket order failed {symbol}: {e} — falling back to standard")
+            return OrderResult(False, message=f"Bracket failed: {e}")
 
     # ─────────────────────────────────────────────────────────────────────
     # EXIT

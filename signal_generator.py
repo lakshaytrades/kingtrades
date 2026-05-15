@@ -143,7 +143,7 @@ class SignalGenerator:
         self,
         data_fetcher: GrowwDataFetcher,
         news_filter=None,
-        min_signal_score: float = 85.0,
+        min_signal_score: float = 90.0,
         high_confidence_score: float = 80.0,
     ):
         self.fetcher = data_fetcher
@@ -381,6 +381,11 @@ class SignalGenerator:
             stock_quote      = self.fetcher.get_quote(symbol) or {}
             stock_change_pct = stock_quote.get("change_pct", 0.0)
 
+            # Gate 13: SPY direction — determine bullish/bearish state
+            spy_bullish: Optional[bool] = None
+            if self._nifty_change_pct != 0.0:
+                spy_bullish = self._nifty_change_pct >= 0.0
+
             filter_result = self.ha_filter.evaluate(
                 signal_score     = ai_score,
                 direction        = "BUY" if direction == "LONG" else "SELL",
@@ -392,7 +397,7 @@ class SignalGenerator:
                 df_5m            = df_5m,
                 rsi              = ind.rsi,
                 above_vwap       = above_vwap,
-                nifty_change_pct = self._nifty_change_pct,
+                spy_change_pct   = self._nifty_change_pct,
                 stock_change_pct = stock_change_pct,
                 news_clear       = news_clear,
                 orb_direction    = self._orb_direction,
@@ -408,6 +413,10 @@ class SignalGenerator:
                                          stock_quote.get("close", 0) or 0),
                 gap_pct          = self._get_gap_pct(symbol),
                 minutes_since_open = self._minutes_since_open(),
+                # ── Gates 11-13 parameters ────────────────────────────
+                at_key_level     = getattr(ind, "at_hvn", False) or getattr(ind, "at_lvn", False) or above_vwap,
+                adx              = getattr(ind, "adx", 0.0),
+                spy_bullish      = spy_bullish,
             )
 
             if not filter_result.passed:

@@ -864,6 +864,7 @@ class RiskManager:
         than a loss. Exit ugly trades early."
 
         Rules (checked in priority order):
+          0. Quick loss cut — -0.5% within first 5 min, not recovering → EXIT_NOW
           1. Peak reversal  — was +1x ATR positive, now ≤0             → EXIT_NOW
           2. Early adverse  — moved 0.6× SL-distance against us        → EXIT_NOW
           3. Stalled trade  — 20+ min with <0.3x ATR progress          → EXIT_NOW
@@ -889,6 +890,20 @@ class RiskManager:
 
         sl_dist   = max(sl_dist, atr * 0.1)   # guard against zero
         age_min   = self._position_age_minutes(pos)
+
+        # ── Rule 0: Quick loss cut (first 5 min) ─────────────────────────
+        # If trade goes -0.5% within 5 minutes and isn't recovering, it's wrong.
+        # Big players cut losses FAST — never let a bad entry become a full SL.
+        if age_min <= 5 and pos.entry_price > 0 and not pos.t1_done:
+            pct_move = move / pos.entry_price * 100
+            if pct_move <= -0.5:
+                return {
+                    "action": "EXIT_NOW",
+                    "reason": (
+                        f"Quick cut: {pct_move:.2f}% adverse in {age_min:.1f}min — "
+                        "thesis not confirmed, exit before full SL"
+                    ),
+                }
 
         # ── Rule 1: Peak reversal ─────────────────────────────────────────
         # Was strongly positive, now flat or losing — momentum has reversed.
