@@ -1,0 +1,15 @@
+{
+  "date": "",
+  "consecutive_wins": 0,
+  "consecutive_losses": 0,
+  "day_pnl": 0.0,
+  "day_capital": 0.0,
+  "trades_today": 0,
+  "wins_today": 0,
+  "current_min_score": 90.0,
+  "size_multiplier": 1.0,
+  "paused": false,
+  "pause_reason": "",
+  "pattern_today": {},
+  "last_update": ""
+}
