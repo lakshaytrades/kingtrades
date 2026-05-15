@@ -1,5 +1,5 @@
 """
-signal_generator.py — NSE Momentum Groww AI Bot
+signal_generator.py — US Momentum Alpaca AI Bot
 AI-Enhanced Multi-Timeframe Momentum Signal Engine
 
 Based on 18+ years of NSE intraday trading experience.
@@ -126,8 +126,8 @@ class TradeSignal:
             f"{direction_emoji} {self.direction} {self.symbol} | "
             f"Grade: {self.grade_emoji}{self.quality_grade} | "
             f"Score: {self.signal_score:.0f}/100 | Size: {self.size_multiplier:.1f}x\n"
-            f"Entry: ₹{self.entry_price:.2f} | SL: ₹{self.stop_loss:.2f} | "
-            f"T1: ₹{self.target_1:.2f} | T2: ₹{self.target_2:.2f} | R:R {rr}\n"
+            f"Entry: ${self.entry_price:.2f} | SL: ${self.stop_loss:.2f} | "
+            f"T1: ${self.target_1:.2f} | T2: ${self.target_2:.2f} | R:R {rr}\n"
             f"Patterns: {', '.join(self.patterns[:3])}\n"
             f"{self.rationale}"
         )
@@ -143,7 +143,7 @@ class SignalGenerator:
         self,
         data_fetcher: GrowwDataFetcher,
         news_filter=None,
-        min_signal_score: float = 65.0,
+        min_signal_score: float = 85.0,
         high_confidence_score: float = 80.0,
     ):
         self.fetcher = data_fetcher
@@ -287,6 +287,14 @@ class SignalGenerator:
             if inst_ctx.get("regime_block", False):
                 return None
 
+            # 5d. Daily HTF bias enforcement (Grok #8):
+            # Only take LONG trades when daily structure is bullish
+            # (price > 20-day SMA AND recent higher highs/lows).
+            daily_bias_penalty = self._get_daily_htf_penalty(symbol, direction)
+            if daily_bias_penalty is None:
+                logger.debug(f"{symbol}: daily HTF opposes direction — skipping")
+                return None
+
             # 6. Composite AI score
             ai_score = self._compute_ai_score(
                 direction=direction,
@@ -301,6 +309,11 @@ class SignalGenerator:
             if ai_score is None:
                 logger.debug(f"{symbol}: time-of-day block — skipping")
                 return None
+
+            # Apply daily HTF penalty if structure partially opposes
+            if daily_bias_penalty is not None and daily_bias_penalty < 0:
+                ai_score = max(0.0, ai_score + daily_bias_penalty)
+                logger.debug(f"{symbol}: daily HTF penalty {daily_bias_penalty:+.0f} → score {ai_score:.1f}")
 
             # 6b. Smart Money Enhancement (Liquidity Sweeps, Wyckoff, ORB, RVOL,
             #     Market Regime, Killzones, Key Levels, Momentum Quality)
@@ -665,7 +678,7 @@ class SignalGenerator:
 
     def _get_relative_strength(self, symbol: str) -> float:
         """
-        Calculate relative strength of stock vs Nifty50.
+        Calculate relative strength of stock vs SPY (US market benchmark).
         RS > 0: stock outperforming (bullish edge)
         RS < 0: stock underperforming (bearish edge)
         """
@@ -679,6 +692,79 @@ class SignalGenerator:
             return round(stock_chg - nifty_chg, 2)
         except Exception:
             return 0.0
+
+    _daily_htf_cache: dict = {}
+
+    def _get_daily_htf_penalty(self, symbol: str, direction: str) -> Optional[float]:
+        """
+        Grok #8 — Multi-Timeframe Bias Enforcement.
+        Check daily candles for bullish (LONG) or bearish (SHORT) structure:
+          - Price > 20-day SMA  (above key moving average)
+          - Recent swing high > prior swing high  (higher highs)
+          - Recent swing low  > prior swing low   (higher lows)
+
+        Returns
+        -------
+        0.0   → structure aligns with direction (no penalty)
+        -8.0  → structure partially opposes (score penalty, still tradeable)
+        None  → structure strongly opposes direction (skip signal)
+        """
+        cache_key = f"{symbol}_{direction}"
+        cached = self._daily_htf_cache.get(cache_key)
+        if cached and (get_current_ist_time() - cached["ts"]).total_seconds() < 14400:
+            return cached["val"]
+
+        result: Optional[float] = 0.0
+        try:
+            import yfinance as yf
+            hist = yf.Ticker(symbol).history(period="60d", interval="1d")
+            if hist is None or len(hist) < 21:
+                self._daily_htf_cache[cache_key] = {"val": 0.0, "ts": get_current_ist_time()}
+                return 0.0
+
+            closes = hist["Close"]
+            highs  = hist["High"]
+            lows   = hist["Low"]
+            sma20  = closes.rolling(20).mean().iloc[-1]
+            price  = float(closes.iloc[-1])
+
+            above_sma = price > float(sma20)
+
+            # Simple swing: compare last 5-bar high/low vs prior 5-bar high/low
+            recent_high = float(highs.iloc[-5:].max())
+            prior_high  = float(highs.iloc[-10:-5].max())
+            recent_low  = float(lows.iloc[-5:].min())
+            prior_low   = float(lows.iloc[-10:-5].min())
+
+            higher_highs = recent_high > prior_high
+            higher_lows  = recent_low  > prior_low
+            bullish_structure = above_sma and higher_highs and higher_lows
+
+            lower_lows   = recent_low  < prior_low
+            lower_highs  = recent_high < prior_high
+            bearish_structure = (not above_sma) and lower_highs and lower_lows
+
+            if direction == "LONG":
+                if bullish_structure:
+                    result = 0.0     # Full alignment — no penalty
+                elif above_sma:
+                    result = -8.0    # Above SMA but no HH/HL — partial penalty
+                else:
+                    result = None    # Below SMA → skip LONG
+            else:  # SHORT
+                if bearish_structure:
+                    result = 0.0
+                elif not above_sma:
+                    result = -8.0
+                else:
+                    result = None    # Strong bull structure → skip SHORT
+
+        except Exception as e:
+            logger.debug(f"Daily HTF check {symbol}: {e}")
+            result = 0.0   # On error: allow signal (don't block)
+
+        self._daily_htf_cache[cache_key] = {"val": result, "ts": get_current_ist_time()}
+        return result
 
     # --------------------------------------------------------
     # GAP & TIME HELPERS (used by Gates 6-10)
@@ -886,7 +972,7 @@ class SignalGenerator:
         else:
             score += vp_score  # Already direction-aligned by get_signal_context
 
-        # ── [NEW] NSE bulk/block deal + delivery + 52wk ───
+        # ── Supplementary data score (volume, 52wk proximity, institutional) ───
         nse_raw = ctx.get("nse_score", 0)
         if nse_raw != 0:
             # Flip sign for SHORT (buy signal = bad for short)

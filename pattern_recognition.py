@@ -3240,21 +3240,20 @@ class PatternRecognizer:
         for p in patterns:
             conf_norm = (p.confidence * adx_mult) / 100.0   # 0.0–1.1 range
             if p.name in ICT_PATTERNS:
-                bucket = ict_long if p.direction == "LONG" else ict_short
                 contrib = conf_norm * 35
                 if p.direction == "LONG":
                     ict_long += contrib
                 elif p.direction == "SHORT":
                     ict_short += contrib
             elif p.name in CHART_PATTERNS:
-                contrib = conf_norm * 20
+                contrib = conf_norm * 10   # Grok: chart patterns = 10 pts max
                 if p.direction == "LONG":
                     chart_long += contrib
                 elif p.direction == "SHORT":
                     chart_short += contrib
             else:
-                # Unclassified patterns (e.g. RVOL Momentum Confirmed) → half-weight chart bucket
-                contrib = conf_norm * 10
+                # Unclassified (e.g. RVOL Momentum Confirmed) → half-weight chart bucket
+                contrib = conf_norm * 5
                 if p.direction == "LONG":
                     chart_long += contrib
                 elif p.direction == "SHORT":
@@ -3262,8 +3261,8 @@ class PatternRecognizer:
 
         ict_long  = min(ict_long,  35.0)
         ict_short = min(ict_short, 35.0)
-        chart_long  = min(chart_long,  20.0)
-        chart_short = min(chart_short, 20.0)
+        chart_long  = min(chart_long,  10.0)
+        chart_short = min(chart_short, 10.0)
 
         # ── Category 3: Momentum / Volume indicators (cap 25) ─────────────
         rvol    = getattr(ind, "rvol", ind.volume_ratio)
@@ -3299,42 +3298,29 @@ class PatternRecognizer:
         elif ind.rsi > 65:
             mom_short += 5
 
-        # MACD histogram: up to 3 pts
+        # MACD histogram: up to 4 pts
         if ind.macd_hist > 0:
-            mom_long += 3
+            mom_long += 4
         elif ind.macd_hist < 0:
-            mom_short += 3
-
-        # Supertrend: up to 4 pts
-        if ind.supertrend_dir == 1:
-            mom_long += 4
-        else:
             mom_short += 4
 
-        # ADX + DI: up to 5 pts
-        if ind.adx > 25:
-            if plus_di > minus_di:
-                mom_long += 5
-            else:
-                mom_short += 5
-
-        # StochRSI: up to 4 pts
+        # StochRSI: up to 5 pts
         if stoch_k < 25:
-            mom_long += 4
+            mom_long += 5
         elif stoch_k > 75:
+            mom_short += 5
+
+        # CCI: up to 4 pts
+        if cci < -100:
+            mom_long += 4
+        elif cci > 100:
             mom_short += 4
 
-        # CCI: up to 3 pts
-        if cci < -100:
-            mom_long += 3
-        elif cci > 100:
-            mom_short += 3
-
-        # Williams %R: up to 3 pts
+        # Williams %R: up to 4 pts
         if wr < -80:
-            mom_long += 3
+            mom_long += 4
         elif wr > -20:
-            mom_short += 3
+            mom_short += 4
 
         # Ichimoku cloud position: up to 5 pts
         if tenkan and kijun and senkou_a and senkou_b:
@@ -3351,14 +3337,33 @@ class PatternRecognizer:
         elif bb_pb < 0.0:
             mom_long += 3
 
-        # EMA full-stack alignment: up to 5 pts
-        if ind.ema9 > ind.ema21 > ind.ema50:
-            mom_long += 5
-        elif ind.ema9 < ind.ema21 < ind.ema50:
-            mom_short += 5
-
         mom_long  = min(mom_long,  25.0)
         mom_short = min(mom_short, 25.0)
+
+        # ── Category 4: Regime alignment (Grok: 10 pts max) ──────────────
+        # EMA full-stack alignment: 4 pts
+        reg_long = 0.0
+        reg_short = 0.0
+        if ind.ema9 > ind.ema21 > ind.ema50:
+            reg_long += 4
+        elif ind.ema9 < ind.ema21 < ind.ema50:
+            reg_short += 4
+
+        # Supertrend direction: 3 pts
+        if ind.supertrend_dir == 1:
+            reg_long += 3
+        else:
+            reg_short += 3
+
+        # ADX trending (not choppy): 3 pts for direction confirmation
+        if ind.adx > 25:
+            if plus_di > minus_di:
+                reg_long += 3
+            else:
+                reg_short += 3
+
+        reg_long  = min(reg_long,  10.0)
+        reg_short = min(reg_short, 10.0)
 
         # ── Multi-factor ICT confluence bonus (adds within ICT 35 cap) ────
         elite_names = {p.name for p in patterns}
@@ -3371,13 +3376,13 @@ class PatternRecognizer:
         if has_ict_bear and adx_rising and high_rvol:
             ict_short = min(ict_short + 10, 35.0)
 
-        # Kill zone timing bonus (adds within chart 20 cap)
+        # Kill zone timing bonus (adds within chart 10 cap)
         has_kz = any("Kill Zone" in p.name for p in patterns)
         if has_kz:
-            if ict_long + mom_long >= ict_short + mom_short:
-                chart_long  = min(chart_long  + 5, 20.0)
+            if ict_long + mom_long + reg_long >= ict_short + mom_short + reg_short:
+                chart_long  = min(chart_long  + 3, 10.0)
             else:
-                chart_short = min(chart_short + 5, 20.0)
+                chart_short = min(chart_short + 3, 10.0)
 
         # ── HVN / LVN proximity bonus ──────────────────────────────────────
         # at_lvn: price in a low-volume node → fast move incoming (+6)
@@ -3388,22 +3393,22 @@ class PatternRecognizer:
         hvn_long = hvn_short = 0.0
         if at_lvn:
             # LVN = fast move zone: boost the dominant side
-            if ict_long + chart_long + mom_long >= ict_short + chart_short + mom_short:
-                hvn_long = 6.0
+            if ict_long + chart_long + mom_long + reg_long >= ict_short + chart_short + mom_short + reg_short:
+                hvn_long = 5.0
             else:
-                hvn_short = 6.0
+                hvn_short = 5.0
         if at_hvn:
             # HVN = strong S/R: boost if momentum is coming FROM this level
-            if ict_long + chart_long + mom_long > ict_short + chart_short + mom_short:
-                hvn_long = 4.0   # bouncing off HVN support
+            if ict_long + chart_long + mom_long + reg_long > ict_short + chart_short + mom_short + reg_short:
+                hvn_long = 3.0   # bouncing off HVN support
             else:
-                hvn_short = 4.0  # rejecting at HVN resistance
+                hvn_short = 3.0  # rejecting at HVN resistance
 
-        # ── Totals: max 80 base → normalize to 100 ────────────────────────
-        raw_long  = ict_long  + chart_long  + mom_long  + hvn_long
-        raw_short = ict_short + chart_short + mom_short + hvn_short
+        # ── Totals: ICT(35) + Mom(25) + Chart(10) + Regime(10) = 80 max ──
+        # ×1.25 maps 80 → 100; HVN/LVN bonus can push slightly above before cap
+        raw_long  = ict_long  + chart_long  + mom_long  + reg_long  + hvn_long
+        raw_short = ict_short + chart_short + mom_short + reg_short + hvn_short
 
-        # ×1.25 maps 80-pt ceiling → 100; hvn bonus can push to ~86 before cap
         long_norm  = min(raw_long  * 1.25, 100.0)
         short_norm = min(raw_short * 1.25, 100.0)
 
