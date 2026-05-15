@@ -68,3 +68,4 @@ google-genai>=1.0.0           # Gemini AI brain for market intelligence
 yfinance>=0.2.40              # Free global market data: VIX, FX, commodities
 pandas-datareader>=0.10.0     # Economic data (FRED, World Bank)
 ta>=0.11.0                    # Alternative TA library fallback
+flask>=3.0

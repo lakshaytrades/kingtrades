@@ -157,6 +157,16 @@ class TradingBot:
         logger.info(f"[{format_ist_timestamp()}] Broker: {MARKET_NAME}")
         self.fetcher = _broker_get_fetcher()
 
+        # Start live WebSocket price stream for real-time quotes
+        try:
+            from price_stream import get_price_stream
+            self.price_stream = get_price_stream()
+            self.price_stream.start(list(config.WATCHLIST))
+            logger.info(f"[{format_ist_timestamp()}] Live price stream started for {len(config.WATCHLIST)} symbols")
+        except Exception as e:
+            self.price_stream = None
+            logger.warning(f"[{format_ist_timestamp()}] Price stream unavailable (will use REST): {e}")
+
         # Initialize risk manager
         from risk_manager import RiskManager
         self.risk_manager = RiskManager(
@@ -350,6 +360,16 @@ class TradingBot:
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
         self.dashboard = PerformanceDashboard(journal=self.journal, alerter=self.alerter)
+
+        # Start web dashboard on port 8080
+        try:
+            from web_dashboard import WebDashboard
+            self.web_dashboard = WebDashboard(state_provider=self._get_web_state, port=8080)
+            self.web_dashboard.start()
+            logger.info(f"[{format_ist_timestamp()}] Web dashboard: http://0.0.0.0:8080")
+        except Exception as e:
+            self.web_dashboard = None
+            logger.warning(f"[{format_ist_timestamp()}] Web dashboard unavailable: {e}")
 
         # Start Telegram command listener (background thread)
         self._start_telegram_listener()
@@ -2601,6 +2621,49 @@ class TradingBot:
     # --------------------------------------------------------
     # HEARTBEAT
     # --------------------------------------------------------
+
+    def _get_web_state(self) -> dict:
+        """State provider for web dashboard — called on every page refresh."""
+        try:
+            rm = self.risk_manager
+            positions = []
+            if rm:
+                for pos in rm.state.positions.values():
+                    positions.append({
+                        "symbol":    pos.symbol,
+                        "direction": pos.direction,
+                        "entry":     round(pos.entry_price, 2),
+                        "ltp":       round(pos.current_price, 2),
+                        "pnl":       round(pos.pnl, 2),
+                        "pnl_pct":   round(pos.pnl_pct, 2),
+                        "sl":        round(pos.stop_loss, 2),
+                        "t1":        round(pos.target_1, 2),
+                        "grade":     getattr(pos, "quality_grade", "B"),
+                        "age_min":   round(self.risk_manager._position_age_minutes(pos), 1),
+                    })
+            stats = {"trades": 0, "wins": 0, "win_rate": 0.0, "total_pnl": 0.0, "day_pct": 0.0}
+            brain = {"min_score": 90.0, "size_mult": 1.0, "streak_wins": 0, "streak_losses": 0, "paused": False, "reason": ""}
+            if hasattr(self, "adaptive_brain") and self.adaptive_brain:
+                s = self.adaptive_brain._state
+                wr = round(s.wins_today / max(s.trades_today, 1) * 100, 1)
+                stats = {"trades": s.trades_today, "wins": s.wins_today, "win_rate": wr,
+                         "total_pnl": round(s.day_pnl, 2),
+                         "day_pct":   round(s.day_pnl / max(s.day_capital, 1) * 100, 2)}
+                brain = {"min_score": s.current_min_score, "size_mult": s.size_multiplier,
+                         "streak_wins": s.consecutive_wins, "streak_losses": s.consecutive_losses,
+                         "paused": s.paused, "reason": s.pause_reason}
+            paused = (rm and rm.state.trading_paused) or (hasattr(self, "adaptive_brain") and self.adaptive_brain and self.adaptive_brain.is_paused())
+            return {
+                "bot_status":     "PAUSED" if paused else ("ACTIVE" if self.running else "STOPPED"),
+                "live_trading":   config.LIVE_TRADING_ENABLED,
+                "positions":      positions,
+                "stats":          stats,
+                "brain":          brain,
+                "recent_signals": getattr(self, "_recent_signals_log", [])[-10:],
+            }
+        except Exception as e:
+            return {"bot_status": "ERROR", "live_trading": False, "positions": [],
+                    "stats": {}, "brain": {}, "recent_signals": [], "error": str(e)}
 
     def _send_heartbeat(self):
         """Send hourly 'bot alive' status to Telegram during market hours."""

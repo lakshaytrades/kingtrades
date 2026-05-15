@@ -25,6 +25,7 @@ import pandas as pd
 
 from auth_alpaca import get_auth_manager
 from utils import format_ist_timestamp, get_current_ist_time
+from price_stream import get_price_stream
 
 logger = logging.getLogger(__name__)
 
@@ -131,6 +132,44 @@ class AlpacaDataFetcher:
 
     def get_ltp(self, symbol: str) -> float:
         return self.get_quote(symbol).get("ltp", 0.0)
+
+    def get_quote_live(self, symbol: str) -> Optional[Dict]:
+        """
+        Returns the latest quote for *symbol*, preferring the live WebSocket
+        cache (sub-second latency) and falling back to the REST ``get_quote()``
+        if the stream is not running or has not yet received data for the symbol.
+
+        Return value has the same keys as ``get_quote()``:
+            ltp, bid, ask, volume, timestamp, change_pct, prev_close
+        (REST fallback also includes open, high, low, close, symbol.)
+
+        This is a drop-in upgrade path — existing callers of ``get_quote()``
+        can switch to ``get_quote_live()`` for lower latency with zero other
+        changes.
+        """
+        stream = get_price_stream()
+        if stream.is_running():
+            cached = stream.get_quote(symbol)
+            if cached is not None:
+                return cached
+            # Stream running but no data yet for this symbol — subscribe it
+            # so the next call will hit the fast path.
+            if symbol.upper() not in stream.subscribed_symbols:
+                try:
+                    stream.start([symbol])
+                except Exception as exc:
+                    logger.debug(
+                        f"[{format_ist_timestamp()}] get_quote_live: "
+                        f"subscribe {symbol} failed: {exc}"
+                    )
+
+        # Fallback to REST poll
+        logger.debug(
+            f"[{format_ist_timestamp()}] get_quote_live({symbol}): "
+            "stream miss — falling back to REST"
+        )
+        rest = self.get_quote(symbol)
+        return rest if rest else None
 
     def scan_watchlist(self, symbols: List[str]) -> List[Dict]:
         """Batch quote for list of symbols. Returns [{symbol, ltp, volume, change_pct}]."""
