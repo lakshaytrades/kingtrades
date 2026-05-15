@@ -7,9 +7,9 @@ The 9/10 win rate comes from taking ONLY THE BEST 10% of signals.
 Patience is your edge. Waiting IS the strategy."
 
 This filter sits BETWEEN signal_generator and execution.
-A signal must PASS ALL 13 gates to become a trade.
+A signal must PASS ALL 14 gates to become a trade.
 
-THE 13 CONFLUENCE GATES:
+THE 14 CONFLUENCE GATES:
   Gate 1:  POWER HOURS ONLY      — Trade only in high-probability ET time windows
   Gate 2:  REGIME ALIGNMENT      — Market regime must be MOMENTUM (not RANGING)
   Gate 3:  MULTI-TF ALIGNMENT    — At least 2 of 3 timeframes must agree
@@ -23,6 +23,7 @@ THE 13 CONFLUENCE GATES:
   Gate 11: ENTRY AT LEVEL        — Price within 0.3% of key level (FVG/OB/VWAP/POC)
   Gate 12: ADX TRENDING          — ADX > 20 (no choppy directionless market)
   Gate 13: SPY ALIGNMENT         — SPY green for LONGs, SPY red for SHORTs
+  Gate 14: CORRELATION GATE      — No new position if ≥75% correlated open pos exists
 
 BONUS GATES (increase score further):
   + Heikin Ashi confirmation  (trend candle in signal direction)
@@ -100,8 +101,23 @@ class HighAccuracyFilter:
     The gatekeeper. Only the best setups get through.
     18yr rule: 'Miss a trade → lose opportunity. Take a bad trade → lose money.
     Opportunity loss is recoverable. Capital loss may not be.'
-    13 gates. 9/10 win rate target.
+    14 gates. 9/10 win rate target.
     """
+
+    # Known correlation pairs (same sector = correlated)
+    CORRELATION_PAIRS = {
+        frozenset({"NVDA", "AMD"}):    0.85,
+        frozenset({"AAPL", "MSFT"}):   0.80,
+        frozenset({"META", "GOOGL"}):  0.82,
+        frozenset({"META", "SNAP"}):   0.78,
+        frozenset({"JPM", "GS"}):      0.80,
+        frozenset({"XOM", "CVX"}):     0.88,
+        frozenset({"TSLA", "RIVN"}):   0.75,
+        frozenset({"SPY", "QQQ"}):     0.92,
+        frozenset({"NVDA", "TSM"}):    0.80,
+        frozenset({"AMZN", "SHOP"}):   0.72,
+    }
+    CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
     def __init__(self):
         self._rejection_log: List[Dict] = []
@@ -140,6 +156,8 @@ class HighAccuracyFilter:
         at_key_level:        bool  = False,   # Gate 11: price at FVG/OB/VWAP/POC
         adx:                 float = 0.0,     # Gate 12: ADX value
         spy_bullish:         Optional[bool] = None,  # Gate 13: SPY direction
+        # ── Gate 14 parameter ──────────────────────────────
+        open_positions:      Optional[List[str]] = None,  # Gate 14: open position symbols (same direction)
     ) -> FilterResult:
 
         result = FilterResult()
@@ -303,6 +321,17 @@ class HighAccuracyFilter:
                 self._log_rejection(result, signal_score, direction)
                 return result
             result.gates_passed.append("SPY_ALIGNED")
+
+        # ── GATE 14: CORRELATION CHECK ────────────────────
+        # Don't double up on highly correlated positions — concentration risk
+        corr_ok, corr_reason = self._check_correlation(symbol, direction, open_positions)
+        if not corr_ok:
+            result.gates_failed.append("CORR_BLOCK")
+            result.rejection_reason = corr_reason
+            self._log_rejection(result, signal_score, direction)
+            return result
+        if open_positions:
+            result.gates_passed.append("CORR_OK")
 
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
@@ -694,6 +723,30 @@ class HighAccuracyFilter:
             return True, ""
         except Exception:
             return True, ""   # Fail open — don't block on data errors
+
+    def _check_correlation(
+        self,
+        symbol: str,
+        direction: str,
+        open_positions: Optional[List[str]] = None,
+    ) -> Tuple[bool, str]:
+        """
+        Gate 14: Block if a highly correlated position is already open in same direction.
+        open_positions: list of currently open position symbols (same direction).
+        Correlation >= CORR_BLOCK_THRESHOLD (0.75) triggers a block.
+        """
+        if not open_positions:
+            return True, "No open positions"
+
+        for open_sym in open_positions:
+            pair = frozenset({symbol.upper(), open_sym.upper()})
+            corr = self.CORRELATION_PAIRS.get(pair)
+            if corr and corr >= self.CORR_BLOCK_THRESHOLD:
+                return False, (
+                    f"CORR_BLOCK: {symbol} correlates {corr:.0%} with open {open_sym}"
+                )
+
+        return True, "Correlation OK"
 
     def _rsi_bonus(self, rsi: float, direction: str) -> float:
         """Ideal RSI zones for momentum entries."""

@@ -271,7 +271,29 @@ class TradingBot:
         from adaptive_brain import get_adaptive_brain
         self.adaptive_brain = get_adaptive_brain(self.signal_gen)
         self.adaptive_brain.set_signal_gen(self.signal_gen)
+        # Pre-warm brain from historical backtest results (if available)
+        try:
+            self.adaptive_brain.warm_up_from_history()
+        except Exception as _e:
+            logger.debug(f"[suppressed] AdaptiveBrain warm_up_from_history: {_e}")
         logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain ready — {self.adaptive_brain.get_status()}")
+
+        # System health checker
+        try:
+            from system_health import get_health_checker
+            self.health_checker = get_health_checker()
+            logger.info(f"[{format_ist_timestamp()}] SystemHealthChecker ready")
+        except Exception as _e:
+            logger.debug(f"[suppressed] SystemHealthChecker init: {_e}")
+            self.health_checker = None
+
+        # Commission tracker
+        try:
+            from commission_tracker import get_commission_tracker
+            self.commission_tracker = get_commission_tracker()
+        except Exception as _e:
+            logger.debug(f"[suppressed] CommissionTracker init: {_e}")
+            self.commission_tracker = None
 
         # Apply EOD-trained parameters (from yesterday's walk-forward optimization)
         self._apply_eod_trained_params()
@@ -917,6 +939,25 @@ class TradingBot:
             if spy_q and self.signal_gen:
                 self.signal_gen.update_nifty_change(spy_q.get("change_pct", 0.0))
 
+            # SystemHealthChecker: pre-scan safety gate
+            if hasattr(self, "health_checker") and self.health_checker:
+                try:
+                    bot_state = {
+                        "day_pnl":     getattr(self.risk_manager.state, "daily_pnl", 0.0),
+                        "day_capital": getattr(self.risk_manager.state, "daily_capital", 50000.0),
+                        "min_score":   getattr(self.signal_gen, "min_score", 90.0),
+                    }
+                    sys_report = self.health_checker.check(bot_state)
+                    if not sys_report.ok:
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] SystemHealth BLOCKED: {sys_report.blocked_reason}"
+                        )
+                        return
+                    for w in sys_report.warnings:
+                        logger.debug(f"[{format_ist_timestamp()}] SystemHealth WARNING: {w}")
+                except Exception as _e:
+                    logger.debug(f"[suppressed] SystemHealth check: {_e}")
+
             # AdaptiveBrain: market health check before scanning
             if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                 health = self.adaptive_brain.check_market_health(
@@ -1411,6 +1452,18 @@ class TradingBot:
                                     self.elite_brain.record_trade_outcome(_eb_votes, won=pnl > 0)
                             except Exception as _e:
                                 logger.debug(f"[suppressed] {_e}")
+                        # CommissionTracker: record realistic cost-adjusted P&L
+                        if hasattr(self, "commission_tracker") and self.commission_tracker:
+                            try:
+                                self.commission_tracker.record_trade(
+                                    symbol      = pos.symbol,
+                                    quantity    = pos.quantity,
+                                    entry_price = pos.entry_price,
+                                    exit_price  = ltp,
+                                    direction   = pos.direction,
+                                )
+                            except Exception as _e:
+                                logger.debug(f"[suppressed] CommissionTracker: {_e}")
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                             try:

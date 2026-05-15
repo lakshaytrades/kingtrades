@@ -44,6 +44,9 @@ _prev_close_cache: Dict[str, float] = {}
 # Guard for concurrent writes from the WS callback thread
 _cache_lock = threading.Lock()
 
+# Monotonic timestamp of the last write per symbol — used by get_quote_age()
+_quote_ts: Dict[str, float] = {}
+
 
 # ─────────────────────────────────────────────────────────────────────────────
 # Helper
@@ -221,6 +224,12 @@ class PriceStream:
         """Read-only list of currently subscribed symbols."""
         return list(self._symbols)
 
+    def get_quote_age(self, symbol: str) -> Optional[float]:
+        """Return seconds since last update for symbol, or None if never updated."""
+        with _cache_lock:
+            ts = _quote_ts.get(symbol.upper(), 0)
+        return _time.monotonic() - ts if ts > 0 else None
+
     # ─────────────────────────────────────────────────────────────────────
     # WebSocket callbacks
     # ─────────────────────────────────────────────────────────────────────
@@ -256,6 +265,7 @@ class PriceStream:
 
             with _cache_lock:
                 _price_cache[sym] = entry
+                _quote_ts[sym] = _time.monotonic()
 
             logger.debug(
                 f"[{format_ist_timestamp()}] quote {sym}: ltp={ltp:.4f} "

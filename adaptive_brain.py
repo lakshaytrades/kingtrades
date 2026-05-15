@@ -70,6 +70,9 @@ class BrainState:
     pause_reason:        str   = ""
     pattern_today:       Dict[str, List[bool]] = field(default_factory=dict)
     last_update:         str   = ""
+    # Pre-calibrated weights from historical backtest warm-up
+    pattern_boosts:      Dict[str, float] = field(default_factory=dict)
+    disabled_patterns:   set              = field(default_factory=set)
 
 
 class AdaptiveBrain:
@@ -210,6 +213,53 @@ class AdaptiveBrain:
         self._save()
         logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: day reset — score={DEFAULT_SCORE}")
 
+    # ── HISTORICAL WARM-UP ────────────────────────────────────────────────────
+
+    def warm_up_from_history(self) -> bool:
+        """
+        Pre-calibrate pattern weights from historical backtest results.
+        Returns True if warm-up succeeded, False if no backtest data available.
+        """
+        try:
+            from historical_backtester import HistoricalBacktester
+            bt = HistoricalBacktester()
+            results = bt.load_results()
+            if results is None:
+                logger.info("AdaptiveBrain: no backtest data for warm-up")
+                return False
+
+            # Pre-set pattern weights based on historical win rates
+            for pattern, stats in results.pattern_stats.items():
+                wr     = stats.get("win_rate", 50.0)
+                trades = stats.get("trades", 0)
+                if trades < 10:
+                    continue  # Not enough data
+                if wr > 65:
+                    self._state.pattern_boosts[pattern] = min(wr / 50.0, 1.5)
+                elif wr < 40:
+                    self._state.disabled_patterns.add(pattern)
+
+            # Adjust min_score based on overall system win rate
+            overall_wr = results.win_rate
+            if overall_wr >= 60:
+                self._state.current_min_score = max(
+                    88.0, self._state.current_min_score - 2
+                )
+            elif overall_wr < 50:
+                self._state.current_min_score = min(
+                    98.0, self._state.current_min_score + 3
+                )
+
+            logger.info(
+                f"[{format_ist_timestamp()}] AdaptiveBrain warm-up: "
+                f"win_rate={overall_wr:.1f}% from {results.total_trades} historical trades | "
+                f"min_score adjusted to {self._state.current_min_score:.0f}"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"AdaptiveBrain warm-up failed: {e}")
+            return False
+
     # ── ADAPTATION LOGIC ─────────────────────────────────────────────────────
 
     def _adapt(self, outcome: TradeOutcome) -> str:
@@ -309,6 +359,9 @@ class AdaptiveBrain:
                 "pause_reason":       state.pause_reason,
                 "pattern_today":      state.pattern_today,
                 "last_update":        state.last_update,
+                # New fields — serialize set as sorted list for JSON
+                "pattern_boosts":     state.pattern_boosts,
+                "disabled_patterns":  sorted(list(state.disabled_patterns)),
             }
             BRAIN_STATE_FILE.write_text(json.dumps(data, indent=2))
         except Exception as e:
@@ -320,8 +373,13 @@ class AdaptiveBrain:
             if BRAIN_STATE_FILE.exists():
                 data = json.loads(BRAIN_STATE_FILE.read_text())
                 if data.get("date") == today:
-                    s = BrainState(**{k: v for k, v in data.items()
-                                      if k in BrainState.__dataclass_fields__})
+                    # Filter to known fields, then fix set deserialization
+                    known = {k: v for k, v in data.items()
+                             if k in BrainState.__dataclass_fields__}
+                    # disabled_patterns is stored as a list in JSON — restore to set
+                    if "disabled_patterns" in known and isinstance(known["disabled_patterns"], list):
+                        known["disabled_patterns"] = set(known["disabled_patterns"])
+                    s = BrainState(**known)
                     logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: resumed today's state "
                                 f"score={s.current_min_score:.0f} trades={s.trades_today}")
                     return s

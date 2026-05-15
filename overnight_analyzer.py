@@ -148,14 +148,15 @@ class OvernightAnalyzer:
         result["vix"] = vix_data
         vix = vix_data.get("vix", 15)
 
-        if vix > 25:
-            result["key_risks"].append(f"VIX = {vix:.1f} (HIGH) — use 50% position size today")
+        # VXX thresholds (VXX proxy, not raw VIX): >20 ≈ VIX high; >16 ≈ VIX elevated; <12 ≈ VIX low
+        if vix > 20:
+            result["key_risks"].append(f"VXX = {vix:.1f} (HIGH) — use 50% position size today")
             bias_score -= 15
-        elif vix > 20:
-            result["key_risks"].append(f"VIX = {vix:.1f} (ELEVATED) — widen stops")
+        elif vix > 16:
+            result["key_risks"].append(f"VXX = {vix:.1f} (ELEVATED) — widen stops")
             bias_score -= 8
         elif vix < 12:
-            result["key_risks"].append(f"VIX = {vix:.1f} (LOW) — low volatility, fewer breakout signals")
+            result["key_risks"].append(f"VXX = {vix:.1f} (LOW) — low volatility, fewer breakout signals")
 
         # 6. Final bias
         result["bias_score"] = bias_score
@@ -210,52 +211,49 @@ class OvernightAnalyzer:
     # --------------------------------------------------------
 
     def _fetch_global_markets(self) -> Dict:
-        """Fetch US market overnight data via yfinance."""
+        """Fetch US market overnight data via Alpaca ETF proxies (SPY/QQQ/DIA)."""
         result = {}
-        try:
-            import yfinance as yf
-            tickers = {
-                "sp500":  "^GSPC",
-                "nasdaq": "^IXIC",
-                "dow":    "^DJI",
-            }
-            for name, ticker in tickers.items():
-                try:
-                    data = yf.download(ticker, period="2d", interval="1d",
-                                       progress=False, auto_adjust=True)
-                    if len(data) >= 2:
-                        prev = float(data["Close"].iloc[-2])
-                        last = float(data["Close"].iloc[-1])
-                        chg  = (last - prev) / prev * 100
-                        result[f"{name}_close"]  = round(last, 2)
-                        result[f"{name}_change"] = round(chg, 2)
-                    else:
-                        result[f"{name}_change"] = 0
-                except Exception:
+        from data_fetch_alpaca import get_data_fetcher
+        fetcher = get_data_fetcher()
+        etf_map = {
+            "sp500":  "SPY",
+            "nasdaq": "QQQ",
+            "dow":    "DIA",
+        }
+        for name, etf in etf_map.items():
+            try:
+                df = fetcher.get_ohlcv(etf, interval="day", lookback_days=3)
+                if df is not None and len(df) >= 2:
+                    prev = float(df["close"].iloc[-2])
+                    last = float(df["close"].iloc[-1])
+                    chg  = (last - prev) / prev * 100
+                    result[f"{name}_close"]  = round(last, 2)
+                    result[f"{name}_change"] = round(chg, 2)
+                else:
                     result[f"{name}_change"] = 0
-        except ImportError:
-            logger.warning("yfinance not installed: pip install yfinance")
-            result = {"sp500_change": 0, "nasdaq_change": 0, "dow_change": 0}
+            except Exception as e:
+                logger.debug(f"_fetch_global_markets {etf} failed: {e}")
+                result[f"{name}_change"] = 0
         return result
 
     def _fetch_spy_gap(self) -> Dict:
         """
         SPY gap vs previous close — best US open predictor.
-        Uses 5-min pre-market data when available.
+        Uses Alpaca daily bars for prev close; Yahoo Finance HTTP for real-time pre-market price.
         """
         result = {"current": 0, "prev_close": 0, "gap_pct": 0}
         try:
-            import yfinance as yf
-            spy = yf.download("SPY", period="5d", interval="1d",
-                              progress=False, auto_adjust=True)
-            if len(spy) >= 2:
-                prev_close = float(spy["Close"].iloc[-2])
-                last_close = float(spy["Close"].iloc[-1])
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            spy_df = fetcher.get_ohlcv("SPY", interval="day", lookback_days=5)
+            if spy_df is not None and len(spy_df) >= 2:
+                prev_close = float(spy_df["close"].iloc[-2])
+                last_close = float(spy_df["close"].iloc[-1])
                 result["prev_close"] = round(prev_close, 2)
                 result["current"]    = round(last_close, 2)
                 result["gap_pct"]    = round((last_close - prev_close) / prev_close * 100, 2)
 
-            # Try pre-market price from Yahoo for current gap
+            # Try pre-market price from Yahoo Finance HTTP API for current gap
             try:
                 import requests
                 resp = requests.get(
@@ -278,57 +276,58 @@ class OvernightAnalyzer:
         return result
 
     def _fetch_commodities(self) -> Dict:
-        """Fetch crude oil (WTI) and gold prices."""
+        """Fetch crude oil and gold prices via Alpaca ETF proxies (USO/GLD)."""
         result = {"crude_change": 0, "gold_change": 0, "crude_price": 0, "gold_price": 0}
-        try:
-            import yfinance as yf
-            for name, ticker in [("crude", "CL=F"), ("gold", "GC=F")]:
-                try:
-                    data = yf.download(ticker, period="2d", interval="1d",
-                                       progress=False, auto_adjust=True)
-                    if len(data) >= 2:
-                        prev = float(data["Close"].iloc[-2])
-                        last = float(data["Close"].iloc[-1])
-                        result[f"{name}_price"]  = round(last, 2)
-                        result[f"{name}_change"] = round((last - prev) / prev * 100, 2)
-                except Exception as _e:
-                    logger.debug(f"[suppressed] {_e}")
-        except ImportError:
-            pass
+        from data_fetch_alpaca import get_data_fetcher
+        fetcher = get_data_fetcher()
+        for name, etf in [("crude", "USO"), ("gold", "GLD")]:
+            try:
+                df = fetcher.get_ohlcv(etf, interval="day", lookback_days=3)
+                if df is not None and len(df) >= 2:
+                    prev = float(df["close"].iloc[-2])
+                    last = float(df["close"].iloc[-1])
+                    result[f"{name}_price"]  = round(last, 2)
+                    result[f"{name}_change"] = round((last - prev) / prev * 100, 2)
+            except Exception as e:
+                logger.debug(f"_fetch_commodities {etf} failed: {e}")
         return result
 
     def _fetch_dxy(self) -> Dict:
-        """Fetch US Dollar Index (DXY)."""
+        """Fetch USD strength via UUP ETF proxy (Invesco DB US Dollar Index Bullish Fund)."""
         result = {"dxy": 0, "dxy_change": 0}
         try:
-            import yfinance as yf
-            data = yf.download("DX-Y.NYB", period="2d", interval="1d",
-                               progress=False, auto_adjust=True)
-            if len(data) >= 2:
-                prev = float(data["Close"].iloc[-2])
-                last = float(data["Close"].iloc[-1])
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            dxy_df = fetcher.get_ohlcv("UUP", interval="day", lookback_days=3)
+            if dxy_df is not None and len(dxy_df) >= 2:
+                prev = float(dxy_df["close"].iloc[-2])
+                last = float(dxy_df["close"].iloc[-1])
                 result["dxy"]        = round(last, 3)
                 result["dxy_change"] = round((last - prev) / prev * 100, 3)
         except Exception as e:
-            logger.debug(f"DXY fetch failed: {e}")
+            logger.debug(f"DXY (UUP) fetch failed: {e}")
         return result
 
     def _fetch_us_vix(self) -> Dict:
-        """Fetch CBOE VIX — US market fear gauge."""
+        """
+        Fetch VIX proxy via VXX ETF (iPath Series B S&P 500 VIX Short-Term Futures ETN).
+        Note: VXX is correlated with VIX but trades at a lower absolute level (~$15-25 vs VIX ~12-40).
+        Thresholds adjusted: VXX > 20 ≈ VIX high; VXX < 12 ≈ VIX low.
+        """
         result = {"vix": 15, "vix_change": 0}
         try:
-            import yfinance as yf
-            data = yf.download("^VIX", period="2d", interval="1d",
-                               progress=False, auto_adjust=True)
-            if len(data) >= 2:
-                prev = float(data["Close"].iloc[-2])
-                last = float(data["Close"].iloc[-1])
+            from data_fetch_alpaca import get_data_fetcher
+            fetcher = get_data_fetcher()
+            vix_df = fetcher.get_ohlcv("VXX", interval="day", lookback_days=3)
+            if vix_df is not None and len(vix_df) >= 2:
+                prev = float(vix_df["close"].iloc[-2])
+                last = float(vix_df["close"].iloc[-1])
                 result["vix"]        = round(last, 2)
                 result["vix_change"] = round(last - prev, 2)
-            elif len(data) == 1:
-                result["vix"] = round(float(data["Close"].iloc[-1]), 2)
+            elif vix_df is not None and len(vix_df) == 1:
+                result["vix"] = round(float(vix_df["close"].iloc[-1]), 2)
         except Exception as e:
-            logger.debug(f"VIX fetch failed: {e}")
+            logger.debug(f"VIX (VXX) fetch failed: {e}")
         return result
 
     def _fetch_top_headlines(self) -> List[str]:
@@ -381,12 +380,13 @@ class OvernightAnalyzer:
         return 0
 
     def get_size_multiplier(self) -> float:
-        """Position size multiplier based on overnight risk."""
+        """Position size multiplier based on overnight risk. VIX proxy is VXX."""
         vix  = self.get_vix()
         bias = abs(self.get_bias_score())
-        if vix > 25:
+        # VXX thresholds: >20 ≈ VIX high; >16 ≈ VIX elevated
+        if vix > 20:
             return 0.5
-        elif vix > 20:
+        elif vix > 16:
             return 0.7
         elif bias > 30:
             return 1.1
