@@ -234,7 +234,7 @@ class FIIDIITracker:
         """Only re-fetch if cache is stale (30 min TTL)."""
         if not self._last_fetch:
             return True
-        elapsed = (datetime.now() - self._last_fetch).total_seconds() / 60
+        elapsed = (get_current_ist_time() - self._last_fetch).total_seconds() / 60
         return elapsed >= CACHE_TTL_MINUTES
 
     def get_today_flow(self, force_refresh: bool = False) -> Optional[FIIDIIFlow]:
@@ -253,7 +253,7 @@ class FIIDIITracker:
         flow = self._fetch_from_nse()
         if flow:
             self._cache[today_str] = flow
-            self._last_fetch = datetime.now()
+            self._last_fetch = get_current_ist_time()
             self._save_to_db(flow)
             logger.info(f"[{format_ist_timestamp()}] {flow.summary()}")
             return flow

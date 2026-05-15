@@ -1442,7 +1442,15 @@ class TradingBot:
                         use_market_order=True,
                     )
                     if result.success:
+                        # Cancel broker-side stop order (position is closed, orphan would re-enter)
+                        if pos.sl_order_id:
+                            try:
+                                self.executor.cancel_order(pos.sl_order_id)
+                            except Exception as _cse:
+                                logger.warning(f"cancel_order(stop) failed on health exit {pos.symbol}: {_cse}")
                         pnl = pos.pnl
+                        # Remove from risk state, update daily P&L / win-loss counters
+                        self.risk_manager.close_position(pos.symbol, ltp, health["reason"])
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             ltp, pos.quantity, pnl, health["reason"]
@@ -1474,7 +1482,15 @@ class TradingBot:
                         use_market_order=True
                     )
                     if result.success:
+                        # Cancel broker-side stop order (position closed; orphan would open new position)
+                        if pos.sl_order_id:
+                            try:
+                                self.executor.cancel_order(pos.sl_order_id)
+                            except Exception as _cse:
+                                logger.warning(f"cancel_order(stop) failed on exit {pos.symbol}: {_cse}")
                         pnl = pos.pnl
+                        # Remove from risk state: updates daily_pnl, daily_trades, consecutive counters
+                        self.risk_manager.close_position(pos.symbol, ltp, action["reason"])
                         # Record closed trade in Profit Engine for compounding/mode tracking
                         if self.profit_engine:
                             try:
@@ -1536,6 +1552,17 @@ class TradingBot:
                     if result.success:
                         # Update local position quantity
                         pos.quantity = max(0, pos.quantity - exit_qty)
+                        # Cancel old stop order (wrong qty after partial) + place new one
+                        if pos.sl_order_id:
+                            try:
+                                self.executor.cancel_order(pos.sl_order_id)
+                            except Exception as _cse:
+                                logger.warning(f"cancel_order(stop) failed on partial exit {pos.symbol}: {_cse}")
+                        if pos.quantity > 0:
+                            new_sl_oid = self.executor.place_stop_order(
+                                pos.symbol, pos.quantity, action["new_sl"], pos.direction
+                            )
+                            pos.sl_order_id = new_sl_oid
                         self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
                         pnl_partial = (ltp - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * exit_qty
                         logger.info(
@@ -1739,21 +1766,29 @@ class TradingBot:
             }
             bot_syms: set = set(self.risk_manager.state.positions.keys())
 
-            # ── Case 1: ghost positions (bot tracks, Groww doesn't) ──────────
+            # ── Case 1: ghost positions (bot tracks, broker doesn't) ─────────
             for sym in list(bot_syms - groww_syms):
-                pos = self.risk_manager.state.positions.pop(sym, None)
+                pos = self.risk_manager.state.positions.get(sym)
                 if not pos:
                     continue
-                # Update daily P&L so the loss/gain is accounted for
+                # Fetch last known price for P&L accounting
                 try:
                     q = self.fetcher.get_quote(sym)
                     ltp = float(q.get("ltp", pos.entry_price)) if q else pos.entry_price
-                    pnl = (ltp - pos.entry_price) * pos.quantity if pos.direction == "LONG" \
-                          else (pos.entry_price - ltp) * pos.quantity
-                    self.risk_manager.state.daily_pnl += pnl
-                    self.risk_manager.state.available_capital += ltp * pos.quantity
                 except Exception as _e:
-                    logger.warning(f"Reconcile P&L update failed ({sym}): {_e}")
+                    logger.warning(f"Reconcile quote failed ({sym}): {_e}")
+                    ltp = pos.entry_price
+
+                # close_position() removes from state.positions and updates daily_pnl,
+                # daily_trades, winning_trades, consecutive_losses — full accounting
+                self.risk_manager.close_position(sym, ltp, "BROKER_RECONCILE_SL_HIT")
+
+                # Also cancel any orphaned broker-side stop order
+                if pos.sl_order_id:
+                    try:
+                        self.executor.cancel_order(pos.sl_order_id)
+                    except Exception:
+                        pass
 
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile REMOVED: {sym} "
