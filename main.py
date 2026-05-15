@@ -257,6 +257,12 @@ class TradingBot:
         if self.signal_gen:
             self.signal_gen.min_score = adaptive_cfg.min_signal_score
 
+        # Intraday Adaptive Brain — real-time learning engine
+        from adaptive_brain import get_adaptive_brain
+        self.adaptive_brain = get_adaptive_brain(self.signal_gen)
+        self.adaptive_brain.set_signal_gen(self.signal_gen)
+        logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain ready — {self.adaptive_brain.get_status()}")
+
         # Apply EOD-trained parameters (from yesterday's walk-forward optimization)
         self._apply_eod_trained_params()
 
@@ -658,6 +664,15 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] RL reset failed: {e}")
 
+        # ── AdaptiveBrain: reset for new day ──────────────────────────
+        try:
+            if hasattr(self, "adaptive_brain") and self.adaptive_brain:
+                self.adaptive_brain.reset_day()
+                self.adaptive_brain.set_day_capital(available)
+                logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: new day reset, capital=${available:,.0f}")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] AdaptiveBrain reset failed: {e}")
+
         # Log day-of-week mode
         now_ist  = get_current_ist_time()
         dow      = now_ist.weekday()
@@ -881,6 +896,18 @@ class TradingBot:
 
             if spy_q and self.signal_gen:
                 self.signal_gen.update_nifty_change(spy_q.get("change_pct", 0.0))
+
+            # AdaptiveBrain: market health check before scanning
+            if hasattr(self, "adaptive_brain") and self.adaptive_brain:
+                health = self.adaptive_brain.check_market_health(
+                    spy_adx    = float(spy_q.get("adx", 0)) if spy_q else 0.0,
+                    spy_change = float(spy_q.get("change_pct", 0)) if spy_q else 0.0,
+                )
+                if not health["healthy"]:
+                    logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain pause: {health['reason']}")
+                    return
+                if health.get("score_override") and self.signal_gen:
+                    self.signal_gen.min_score = health["score_override"]
 
             signals = self.signal_gen.scan_watchlist(
                 symbols=watchlist,
@@ -1335,6 +1362,24 @@ class TradingBot:
                                     self.elite_brain.record_trade_outcome(_eb_votes, won=pnl > 0)
                             except Exception:
                                 pass
+                        # AdaptiveBrain: record trade outcome for intraday adaptation
+                        if hasattr(self, "adaptive_brain") and self.adaptive_brain:
+                            try:
+                                from adaptive_brain import TradeOutcome
+                                outcome = TradeOutcome(
+                                    symbol      = pos.symbol,
+                                    direction   = pos.direction,
+                                    pattern     = getattr(pos, "pattern_name", "UNKNOWN"),
+                                    entry_score = getattr(pos, "signal_score", 0.0),
+                                    pnl         = pnl,
+                                    win         = pnl > 0,
+                                    regime      = getattr(pos, "regime", "UNKNOWN"),
+                                    session     = getattr(pos, "session", "UNKNOWN"),
+                                )
+                                adapt_msg = self.adaptive_brain.record_trade(outcome)
+                                logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: {adapt_msg}")
+                            except Exception as e:
+                                logger.debug(f"AdaptiveBrain record error: {e}")
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             ltp, pos.quantity, pnl, action["reason"]
@@ -2626,6 +2671,14 @@ def main():
         level=config.LOG_LEVEL,
         module_name="kingtrades"
     )
+
+    # Auto-update: pull latest code so bot is always current
+    try:
+        from adaptive_brain import auto_update_code
+        update_msg = auto_update_code()
+        logger.info(f"[{format_ist_timestamp()}] {update_msg}")
+    except Exception:
+        pass
 
     logger.info("=" * 60)
     logger.info("  US MOMENTUM ALPACA AI BOT")
