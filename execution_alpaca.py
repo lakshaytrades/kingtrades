@@ -418,18 +418,19 @@ class AlpacaExecutor:
     # SQUARE OFF ALL
     # ─────────────────────────────────────────────────────────────────────
 
-    def square_off_all(self) -> List[OrderResult]:
+    def square_off_all(self, reason: str = "") -> List[OrderResult]:
         """
         Close ALL open positions via Alpaca's close-all endpoint.
         Used at EOD or on /kill command.
         """
         results = []
         if not self.live_enabled:
+            logger.info(f"[{format_ist_timestamp()}] square_off_all ({reason}): paper mode — skipping")
             return results
         try:
             trading_client = self._auth.get_trading_client()
             trading_client.close_all_positions(cancel_orders=True)
-            logger.info(f"[{format_ist_timestamp()}] square_off_all: sent close_all_positions")
+            logger.info(f"[{format_ist_timestamp()}] square_off_all ({reason}): sent close_all_positions")
             results.append(OrderResult(True, message="All positions closed"))
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] square_off_all failed: {e}")

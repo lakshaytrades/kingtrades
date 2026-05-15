@@ -968,15 +968,6 @@ class TradingBot:
                     logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain pause: {health['reason']}")
                     return
 
-            # Apply effective score threshold: DOW is the floor, brain can raise above it
-            if self.signal_gen:
-                brain_score = (
-                    self.adaptive_brain._state.current_min_score
-                    if hasattr(self, "adaptive_brain") and self.adaptive_brain
-                    else dow_min
-                )
-                self.signal_gen.min_score = max(dow_min, brain_score)
-
             signals = self.signal_gen.scan_watchlist(
                 symbols=watchlist,
                 max_signals=min(max_new, 3)  # Max 3 new signals per cycle
@@ -1015,6 +1006,15 @@ class TradingBot:
             dow = now_ist.weekday()
             dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
             dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
+
+            # Apply effective score threshold: DOW is the floor, brain can raise above it
+            if self.signal_gen:
+                brain_score = (
+                    self.adaptive_brain._state.current_min_score
+                    if hasattr(self, "adaptive_brain") and self.adaptive_brain
+                    else dow_min
+                )
+                self.signal_gen.min_score = max(dow_min, brain_score)
             if self.risk_manager.state.daily_trades >= dow_max_trades:
                 logger.info(
                     f"[{format_ist_timestamp()}] DOW max trades "
@@ -1313,6 +1313,28 @@ class TradingBot:
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
                 if result.success:
+                    # Register position with risk manager (trailing stops, T1/T2, daily-loss)
+                    try:
+                        from risk_manager import Position
+                        fill_price = result.fill_price if result.fill_price > 0 else signal.entry_price
+                        fill_qty   = result.quantity   if result.quantity   > 0 else getattr(signal, "quantity", 1)
+                        position = Position(
+                            symbol          = signal.symbol,
+                            direction       = signal.direction,
+                            quantity        = fill_qty,
+                            entry_price     = fill_price,
+                            stop_loss       = signal.stop_loss,
+                            target_1        = signal.target_1,
+                            target_2        = signal.target_2,
+                            atr             = getattr(signal, "atr", fill_price * 0.01),
+                            entry_time      = format_ist_timestamp(),
+                            quality_grade   = getattr(signal, "quality_grade", "B"),
+                            size_multiplier = getattr(signal, "size_multiplier", 1.0),
+                        )
+                        self.risk_manager.add_position(position)
+                    except Exception as _pe:
+                        logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
+
                     # Send Telegram alert with chart
                     try:
                         df_5m = self.fetcher.get_today_candles(signal.symbol)
