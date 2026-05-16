@@ -10,6 +10,8 @@ alpaca-py>=0.40.0             # Official Alpaca Python SDK — stocks, options, 
 pandas>=2.0.0
 numpy>=1.26.0
 pandas-ta>=0.3.14b            # Technical indicators (RSI, MACD, ATR, VWAP, etc.)
+                              # NOTE: pandas-ta requires Python >=3.12 as of v0.4.67+
+                              # On Python 3.11 the bot uses its built-in pandas/numpy fallback
 scipy>=1.10.0
 
 # ---- Visualization ----

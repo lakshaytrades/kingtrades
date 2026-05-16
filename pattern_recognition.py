@@ -121,16 +121,17 @@ class IndicatorSet:
 
 
 class TechnicalIndicators:
-    """Computes full indicator stack using pandas_ta."""
+    """Computes full indicator stack using pandas_ta (or pure-pandas fallback)."""
 
     def compute(self, df: pd.DataFrame) -> pd.DataFrame:
         """
         Add all technical indicators to a candles DataFrame.
         Input: OHLCV DataFrame. Returns augmented DataFrame.
+        Uses pandas_ta when available; falls back to pure pandas/numpy otherwise.
         """
         if ta is None:
-            logger.error("pandas_ta not available — cannot compute indicators")
-            return df
+            # pandas_ta not installed (incompatible Python version) — use built-in fallback
+            return self._compute_with_pandas(df)
 
         df = df.copy()
 
@@ -206,6 +207,141 @@ class TechnicalIndicators:
 
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Indicator compute error: {e}")
+
+        return df.ffill().infer_objects(copy=False).fillna(0)
+
+    # ── Pure-pandas fallback (used when pandas_ta is not installed) ──────────
+
+    @staticmethod
+    def _ema(series: pd.Series, span: int) -> pd.Series:
+        return series.ewm(span=span, adjust=False).mean()
+
+    @staticmethod
+    def _sma(series: pd.Series, length: int) -> pd.Series:
+        return series.rolling(window=length, min_periods=1).mean()
+
+    @staticmethod
+    def _true_range(df: pd.DataFrame) -> pd.Series:
+        hl = df["high"] - df["low"]
+        hc = (df["high"] - df["close"].shift(1)).abs()
+        lc = (df["low"]  - df["close"].shift(1)).abs()
+        return pd.concat([hl, hc, lc], axis=1).max(axis=1)
+
+    def _compute_with_pandas(self, df: pd.DataFrame) -> pd.DataFrame:
+        """
+        Full indicator stack using only pandas/numpy — zero external dependencies.
+        Produces the same column names as the pandas_ta path so all downstream code works unchanged.
+        """
+        df = df.copy()
+        if len(df) < 2:
+            return df
+
+        close  = df["close"]
+        high   = df["high"]
+        low    = df["low"]
+        volume = df["volume"].astype(float)
+
+        # ── RSI (14) ──────────────────────────────────────────────────────
+        delta  = close.diff()
+        gain   = delta.clip(lower=0)
+        loss   = (-delta).clip(lower=0)
+        avg_g  = gain.ewm(span=14, adjust=False).mean()
+        avg_l  = loss.ewm(span=14, adjust=False).mean()
+        rs     = avg_g / avg_l.replace(0, np.nan)
+        df["rsi"] = 100 - (100 / (1 + rs))
+
+        # ── MACD (12, 26, 9) ──────────────────────────────────────────────
+        ema12         = self._ema(close, 12)
+        ema26         = self._ema(close, 26)
+        df["macd"]        = ema12 - ema26
+        df["macd_signal"] = self._ema(df["macd"], 9)
+        df["macd_hist"]   = df["macd"] - df["macd_signal"]
+
+        # ── ATR (14) ──────────────────────────────────────────────────────
+        tr = self._true_range(df)
+        df["atr"] = tr.ewm(span=14, adjust=False).mean()
+
+        # ── Bollinger Bands (20, 2) ───────────────────────────────────────
+        bb_mid          = close.rolling(20, min_periods=1).mean()
+        bb_std          = close.rolling(20, min_periods=1).std(ddof=0)
+        df["bb_mid"]    = bb_mid
+        df["bb_upper"]  = bb_mid + 2 * bb_std
+        df["bb_lower"]  = bb_mid - 2 * bb_std
+        df["bb_width"]  = (df["bb_upper"] - df["bb_lower"]) / bb_mid.replace(0, np.nan)
+
+        # ── EMAs ──────────────────────────────────────────────────────────
+        df["ema9"]   = self._ema(close, 9)
+        df["ema21"]  = self._ema(close, 21)
+        df["ema50"]  = self._ema(close, 50)
+        df["ema200"] = self._ema(close, 200)
+
+        # ── Volume SMA / ratio ────────────────────────────────────────────
+        df["volume_sma"]   = self._sma(volume, 20)
+        df["volume_ratio"] = volume / df["volume_sma"].replace(0, np.nan)
+
+        # ── Stochastic (14, 3, 3) ─────────────────────────────────────────
+        low14  = low.rolling(14, min_periods=1).min()
+        high14 = high.rolling(14, min_periods=1).max()
+        denom  = (high14 - low14).replace(0, np.nan)
+        raw_k  = 100 * (close - low14) / denom
+        df["stoch_k"] = raw_k.rolling(3, min_periods=1).mean()   # smooth %K
+        df["stoch_d"] = df["stoch_k"].rolling(3, min_periods=1).mean()
+
+        # ── OBV ───────────────────────────────────────────────────────────
+        direction    = np.sign(close.diff().fillna(0))
+        df["obv"]    = (direction * volume).cumsum()
+
+        # ── ADX / DI (14) ─────────────────────────────────────────────────
+        up_move   = high.diff()
+        dn_move   = low.shift(1) - low
+        plus_dm   = up_move.where((up_move > dn_move) & (up_move > 0), 0.0)
+        minus_dm  = dn_move.where((dn_move > up_move) & (dn_move > 0), 0.0)
+        atr14     = tr.ewm(span=14, adjust=False).mean()
+        plus_di   = 100 * (plus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, np.nan))
+        minus_di  = 100 * (minus_dm.ewm(span=14, adjust=False).mean() / atr14.replace(0, np.nan))
+        dx        = 100 * (plus_di - minus_di).abs() / (plus_di + minus_di).replace(0, np.nan)
+        df["adx"]      = dx.ewm(span=14, adjust=False).mean()
+        df["plus_di"]  = plus_di
+        df["minus_di"] = minus_di
+
+        # ── VWAP ─────────────────────────────────────────────────────────
+        try:
+            df["vwap"] = self._calculate_vwap(df)
+        except Exception:
+            df["vwap"] = close
+
+        # ── Supertrend (10, 3) ────────────────────────────────────────────
+        try:
+            atr10      = tr.ewm(span=10, adjust=False).mean()
+            hl2        = (high + low) / 2
+            upper_band = hl2 + 3 * atr10
+            lower_band = hl2 - 3 * atr10
+            supertrend = close.copy()
+            direction_ = pd.Series(1, index=df.index)
+            for i in range(1, len(df)):
+                if close.iloc[i] > upper_band.iloc[i - 1]:
+                    direction_.iloc[i] = 1
+                elif close.iloc[i] < lower_band.iloc[i - 1]:
+                    direction_.iloc[i] = -1
+                else:
+                    direction_.iloc[i] = direction_.iloc[i - 1]
+                supertrend.iloc[i] = (lower_band.iloc[i] if direction_.iloc[i] == 1
+                                      else upper_band.iloc[i])
+            df["supertrend"]     = supertrend
+            df["supertrend_dir"] = direction_
+        except Exception:
+            df["supertrend"]     = close
+            df["supertrend_dir"] = 1
+
+        # ── Extended indicators (ADX aliases, etc.) ───────────────────────
+        df["_adx"]         = df["adx"]
+        df["_adx_plus_di"] = df["plus_di"]
+        df["_adx_minus_di"]= df["minus_di"]
+
+        try:
+            self._compute_extended_indicators(df)
+        except Exception as ex:
+            logger.debug(f"Extended indicator compute (pandas fallback) error: {ex}")
 
         return df.ffill().infer_objects(copy=False).fillna(0)
 
