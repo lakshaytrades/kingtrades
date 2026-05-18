@@ -35,7 +35,7 @@ logger = logging.getLogger(__name__)
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
 MIN_SCORE_FLOOR  = 72.0    # Never go below this (DOW Wednesday/Tuesday floor)
 MIN_SCORE_CEIL   = 92.0    # Never above this (reachable ceiling)
-DEFAULT_SCORE    = 78.0    # Day-start score (matches Friday DOW_MIN_SCORE)
+DEFAULT_SCORE    = 75.0    # Day-start score; lowered from 78 to allow 75+ signals
 
 
 @dataclass

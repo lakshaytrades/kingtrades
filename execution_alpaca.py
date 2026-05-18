@@ -606,9 +606,9 @@ class AlpacaExecutor:
 
         except Exception as e:
             msg = str(e)
-            logger.warning(
-                f"[{format_ist_timestamp()}] _submit_order {symbol} {direction} "
-                f"{order_type} qty={qty}: {msg}"
+            logger.error(
+                f"[{format_ist_timestamp()}] ORDER FAILED: {symbol} {direction} "
+                f"{order_type} qty={qty} | Error: {msg}"
             )
             return OrderResult(False, message=msg)
 

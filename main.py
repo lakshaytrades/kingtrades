@@ -1312,6 +1312,12 @@ class TradingBot:
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
+                if not result.success:
+                    logger.error(
+                        f"[{format_ist_timestamp()}] ORDER REJECTED: {signal.symbol} "
+                        f"{signal.direction} score={signal.signal_score:.0f} | "
+                        f"Reason: {result.message}"
+                    )
                 if result.success:
                     # Register position with risk manager (trailing stops, T1/T2, daily-loss)
                     try:
