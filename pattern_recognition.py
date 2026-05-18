@@ -683,7 +683,8 @@ class TechnicalIndicators:
                 c = df["close"].values[-20:]
                 v = df["volume"].values[-20:].astype(float)
                 hl = h - l
-                clv = np.where(hl > 0, ((c - l) - (h - c)) / hl, 0.0)
+                hl_safe = np.where(hl > 0, hl, 1.0)  # avoid div-by-zero warning
+                clv = np.where(hl > 0, ((c - l) - (h - c)) / hl_safe, 0.0)
                 ind.cmf = float((clv * v).sum() / max(v.sum(), 1))
         except Exception as _e:
             logger.debug(f"[suppressed] {_e}")

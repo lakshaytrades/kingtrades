@@ -47,6 +47,15 @@ CALENDAR_FEEDS = [
 # Earnings blackout window (days before/after earnings)
 EARNINGS_BUFFER_DAYS = 1
 
+# ETFs and funds never have earnings — skip yfinance calendar fetch for these
+_ETF_SYMBOLS = frozenset([
+    "SPY", "QQQ", "IWM", "DIA", "GLD", "SLV", "TLT", "HYG", "LQD",
+    "XLF", "XLK", "XLE", "XLV", "XLI", "XLB", "XLRE", "XLU", "XLP", "XLY",
+    "TQQQ", "SQQQ", "SPXL", "SPXS", "UVXY", "VXX", "SVXY",
+    "ARKK", "ARKG", "ARKF", "ARKW", "ARKQ",
+    "VTI", "VOO", "VEA", "VWO", "IEFA", "EEM",
+])
+
 
 class NewsFilter:
     """
@@ -105,6 +114,8 @@ class NewsFilter:
 
     def _near_earnings(self, symbol: str) -> bool:
         """Check if symbol has earnings within EARNINGS_BUFFER_DAYS."""
+        if symbol in _ETF_SYMBOLS:
+            return False
         if symbol not in self._earnings_cache:
             self._earnings_cache[symbol] = self._fetch_next_earnings(symbol)
         earnings_date = self._earnings_cache.get(symbol)
