@@ -11,7 +11,7 @@ Health checks (in order of criticality):
   4. CAPITAL       — Available buying power > minimum threshold
   5. TIME_WINDOW   — Within valid trading hours (9:30-15:55 ET)
   6. CIRCUIT       — Daily loss limit not hit
-  7. SCORE_GATE    — min_score within sane bounds (88-98)
+  7. SCORE_GATE    — min_score within sane bounds (72-92)
 
 Result: HealthReport with overall ok/blocked + per-check details.
 """
@@ -141,16 +141,20 @@ class SystemHealthChecker:
             return HealthReport(ok=False, blocked_reason=blocked_reason,
                                 checks=checks, warnings=warnings)
 
-        # 6. Score gate sanity — warning-only, resets to 90 if out of bounds
-        min_score = float(bot_state.get("min_score", 90.0))
-        checks["SCORE_GATE"] = 88.0 <= min_score <= 98.0
+        # 6. Score gate sanity — warning-only (bounds match adaptive_brain MIN/CEIL: 72-92)
+        min_score = float(bot_state.get("min_score", 78.0))
+        try:
+            from adaptive_brain import MIN_SCORE_FLOOR, MIN_SCORE_CEIL
+        except Exception:
+            MIN_SCORE_FLOOR, MIN_SCORE_CEIL = 72.0, 92.0
+        checks["SCORE_GATE"] = MIN_SCORE_FLOOR <= min_score <= MIN_SCORE_CEIL
         if not checks["SCORE_GATE"]:
             warnings.append(
-                f"min_score {min_score:.0f} out of bounds [88-98] — reset to 90"
+                f"min_score {min_score:.0f} out of bounds [{MIN_SCORE_FLOOR:.0f}-{MIN_SCORE_CEIL:.0f}]"
             )
             logger.warning(
                 f"[{format_ist_timestamp()}] HEALTH WARNING: min_score {min_score:.0f} "
-                "out of bounds [88-98]"
+                f"out of bounds [{MIN_SCORE_FLOOR:.0f}-{MIN_SCORE_CEIL:.0f}]"
             )
 
         # All critical checks: ALPACA_API, TIME_WINDOW, CAPITAL, CIRCUIT

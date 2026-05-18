@@ -413,7 +413,7 @@ class FIIDIITracker:
 
     def get_flow_bias(self) -> "FlowBias":
         """Disabled in US/Alpaca mode — returns neutral bias."""
-        return FlowBias(bias="NEUTRAL", score=0, today_flow=None, rolling_5d=0, trend="NEUTRAL")
+        return FlowBias(bias="NEUTRAL", score=0, today_flow=None, rolling_5d_net=0, rolling_trend="NEUTRAL")
 
     def _get_flow_bias_nse(self) -> "FlowBias":
         """Original NSE flow bias (kept but not called in US mode).
