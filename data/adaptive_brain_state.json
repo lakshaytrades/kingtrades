@@ -1,5 +1,5 @@
 {
-  "date": "2026-05-16",
+  "date": "2026-05-18",
   "consecutive_wins": 1,
   "consecutive_losses": 0,
   "day_pnl": -100.0,
@@ -21,7 +21,7 @@
       true
     ]
   },
-  "last_update": "2026-05-16 03:09:23 ET",
+  "last_update": "2026-05-18 09:48:24 ET",
   "pattern_boosts": {},
   "disabled_patterns": []
 }
