@@ -652,15 +652,9 @@ class SignalGenerator:
         }
 
         # ── Option Chain ─────────────────────────────────
-        if self._oc:
-            try:
-                oc_sym   = "NIFTY"  # Use Nifty chain for market bias
-                ctx["oc_score"] = self._oc.get_direction_score(oc_sym)
-                oc_result = self._oc.analyze(oc_sym)
-                if oc_result:
-                    ctx["oc_signals"] = oc_result.signals[:3]
-            except Exception as e:
-                logger.debug(f"OC context error: {e}")
+        # Disabled: option_chain module fetches NSE India (nseindia.com)
+        # which is irrelevant for US/Alpaca mode and causes 60s timeouts.
+        # US options context handled via Alpaca options data separately.
 
         # ── Volume Profile ────────────────────────────────
         if self._vp and df_5m is not None and not df_5m.empty:
@@ -683,17 +677,8 @@ class SignalGenerator:
             except Exception as e:
                 logger.debug(f"VP context error for {symbol}: {e}")
 
-        # ── NSE supplementary data (bulk/block, delivery, 52wk) ──
-        if self._nse_data:
-            try:
-                # direction placeholder — adjusted in _compute_ai_score
-                nse_score, nse_reason = self._nse_data.get_composite_score(
-                    symbol, "LONG"
-                )
-                ctx["nse_score"]  = nse_score
-                ctx["nse_reason"] = nse_reason
-            except Exception as e:
-                logger.debug(f"NSE data context error for {symbol}: {e}")
+        # ── NSE supplementary data — disabled for US/Alpaca mode ──
+        # NSEDataFetcher connects to nseindia.com which is irrelevant here.
 
         # ── Market Regime Detection ───────────────────────────
         if self._regime and df_5m is not None and not df_5m.empty:
