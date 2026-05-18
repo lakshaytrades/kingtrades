@@ -24,17 +24,19 @@ ET = ZoneInfo("America/New_York")
 
 # High-impact US market keywords that trigger blackout
 HIGH_IMPACT_KEYWORDS = [
+    # Macro/monetary policy — genuinely market-wide
     "federal reserve", "fomc", "fed rate", "interest rate decision",
     "cpi", "consumer price index", "inflation data",
     "nonfarm payroll", "nfp", "jobs report", "unemployment",
     "gdp", "gross domestic product",
     "pce", "personal consumption",
-    "earnings beat", "earnings miss", "quarterly earnings", "eps results",
+    # Market structure events
     "circuit breaker", "market halt", "trading halt",
-    "sec investigation", "fraud", "accounting restatement",
     "index rebalance", "msci rebalance",
     "us treasury", "debt ceiling", "government shutdown",
 ]
+# NOTE: "fraud", "sec investigation", "earnings beat/miss" intentionally excluded —
+# they are company-specific and must NOT trigger a global trading halt.
 
 # US economic calendar RSS feeds
 CALENDAR_FEEDS = [
