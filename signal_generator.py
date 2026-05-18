@@ -22,6 +22,7 @@ Signal pipeline:
 """
 
 import logging
+import config
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -706,11 +707,12 @@ class SignalGenerator:
                 ctx["regime_confidence"]   = regime.confidence
                 ctx["regime_description"]  = regime.description
                 ctx["fii_mult"]            = ctx.get("fii_size_mult", 1.0)
-                # Block AVOID regimes before signal generation
-                if not regime.is_tradeable:
+                # Flag AVOID regimes — score gets -25 penalty in _compute_ai_score.
+                # Only hard-block if regime is completely untradeable (size_mult == 0).
+                if regime.size_multiplier == 0:
                     logger.debug(
                         f"[{format_ist_timestamp()}] {symbol}: regime={regime.regime} "
-                        f"strategy=AVOID — skipping signal"
+                        f"size_mult=0 — hard block"
                     )
                     ctx["regime_block"] = True
             except Exception as e:
