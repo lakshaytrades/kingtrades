@@ -80,6 +80,7 @@ class BarCache:
         self._cache: Dict[Tuple[str, str], pd.DataFrame] = {}  # (symbol, interval) → df
         self._last_refresh: Dict[str, float] = {}              # interval → monotonic time
         self._lock = threading.Lock()
+        self._refresh_lock = threading.Lock()   # prevents concurrent refreshes
         self._et = ET
 
     def get(self, symbol: str, interval: str, lookback_days: int) -> pd.DataFrame:
@@ -88,7 +89,11 @@ class BarCache:
         last = self._last_refresh.get(interval, 0.0)
 
         if (now - last) > self.REFRESH_INTERVAL:
-            self._refresh_interval(interval, lookback_days)
+            with self._refresh_lock:
+                # Re-check inside lock — another thread may have just refreshed
+                if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
+                    self._last_refresh[interval] = _time.monotonic()  # claim slot immediately
+                    self._refresh_interval(interval, lookback_days)
 
         with self._lock:
             df = self._cache.get(cache_key, pd.DataFrame())
