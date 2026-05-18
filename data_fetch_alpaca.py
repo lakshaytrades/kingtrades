@@ -114,7 +114,8 @@ class AlpacaDataFetcher:
                 symbol_or_symbols=symbol,
                 timeframe=TimeFrame.Day,
                 start=start,
-                feed="iex",
+                end=_dt.now(ET) - _td(hours=1),  # daily bars: 1h delay is fine
+                adjustment="split",
             )
             bars_resp = data_client.get_stock_bars(req)
             bars = bars_resp[symbol] if symbol in bars_resp else []
@@ -300,15 +301,17 @@ class AlpacaDataFetcher:
             tf = tf_map.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
 
             now_et  = datetime.now(ET)
+            # Free Alpaca plan: SIP data available with 15-min delay.
+            # Setting end to 16 min ago avoids "recent SIP data" restriction.
+            end_et  = now_et - timedelta(minutes=16)
             start   = now_et - timedelta(days=lookback_days + 2)  # +2 for weekends
 
             req  = StockBarsRequest(
                 symbol_or_symbols = symbol,
                 timeframe         = tf,
                 start             = start,
-                end               = now_et,
+                end               = end_et,
                 adjustment        = "split",
-                feed              = "iex",   # free tier — SIP requires paid subscription
             )
             data_client = self._auth.get_data_client()
             bars = data_client.get_stock_bars(req)
