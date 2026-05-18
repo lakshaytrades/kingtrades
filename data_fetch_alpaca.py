@@ -17,9 +17,10 @@ Leverage note:
 """
 
 import logging
+import threading
 import time as _time
 from datetime import datetime, timedelta
-from typing import Dict, List, Optional
+from typing import Dict, List, Optional, Tuple
 
 import pandas as pd
 
@@ -61,6 +62,111 @@ US_CORR_PAIRS = [
     ("XOM", "CVX"),        # Oil majors
     ("SPY", "QQQ"),        # Index ETFs
 ]
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# BarCache — batch-fetch all symbols once, serve instantly from memory
+# ─────────────────────────────────────────────────────────────────────────────
+
+class BarCache:
+    """
+    Fetches all watchlist bars in a single yfinance batch call (one HTTP request
+    per interval). Refreshes every REFRESH_INTERVAL seconds in the background.
+    Serves get_ohlcv() requests from in-memory DataFrames — sub-millisecond.
+    """
+    REFRESH_INTERVAL = 300   # refresh bars every 5 minutes
+
+    def __init__(self):
+        self._cache: Dict[Tuple[str, str], pd.DataFrame] = {}  # (symbol, interval) → df
+        self._last_refresh: Dict[str, float] = {}              # interval → monotonic time
+        self._lock = threading.Lock()
+        self._et = ET
+
+    def get(self, symbol: str, interval: str, lookback_days: int) -> pd.DataFrame:
+        cache_key = (symbol, interval)
+        now = _time.monotonic()
+        last = self._last_refresh.get(interval, 0.0)
+
+        if (now - last) > self.REFRESH_INTERVAL:
+            self._refresh_interval(interval, lookback_days)
+
+        with self._lock:
+            df = self._cache.get(cache_key, pd.DataFrame())
+
+        if df.empty:
+            return df
+
+        # Return only the requested lookback window
+        cutoff = datetime.now(self._et) - timedelta(days=lookback_days + 2)
+        return df[df.index >= cutoff]
+
+    def _refresh_interval(self, interval: str, lookback_days: int):
+        try:
+            import yfinance as yf
+            import config
+
+            symbols = list(config.WATCHLIST)
+            yf_interval = {
+                "5minute": "5m", "15minute": "15m",
+                "1hour": "60m", "60minute": "60m",
+                "1minute": "1m", "day": "1d",
+            }.get(interval, "5m")
+
+            days = min(lookback_days + 2, 59)
+            t0 = _time.monotonic()
+            raw = yf.download(
+                symbols, period=f"{days}d", interval=yf_interval,
+                auto_adjust=True, progress=False, threads=True,
+                group_by="ticker",
+            )
+            elapsed = _time.monotonic() - t0
+
+            if raw.empty:
+                return
+
+            new_data: Dict[Tuple[str, str], pd.DataFrame] = {}
+            for sym in symbols:
+                try:
+                    if len(symbols) == 1:
+                        df = raw.copy()
+                    elif sym in raw.columns.get_level_values(0):
+                        df = raw[sym].copy()
+                    else:
+                        continue
+
+                    df.columns = [c.lower() for c in df.columns]
+                    df = df[["open", "high", "low", "close", "volume"]].dropna()
+                    if df.index.tz is None:
+                        df.index = df.index.tz_localize("America/New_York")
+                    else:
+                        df.index = df.index.tz_convert("America/New_York")
+                    df.index.name = "timestamp"
+                    df.sort_index(inplace=True)
+                    new_data[(sym, interval)] = df
+                except Exception:
+                    pass
+
+            with self._lock:
+                self._cache.update(new_data)
+            self._last_refresh[interval] = _time.monotonic()
+            logger.info(
+                f"[{format_ist_timestamp()}] BarCache refreshed {interval}: "
+                f"{len(new_data)}/{len(symbols)} symbols in {elapsed:.1f}s"
+            )
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] BarCache refresh {interval} failed: {e}")
+
+
+_bar_cache: Optional["BarCache"] = None
+_bar_cache_lock = threading.Lock()
+
+def get_bar_cache() -> "BarCache":
+    global _bar_cache
+    if _bar_cache is None:
+        with _bar_cache_lock:
+            if _bar_cache is None:
+                _bar_cache = BarCache()
+    return _bar_cache
 
 
 class AlpacaDataFetcher:
@@ -338,51 +444,8 @@ class AlpacaDataFetcher:
             return df
 
         except Exception as e:
-            logger.debug(f"Alpaca bars {symbol}/{interval}: {e} — trying yfinance")
-            return self._get_ohlcv_yfinance(symbol, interval, lookback_days)
-
-    def _get_ohlcv_yfinance(
-        self,
-        symbol: str,
-        interval: str = "5minute",
-        lookback_days: int = 5,
-    ) -> pd.DataFrame:
-        """yfinance fallback for OHLCV bars — free, no subscription needed."""
-        try:
-            import yfinance as yf
-
-            yf_interval = {
-                "1minute":  "1m",
-                "5minute":  "5m",
-                "15minute": "15m",
-                "60minute": "60m",
-                "1hour":    "60m",
-                "day":      "1d",
-            }.get(interval, "5m")
-
-            # yfinance: 5m/15m bars limited to last 60 days; use period string
-            days = min(lookback_days + 2, 59)
-            ticker = yf.Ticker(symbol)
-            df = ticker.history(period=f"{days}d", interval=yf_interval, auto_adjust=True)
-
-            if df.empty:
-                logger.warning(f"[{format_ist_timestamp()}] yfinance also returned 0 bars for {symbol}/{interval}")
-                return pd.DataFrame()
-
-            df.columns = [c.lower() for c in df.columns]
-            df = df[["open", "high", "low", "close", "volume"]].copy()
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("America/New_York")
-            else:
-                df.index = df.index.tz_convert("America/New_York")
-            df.index.name = "timestamp"
-            df.sort_index(inplace=True)
-            logger.debug(f"yfinance: {symbol}/{interval} → {len(df)} bars")
-            return df
-
-        except Exception as e:
-            logger.warning(f"[{format_ist_timestamp()}] yfinance {symbol}/{interval} FAILED: {e}")
-            return pd.DataFrame()
+            logger.debug(f"Alpaca bars {symbol}/{interval}: {e} — using BarCache")
+            return get_bar_cache().get(symbol, interval, lookback_days)
 
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
         """
