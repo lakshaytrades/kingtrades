@@ -244,7 +244,7 @@ class SignalGenerator:
             df_1h  = mtf_data.get("1h")
 
             if df_5m is None or len(df_5m) < 30:
-                logger.debug(f"{symbol}: insufficient 5m data")
+                logger.info(f"[{format_ist_timestamp()}] {symbol}: insufficient 5m data (got {len(df_5m) if df_5m is not None else 0} bars)")
                 return None
 
             # 2. Pattern analysis on each timeframe
@@ -264,7 +264,7 @@ class SignalGenerator:
                 pass  # keep direction for fallback below
             if not alignment["aligned"]:
                 if config.REQUIRE_MTF_ALIGNMENT or dir_5m == "NEUTRAL":
-                    logger.debug(f"{symbol}: MTF not aligned — skipping")
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: MTF not aligned — dir_5m={dir_5m} align_score={alignment.get('score',0):.0f} require_mtf={config.REQUIRE_MTF_ALIGNMENT}")
                     return None
                 # MTF alignment not required — continue with 5m direction, apply penalty later
                 logger.debug(f"{symbol}: MTF partial alignment {alignment['score']:.0f} — proceeding with penalty")
@@ -290,6 +290,7 @@ class SignalGenerator:
 
             # 5c. Regime block — skip signal if regime is AVOID
             if inst_ctx.get("regime_block", False):
+                logger.info(f"[{format_ist_timestamp()}] {symbol}: regime_block=True — skipping")
                 return None
 
             # 5d. Daily HTF bias enforcement (Grok #8):
@@ -297,7 +298,7 @@ class SignalGenerator:
             # (price > 20-day SMA AND recent higher highs/lows).
             daily_bias_penalty = self._get_daily_htf_penalty(symbol, direction)
             if daily_bias_penalty is None:
-                logger.debug(f"{symbol}: daily HTF opposes direction — skipping")
+                logger.info(f"[{format_ist_timestamp()}] {symbol}: daily HTF opposes direction — skipping")
                 return None
 
             # 6. Composite AI score
