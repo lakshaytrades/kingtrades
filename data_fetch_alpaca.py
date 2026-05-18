@@ -114,6 +114,7 @@ class AlpacaDataFetcher:
                 symbol_or_symbols=symbol,
                 timeframe=TimeFrame.Day,
                 start=start,
+                feed="iex",
             )
             bars_resp = data_client.get_stock_bars(req)
             bars = bars_resp[symbol] if symbol in bars_resp else []
@@ -307,6 +308,7 @@ class AlpacaDataFetcher:
                 start             = start,
                 end               = now_et,
                 adjustment        = "split",
+                feed              = "iex",   # free tier — SIP requires paid subscription
             )
             data_client = self._auth.get_data_client()
             bars = data_client.get_stock_bars(req)
