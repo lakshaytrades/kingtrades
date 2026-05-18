@@ -317,7 +317,8 @@ class AlpacaDataFetcher:
             bars = data_client.get_stock_bars(req)
 
             if symbol not in bars or not bars[symbol]:
-                return pd.DataFrame()
+                # Alpaca returned 0 bars — fall through to yfinance fallback
+                raise ValueError(f"Alpaca returned 0 bars for {symbol}/{interval}")
 
             rows = []
             for bar in bars[symbol]:
@@ -337,7 +338,50 @@ class AlpacaDataFetcher:
             return df
 
         except Exception as e:
-            logger.warning(f"[{format_ist_timestamp()}] get_ohlcv({symbol}, {interval}) FAILED: {e}")
+            logger.debug(f"Alpaca bars {symbol}/{interval}: {e} — trying yfinance")
+            return self._get_ohlcv_yfinance(symbol, interval, lookback_days)
+
+    def _get_ohlcv_yfinance(
+        self,
+        symbol: str,
+        interval: str = "5minute",
+        lookback_days: int = 5,
+    ) -> pd.DataFrame:
+        """yfinance fallback for OHLCV bars — free, no subscription needed."""
+        try:
+            import yfinance as yf
+
+            yf_interval = {
+                "1minute":  "1m",
+                "5minute":  "5m",
+                "15minute": "15m",
+                "60minute": "60m",
+                "1hour":    "60m",
+                "day":      "1d",
+            }.get(interval, "5m")
+
+            # yfinance: 5m/15m bars limited to last 60 days; use period string
+            days = min(lookback_days + 2, 59)
+            ticker = yf.Ticker(symbol)
+            df = ticker.history(period=f"{days}d", interval=yf_interval, auto_adjust=True)
+
+            if df.empty:
+                logger.warning(f"[{format_ist_timestamp()}] yfinance also returned 0 bars for {symbol}/{interval}")
+                return pd.DataFrame()
+
+            df.columns = [c.lower() for c in df.columns]
+            df = df[["open", "high", "low", "close", "volume"]].copy()
+            if df.index.tz is None:
+                df.index = df.index.tz_localize("America/New_York")
+            else:
+                df.index = df.index.tz_convert("America/New_York")
+            df.index.name = "timestamp"
+            df.sort_index(inplace=True)
+            logger.debug(f"yfinance: {symbol}/{interval} → {len(df)} bars")
+            return df
+
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] yfinance {symbol}/{interval} FAILED: {e}")
             return pd.DataFrame()
 
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
