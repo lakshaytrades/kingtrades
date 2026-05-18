@@ -332,7 +332,7 @@ class AlpacaDataFetcher:
             return df
 
         except Exception as e:
-            logger.debug(f"get_ohlcv({symbol}, {interval}) failed: {e}")
+            logger.warning(f"[{format_ist_timestamp()}] get_ohlcv({symbol}, {interval}) FAILED: {e}")
             return pd.DataFrame()
 
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
@@ -348,7 +348,7 @@ class AlpacaDataFetcher:
                 df = self.get_ohlcv(symbol, interval=interval, lookback_days=days)
                 data[key] = df if not df.empty else None
             except Exception as e:
-                logger.debug(f"MTF {symbol}/{key}: {e}")
+                logger.warning(f"[{format_ist_timestamp()}] MTF {symbol}/{key} FAILED: {e}")
                 data[key] = None
         return data
 
