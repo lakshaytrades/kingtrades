@@ -1020,8 +1020,9 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Mean-reversion scan error: {e}")
 
+            eff_min_score = getattr(self.signal_gen, "min_score", dow_min)
             before_filter = len(signals)
-            signals = [s for s in signals if s.signal_score >= dow_min]
+            signals = [s for s in signals if s.signal_score >= eff_min_score]
             if self._weekly_mode == "PROTECT":
                 signals = [s for s in signals if s.quality_grade in ("A+", "A")]
 
@@ -1033,14 +1034,14 @@ class TradingBot:
                     day_name = ["Mon","Tue","Wed","Thu","Fri"][dow]
                     logger.info(
                         f"[{format_ist_timestamp()}] Scan complete — 0 signals on "
-                        f"{len(watchlist)} symbols (min_score={dow_min:.0f}, day={day_name})"
+                        f"{len(watchlist)} symbols (min_score={eff_min_score:.0f}, day={day_name})"
                     )
                     try:
                         self.alerter.send_html(
                             f"📊 <b>Market Scan — No Signals</b>\n"
                             f"Scanned {len(watchlist)} stocks at "
                             f"{now_ist.strftime('%H:%M')} ET\n"
-                            f"Min score required: {dow_min:.0f} | Day: {day_name}\n"
+                            f"Min score required: {eff_min_score:.0f} | Day: {day_name}\n"
                             f"<i>Bot is running — waiting for quality setups</i>"
                         )
                     except Exception as _e:
@@ -1925,7 +1926,7 @@ class TradingBot:
         logger.info(f"[{format_ist_timestamp()}] Running overnight intelligence...")
         try:
             if self.overnight:
-                result = self.overnight.run(ai_brain=self.ai_brain)
+                result = self.overnight.run_analysis(ai_brain=self.ai_brain)
                 bias   = result.get("day_bias", "NEUTRAL")
                 score  = result.get("bias_score", 0)
                 risks  = result.get("key_risks", [])

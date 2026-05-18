@@ -133,15 +133,16 @@ PAUSE_AFTER_LOSSES_MINUTES: int = 30
 DEFAULT_WATCHLIST = [
     # Mega-cap tech & momentum (liquid, tight spreads)
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-    "AMD", "NFLX", "COIN", "HOOD",
+    "AMD", "NFLX", "COIN",
     # ETFs — best for scalping (deepest liquidity)
-    "SPY", "QQQ", "IWM", "TQQQ", "SQQQ", "SPXL",
+    "SPY", "QQQ", "IWM", "TQQQ", "SPXL",
     # High-beta momentum plays
-    "MSTR", "PLTR", "SOFI", "RIVN", "LCID", "NIO",
-    "SMCI", "ARM", "ASML", "MU", "INTC", "QCOM",
+    "MSTR", "PLTR", "SOFI",
+    "SMCI", "ARM", "MU", "QCOM",
     # Financials & energy
     "JPM", "GS", "BAC", "XOM", "CVX", "OXY",
 ]
+# IEX free-tier WebSocket limit is 30 symbols — keep DEFAULT_WATCHLIST ≤28
 
 DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "200"))
 
