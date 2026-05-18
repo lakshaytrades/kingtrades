@@ -1099,16 +1099,17 @@ class SignalGenerator:
         regime_pref_dir  = ctx.get("regime_preferred_dir", "BOTH")
         regime_tradeable = ctx.get("regime_tradeable", True)
         if not regime_tradeable:
-            score -= 20   # Non-tradeable regime = heavy penalty
+            score -= 8    # Non-tradeable regime — position size already 0 via size_mult
         elif regime_strategy == "MOMENTUM":
             if regime_pref_dir == direction or regime_pref_dir == "BOTH":
                 score += 12   # Regime confirms direction
             else:
-                score -= 15   # Regime opposes direction
+                score -= 8    # Regime opposes direction
         elif regime_strategy == "MEAN_REVERSION":
-            score -= 5    # Momentum signals in mean-reversion regime = slight penalty
+            score -= 3    # Slight penalty — size_mult already reduced
         else:
-            score -= 25   # AVOID regime = very heavy penalty
+            # AVOID/RANGING: position sizing reduced by regime (0.4x), score penalty kept small
+            score -= 8
 
         return min(round(score, 1), 100)
 
