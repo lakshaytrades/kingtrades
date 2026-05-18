@@ -446,14 +446,20 @@ class MorningIntelligence:
         """
         default_vix  = 15.0
         default_gap  = 0.0
-        default_spy  = 500.0  # fallback SPY price
+        # Live SPY prev_close fallback — only used if overnight_analyzer fails to run
+        try:
+            from data_fetch_alpaca import get_data_fetcher
+            _q = get_data_fetcher().get_quote("SPY")
+            default_spy = float(_q.get("prev_close") or _q.get("ltp") or 530.0)
+        except Exception:
+            default_spy = 530.0   # rough 2026 SPY level — only used if all APIs fail
 
         if self._overnight is None:
             return 0, default_vix, default_gap, default_spy
 
         try:
             if self._overnight._today_analysis is None:
-                self._overnight.run()
+                self._overnight.run_analysis()   # was .run() — method is run_analysis()
 
             analysis  = self._overnight._today_analysis or {}
             vix_data  = analysis.get("vix", {})
