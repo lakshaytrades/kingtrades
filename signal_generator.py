@@ -372,7 +372,7 @@ class SignalGenerator:
                 logger.debug(f"Catalyst boost error for {symbol}: {_cat_err}")
 
             if ai_score is None or ai_score < self.min_score:
-                logger.debug(f"{symbol}: score {ai_score:.1f} below threshold {self.min_score}")
+                logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
                 return None
 
             # 7. High-accuracy filter — 5-gate confluence check
