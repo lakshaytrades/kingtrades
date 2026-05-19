@@ -431,7 +431,7 @@ class SignalGenerator:
             )
 
             if not filter_result.passed:
-                logger.debug(
+                logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: FILTERED — {filter_result.rejection_reason}"
                 )
                 return None

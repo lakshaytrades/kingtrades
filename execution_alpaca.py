@@ -621,7 +621,7 @@ class AlpacaExecutor:
         fetcher  = get_data_fetcher()
         while _time.monotonic() < deadline:
             status = fetcher.get_order_status(order_id)
-            if status.get("status") in ("filled", "partially_filled"):
+            if str(status.get("status", "")).lower() in ("filled", "partially_filled"):
                 price = status.get("filled_avg_price", 0.0)
                 if price > 0:
                     return float(price)

@@ -552,7 +552,7 @@ class HighAccuracyFilter:
             return True, ""
         # Soft pass if price is exactly at VWAP boundary (fallback when level data unavailable)
         if ltp == 0:
-            return True, ""   # No price data — fail open
+            return True, ""   # No price data — pass (above_vwap already checked)
         return False, (
             "Price not at a key level (FVG/OB/VWAP/POC/Pivot). "
             "Institutional entries require defined reference levels. "
@@ -561,16 +561,16 @@ class HighAccuracyFilter:
 
     def _check_adx(self, adx: float) -> Tuple[bool, str]:
         """
-        Gate 12: ADX > 15 confirms directional trend exists.
+        Gate 12: ADX >= 20 confirms directional trend exists.
         ADX = 0 means data unavailable — fail open (don't block on missing data).
         """
         if adx == 0:
             return True, ""   # Data unavailable — fail open
-        if adx >= 15:
+        if adx >= 20:
             return True, ""
         return False, (
-            f"ADX {adx:.0f} < 15 — market is choppy/ranging. "
-            "Momentum strategies require ADX > 15."
+            f"ADX {adx:.0f} < 20 — market is choppy/ranging. "
+            "Momentum strategies require ADX >= 20."
         )
 
     def _check_spy_alignment(

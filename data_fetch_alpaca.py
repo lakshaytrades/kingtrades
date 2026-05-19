@@ -93,7 +93,12 @@ class BarCache:
                 # Re-check inside lock — another thread may have just refreshed
                 if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
                     self._last_refresh[interval] = _time.monotonic()  # claim slot immediately
-                    self._refresh_interval(interval, lookback_days)
+                    try:
+                        self._refresh_interval(interval, lookback_days)
+                    except Exception as _re:
+                        # Reset so next call retries instead of using a stale slot
+                        self._last_refresh[interval] = 0.0
+                        logger.warning(f"BarCache refresh failed ({interval}): {_re}")
 
         with self._lock:
             df = self._cache.get(cache_key, pd.DataFrame())

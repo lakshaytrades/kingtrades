@@ -203,11 +203,12 @@ class RiskManager:
         )
 
     def update_balance(self, balance: float):
-        """Update to live Groww balance before each trade — no cap, uses real funds."""
+        """Update live balance before each trade. Warns loudly if API returns 0."""
         if balance <= 0:
-            logger.debug(
-                f"[{format_ist_timestamp()}] update_balance: ignoring 0 — "
-                f"keeping ${self._available_balance:,.2f} (API may be offline)"
+            logger.warning(
+                f"[{format_ist_timestamp()}] update_balance: API returned ${balance:.2f} — "
+                f"keeping last known ${self._available_balance:,.2f}. "
+                "Check Alpaca account connection."
             )
             return
         self._available_balance = balance
