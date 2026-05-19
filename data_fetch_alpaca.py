@@ -146,6 +146,13 @@ class BarCache:
 
                     df.columns = [c.lower() for c in df.columns]
                     df = df[["open", "high", "low", "close", "volume"]].dropna()
+                    # Drop partial bar at end of intraday data: yfinance returns the
+                    # current in-progress bar with volume=0, making volume_ratio=0 for
+                    # all stocks and blocking every trade via the volume gate.
+                    if len(df) > 1 and df["volume"].iloc[-1] == 0:
+                        df = df.iloc[:-1]
+                    if df.empty:
+                        continue
                     if df.index.tz is None:
                         df.index = df.index.tz_localize("America/New_York")
                     else:

@@ -210,8 +210,8 @@ class HighAccuracyFilter:
         if not vol_ok:
             result.gates_failed.append(f"VOLUME(ratio={volume_ratio:.1f})")
             result.rejection_reason = (
-                f"Volume ratio {volume_ratio:.1f}x < 2.0x required. "
-                "Institutional trades require 2x+ volume confirmation."
+                f"Volume ratio {volume_ratio:.1f}x < 1.5x required. "
+                "Institutional trades require 1.5x+ volume confirmation."
             )
             self._log_rejection(result, signal_score, direction)
             return result
