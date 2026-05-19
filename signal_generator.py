@@ -390,7 +390,8 @@ class SignalGenerator:
 
             # 6f. ICT triple confluence bonus (OB + FVG + BOS together = institutional setup)
             try:
-                pat_names_all = {p.name for p in pattern_objs if hasattr(p, "name")}
+                _early_pattern_objs = analysis_5m.get("patterns", [])
+                pat_names_all = {p.name for p in _early_pattern_objs if hasattr(p, "name")}
                 ict_bull = {"Bullish FVG", "Bullish Order Block", "BOS — Higher High (Trend Continues)"}
                 ict_bear = {"Bearish FVG", "Bearish Order Block", "BOS — Lower Low (Trend Continues)"}
                 if direction == "LONG" and len(ict_bull & pat_names_all) >= 2:
@@ -399,6 +400,15 @@ class SignalGenerator:
                 elif direction == "SHORT" and len(ict_bear & pat_names_all) >= 2:
                     ai_score = min(100.0, ai_score + config.ICT_CONFLUENCE_BOOST)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: ICT confluence +{config.ICT_CONFLUENCE_BOOST:.0f} ({ict_bear & pat_names_all})")
+            except Exception:
+                pass
+
+            # 6g. Sector ETF leading indicator boost (top-1%: trade with sector flow)
+            try:
+                sector_boost = self._get_sector_etf_boost(symbol, direction)
+                if sector_boost > 0:
+                    ai_score = min(100.0, ai_score + sector_boost)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: sector ETF boost +{sector_boost:.1f}")
             except Exception:
                 pass
 
@@ -556,13 +566,10 @@ class SignalGenerator:
 
             # ── VIX regime sizing (top-1% rule: size by fear level) ──────────
             try:
-                from market_internals import get_market_internals
-                internals = get_market_internals()
-                vix_level = internals.get_vix_level() if hasattr(internals, "get_vix_level") else 0
-                if vix_level == 0:
-                    # Fallback: use UVXY breadth as VIX proxy
-                    breadth_data = internals.get_breadth()
-                    vix_level = breadth_data.get("vix_proxy", 18)
+                from data_fetch_alpaca import get_vix_level as _get_vix_level
+                vix_level = _get_vix_level()
+                if vix_level <= 0:
+                    vix_level = 18.0   # safe default (optimal zone)
                 if vix_level > 35:
                     if direction == "LONG":
                         logger.info(f"[{format_ist_timestamp()}] {symbol}: VIX>{vix_level:.0f} — LONG blocked in extreme fear")
@@ -978,6 +985,44 @@ class SignalGenerator:
     # --------------------------------------------------------
     # GAP & TIME HELPERS (used by Gates 6-10)
     # --------------------------------------------------------
+
+    # Sector ETF map: symbol → sector ETF
+    _SECTOR_ETF_MAP: Dict[str, str] = {
+        # Tech
+        "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
+        "QCOM": "XLK", "MU": "XLK", "ARM": "XLK", "SMCI": "XLK",
+        # Communication
+        "META": "XLC", "GOOGL": "XLC", "NFLX": "XLC",
+        # Consumer Discretionary
+        "AMZN": "XLY", "TSLA": "XLY",
+        # Financials
+        "JPM": "XLF", "GS": "XLF", "BAC": "XLF",
+        # Energy
+        "XOM": "XLE", "CVX": "XLE", "OXY": "XLE",
+        # High-beta / no clear sector ETF — skip
+        "COIN": "", "MSTR": "", "PLTR": "", "SOFI": "",
+    }
+
+    def _get_sector_etf_boost(self, symbol: str, direction: str) -> float:
+        """
+        Boost score by up to 8 pts when the sector ETF is trending strongly
+        in the same direction as the signal (top-1% flow-with-sector technique).
+        """
+        etf = self._SECTOR_ETF_MAP.get(symbol, "")
+        if not etf:
+            return 0.0
+        try:
+            q = self.fetcher.get_quote(etf)
+            if not q:
+                return 0.0
+            etf_change = float(q.get("change_pct", 0.0))
+            if direction == "LONG" and etf_change >= 0.5:
+                return min(8.0, etf_change * 2.0)
+            if direction == "SHORT" and etf_change <= -0.5:
+                return min(8.0, abs(etf_change) * 2.0)
+        except Exception:
+            pass
+        return 0.0
 
     def _get_gap_pct(self, symbol: str) -> float:
         """Get today's opening gap % for symbol (0.0 if not available)."""

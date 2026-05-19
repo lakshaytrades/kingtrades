@@ -632,3 +632,38 @@ def get_data_fetcher() -> AlpacaDataFetcher:
         _fetcher = AlpacaDataFetcher()
         logger.info(f"[{format_ist_timestamp()}] AlpacaDataFetcher initialized")
     return _fetcher
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIX LEVEL FETCH — cached, yfinance ^VIX
+# ─────────────────────────────────────────────────────────────────────────────
+
+_vix_cache: Dict = {"level": 0.0, "ts": 0.0}
+_VIX_TTL = 300.0   # refresh every 5 minutes
+
+
+def get_vix_level() -> float:
+    """
+    Returns current VIX level fetched from yfinance ^VIX.
+    Cached for 5 minutes. Returns 18.0 (optimal zone default) on failure.
+    """
+    global _vix_cache
+    now = _time.monotonic()
+    if now - _vix_cache["ts"] < _VIX_TTL and _vix_cache["level"] > 0:
+        return _vix_cache["level"]
+    try:
+        import yfinance as yf
+        tick = yf.Ticker("^VIX")
+        info = tick.fast_info
+        vix = float(getattr(info, "last_price", 0) or getattr(info, "regularMarketPrice", 0) or 0)
+        if vix <= 0:
+            hist = tick.history(period="1d", interval="5m")
+            if not hist.empty:
+                vix = float(hist["Close"].iloc[-1])
+        if vix > 0:
+            _vix_cache = {"level": round(vix, 2), "ts": now}
+            logger.debug(f"VIX fetched: {vix:.1f}")
+            return _vix_cache["level"]
+    except Exception as e:
+        logger.debug(f"VIX fetch failed: {e}")
+    return _vix_cache.get("level") or 18.0

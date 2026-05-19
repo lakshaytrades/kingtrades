@@ -327,9 +327,12 @@ class AlpacaExecutor:
             from alpaca.trading.enums import OrderSide, TimeInForce, OrderClass
             import os
 
+            if not hasattr(OrderClass, "BRACKET"):
+                raise AttributeError("OrderClass.BRACKET not available in this alpaca-py version")
+
             api_key    = os.getenv("ALPACA_API_KEY", "")
             api_secret = os.getenv("ALPACA_SECRET_KEY", "")
-            paper      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+            paper      = not self.live_enabled   # consistent with rest of executor
             trading_client = TradingClient(api_key, api_secret, paper=paper)
 
             side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
