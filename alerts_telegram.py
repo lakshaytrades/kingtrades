@@ -334,7 +334,8 @@ class TelegramAlerter:
             return False
 
     def send_text(self, text: str) -> bool:
-        return self._send(text)
+        # Default to HTML so messages with <b>, <code>, etc. render correctly
+        return self._send(text, parse_mode="HTML")
 
     def send_html(self, text: str) -> bool:
         """Send message with HTML parse mode (supports <b>, <i>, <code> tags)."""

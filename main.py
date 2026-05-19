@@ -1545,9 +1545,10 @@ class TradingBot:
                                 logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: {adapt_msg}")
                             except Exception as e:
                                 logger.debug(f"AdaptiveBrain record error: {e}")
+                        actual_exit = result.fill_price if result.fill_price > 0 else ltp
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
-                            ltp, pos.quantity, pnl, action["reason"]
+                            actual_exit, pos.quantity, pnl, action["reason"]
                         )
 
                 elif action["action"] in ("PARTIAL_EXIT_T1", "PARTIAL_EXIT_T2"):
@@ -1605,9 +1606,10 @@ class TradingBot:
                             except Exception as _e:
                                 logger.warning(f"profit_engine partial-exit record failed ({pos.symbol}): {_e}")
                         try:
+                            actual_fill = result.fill_price if result.fill_price > 0 else ltp
                             self.alerter.send_exit_alert(
                                 pos.symbol, pos.direction, pos.entry_price,
-                                ltp, exit_qty, pnl_partial, action["reason"]
+                                actual_fill, exit_qty, pnl_partial, action["reason"]
                             )
                         except Exception as _e:
                             logger.warning(f"send_exit_alert failed ({pos.symbol}): {_e}")
