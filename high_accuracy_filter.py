@@ -60,15 +60,15 @@ POWER_WINDOWS = [
     (time(14, 30), time(16, 0)),    # Power Hour — institutional accumulation/distribution
 ]
 
-# Reduced-size window (can trade but 60% size)
+# Reduced-size window (can trade but 50% size)
 CAUTION_WINDOWS = [
     (time(10, 45), time(11, 30)),   # Post-opening fade
+    (time(11, 30), time(13, 30)),   # Midday — allowed at 0.5x size (score gate still filters)
     (time(13, 30), time(14, 30)),   # Early afternoon pickup
 ]
 
-# NO TRADE windows
+# NO TRADE windows (only hard stop near EOD)
 AVOID_WINDOWS = [
-    (time(11, 30), time(13, 30)),   # Midday chop — 18yr rule: ALWAYS avoid
     (time(15, 50), time(16, 0)),    # EOD — no new entries
 ]
 
@@ -225,8 +225,8 @@ class HighAccuracyFilter:
         if not pat_ok:
             result.gates_failed.append(f"PATTERN_SCORE({signal_score:.0f})")
             result.rejection_reason = (
-                f"Signal score {signal_score:.0f} < 80 required. "
-                f"Best pattern: {best_pattern}. Only A-grade setups qualify."
+                f"Signal score {signal_score:.0f} < 70 required. "
+                f"Best pattern: {best_pattern}."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -413,11 +413,11 @@ class HighAccuracyFilter:
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 
-        # Reject if post-bonus score drops below 80
-        if result.final_score < 80:
+        # Reject if post-bonus score drops below 70
+        if result.final_score < 70:
             result.passed = False
             result.rejection_reason = (
-                f"Post-bonus score {result.final_score:.0f} < 80. "
+                f"Post-bonus score {result.final_score:.0f} < 70. "
                 f"Bonuses: {bonus_score:+.0f}. Too many counter-indicators."
             )
             self._log_rejection(result, signal_score, direction)
@@ -427,10 +427,10 @@ class HighAccuracyFilter:
         if result.final_score >= 92:
             result.quality_grade   = "A+"
             result.size_multiplier = min(result.size_multiplier * 1.3, 2.0)
-        elif result.final_score >= 85:
+        elif result.final_score >= 82:
             result.quality_grade   = "A"
             result.size_multiplier = min(result.size_multiplier * 1.15, 1.5)
-        elif result.final_score >= 80:
+        elif result.final_score >= 70:
             result.quality_grade   = "B"
         else:
             result.quality_grade   = "C"
@@ -527,7 +527,7 @@ class HighAccuracyFilter:
         pat_names:     List[str],
         learner=None,
     ) -> Tuple[bool, float, str]:
-        """Require minimum 80 base score — only A-grade setups."""
+        """Require minimum 70 base score."""
         best_score   = max(pat_scores) if pat_scores else signal_score
         best_pattern = pat_names[pat_scores.index(best_score)] if pat_scores and pat_names else "?"
 
@@ -538,7 +538,7 @@ class HighAccuracyFilter:
                 return False, 0, f"{best_pattern}(DISABLED)"
             effective_score = signal_score * weight
 
-        return effective_score >= 80, effective_score, best_pattern
+        return effective_score >= 70, effective_score, best_pattern
 
     def _check_key_level(
         self, at_key_level: bool, ltp: float, above_vwap: bool

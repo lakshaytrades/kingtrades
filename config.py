@@ -282,11 +282,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 75.0,   # Monday — lowered from 78 to allow 75+ signals
-    1: 72.0,
-    2: 72.0,
-    3: 75.0,
-    4: 78.0,   # Friday stays strict (early close risk)
+    0: 68.0,   # Monday
+    1: 68.0,   # Tuesday
+    2: 68.0,   # Wednesday
+    3: 68.0,   # Thursday
+    4: 72.0,   # Friday — slightly higher (early close risk)
 }
 
 DOW_MAX_TRADES: dict = {
