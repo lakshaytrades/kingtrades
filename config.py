@@ -62,7 +62,7 @@ MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.0)
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)
 
-MAX_POSITIONS: int = 10
+MAX_POSITIONS: int = 15
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 20.0
 
@@ -116,7 +116,7 @@ MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False
 REQUIRE_POWER_HOUR: bool = False
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 10
+MAX_TRADES_PER_DAY: int = 15
 MAX_TRADES_PER_STOCK: int = 2
 
 # ============================================================
@@ -233,8 +233,8 @@ VP_LVN_STD_THRESHOLD: float = 1.0
 # ============================================================
 # ADVANCED RISK MANAGEMENT
 # ============================================================
-MAX_PORTFOLIO_HEAT_PCT: float = 3.0
-MAX_POSITIONS_PER_SECTOR: int = 2
+MAX_PORTFOLIO_HEAT_PCT: float = 10.0   # was 3.0 — allows up to 10 concurrent 1%-risk trades
+MAX_POSITIONS_PER_SECTOR: int = 5      # was 2 — allows more tech/momentum positions
 
 SESSION_SIZE_MULTIPLIERS = {
     "OPENING_DRIVE": 1.00,   # 09:30-10:30 — peak momentum
@@ -290,11 +290,11 @@ DOW_MIN_SCORE: dict = {
 }
 
 DOW_MAX_TRADES: dict = {
-    0: 3,
-    1: 6,
-    2: 6,
-    3: 5,
-    4: 3,
+    0: 15,   # Monday
+    1: 15,   # Tuesday
+    2: 15,   # Wednesday
+    3: 15,   # Thursday
+    4: 10,   # Friday — slightly lower (early close risk)
 }
 
 WEEKLY_PROFIT_TARGET_PCT: float = 2.0
