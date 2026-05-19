@@ -1038,8 +1038,8 @@ class SignalGenerator:
         # ── Time of day filter (US ET market hours) ──────────
         now_et   = get_current_ist_time()   # IST alias → ET after migration
         time_val = now_et.hour + now_et.minute / 60
-        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday — softer penalty (CAUTION size)
-            score -= 5
+        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop — strong penalty
+            score -= 8
         elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone
             score += 8
         elif 14.5 <= time_val <= 16.0:  # 2:30–4:00 PM ET: Power Hour

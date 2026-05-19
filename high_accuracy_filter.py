@@ -60,15 +60,15 @@ POWER_WINDOWS = [
     (time(14, 30), time(16, 0)),    # Power Hour — institutional accumulation/distribution
 ]
 
-# Reduced-size window (can trade but 50% size)
+# Reduced-size window (can trade but 70% size — score still gates quality)
 CAUTION_WINDOWS = [
     (time(10, 45), time(11, 30)),   # Post-opening fade
-    (time(11, 30), time(13, 30)),   # Midday — allowed at 0.5x size (score gate still filters)
     (time(13, 30), time(14, 30)),   # Early afternoon pickup
 ]
 
-# NO TRADE windows (only hard stop near EOD)
+# NO TRADE windows — midday chop destroys momentum P&L
 AVOID_WINDOWS = [
+    (time(11, 30), time(13, 30)),   # Midday dead zone — no trades, ever
     (time(15, 50), time(16, 0)),    # EOD — no new entries
 ]
 
@@ -225,7 +225,7 @@ class HighAccuracyFilter:
         if not pat_ok:
             result.gates_failed.append(f"PATTERN_SCORE({signal_score:.0f})")
             result.rejection_reason = (
-                f"Signal score {signal_score:.0f} < 70 required. "
+                f"Signal score {signal_score:.0f} < 72 required. "
                 f"Best pattern: {best_pattern}."
             )
             self._log_rejection(result, signal_score, direction)
@@ -413,11 +413,11 @@ class HighAccuracyFilter:
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 
-        # Reject if post-bonus score drops below 70
-        if result.final_score < 70:
+        # Reject if post-bonus score drops below 72
+        if result.final_score < 72:
             result.passed = False
             result.rejection_reason = (
-                f"Post-bonus score {result.final_score:.0f} < 70. "
+                f"Post-bonus score {result.final_score:.0f} < 72. "
                 f"Bonuses: {bonus_score:+.0f}. Too many counter-indicators."
             )
             self._log_rejection(result, signal_score, direction)
@@ -430,7 +430,7 @@ class HighAccuracyFilter:
         elif result.final_score >= 82:
             result.quality_grade   = "A"
             result.size_multiplier = min(result.size_multiplier * 1.15, 1.5)
-        elif result.final_score >= 70:
+        elif result.final_score >= 72:
             result.quality_grade   = "B"
         else:
             result.quality_grade   = "C"
@@ -538,7 +538,7 @@ class HighAccuracyFilter:
                 return False, 0, f"{best_pattern}(DISABLED)"
             effective_score = signal_score * weight
 
-        return effective_score >= 70, effective_score, best_pattern
+        return effective_score >= 72, effective_score, best_pattern
 
     def _check_key_level(
         self, at_key_level: bool, ltp: float, above_vwap: bool

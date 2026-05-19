@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 68.0    # Never go below this
+MIN_SCORE_FLOOR  = 72.0    # Never go below this — matches HighAccuracyFilter floor
 MIN_SCORE_CEIL   = 92.0    # Never above this (reachable ceiling)
-DEFAULT_SCORE    = 70.0    # Day-start score
+DEFAULT_SCORE    = 72.0    # Day-start score
 
 
 @dataclass
