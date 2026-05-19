@@ -241,7 +241,7 @@ class PerformanceDashboard:
         """Print live positions table."""
         if not risk_mgr:
             return
-        positions = getattr(risk_mgr, "open_positions", [])
+        positions = list(getattr(getattr(risk_mgr, "state", None), "positions", {}).values())
         if not positions:
             print("No open positions.")
             return

@@ -1551,7 +1551,15 @@ class TradingBot:
                         )
 
                 elif action["action"] in ("PARTIAL_EXIT_T1", "PARTIAL_EXIT_T2"):
-                    exit_qty = action.get("exit_qty", max(1, pos.quantity // 2))
+                    exit_qty = action.get("exit_qty", 0)
+                    if exit_qty <= 0:
+                        exit_qty = max(1, pos.quantity // 2)
+                    if exit_qty <= 0 or pos.quantity <= 0:
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] {pos.symbol}: PARTIAL_EXIT skipped — "
+                            f"exit_qty={exit_qty} pos.quantity={pos.quantity} (position already closed?)"
+                        )
+                        continue
                     result = self.executor.place_exit_order(
                         pos.symbol, exit_qty, pos.direction,
                         reason=action["reason"]
@@ -1835,7 +1843,7 @@ class TradingBot:
                     atr=avg * 0.01,
                     entry_time=format_ist_timestamp(),
                 )
-                self.risk_manager.state.positions[sym] = pos
+                self.risk_manager.add_position(pos)
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile ADDED: {sym} "
                     f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@${avg:.2f}) — "
@@ -2728,8 +2736,8 @@ class TradingBot:
                         atr=avg * 0.01,
                         entry_time=format_ist_timestamp(),
                     )
-                    self.risk_manager.state.positions[sym] = pos
-                    synced += 1
+                self.risk_manager.add_position(pos)
+                synced += 1
             if synced:
                 logger.info(f"[{format_ist_timestamp()}] Synced {synced} open position(s) from Alpaca")
                 self.alerter.send_text(

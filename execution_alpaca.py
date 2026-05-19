@@ -472,7 +472,7 @@ class AlpacaExecutor:
 
             api_key    = os.getenv("ALPACA_API_KEY", "")
             api_secret = os.getenv("ALPACA_SECRET_KEY", "")
-            paper      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+            paper      = not self.live_enabled
             trading_client = TradingClient(api_key, api_secret, paper=paper)
 
             # Find open stop orders for the symbol
@@ -493,15 +493,26 @@ class AlpacaExecutor:
             positions = trading_client.get_all_positions()
             pos_side = None
             pos_qty  = 0
+            current_price = 0.0
             for p in positions:
                 if p.symbol == symbol:
                     pos_side = str(p.side.value).lower()
                     pos_qty  = abs(int(p.qty))
+                    current_price = float(p.current_price or 0)
                     break
 
             if pos_side is None or pos_qty == 0:
                 logger.debug(f"modify_stop_loss: no open position found for {symbol}")
                 return False
+
+            # Sanity check: SL must be on the correct side of market price
+            if current_price > 0:
+                if pos_side == "long" and new_sl >= current_price:
+                    new_sl = round(current_price * 0.995, 2)  # clamp to 0.5% below market
+                    logger.debug(f"modify_stop_loss: {symbol} LONG SL clamped to ${new_sl:.2f} (below current ${current_price:.2f})")
+                elif pos_side == "short" and new_sl <= current_price:
+                    new_sl = round(current_price * 1.005, 2)  # clamp to 0.5% above market
+                    logger.debug(f"modify_stop_loss: {symbol} SHORT SL clamped to ${new_sl:.2f} (above current ${current_price:.2f})")
 
             # Stop order side is opposite to position side (sell stop for long, buy stop for short)
             stop_side = OrderSide.SELL if pos_side == "long" else OrderSide.BUY
