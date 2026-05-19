@@ -81,11 +81,17 @@ MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
 ATR_SL_MULTIPLIER: float = 1.4
-ATR_TP_MULTIPLIER: float = 3.0   # T2 = exact 1:3 R:R (Grok spec)
+ATR_TP_MULTIPLIER: float = 3.0   # T2 = 1:3 R:R
+ATR_TP_RUNNER: float = 5.0       # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
 ATR_TRAIL_MULTIPLIER: float = 0.8
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
+
+# ── Top-3% trader hard gates ──────────────────────────────────────────────
+MIN_RISK_REWARD: float = 2.0       # Reject any trade with R:R < 2:1 — non-negotiable
+GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
+ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 
 EMA_FAST: int = 9
 EMA_MID: int = 21

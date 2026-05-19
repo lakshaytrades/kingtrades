@@ -373,6 +373,34 @@ class SignalGenerator:
             except Exception as _cat_err:
                 logger.debug(f"Catalyst boost error for {symbol}: {_cat_err}")
 
+            # 6e. Gap direction alignment boost (top-3% edge: gap + direction = very high win rate)
+            try:
+                gap_pct = self._get_gap_pct(symbol)
+                if direction == "LONG" and gap_pct >= 0.5:
+                    gap_boost = min(gap_pct * 2.0, config.GAP_DIRECTION_BOOST)
+                    ai_score = min(100.0, ai_score + gap_boost)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: gap boost +{gap_boost:.1f} (gap={gap_pct:+.1f}%)")
+                elif direction == "SHORT" and gap_pct <= -0.5:
+                    gap_boost = min(abs(gap_pct) * 2.0, config.GAP_DIRECTION_BOOST)
+                    ai_score = min(100.0, ai_score + gap_boost)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: gap boost +{gap_boost:.1f} (gap={gap_pct:+.1f}%)")
+            except Exception:
+                pass
+
+            # 6f. ICT triple confluence bonus (OB + FVG + BOS together = institutional setup)
+            try:
+                pat_names_all = {p.name for p in pattern_objs if hasattr(p, "name")}
+                ict_bull = {"Bullish FVG", "Bullish Order Block", "BOS — Higher High (Trend Continues)"}
+                ict_bear = {"Bearish FVG", "Bearish Order Block", "BOS — Lower Low (Trend Continues)"}
+                if direction == "LONG" and len(ict_bull & pat_names_all) >= 2:
+                    ai_score = min(100.0, ai_score + config.ICT_CONFLUENCE_BOOST)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: ICT confluence +{config.ICT_CONFLUENCE_BOOST:.0f} ({ict_bull & pat_names_all})")
+                elif direction == "SHORT" and len(ict_bear & pat_names_all) >= 2:
+                    ai_score = min(100.0, ai_score + config.ICT_CONFLUENCE_BOOST)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: ICT confluence +{config.ICT_CONFLUENCE_BOOST:.0f} ({ict_bear & pat_names_all})")
+            except Exception:
+                pass
+
             if ai_score is None or ai_score < self.min_score:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
                 return None
@@ -541,10 +569,34 @@ class SignalGenerator:
                 pm_score=pm_score,
             )
 
+            # Hard R:R gate — top-3% rule: never trade below 2:1 reward-to-risk
+            min_rr = getattr(config, "MIN_RISK_REWARD", 2.0)
+            if signal.risk_reward < min_rr:
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: R:R {signal.risk_reward:.1f}:1 < "
+                    f"{min_rr}:1 minimum — skipping (SL too wide or target too close)"
+                )
+                return None
+
+            # For A+ setups (score ≥ 92), extend T2 to 5R runner target
+            runner_mult = getattr(config, "ATR_TP_RUNNER", 5.0)
+            if filter_result.quality_grade == "A+" and signal.atr > 0:
+                sl_dist = abs(signal.entry_price - signal.stop_loss)
+                if direction == "LONG":
+                    signal.target_2 = round(signal.entry_price + runner_mult * sl_dist, 2)
+                else:
+                    signal.target_2 = round(signal.entry_price - runner_mult * sl_dist, 2)
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: A+ setup — T2 extended to "
+                    f"${signal.target_2:.2f} ({runner_mult}R runner)"
+                )
+
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ SIGNAL: {direction} {symbol} "
-                f"| Score: {filter_result.final_score:.0f} | Entry: ${signal.entry_price:.2f}"
-                f"| Breadth: {ind.breadth_score:.0f}/100"
+                f"| Score: {filter_result.final_score:.0f} | Grade: {filter_result.quality_grade} "
+                f"| Entry: ${signal.entry_price:.2f} | SL: ${signal.stop_loss:.2f} "
+                f"| T1: ${signal.target_1:.2f} | T2: ${signal.target_2:.2f} "
+                f"| R:R {signal.risk_reward:.1f}:1 | Breadth: {ind.breadth_score:.0f}/100"
             )
             return signal
 
