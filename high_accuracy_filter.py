@@ -210,8 +210,8 @@ class HighAccuracyFilter:
         if not vol_ok:
             result.gates_failed.append(f"VOLUME(ratio={volume_ratio:.1f})")
             result.rejection_reason = (
-                f"Volume ratio {volume_ratio:.1f}x < 1.5x required. "
-                "Institutional trades require 1.5x+ volume confirmation."
+                f"Volume ratio {volume_ratio:.1f}x < 0.5x minimum. "
+                "Stock appears illiquid or data unavailable."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -514,10 +514,18 @@ class HighAccuracyFilter:
         return True, alignment_score
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
-        """Require 1.5x volume — confirmed participation threshold."""
-        if volume_ratio < 1.5:
+        """
+        Volume participation gate.
+        Hard minimum 0.5x — blocks genuinely dead/illiquid situations.
+        Top-1% note: mega-cap SMA is cross-session biased (closing bars inflate
+        denominator), so 0.5-1.0x at mid-morning on established stocks is normal.
+        Bonus awarded for genuine surges above 1.5x.
+        """
+        if volume_ratio < 0.5:
             return False, 0
-        bonus = min((volume_ratio - 1.5) * 4, 10)
+        if volume_ratio < 1.0:
+            return True, 0                        # pass but no bonus
+        bonus = min((volume_ratio - 1.0) * 5, 10) # bonus for 1.0x-3.0x
         return True, bonus
 
     def _check_pattern_quality(
