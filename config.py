@@ -88,10 +88,18 @@ PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
 
-# ── Top-3% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.0       # Reject any trade with R:R < 2:1 — non-negotiable
+# ── Top-1% trader hard gates ──────────────────────────────────────────────
+MIN_RISK_REWARD: float = 2.5       # Top-1% rule: never trade below 2.5:1 R:R
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
+
+# VIX regime thresholds (top-1% know: size by fear level)
+VIX_COMPLACENCY: float = 14.0   # Below = low vol, mean-reversion, reduce momentum size
+VIX_OPTIMAL_LOW: float = 14.0   # 14-25 = optimal momentum trading zone
+VIX_OPTIMAL_HIGH: float = 25.0
+VIX_CAUTION: float = 25.0       # 25-35 = fear rising, reduce size 25%
+VIX_DANGER: float = 35.0        # 35+ = extreme fear, no LONG trades
+VIX_CRASH: float = 40.0         # 40+ = crisis mode, flat or short only
 
 EMA_FAST: int = 9
 EMA_MID: int = 21

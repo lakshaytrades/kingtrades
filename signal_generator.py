@@ -110,6 +110,7 @@ class TradeSignal:
     is_high_confidence: bool = False  # Score >= 80
     quality_grade: str = "B"          # A+, A, B, C from HighAccuracyFilter
     size_multiplier: float = 1.0      # From HighAccuracyFilter (0.5–1.5x)
+    time_stop_minutes: int = 30       # Exit if no movement in N minutes (top-1% rule)
 
     def __post_init__(self):
         if not self.signal_time:
@@ -515,8 +516,68 @@ class SignalGenerator:
             except Exception as _e:
                 logger.debug(f"[suppressed] {_e}")
 
-            # ── LLM Reasoning Gate (95+ score only) ──────────────────────────
-            if filter_result.final_score >= 95:
+            # ── Elite Brain: 12-module ensemble fusion (top-1% gate) ────────
+            try:
+                from elite_brain import get_elite_brain
+                elite = get_elite_brain()
+                elite_decision = elite.evaluate(
+                    symbol        = symbol,
+                    direction     = direction,
+                    signal_score  = ai_score,
+                    ctx           = inst_ctx,
+                    sm_score      = sm_score,
+                    pm_score      = pm_score,
+                    nifty_trend   = "bullish" if inst_ctx.get("spy_trend", 0) > 0 else
+                                    "bearish" if inst_ctx.get("spy_trend", 0) < 0 else "neutral",
+                )
+                if not elite_decision.approved:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: ELITE BRAIN REJECTED — "
+                        f"{elite_decision.reject_reason}"
+                    )
+                    return None
+                # Grand Slam: 7+ modules aligned → scale up size aggressively
+                if elite_decision.grand_slam:
+                    combined_size = min(combined_size * 2.0, 3.0)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] 🏆 {symbol}: GRAND SLAM — "
+                        f"{elite_decision.aligned_count} modules aligned | "
+                        f"conviction={elite_decision.conviction_score:.0f} | size={combined_size}x"
+                    )
+                else:
+                    # Blend elite conviction into size
+                    elite_size_adj = elite_decision.size_multiplier
+                    combined_size  = round(min(combined_size * elite_size_adj, 3.0), 2)
+                # Use elite conviction score if it's higher
+                if elite_decision.conviction_score > ai_score:
+                    ai_score = min(100.0, elite_decision.conviction_score)
+            except Exception as _eb:
+                logger.debug(f"[suppressed] elite_brain: {_eb}")
+
+            # ── VIX regime sizing (top-1% rule: size by fear level) ──────────
+            try:
+                from market_internals import get_market_internals
+                internals = get_market_internals()
+                vix_level = internals.get_vix_level() if hasattr(internals, "get_vix_level") else 0
+                if vix_level == 0:
+                    # Fallback: use UVXY breadth as VIX proxy
+                    breadth_data = internals.get_breadth()
+                    vix_level = breadth_data.get("vix_proxy", 18)
+                if vix_level > 35:
+                    if direction == "LONG":
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: VIX>{vix_level:.0f} — LONG blocked in extreme fear")
+                        return None
+                    combined_size = round(combined_size * 0.5, 2)   # SHORT only at 50% size in crash
+                elif vix_level > 25:
+                    combined_size = round(combined_size * 0.75, 2)  # High fear → reduce size
+                elif vix_level < 14:
+                    combined_size = round(combined_size * 0.8, 2)   # Low VIX = complacency → reduce size
+                # VIX 14-25 = optimal momentum zone → full size
+            except Exception as _vix:
+                logger.debug(f"[suppressed] vix_sizing: {_vix}")
+
+            # ── LLM Reasoning Gate (82+ score — expanded from 95 for top-1%) ─
+            if filter_result.final_score >= 82:
                 try:
                     from llm_reasoner import get_llm_reasoner
                     rr = abs(ind.atr * 3.0) / max(abs(ind.atr * 1.4), 0.01)
@@ -1232,4 +1293,5 @@ class SignalGenerator:
             rationale=rationale,
             quality_grade=quality_grade,
             size_multiplier=size_multiplier,
+            time_stop_minutes=20 if quality_grade == "A+" else 30,
         )
