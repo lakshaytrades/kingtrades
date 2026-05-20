@@ -367,7 +367,15 @@ class PriceStream:
 
             except Exception as exc:
                 if self._stop_event.is_set():
-                    # Normal shutdown triggered stop_event before run() returned
+                    break
+                err_str = str(exc).lower()
+                if "connection limit" in err_str or "auth failed" in err_str:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] PriceStream WS permanently disabled: {exc}. "
+                        "Falling back to REST polling — bot continues normally."
+                    )
+                    self._running = False
+                    self._stop_event.set()
                     break
                 logger.warning(
                     f"[{format_ist_timestamp()}] PriceStream WS disconnected: {exc}. "
