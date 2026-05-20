@@ -505,3 +505,42 @@ python setup_autostart.py remove    # Remove auto-start (if you want to stop)
 python watchdog.py --status         # Show bot current state
 python watchdog.py --once           # Run bot once without restart loop
 ```
+
+---
+
+## AUTONOMOUS SUPERVISOR (VPS — Recommended)
+
+The supervisor is a self-healing agent that keeps the bot running 24/7 and
+alerts you via Telegram when something needs attention.
+
+### What it does automatically (no human needed):
+- **Auto-restart** if bot crashes (circuit breaker: max 5 restarts/hour)
+- **Monitor logs** for CRITICAL/HIGH errors and alert via Telegram
+- **Track P&L** every 15 minutes — warns if approaching daily loss limit (-1.5%)
+- **Health checks** — Alpaca API connectivity, log freshness, disk space
+
+### Run on VPS (recommended — use supervisor instead of running main.py directly):
+
+```bash
+# Install as systemd service (one-time)
+sudo cp /opt/kingtrades/supervisor.service /etc/systemd/system/
+sudo systemctl daemon-reload
+sudo systemctl enable kingtrades-supervisor
+sudo systemctl start kingtrades-supervisor
+
+# Check supervisor logs
+sudo journalctl -u kingtrades-supervisor -f
+
+# Run in foreground (testing)
+python supervisor.py
+```
+
+### Telegram alerts you will receive:
+| Event | Message |
+|-------|---------|
+| Bot crash | ⚠️ Bot restarting — reason + restart count |
+| Circuit breaker | 🚨 5 restarts/hr limit hit — manual action needed |
+| P&L alert | ⚠️ Approaching daily loss limit |
+| P&L milestone | 💰 On track for target returns (+2%+ day) |
+| Health issue | ⚠️ API unreachable / log stale / low disk |
+

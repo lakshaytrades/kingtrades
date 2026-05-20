@@ -1,0 +1,22 @@
+[Unit]
+Description=KingTrades Autonomous Supervisor — watchdog + auto-restart + P&L monitor
+After=network-online.target kingtrades.service
+# Supervisor manages the kingtrades process itself — don't run both services
+
+[Service]
+Type=simple
+WorkingDirectory=/opt/kingtrades
+ExecStart=/opt/kingtrades/venv/bin/python supervisor.py
+Restart=always
+RestartSec=15s
+User=root
+EnvironmentFile=/opt/kingtrades/.env
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=kingtrades-supervisor
+
+# Give the supervisor time to cleanly shut down the bot process
+TimeoutStopSec=60
+
+[Install]
+WantedBy=multi-user.target
