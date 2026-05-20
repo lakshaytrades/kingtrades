@@ -121,13 +121,13 @@ class WatchlistManager:
             return self._watchlist
 
         # Fallback to default
-        return config.DEFAULT_WATCHLIST[:15]
+        return config.DEFAULT_WATCHLIST
 
     # -------------------------------------------------------
     # MOMENTUM SCAN
     # -------------------------------------------------------
 
-    def _run_momentum_scan(self, data_fetcher, learner=None, top_n: int = 15):
+    def _run_momentum_scan(self, data_fetcher, learner=None, top_n: int = 40):
         """
         Score all liquid stocks by momentum.
         18yr rule: "Trade what's moving RIGHT NOW, not what moved yesterday."
