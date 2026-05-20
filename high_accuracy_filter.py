@@ -569,16 +569,17 @@ class HighAccuracyFilter:
 
     def _check_adx(self, adx: float) -> Tuple[bool, str]:
         """
-        Gate 12: ADX >= 20 confirms directional trend exists.
+        Gate 12: ADX >= 17 confirms directional trend exists.
         ADX = 0 means data unavailable — fail open (don't block on missing data).
+        Lowered from 20 → 17 to allow early-trend entries (ADX lags price action).
         """
         if adx == 0:
             return True, ""   # Data unavailable — fail open
-        if adx >= 20:
+        if adx >= 17:
             return True, ""
         return False, (
-            f"ADX {adx:.0f} < 20 — market is choppy/ranging. "
-            "Momentum strategies require ADX >= 20."
+            f"ADX {adx:.0f} < 17 — market is choppy/ranging. "
+            "Momentum strategies require ADX >= 17."
         )
 
     def _check_spy_alignment(

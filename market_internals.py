@@ -49,12 +49,14 @@ SECTORS: List[str] = [
 ]
 
 # Thresholds
-LONG_OK_THRESHOLD  = 55.0   # breadth_score >= 55 → long entries allowed
-SHORT_OK_THRESHOLD = 45.0   # breadth_score <= 45 → short entries allowed
-SIZE_BOOST_HIGH    = 75.0   # >= 75 → 1.2x size multiplier (strong bull breadth)
-SIZE_NORMAL_LOW    = 55.0   # 55–74 → 1.0x
-SIZE_NEUTRAL_LOW   = 45.0   # 45–54 → 0.8x (mixed)
-                             # < 45  → 0.5x for longs (bearish breadth)
+# Wide neutral zone (45-55) was blocking ALL trades on mixed market days.
+# Fixed: LONGs allowed >= 42, SHORTs allowed <= 58. Hard stop only at extremes.
+LONG_OK_THRESHOLD  = 42.0   # breadth >= 42 → longs OK (reduced size 42-54)
+SHORT_OK_THRESHOLD = 58.0   # breadth <= 58 → shorts OK (reduced size 46-58)
+SIZE_BOOST_HIGH    = 70.0   # >= 70 → 1.2x (strong bull breadth)
+SIZE_NORMAL_LOW    = 54.0   # 54–69 → 1.0x
+SIZE_NEUTRAL_LOW   = 42.0   # 42–53 → 0.75x (cautious/mixed)
+                             # < 42  → 0.4x for longs (bearish breadth)
 
 UVXY_FEAR_THRESHOLD = 10.0  # UVXY 5-day change % that signals fear spike
 
@@ -164,64 +166,71 @@ class MarketInternals:
 
     def is_long_ok(self) -> Tuple[bool, str]:
         """
-        Returns (ok: bool, reason: str).
-        Long entries are OK when breadth_score >= 55.
+        Long entries OK when breadth >= 42. Hard block only below 42
+        (was 55, which created a dead zone where no trades were possible).
         """
         data = self.get_breadth()
         score = data["breadth_score"]
         if score >= LONG_OK_THRESHOLD:
+            caution = " (cautious size — mixed breadth)" if score < 54 else ""
             reason = (
-                f"Breadth {score:.1f}/100 — {data['bullish_sectors']} of "
-                f"{len(SECTORS)} sectors bullish. LONG entries OK."
+                f"Breadth {score:.1f}/100 — {data['bullish_sectors']} sectors bullish."
+                f" LONG OK{caution}."
             )
             return True, reason
         else:
             reason = (
-                f"Breadth {score:.1f}/100 below {LONG_OK_THRESHOLD} threshold — "
-                f"only {data['bullish_sectors']} of {len(SECTORS)} sectors bullish. "
-                f"LONG entries blocked."
+                f"Breadth {score:.1f}/100 below {LONG_OK_THRESHOLD} — "
+                f"only {data['bullish_sectors']} sectors bullish. LONG blocked."
             )
             return False, reason
 
     def is_short_ok(self) -> Tuple[bool, str]:
         """
-        Returns (ok: bool, reason: str).
-        Short entries are OK when breadth_score <= 45.
+        Short entries OK when breadth <= 58. Hard block only above 58
+        (was 45, which created a dead zone where no trades were possible).
         """
         data = self.get_breadth()
         score = data["breadth_score"]
         if score <= SHORT_OK_THRESHOLD:
+            caution = " (cautious size — mixed breadth)" if score > 46 else ""
             reason = (
-                f"Breadth {score:.1f}/100 — {data['bearish_sectors']} of "
-                f"{len(SECTORS)} sectors bearish. SHORT entries OK."
+                f"Breadth {score:.1f}/100 — {data['bearish_sectors']} sectors bearish."
+                f" SHORT OK{caution}."
             )
             return True, reason
         else:
             reason = (
-                f"Breadth {score:.1f}/100 above {SHORT_OK_THRESHOLD} threshold — "
-                f"only {data['bearish_sectors']} of {len(SECTORS)} sectors bearish. "
-                f"SHORT entries blocked."
+                f"Breadth {score:.1f}/100 above {SHORT_OK_THRESHOLD} — "
+                f"only {data['bearish_sectors']} sectors bearish. SHORT blocked."
             )
             return False, reason
 
-    def get_size_multiplier(self) -> float:
+    def get_size_multiplier(self, direction: str = "LONG") -> float:
         """
-        Returns position-size multiplier based on breadth score.
-
-        breadth >= 75  → 1.2x  (high-confidence bull breadth, press size)
-        breadth 55–74  → 1.0x  (normal)
-        breadth 45–54  → 0.8x  (mixed / indecisive)
-        breadth < 45   → 0.5x  (bearish breadth — scale longs way down)
+        Returns position-size multiplier based on breadth score and direction.
+        Accepts direction arg (was missing, causing silent failures in signal_generator).
         """
         score = self.get_breadth()["breadth_score"]
-        if score >= SIZE_BOOST_HIGH:
-            return 1.2
-        elif score >= SIZE_NORMAL_LOW:
-            return 1.0
-        elif score >= SIZE_NEUTRAL_LOW:
-            return 0.8
-        else:
-            return 0.5
+        if direction == "LONG":
+            if score >= SIZE_BOOST_HIGH:
+                return 1.2
+            elif score >= SIZE_NORMAL_LOW:
+                return 1.0
+            elif score >= SIZE_NEUTRAL_LOW:
+                return 0.75   # cautious in mixed breadth
+            else:
+                return 0.4    # bearish breadth — small longs only
+        else:  # SHORT
+            # Inverse: low breadth = good for shorts
+            if score <= (100 - SIZE_BOOST_HIGH):
+                return 1.2
+            elif score <= (100 - SIZE_NORMAL_LOW):
+                return 1.0
+            elif score <= (100 - SIZE_NEUTRAL_LOW):
+                return 0.75
+            else:
+                return 0.4
 
     # ─────────────────────────────────────────────────────────────────────
     # INTERNAL COMPUTATION

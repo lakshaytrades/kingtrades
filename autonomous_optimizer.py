@@ -123,12 +123,16 @@ def analyze_and_adjust() -> Tuple[Dict, str]:
     notes   = []
 
     daily_pnl     = cap.get("daily_pnl", 0)
-    daily_capital = cap.get("daily_capital", 1)
+    # total_equity = actual Alpaca account balance (set by main.py at EOD)
+    total_equity  = cap.get("total_equity", cap.get("daily_capital", 1))
+    daily_capital = total_equity   # track ROI on actual account equity
     daily_trades  = cap.get("daily_trades", 0)
     wins          = cap.get("wins", 0)
     losses        = cap.get("losses", 0)
     win_rate      = wins / max(wins + losses, 1)
     pnl_pct       = (daily_pnl / max(daily_capital, 1)) * 100
+    # Dynamic daily target: 13% of actual equity / 22 trading days
+    _dynamic_daily_target_pct = MONTHLY_TARGET_PCT / TRADING_DAYS_PER_MONTH
 
     block_rates = stats.get("block_rates", {})
     today_stats = stats.get("today", {})
@@ -179,7 +183,7 @@ def analyze_and_adjust() -> Tuple[Dict, str]:
 
     # ── Rule 4: P&L behind target → slightly increase risk per trade ────────
     # Only if win rate is healthy (> 55%)
-    if win_rate > 0.55 and pnl_pct < DAILY_TARGET_PCT * 0.5 and daily_trades >= 2:
+    if win_rate > 0.55 and pnl_pct < _dynamic_daily_target_pct * 0.5 and daily_trades >= 2:
         old = cfg.get("risk_per_trade_pct", DEFAULTS["risk_per_trade_pct"])
         new = _clamp(old + STEPS["risk_per_trade_pct"], "risk_per_trade_pct")
         if new > old:
@@ -198,7 +202,7 @@ def analyze_and_adjust() -> Tuple[Dict, str]:
             notes.append(f"{consecutive_losses} consecutive losses → reduced risk/trade {old:.1f}→{new:.1f}%")
 
     # ── Rule 6: Great P&L day → lock it in (tighten risk for rest of day) ──
-    if pnl_pct >= DAILY_TARGET_PCT * 2 and daily_trades >= 3:
+    if pnl_pct >= _dynamic_daily_target_pct * 2 and daily_trades >= 3:
         old = cfg.get("risk_per_trade_pct", DEFAULTS["risk_per_trade_pct"])
         new = _clamp(old - STEPS["risk_per_trade_pct"] * 2, "risk_per_trade_pct")
         if new < old:
@@ -217,15 +221,21 @@ def analyze_and_adjust() -> Tuple[Dict, str]:
     else:
         report_lines.append("✅ All parameters within optimal range — no changes needed")
 
+    daily_target_usd = daily_capital * _dynamic_daily_target_pct / 100
+    month_pnl = cap.get("month_pnl", daily_pnl)
+    monthly_target_usd = daily_capital * MONTHLY_TARGET_PCT / 100
+    monthly_pace_pct = (month_pnl / max(daily_capital, 1)) * 100 * (TRADING_DAYS_PER_MONTH / max(1, 1))
     report_lines += [
         f"\n<b>Current params:</b>",
         f"  Min score:    {cfg.get('min_score', DEFAULTS['min_score']):.0f}",
         f"  Vol min:      {cfg.get('volume_ratio_min', DEFAULTS['volume_ratio_min']):.2f}x",
         f"  Max positions:{int(cfg.get('max_positions', DEFAULTS['max_positions']))}",
         f"  Risk/trade:   {cfg.get('risk_per_trade_pct', DEFAULTS['risk_per_trade_pct']):.2f}%",
-        f"\n<b>Today's pace:</b>",
-        f"  P&L: {'+' if daily_pnl >= 0 else ''}{daily_pnl:.2f} ({pnl_pct:+.2f}%)",
-        f"  Target/day:  +{DAILY_TARGET_PCT:.2f}%",
+        f"\n<b>Today vs 13% target:</b>",
+        f"  Capital:     ${daily_capital:,.0f}",
+        f"  Daily target:${daily_target_usd:,.2f} ({_dynamic_daily_target_pct:.2f}%/day)",
+        f"  Today P&L:   {'+' if daily_pnl >= 0 else ''}{daily_pnl:.2f} ({pnl_pct:+.2f}%)",
+        f"  Month P&L:   ${month_pnl:+,.2f} / target ${monthly_target_usd:+,.0f}",
         f"  WR: {win_rate*100:.0f}%  Trades: {daily_trades}  Pass rate: {pass_rate*100:.0f}%",
     ]
 

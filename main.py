@@ -2776,17 +2776,43 @@ class TradingBot:
         try:
             if not self.risk_manager:
                 return
-            today_pnl = self.risk_manager.state.daily_pnl
-            base = config.MAX_DAILY_CAPITAL
-            existing = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
-            prev = float(existing.get("compounded_capital", base))
-            new_capital = max(base * 0.8, prev + today_pnl)  # max 20% drawdown on capital
+            today_pnl   = self.risk_manager.state.daily_pnl
+            daily_cap   = self.risk_manager.state.daily_capital  # actual broker equity
+            wins        = self.risk_manager.state.wins
+            losses      = self.risk_manager.state.losses
+            daily_trades= self.risk_manager.state.daily_trades
+            cons_losses = self.risk_manager.state.consecutive_losses
+            base        = config.MAX_DAILY_CAPITAL
+            existing    = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+            prev        = float(existing.get("compounded_capital", daily_cap or base))
+            new_capital = max(base * 0.8, prev + today_pnl)
+
+            # Monthly P&L accumulator
+            month_key = get_current_ist_time().strftime("%Y-%m")
+            prev_month = existing.get("month_key", month_key)
+            month_pnl  = existing.get("month_pnl", 0.0)
+            if prev_month != month_key:
+                month_pnl = 0.0   # reset on new month
+            month_pnl += today_pnl
+
             self._capital_file.write_text(json.dumps({
-                "date": get_current_ist_time().strftime("%Y-%m-%d"),
-                "base_capital": base,
-                "today_pnl": round(today_pnl, 2),
+                "date":               get_current_ist_time().strftime("%Y-%m-%d"),
+                "base_capital":       base,
+                "daily_capital":      round(daily_cap, 2),   # actual broker equity
+                "total_equity":       round(daily_cap, 2),   # alias used by optimizer
+                "today_pnl":          round(today_pnl, 2),
                 "compounded_capital": round(new_capital, 2),
-                "total_growth_pct": round((new_capital - base) / base * 100, 2),
+                "total_growth_pct":   round((new_capital - base) / max(base, 1) * 100, 2),
+                "wins":               wins,
+                "losses":             losses,
+                "daily_trades":       daily_trades,
+                "consecutive_losses": cons_losses,
+                "month_key":          month_key,
+                "month_pnl":          round(month_pnl, 2),
+                # 13% monthly progress
+                "monthly_target_pct": 13.0,
+                "monthly_target_usd": round(daily_cap * 0.13, 2),
+                "monthly_pace_pct":   round(month_pnl / max(daily_cap, 1) * 100, 2),
             }, indent=2))
             logger.info(
                 f"[{format_ist_timestamp()}] Capital saved: "
