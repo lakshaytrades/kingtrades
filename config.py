@@ -163,7 +163,7 @@ DEFAULT_WATCHLIST = [
     # Leveraged ETFs — 2-3x the index move (best for momentum breakouts)
     "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL",
     # Fintech / high-growth finance
-    "SOFI", "HOOD", "SQ",
+    "SOFI", "HOOD", "XYZ",
     # Big finance
     "JPM", "GS", "MS",
     # Energy

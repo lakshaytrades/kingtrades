@@ -52,7 +52,7 @@ GAP_WAIT_MINUTES: Dict[str, int] = {
     GapCategory.SMALL:   0,
     GapCategory.MEDIUM:  5,
     GapCategory.LARGE:   15,
-    GapCategory.EXTREME: 9999,   # Session-long avoid
+    GapCategory.EXTREME: 60,   # Wait 60 min for gap to settle, then trade continuation
 }
 
 

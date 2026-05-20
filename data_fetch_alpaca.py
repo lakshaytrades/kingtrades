@@ -733,7 +733,7 @@ def get_top_movers(n: int = 15) -> List[Dict]:
             _SCREEN = [
                 "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AMD","NFLX","COIN",
                 "CRWD","PANW","ZS","DDOG","NET","SNOW","AVGO","MU","ARM","SMCI",
-                "PLTR","MSTR","MARA","RIOT","SOFI","HOOD","SQ","UBER","SHOP","ABNB",
+                "PLTR","MSTR","MARA","RIOT","SOFI","HOOD","XYZ","UBER","SHOP","ABNB",
                 "MELI","RBLX","MRNA","HIMS","JPM","GS","MS","XOM","CVX","OXY",
                 "TQQQ","SPXL","SOXL","IWM","SPY","QQQ",
             ]

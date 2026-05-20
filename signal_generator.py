@@ -1010,14 +1010,14 @@ class SignalGenerator:
                 elif above_sma:
                     result = -8.0    # Above SMA but no HH/HL — partial penalty
                 else:
-                    result = None    # Below SMA → skip LONG
+                    result = -12.0   # Below SMA — heavy penalty but still tradeable (gaps change structure)
             else:  # SHORT
                 if bearish_structure:
                     result = 0.0
                 elif not above_sma:
                     result = -8.0
                 else:
-                    result = None    # Strong bull structure → skip SHORT
+                    result = -12.0   # Strong bull — heavy penalty but still tradeable for shorts
 
         except Exception as e:
             logger.debug(f"Daily HTF check {symbol}: {e}")
