@@ -493,7 +493,13 @@ class SignalGenerator:
                 gap_pct          = self._get_gap_pct(symbol),
                 minutes_since_open = self._minutes_since_open(),
                 # ── Gates 11-13 parameters ────────────────────────────
-                at_key_level     = getattr(ind, "at_hvn", False) or getattr(ind, "at_lvn", False) or above_vwap,
+                at_key_level     = (
+                    getattr(ind, "at_hvn", False)
+                    or getattr(ind, "at_lvn", False)
+                    # VWAP-proximity: within 2% of VWAP is a valid level; fail open when VWAP unavailable
+                    or (ind.vwap <= 0)
+                    or (abs(ltp_now - ind.vwap) / ind.vwap <= 0.02)
+                ),
                 adx              = getattr(ind, "adx", 0.0),
                 spy_bullish      = spy_bullish,
             )
@@ -919,7 +925,9 @@ class SignalGenerator:
         else:
             alignment_score -= 15  # 1h opposing means counter-trend — risky
 
-        aligned = alignment_score >= 55  # 5m+15m NEUTRAL+1h NEUTRAL = 60 passes; 5m alone = 35+15+10=60 passes
+        # Require 5m + at least one HTF confirming (not just neutral):
+        # 5m(35) + 15m aligned(35) = 70 ✅  |  5m + two NEUTRALs = 60 ❌  |  5m + 1h opposing = 50 ❌
+        aligned = alignment_score >= 70
 
         return {
             "aligned": aligned,
