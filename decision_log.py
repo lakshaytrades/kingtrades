@@ -202,6 +202,18 @@ def log_rejected_heat(symbol: str, direction: str, ai_score: float,
     _bump_daily(date, REJ_HEAT)
 
 
+def log_rejected_order(symbol: str, direction: str, ai_score: float, reason: str) -> None:
+    ts, date, time_s = _now_et()
+    with _lock, _conn() as con:
+        con.execute(
+            "INSERT INTO signal_decisions (ts_et,date_et,time_et,symbol,direction,ai_score,"
+            "outcome,rejection_stage,rejection_reason) VALUES (?,?,?,?,?,?,?,?,?)",
+            (ts, date, time_s, symbol, direction, ai_score,
+             REJ_ORDER_FAIL, "ORDER_PLACEMENT", reason)
+        )
+    _bump_daily(date, REJ_ORDER_FAIL)
+
+
 def log_trade_taken(signal) -> None:
     ts, date, time_s = _now_et()
     patterns = json.dumps(getattr(signal, "patterns", []))

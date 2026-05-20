@@ -164,11 +164,27 @@ class AlpacaExecutor:
         direction = signal.direction   # "LONG" or "SHORT"
 
         if not self.live_enabled:
-            logger.info(
-                f"[{format_ist_timestamp()}] PAPER mode — would {direction} {symbol} "
-                f"@ ${signal.entry_price:.2f} (live_enabled=False)"
+            # Paper mode: simulate a fill so P&L and position tracking work correctly
+            sizing = self.risk_manager.calculate_position_size(
+                symbol          = symbol,
+                entry_price     = signal.entry_price,
+                stop_loss       = signal.stop_loss,
+                direction       = direction,
+                size_multiplier = getattr(signal, "size_multiplier", 1.0),
+                signal_rr       = getattr(signal, "risk_reward", 2.0),
             )
-            return OrderResult(False, message="Live trading disabled — paper mode")
+            qty = sizing.get("quantity", 0)
+            if qty <= 0:
+                logger.info(
+                    f"[{format_ist_timestamp()}] PAPER {direction} {symbol} "
+                    f"@ ${signal.entry_price:.2f} — size=0 ({sizing.get('reason', 'capital')})"
+                )
+                return OrderResult(False, message=f"Paper size=0: {sizing.get('reason', 'insufficient capital')}")
+            logger.info(
+                f"[{format_ist_timestamp()}] PAPER {direction} {symbol} "
+                f"qty={qty} @ ${signal.entry_price:.2f}"
+            )
+            return OrderResult(True, fill_price=signal.entry_price, quantity=qty, message="Paper fill")
 
         if not self._auth.is_configured():
             return OrderResult(False, message="Alpaca API keys not configured")
@@ -390,7 +406,13 @@ class AlpacaExecutor:
         use_market_order=True forces MARKET order (bypasses limit attempt).
         """
         if not self.live_enabled:
-            return OrderResult(False, message="Live trading disabled")
+            # Paper mode: simulate a market fill so risk_manager closes the position correctly
+            fill = limit_price if (limit_price and limit_price > 0) else 0.0
+            logger.info(
+                f"[{format_ist_timestamp()}] PAPER EXIT: {symbol} "
+                f"qty={quantity} reason={reason}"
+            )
+            return OrderResult(True, fill_price=fill, quantity=quantity, message="Paper exit")
 
         exit_side = "SHORT" if direction == "LONG" else "LONG"
 
@@ -427,7 +449,8 @@ class AlpacaExecutor:
         """
         results = []
         if not self.live_enabled:
-            logger.info(f"[{format_ist_timestamp()}] square_off_all ({reason}): paper mode — skipping")
+            logger.info(f"[{format_ist_timestamp()}] square_off_all ({reason}): paper mode — simulating close")
+            results.append(OrderResult(True, message="Paper square-off"))
             return results
         try:
             trading_client = self._auth.get_trading_client()

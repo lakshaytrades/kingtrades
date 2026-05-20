@@ -155,7 +155,7 @@ class SignalGenerator:
         self.high_conf_score = high_confidence_score
         self._nifty_open: Optional[float] = None
         self._nifty_current: Optional[float] = None
-        self.ha_filter = HighAccuracyFilter()
+        self.ha_filter = HighAccuracyFilter(min_score=min_signal_score)
         self._learner = None          # Set by main.py: generator.set_learner(learner)
         self._orb_direction: str = "" # Set by main.py after ORB is established
         self._nifty_change_pct: float = 0.0

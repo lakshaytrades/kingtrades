@@ -185,8 +185,8 @@ class RiskManager:
     def initialize_day(self, available_balance: float, nifty_open: float = 0):
         """Call this at market open (9:15 AM IST) each day."""
         now_ist = get_current_ist_time()
-        # Use actual live balance — no artificial cap
-        cap = available_balance if available_balance > 0 else self.max_daily_capital
+        # Cap at max_daily_capital so risk sizing stays within configured limits
+        cap = min(available_balance, self.max_daily_capital) if available_balance > 0 else self.max_daily_capital
         self.state = RiskState(
             date=now_ist.strftime("%Y-%m-%d"),
             daily_capital=cap,
@@ -212,9 +212,10 @@ class RiskManager:
             )
             return
         self._available_balance = balance
-        # Use actual balance — bot adapts to whatever funds are in the account
-        self.state.available_capital = balance
-        self.state.daily_capital     = balance
+        # Cap at max_daily_capital to keep risk per trade within configured limits
+        capped = min(balance, self.max_daily_capital)
+        self.state.available_capital = capped
+        self.state.daily_capital     = capped
 
     def set_institutional_multiplier(
         self, fii_mult: float = 1.0, oc_mult: float = 1.0

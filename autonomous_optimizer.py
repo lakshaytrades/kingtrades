@@ -224,7 +224,8 @@ def analyze_and_adjust() -> Tuple[Dict, str]:
     daily_target_usd = daily_capital * _dynamic_daily_target_pct / 100
     month_pnl = cap.get("month_pnl", daily_pnl)
     monthly_target_usd = daily_capital * MONTHLY_TARGET_PCT / 100
-    monthly_pace_pct = (month_pnl / max(daily_capital, 1)) * 100 * (TRADING_DAYS_PER_MONTH / max(1, 1))
+    _days_elapsed = max(1, int(datetime.now(_ET).day * 5 / 7))
+    monthly_pace_pct = (month_pnl / max(daily_capital, 1)) * 100 * (TRADING_DAYS_PER_MONTH / _days_elapsed)
     report_lines += [
         f"\n<b>Current params:</b>",
         f"  Min score:    {cfg.get('min_score', DEFAULTS['min_score']):.0f}",

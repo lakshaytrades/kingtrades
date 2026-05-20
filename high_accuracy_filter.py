@@ -119,10 +119,11 @@ class HighAccuracyFilter:
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
-    def __init__(self):
+    def __init__(self, min_score: float = 72.0):
         self._rejection_log: List[Dict] = []
         self._pass_count    = 0
         self._reject_count  = 0
+        self.min_score      = min_score
 
     # ─────────────────────────────────────────────────────────
     # MAIN FILTER — call this before every trade
@@ -225,7 +226,7 @@ class HighAccuracyFilter:
         if not pat_ok:
             result.gates_failed.append(f"PATTERN_SCORE({signal_score:.0f})")
             result.rejection_reason = (
-                f"Signal score {signal_score:.0f} < 72 required. "
+                f"Signal score {signal_score:.0f} < {self.min_score:.0f} required. "
                 f"Best pattern: {best_pattern}."
             )
             self._log_rejection(result, signal_score, direction)
@@ -413,11 +414,11 @@ class HighAccuracyFilter:
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 
-        # Reject if post-bonus score drops below 72
-        if result.final_score < 72:
+        # Reject if post-bonus score drops below min_score
+        if result.final_score < self.min_score:
             result.passed = False
             result.rejection_reason = (
-                f"Post-bonus score {result.final_score:.0f} < 72. "
+                f"Post-bonus score {result.final_score:.0f} < {self.min_score:.0f}. "
                 f"Bonuses: {bonus_score:+.0f}. Too many counter-indicators."
             )
             self._log_rejection(result, signal_score, direction)
@@ -430,7 +431,7 @@ class HighAccuracyFilter:
         elif result.final_score >= 82:
             result.quality_grade   = "A"
             result.size_multiplier = min(result.size_multiplier * 1.15, 1.5)
-        elif result.final_score >= 72:
+        elif result.final_score >= self.min_score:
             result.quality_grade   = "B"
         else:
             result.quality_grade   = "C"
@@ -546,7 +547,7 @@ class HighAccuracyFilter:
                 return False, 0, f"{best_pattern}(DISABLED)"
             effective_score = signal_score * weight
 
-        return effective_score >= 72, effective_score, best_pattern
+        return effective_score >= self.min_score, effective_score, best_pattern
 
     def _check_key_level(
         self, at_key_level: bool, ltp: float, above_vwap: bool

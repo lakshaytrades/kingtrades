@@ -700,7 +700,10 @@ def get_top_movers(n: int = 15) -> List[Dict]:
     results = []
     try:
         fetcher = get_fetcher()
-        client  = getattr(fetcher, "_data_client", None) or getattr(fetcher, "client", None)
+        try:
+            client = fetcher._auth.get_data_client()
+        except Exception:
+            client = None
         # Try Alpaca screener (most_actives endpoint)
         if client and hasattr(client, "get_stock_most_actives"):
             from alpaca.data.requests import MostActivesRequest

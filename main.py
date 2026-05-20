@@ -306,7 +306,10 @@ class TradingBot:
             from autonomous_optimizer import load_optimizer_config, DEFAULTS
             opt_cfg = load_optimizer_config()
             if self.signal_gen:
-                self.signal_gen.min_score = opt_cfg.get("min_score", self.signal_gen.min_score)
+                new_min = opt_cfg.get("min_score", self.signal_gen.min_score)
+                self.signal_gen.min_score = new_min
+                if hasattr(self.signal_gen, "ha_filter"):
+                    self.signal_gen.ha_filter.min_score = new_min
             if self.risk_manager:
                 opt_max_pos = int(opt_cfg.get("max_positions", config.MAX_POSITIONS))
                 self.risk_manager.max_positions = opt_max_pos
@@ -949,9 +952,10 @@ class TradingBot:
 
             # 4. Scan watchlist (15-min cached)
             watchlist = self._get_watchlist_cached()
-            max_new = config.MAX_POSITIONS - len(self.risk_manager.state.positions)
+            _max_pos = self.risk_manager.max_positions
+            max_new = _max_pos - len(self.risk_manager.state.positions)
             if max_new <= 0:
-                logger.info(f"[{format_ist_timestamp()}] Max positions ({config.MAX_POSITIONS}) reached — no new entries")
+                logger.info(f"[{format_ist_timestamp()}] Max positions ({_max_pos}) reached — no new entries")
                 return
 
             if spy_q and self.signal_gen:
@@ -1370,11 +1374,6 @@ class TradingBot:
                     logger.debug(f"Portfolio heat check skipped: {_he}")
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
-                try:
-                    from decision_log import log_trade_taken
-                    log_trade_taken(signal)
-                except Exception:
-                    pass
                 result = self.executor.place_entry_order(signal)
                 if not result.success:
                     logger.error(
@@ -1382,7 +1381,18 @@ class TradingBot:
                         f"{signal.direction} score={signal.signal_score:.0f} | "
                         f"Reason: {result.message}"
                     )
+                    try:
+                        from decision_log import log_rejected_order
+                        log_rejected_order(signal.symbol, signal.direction,
+                                           getattr(signal, "signal_score", 0), result.message)
+                    except Exception:
+                        pass
                 if result.success:
+                    try:
+                        from decision_log import log_trade_taken
+                        log_trade_taken(signal)
+                    except Exception:
+                        pass
                     # Register position with risk manager (trailing stops, T1/T2, daily-loss)
                     try:
                         from risk_manager import Position
@@ -1671,10 +1681,13 @@ class TradingBot:
                         self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
                         actual_fill = result.fill_price if result.fill_price > 0 else ltp
                         pnl_partial = (actual_fill - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - actual_fill) * exit_qty
+                        # Include partial P&L in daily tracking so loss limits are enforced
+                        self.risk_manager.state.daily_pnl += pnl_partial
                         logger.info(
                             f"[{format_ist_timestamp()}] {action['action']}: "
                             f"{pos.symbol} {exit_qty}qty @ ${actual_fill:.2f} | "
-                            f"Partial P&L: ${pnl_partial:.2f}"
+                            f"Partial P&L: ${pnl_partial:.2f} | "
+                            f"Daily P&L: ${self.risk_manager.state.daily_pnl:+.2f}"
                         )
                         # Notify Profit Engine — triggers compounding activation
                         if self.profit_engine:
@@ -2778,8 +2791,8 @@ class TradingBot:
                 return
             today_pnl   = self.risk_manager.state.daily_pnl
             daily_cap   = self.risk_manager.state.daily_capital  # actual broker equity
-            wins        = self.risk_manager.state.wins
-            losses      = self.risk_manager.state.losses
+            wins        = self.risk_manager.state.winning_trades
+            losses      = self.risk_manager.state.losing_trades
             daily_trades= self.risk_manager.state.daily_trades
             cons_losses = self.risk_manager.state.consecutive_losses
             base        = config.MAX_DAILY_CAPITAL
