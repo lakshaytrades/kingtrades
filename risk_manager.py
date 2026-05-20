@@ -473,7 +473,8 @@ class RiskManager:
         if sl_distance <= 0:
             return {"quantity": 0, "reason": "Invalid SL distance"}
 
-        LEVERAGE = 1.0  # no MIS leverage for Alpaca
+        import config as _cfg
+        LEVERAGE = getattr(_cfg, "ALPACA_LEVERAGE", 1.0)
         buying_power = capital * LEVERAGE  # effective capital for position sizing
 
         # 1. Risk-based sizing (risk on actual capital, not leveraged)

@@ -60,15 +60,15 @@ POWER_WINDOWS = [
     (time(14, 30), time(16, 0)),    # Power Hour — institutional accumulation/distribution
 ]
 
-# Reduced-size window (can trade but 70% size — score still gates quality)
+# Reduced-size window (can trade but 50% size — score still gates quality)
 CAUTION_WINDOWS = [
     (time(10, 45), time(11, 30)),   # Post-opening fade
+    (time(11, 30), time(13, 30)),   # Midday — lower volatility, 50% size, score ≥80 only
     (time(13, 30), time(14, 30)),   # Early afternoon pickup
 ]
 
-# NO TRADE windows — midday chop destroys momentum P&L
+# NO TRADE windows — EOD only (midday moved to CAUTION for more signal opportunities)
 AVOID_WINDOWS = [
-    (time(11, 30), time(13, 30)),   # Midday dead zone — no trades, ever
     (time(15, 50), time(16, 0)),    # EOD — no new entries
 ]
 
@@ -171,10 +171,20 @@ class HighAccuracyFilter:
         if window == "AVOID":
             result.rejection_reason = (
                 f"AVOID window ({now_et.strftime('%H:%M')} ET). "
-                "No trades during midday chop (11:30–13:30) or EOD."
+                "No new entries in the final 10 min before close."
             )
             self._log_rejection(result, signal_score, direction)
             return result
+
+        # Midday CAUTION: require score ≥ 80 to filter out low-quality chop setups
+        if window == "CAUTION" and now_et.time() >= time(11, 30) and now_et.time() < time(13, 30):
+            if signal_score < 80:
+                result.rejection_reason = (
+                    f"Midday CAUTION ({now_et.strftime('%H:%M')} ET): "
+                    f"score {signal_score:.0f} < 80 required during 11:30–13:30."
+                )
+                self._log_rejection(result, signal_score, direction)
+                return result
 
         result.size_multiplier = size_mult
         result.gates_passed.append(f"POWER_HOUR({window})")

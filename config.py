@@ -56,11 +56,16 @@ LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() i
 # Capital (USD) — paper account ~$99K; deploy 25% for 13%/month maths
 MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "25000"))
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.75"))
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
 
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)
+
+# Intraday leverage multiplier (Alpaca supports up to 4x for PDT accounts).
+# 2x is conservative — doubles position capacity without excessive risk.
+ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "2.0"))
+ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
 
 MAX_POSITIONS: int = 15
 MIN_POSITIONS: int = 1
