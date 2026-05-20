@@ -57,6 +57,8 @@ backtest_results/
 # Data & cache
 data/cache/
 data/raw/
+data/*.db
+data/*.json
 *.csv
 *.pkl
 *.parquet
