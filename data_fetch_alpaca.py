@@ -505,6 +505,10 @@ class AlpacaDataFetcher:
         df = self.get_ohlcv(symbol, interval=alpaca_interval, lookback_days=days)
         return df if not df.empty else None
 
+    def get_today_candles(self, symbol: str, interval: str = "5m") -> Optional[pd.DataFrame]:
+        """Return today's intraday candles. Alias used by main.py for alerts and health checks."""
+        return self.get_candles(symbol, interval=interval, days=1)
+
     # ─────────────────────────────────────────────────────────────────────
     # ACCOUNT BALANCE
     # ─────────────────────────────────────────────────────────────────────
@@ -699,7 +703,7 @@ def get_top_movers(n: int = 15) -> List[Dict]:
 
     results = []
     try:
-        fetcher = get_fetcher()
+        fetcher = get_data_fetcher()
         try:
             client = fetcher._auth.get_data_client()
         except Exception:

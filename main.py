@@ -130,6 +130,8 @@ class TradingBot:
         self._mover_watchlist: List[str] = []    # dynamic top-movers added intraday
         self._last_mover_scan: float = 0.0       # timestamp of last top-movers refresh
         self._mover_scan_interval = 3600         # refresh top-movers every 60 min
+        self._last_optimizer_reload: float = 0.0 # timestamp of last optimizer config reload
+        self._optimizer_reload_interval = 3600   # re-apply optimizer params every 60 min
 
     # --------------------------------------------------------
     # STARTUP
@@ -895,6 +897,26 @@ class TradingBot:
             # 0. Self-heal — reinit anything that crashed
             self._auto_heal()
 
+            # 0b. Reload optimizer config hourly so autonomous adjustments take effect
+            import time as _time_mod
+            _now_ts2 = _time_mod.monotonic()
+            if _now_ts2 - self._last_optimizer_reload >= self._optimizer_reload_interval:
+                self._last_optimizer_reload = _now_ts2
+                try:
+                    from autonomous_optimizer import load_optimizer_config
+                    _opt = load_optimizer_config()
+                    if self.signal_gen:
+                        _new_min = _opt.get("min_score", self.signal_gen.min_score)
+                        self.signal_gen.min_score = _new_min
+                        if hasattr(self.signal_gen, "ha_filter"):
+                            self.signal_gen.ha_filter.min_score = _new_min
+                    if self.risk_manager:
+                        self.risk_manager.max_positions = int(_opt.get("max_positions", self.risk_manager.max_positions))
+                        self.risk_manager.max_risk_pct = _opt.get("risk_per_trade_pct", self.risk_manager.max_risk_pct * 100) / 100.0
+                    logger.debug(f"[{format_ist_timestamp()}] Optimizer params reloaded")
+                except Exception as _oe:
+                    logger.debug(f"Optimizer reload skipped: {_oe}")
+
             # 1. Update open positions (ALWAYS — even if paused)
             self._update_positions()
 
@@ -1054,8 +1076,9 @@ class TradingBot:
                                     target_1=mrs.target_1, target_2=mrs.target_2,
                                     signal_score=mrs.score, quality_grade="B",
                                     size_multiplier=0.7,  # Conservative for reversion
-                                    reason=f"[REVERSION] {mrs.reason}",
-                                    strategy=mrs.strategy,
+                                    rationale=f"[REVERSION] {getattr(mrs, 'reason', '')}",
+                                    atr=getattr(mrs, "atr", mrs.entry_price * 0.01),
+                                    risk_reward=getattr(mrs, "risk_reward", 2.0),
                                 )
                                 signals.append(ts)
                             logger.info(f"[{format_ist_timestamp()}] Mean-reversion: {len(mr_signals)} setups in {current_regime} regime")
@@ -1373,6 +1396,15 @@ class TradingBot:
                 except Exception as _he:
                     logger.debug(f"Portfolio heat check skipped: {_he}")
 
+                # Risk gate: enforce daily-loss, max-positions, pause, and duplicate checks
+                # for BOTH paper and live (executor only runs can_take_trade in live mode)
+                _risk_check = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
+                if not _risk_check["allowed"]:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] RISK GATE: {signal.symbol} — {_risk_check['reason']}"
+                    )
+                    continue
+
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
                 result = self.executor.place_entry_order(signal)
                 if not result.success:
@@ -1534,6 +1566,7 @@ class TradingBot:
                         pnl = pos.pnl
                         # Remove from risk state, update daily P&L / win-loss counters
                         self.risk_manager.close_position(pos.symbol, actual_exit, health["reason"])
+                        self._save_capital_intraday()
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, health["reason"]
@@ -1587,6 +1620,7 @@ class TradingBot:
                         pnl = pos.pnl
                         # Remove from risk state: updates daily_pnl, daily_trades, consecutive counters
                         self.risk_manager.close_position(pos.symbol, actual_exit, action["reason"])
+                        self._save_capital_intraday()
                         # Record closed trade in Profit Engine for compounding/mode tracking
                         if self.profit_engine:
                             try:
@@ -1865,6 +1899,10 @@ class TradingBot:
         """
         if not self.fetcher or not self.risk_manager:
             return
+        # In paper mode the broker has no positions (fills are simulated in memory).
+        # Reconciling would force-close all simulated positions as ghost entries.
+        if not config.LIVE_TRADING_ENABLED:
+            return
 
         now = get_current_ist_time()
         if (self._last_reconcile_time and
@@ -1976,6 +2014,30 @@ class TradingBot:
         if not self.eod_done:
             logger.warning(f"[{format_ist_timestamp()}] 🔴 EOD SQUARE-OFF")
             self.executor.square_off_all("EOD automatic square-off")
+
+            # Close all in-memory positions so P&L, daily_pnl, and wins/losses are recorded.
+            # Applies in both live and paper modes — broker call above handles the broker side.
+            for sym, pos in list(self.risk_manager.state.positions.items()):
+                try:
+                    q = self.fetcher.get_quote(sym) if self.fetcher else {}
+                    ltp = float(q.get("ltp", pos.current_price or pos.entry_price)) if q else pos.entry_price
+                    pos.current_price = ltp
+                    pnl = pos.pnl
+                    self.risk_manager.close_position(sym, ltp, "EOD_SQUAREOFF")
+                    try:
+                        from decision_log import log_trade_outcome
+                        log_trade_outcome(
+                            sym, pos.direction, pos.entry_price, ltp,
+                            pos.quantity, pnl, "EOD_SQUAREOFF",
+                            getattr(pos, "entry_time", ""),
+                            getattr(pos, "signal_score", 0.0),
+                            getattr(pos, "quality_grade", "B"),
+                        )
+                    except Exception:
+                        pass
+                except Exception as _e:
+                    logger.warning(f"EOD in-memory close failed ({sym}): {_e}")
+
             # Also close all options positions
             if self.options_scalper:
                 try:
@@ -2783,6 +2845,27 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"Capital load error: {e}")
         return base
+
+    def _save_capital_intraday(self):
+        """Write capital.json mid-day so supervisor/optimizer see live P&L data."""
+        try:
+            if not self.risk_manager:
+                return
+            rm = self.risk_manager
+            existing = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+            self._capital_file.parent.mkdir(exist_ok=True)
+            self._capital_file.write_text(json.dumps({
+                **existing,
+                "daily_pnl":          round(rm.state.daily_pnl, 2),
+                "total_equity":       round(rm.state.daily_capital, 2),
+                "daily_capital":      round(rm.state.daily_capital, 2),
+                "wins":               rm.state.winning_trades,
+                "losses":             rm.state.losing_trades,
+                "daily_trades":       rm.state.daily_trades,
+                "consecutive_losses": rm.state.consecutive_losses,
+            }, indent=2))
+        except Exception as _e:
+            logger.debug(f"Intraday capital save skipped: {_e}")
 
     def _save_compounded_capital(self):
         """Save today's P&L to capital.json for tomorrow's compound."""

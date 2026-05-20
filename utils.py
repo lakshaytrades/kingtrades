@@ -96,6 +96,12 @@ def is_us_squareoff_time() -> bool:
     return get_current_et_time().time() >= US_SQUAREOFF
 
 
+def is_us_squareoff_warn_time() -> bool:
+    """Check if it's the 15-minute warning window (3:45–3:50 PM ET)."""
+    t = get_current_et_time().time()
+    return US_SQUAREOFF_WARN <= t < US_SQUAREOFF
+
+
 def is_market_day_et() -> bool:
     """Check if today is a US trading weekday."""
     return get_current_et_time().weekday() < 5

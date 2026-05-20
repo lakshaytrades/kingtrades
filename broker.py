@@ -20,11 +20,11 @@ from data_fetch_alpaca import get_data_fetcher, AlpacaDataFetcher as DataFetcher
 from data_fetch_alpaca import US_WATCHLIST as WATCHLIST
 from execution_alpaca import AlpacaExecutor as ExecutorClass
 from utils import (
-    is_market_open_et    as is_market_open,
-    is_us_squareoff_time as is_squareoff_time,
-    is_us_squareoff_time as should_force_squareoff,
-    format_et_timestamp  as format_market_timestamp,
-    get_current_et_time  as get_current_market_time,
+    is_market_open_et         as is_market_open,
+    is_us_squareoff_time      as should_force_squareoff,
+    is_us_squareoff_warn_time as is_squareoff_time,
+    format_et_timestamp       as format_market_timestamp,
+    get_current_et_time       as get_current_market_time,
 )
 
 CURRENCY_SYMBOL     = "$"
