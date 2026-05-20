@@ -375,6 +375,10 @@ class HealthChecker:
 
 # ── Main supervisor loop ──────────────────────────────────────────────────────
 
+OPTIMIZER_INTERVAL_S = 3600   # run optimizer every hour
+EOD_REPORT_HOUR_ET   = 16     # send EOD decision log report at 4 PM ET
+
+
 class BotSupervisor:
     def __init__(self):
         self.watcher = ProcessWatcher()
@@ -383,6 +387,8 @@ class BotSupervisor:
         self.health  = HealthChecker()
         self._running = True
         self._start_time = time.time()
+        self._last_optimizer_run = 0.0
+        self._eod_report_sent_date = ""
 
         signal.signal(signal.SIGINT,  self._handle_stop)
         signal.signal(signal.SIGTERM, self._handle_stop)
@@ -475,6 +481,66 @@ class BotSupervisor:
 
             # 4. Performance monitoring
             self.perf.check()
+
+            # 5. Autonomous optimizer — adjust parameters hourly
+            now = time.time()
+            if now - self._last_optimizer_run >= OPTIMIZER_INTERVAL_S:
+                self._last_optimizer_run = now
+                self._run_optimizer()
+
+            # 6. EOD decision log report — sent once after 4 PM ET
+            self._maybe_send_eod_report()
+
+
+    def _run_optimizer(self) -> None:
+        """Run parameter optimizer and send Telegram update."""
+        try:
+            from autonomous_optimizer import analyze_and_adjust
+            _cfg, report = analyze_and_adjust()
+            logger.info(f"Optimizer ran — report:\n{report}")
+            tg(report, "🤖")
+        except Exception as e:
+            logger.warning(f"Optimizer failed: {e}")
+
+    def _maybe_send_eod_report(self) -> None:
+        """Send comprehensive EOD decision log report once per day after market close."""
+        try:
+            from zoneinfo import ZoneInfo
+            now_et = datetime.now(ZoneInfo("America/New_York"))
+        except Exception:
+            now_et = datetime.utcnow()
+
+        today = now_et.strftime("%Y-%m-%d")
+        if now_et.hour < EOD_REPORT_HOUR_ET:
+            return
+        if self._eod_report_sent_date == today:
+            return
+
+        self._eod_report_sent_date = today
+        try:
+            from decision_log import build_daily_report
+            from autonomous_optimizer import get_monthly_progress, _read_capital
+            report = build_daily_report(today)
+
+            # Add monthly progress tracker
+            cap = _read_capital()
+            daily_capital = cap.get("daily_capital", 0)
+            month_pnl = cap.get("month_pnl", cap.get("daily_pnl", 0))
+            if daily_capital > 0:
+                progress = get_monthly_progress(daily_capital, month_pnl)
+                pace_emoji = "🟢" if progress["on_track"] else "🟡"
+                report += (
+                    f"\n\n🎯 <b>Monthly Target Progress (13%)</b>\n"
+                    f"  Current: {progress['current_pct']:+.2f}%\n"
+                    f"  On-pace: {pace_emoji} {progress['on_pace_pct']:+.2f}%\n"
+                    f"  Days elapsed: {progress['days_elapsed']}/{22}\n"
+                    f"  Need per remaining day: ${progress['needed_per_day']:+.2f}"
+                )
+
+            tg(report, "📊")
+            logger.info("EOD decision report sent via Telegram")
+        except Exception as e:
+            logger.warning(f"EOD report failed: {e}")
 
 
 def main():

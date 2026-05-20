@@ -298,6 +298,21 @@ class TradingBot:
         # Apply EOD-trained parameters (from yesterday's walk-forward optimization)
         self._apply_eod_trained_params()
 
+        # Apply autonomous optimizer parameters (overrides defaults, targets 13%/month)
+        try:
+            from autonomous_optimizer import load_optimizer_config, DEFAULTS
+            opt_cfg = load_optimizer_config()
+            if self.signal_gen:
+                self.signal_gen.min_score = opt_cfg.get("min_score", self.signal_gen.min_score)
+            if self.risk_manager:
+                opt_max_pos = int(opt_cfg.get("max_positions", config.MAX_POSITIONS))
+                self.risk_manager.max_positions = opt_max_pos
+                opt_risk = opt_cfg.get("risk_per_trade_pct", config.MAX_RISK_PER_TRADE_PCT)
+                self.risk_manager.max_risk_pct = opt_risk / 100.0
+            logger.info(f"[{format_ist_timestamp()}] Autonomous optimizer params applied")
+        except Exception as _oe:
+            logger.debug(f"[suppressed] Optimizer config: {_oe}")
+
         # Initialize MTF analyzer
         from multi_timeframe import MultiTimeframeAnalyzer
         self.mtf_analyzer = MultiTimeframeAnalyzer()
@@ -1302,6 +1317,12 @@ class TradingBot:
                             f"[{format_ist_timestamp()}] HEAT GUARD BLOCK: "
                             f"{signal.symbol} — {_heat_reason}"
                         )
+                        try:
+                            from decision_log import log_rejected_heat
+                            log_rejected_heat(signal.symbol, signal.direction,
+                                              getattr(signal, "signal_score", 0), _heat_reason)
+                        except Exception:
+                            pass
                         continue
                     if _heat_reason != "OK":
                         logger.debug(
@@ -1311,6 +1332,11 @@ class TradingBot:
                     logger.debug(f"Portfolio heat check skipped: {_he}")
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+                try:
+                    from decision_log import log_trade_taken
+                    log_trade_taken(signal)
+                except Exception:
+                    pass
                 result = self.executor.place_entry_order(signal)
                 if not result.success:
                     logger.error(
@@ -1464,6 +1490,17 @@ class TradingBot:
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, health["reason"]
                         )
+                        try:
+                            from decision_log import log_trade_outcome
+                            log_trade_outcome(
+                                pos.symbol, pos.direction, pos.entry_price, actual_exit,
+                                pos.quantity, pnl, health["reason"],
+                                getattr(pos, "entry_time", ""),
+                                getattr(pos, "signal_score", 0.0),
+                                getattr(pos, "quality_grade", "B"),
+                            )
+                        except Exception:
+                            pass
                     continue   # skip trailing-stop logic for this position
 
                 elif health["action"] == "BREAK_EVEN":
@@ -1553,6 +1590,17 @@ class TradingBot:
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, action["reason"]
                         )
+                        try:
+                            from decision_log import log_trade_outcome
+                            log_trade_outcome(
+                                pos.symbol, pos.direction, pos.entry_price, actual_exit,
+                                pos.quantity, pnl, action["reason"],
+                                getattr(pos, "entry_time", ""),
+                                getattr(pos, "signal_score", 0.0),
+                                getattr(pos, "quality_grade", "B"),
+                            )
+                        except Exception:
+                            pass
 
                 elif action["action"] in ("PARTIAL_EXIT_T1", "PARTIAL_EXIT_T2"):
                     exit_qty = action.get("exit_qty", 0)

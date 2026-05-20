@@ -414,6 +414,11 @@ class SignalGenerator:
 
             if ai_score is None or ai_score < self.min_score:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
+                try:
+                    from decision_log import log_rejected_score
+                    log_rejected_score(symbol, direction, ai_score or 0.0, self.min_score)
+                except Exception:
+                    pass
                 return None
 
             # 7. High-accuracy filter — 5-gate confluence check
@@ -473,6 +478,11 @@ class SignalGenerator:
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: FILTERED — {filter_result.rejection_reason}"
                 )
+                try:
+                    from decision_log import log_rejected_haf
+                    log_rejected_haf(symbol, direction, ai_score, filter_result)
+                except Exception:
+                    pass
                 return None
 
             # 8. Build signal using filter's final score and size
@@ -519,6 +529,11 @@ class SignalGenerator:
                 )
                 if not breadth_ok:
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: INTERNALS BLOCK — {breadth_reason}")
+                    try:
+                        from decision_log import log_rejected_internals
+                        log_rejected_internals(symbol, direction, ai_score, breadth_reason)
+                    except Exception:
+                        pass
                     return None
                 # Adjust size by breadth quality
                 combined_size = round(combined_size * internals.get_size_multiplier(direction), 2)
@@ -545,6 +560,11 @@ class SignalGenerator:
                         f"[{format_ist_timestamp()}] {symbol}: ELITE BRAIN REJECTED — "
                         f"{elite_decision.reject_reason}"
                     )
+                    try:
+                        from decision_log import log_rejected_elite
+                        log_rejected_elite(symbol, direction, ai_score, elite_decision.reject_reason)
+                    except Exception:
+                        pass
                     return None
                 # Grand Slam: 7+ modules aligned → scale up size aggressively
                 if elite_decision.grand_slam:
