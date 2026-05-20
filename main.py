@@ -1455,12 +1455,14 @@ class TradingBot:
                                 self.executor.cancel_order(pos.sl_order_id)
                             except Exception as _cse:
                                 logger.warning(f"cancel_order(stop) failed on health exit {pos.symbol}: {_cse}")
+                        actual_exit = result.fill_price if result.fill_price > 0 else ltp
+                        pos.current_price = actual_exit  # use fill price for accurate P&L
                         pnl = pos.pnl
                         # Remove from risk state, update daily P&L / win-loss counters
-                        self.risk_manager.close_position(pos.symbol, ltp, health["reason"])
+                        self.risk_manager.close_position(pos.symbol, actual_exit, health["reason"])
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
-                            ltp, pos.quantity, pnl, health["reason"]
+                            actual_exit, pos.quantity, pnl, health["reason"]
                         )
                     continue   # skip trailing-stop logic for this position
 
@@ -1495,9 +1497,11 @@ class TradingBot:
                                 self.executor.cancel_order(pos.sl_order_id)
                             except Exception as _cse:
                                 logger.warning(f"cancel_order(stop) failed on exit {pos.symbol}: {_cse}")
+                        actual_exit = result.fill_price if result.fill_price > 0 else ltp
+                        pos.current_price = actual_exit  # use fill price for accurate P&L
                         pnl = pos.pnl
                         # Remove from risk state: updates daily_pnl, daily_trades, consecutive counters
-                        self.risk_manager.close_position(pos.symbol, ltp, action["reason"])
+                        self.risk_manager.close_position(pos.symbol, actual_exit, action["reason"])
                         # Record closed trade in Profit Engine for compounding/mode tracking
                         if self.profit_engine:
                             try:
@@ -1522,7 +1526,7 @@ class TradingBot:
                                     symbol      = pos.symbol,
                                     quantity    = pos.quantity,
                                     entry_price = pos.entry_price,
-                                    exit_price  = ltp,
+                                    exit_price  = actual_exit,
                                     direction   = pos.direction,
                                 )
                             except Exception as _e:
@@ -1545,7 +1549,6 @@ class TradingBot:
                                 logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: {adapt_msg}")
                             except Exception as e:
                                 logger.debug(f"AdaptiveBrain record error: {e}")
-                        actual_exit = result.fill_price if result.fill_price > 0 else ltp
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, action["reason"]
@@ -1580,10 +1583,11 @@ class TradingBot:
                             )
                             pos.sl_order_id = new_sl_oid
                         self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
-                        pnl_partial = (ltp - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * exit_qty
+                        actual_fill = result.fill_price if result.fill_price > 0 else ltp
+                        pnl_partial = (actual_fill - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - actual_fill) * exit_qty
                         logger.info(
                             f"[{format_ist_timestamp()}] {action['action']}: "
-                            f"{pos.symbol} {exit_qty}qty @ ${ltp:.2f} | "
+                            f"{pos.symbol} {exit_qty}qty @ ${actual_fill:.2f} | "
                             f"Partial P&L: ${pnl_partial:.2f}"
                         )
                         # Notify Profit Engine — triggers compounding activation
@@ -1606,7 +1610,6 @@ class TradingBot:
                             except Exception as _e:
                                 logger.warning(f"profit_engine partial-exit record failed ({pos.symbol}): {_e}")
                         try:
-                            actual_fill = result.fill_price if result.fill_price > 0 else ltp
                             self.alerter.send_exit_alert(
                                 pos.symbol, pos.direction, pos.entry_price,
                                 actual_fill, exit_qty, pnl_partial, action["reason"]
