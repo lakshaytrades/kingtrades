@@ -62,13 +62,13 @@ POWER_WINDOWS = [
 
 # Reduced-size window (can trade but 50% size — score still gates quality)
 CAUTION_WINDOWS = [
-    (time(10, 45), time(11, 30)),   # Post-opening fade
-    (time(11, 30), time(13, 30)),   # Midday — lower volatility, 50% size, score ≥80 only
+    (time(10, 45), time(11, 30)),   # Post-opening fade — reduced size
     (time(13, 30), time(14, 30)),   # Early afternoon pickup
 ]
 
-# NO TRADE windows — EOD only (midday moved to CAUTION for more signal opportunities)
+# NO TRADE windows
 AVOID_WINDOWS = [
+    (time(11, 30), time(13, 30)),   # Midday dead zone — no trades
     (time(15, 50), time(16, 0)),    # EOD — no new entries
 ]
 
@@ -176,15 +176,14 @@ class HighAccuracyFilter:
             self._log_rejection(result, signal_score, direction)
             return result
 
-        # Midday CAUTION: require score ≥ 80 to filter out low-quality chop setups
-        if window == "CAUTION" and now_et.time() >= time(11, 30) and now_et.time() < time(13, 30):
-            if signal_score < 80:
-                result.rejection_reason = (
-                    f"Midday CAUTION ({now_et.strftime('%H:%M')} ET): "
-                    f"score {signal_score:.0f} < 80 required during 11:30–13:30."
-                )
-                self._log_rejection(result, signal_score, direction)
-                return result
+        # In CAUTION windows, require higher score to compensate for lower-quality conditions
+        if window == "CAUTION" and signal_score < 78:
+            result.rejection_reason = (
+                f"CAUTION window — score {signal_score:.0f} < 78 required. "
+                "Only A-grade setups in reduced-probability windows."
+            )
+            self._log_rejection(result, signal_score, direction)
+            return result
 
         result.size_multiplier = size_mult
         result.gates_passed.append(f"POWER_HOUR({window})")
@@ -325,7 +324,7 @@ class HighAccuracyFilter:
         # ── GATE 13: SPY DIRECTION ALIGNMENT ─────────────
         # Never fight the market — SPY must confirm signal direction
         if spy_bullish is not None:
-            spy_ok, spy_reason = self._check_spy_alignment(direction, spy_bullish)
+            spy_ok, spy_reason = self._check_spy_alignment(direction, spy_bullish, spy_change_pct=spy_change_pct)
             if not spy_ok:
                 result.gates_failed.append("SPY_CONFLICT")
                 result.rejection_reason = spy_reason
@@ -594,23 +593,41 @@ class HighAccuracyFilter:
         )
 
     def _check_spy_alignment(
-        self, direction: str, spy_bullish: bool
+        self, direction: str, spy_bullish: bool, spy_change_pct: float = 0.0
     ) -> Tuple[bool, str]:
         """
-        Gate 13: Never fight the market. SPY must confirm signal direction.
-        LONG signals require SPY to be net positive today.
-        SHORT signals require SPY to be net negative today.
+        Gate 13: Never fight the market. Block direction against strong trend.
+        - SPY up >1%: strong bull day → block SHORTs outright
+        - SPY down >1%: strong bear day → block LONGs outright
+        - SPY ±0.5-1%: moderate — only block if directly opposed
+        - SPY <±0.5%: neutral — allow both directions
         """
-        if direction == "BUY" and not spy_bullish:
-            return False, (
-                "SPY is bearish — avoid LONG entries against market direction. "
-                "Big players don't buy when the S&P 500 is selling off."
-            )
-        if direction == "SELL" and spy_bullish:
-            return False, (
-                "SPY is bullish — avoid SHORT entries against market direction. "
-                "Big players don't short when the S&P 500 is rallying."
-            )
+        abs_chg = abs(spy_change_pct)
+
+        if direction == "BUY":
+            if spy_change_pct <= -1.0:
+                return False, (
+                    f"Strong bear day (SPY {spy_change_pct:+.1f}%) — LONGs blocked. "
+                    "Indices in strong sell-off: wait for stabilisation."
+                )
+            if spy_change_pct < -0.5 and not spy_bullish:
+                return False, (
+                    f"SPY bearish ({spy_change_pct:+.1f}%) — avoid LONG entries. "
+                    "Big players don't buy when S&P 500 is selling off."
+                )
+
+        if direction == "SELL":
+            if spy_change_pct >= 1.0:
+                return False, (
+                    f"Strong bull day (SPY {spy_change_pct:+.1f}%) — SHORTs blocked. "
+                    "Indices in strong rally: only trade with momentum, not against it."
+                )
+            if spy_change_pct > 0.5 and spy_bullish:
+                return False, (
+                    f"SPY bullish ({spy_change_pct:+.1f}%) — avoid SHORT entries. "
+                    "Big players don't short when S&P 500 is rallying."
+                )
+
         return True, ""
 
     def _check_heikin_ashi(self, df: pd.DataFrame, direction: str) -> Tuple[bool, str]:

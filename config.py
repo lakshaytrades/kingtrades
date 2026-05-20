@@ -85,10 +85,10 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.2        # tighter SL → better R:R at same entry
+ATR_SL_MULTIPLIER: float = 1.5        # tighter SL → better R:R at same entry
 ATR_TP_MULTIPLIER: float = 3.0        # T2 = 1:3 R:R
 ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
-ATR_TRAIL_MULTIPLIER: float = 0.7     # trail tighter after T1 to lock gains
+ATR_TRAIL_MULTIPLIER: float = 0.8     # trail tighter after T1 to lock gains
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
@@ -128,11 +128,11 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 68.0
+MIN_SIGNAL_SCORE: float = 75.0
 HIGH_CONFIDENCE_SCORE: float = 80.0
 PREMIUM_SCORE: float = 90.0
 MIN_VOLUME_RATIO: float = 1.8
-REQUIRE_MTF_ALIGNMENT: bool = False
+REQUIRE_MTF_ALIGNMENT: bool = True
 REQUIRE_POWER_HOUR: bool = False
 HEIKIN_ASHI_CONFIRM: bool = False
 MAX_TRADES_PER_DAY: int = 15
@@ -141,7 +141,7 @@ MAX_TRADES_PER_STOCK: int = 2
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
-BREAKEVEN_TRIGGER_PCT: float = 0.35   # move to BE after 0.35% gain (was 0.5%)
+BREAKEVEN_TRIGGER_PCT: float = 0.55   # move to BE after 0.35% gain (was 0.5%)
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
 CONSECUTIVE_LOSS_LIMIT: int = 3
 PAUSE_AFTER_LOSSES_MINUTES: int = 30
