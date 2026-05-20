@@ -412,6 +412,30 @@ class SignalGenerator:
             except Exception:
                 pass
 
+            # 6h. RVOL mega-boost — >5x volume = explosive move, size conviction up
+            try:
+                rvol_threshold = getattr(config, "RVOL_MEGA_THRESHOLD", 5.0)
+                rvol_bonus_pts = getattr(config, "RVOL_MEGA_BOOST_PTS", 8.0)
+                if ind.volume_ratio >= rvol_threshold:
+                    ai_score = min(100.0, ai_score + rvol_bonus_pts)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: RVOL mega-boost "
+                        f"+{rvol_bonus_pts:.0f} (RVOL={ind.volume_ratio:.1f}x)"
+                    )
+            except Exception:
+                pass
+
+            # 6i. 52-week high breakout bonus — momentum continuation play
+            try:
+                _q52 = self.fetcher.get_quote(symbol) or {}
+                _high52 = float(_q52.get("week_52_high", 0) or _q52.get("high_52w", 0) or 0)
+                _ltp52  = float(df_5m.iloc[-1]["close"])
+                if _high52 > 0 and _ltp52 >= _high52 * 0.995 and direction == "LONG":
+                    ai_score = min(100.0, ai_score + 10.0)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: 52W high breakout +10 pts")
+            except Exception:
+                pass
+
             if ai_score is None or ai_score < self.min_score:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
                 try:

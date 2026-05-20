@@ -77,7 +77,7 @@ class TradingBot:
         self._token_refreshed_today = False
         self._token_refreshed_date = ""   # "YYYY-MM-DD" — prevents double-refresh
         self._day_initialized = False
-        self._scan_interval = 60  # seconds between full watchlist scans
+        self._scan_interval = 30  # seconds between full watchlist scans (was 60)
 
         # Modules (initialized lazily after auth)
         self.fetcher = None
@@ -127,6 +127,9 @@ class TradingBot:
         self._weekly_pnl_file.parent.mkdir(exist_ok=True)
         self._weekly_mode: str = "NORMAL"   # NORMAL / PROTECT / LOCKED
         self._day_bias_score: int = 0        # overnight bias -100 to +100 (set at market open)
+        self._mover_watchlist: List[str] = []    # dynamic top-movers added intraday
+        self._last_mover_scan: float = 0.0       # timestamp of last top-movers refresh
+        self._mover_scan_interval = 3600         # refresh top-movers every 60 min
 
     # --------------------------------------------------------
     # STARTUP
@@ -1001,9 +1004,29 @@ class TradingBot:
                     logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain pause: {health['reason']}")
                     return
 
+            # Refresh dynamic top-movers hourly — fresh opportunity set each hour
+            _now_ts = time_module.time() if "time_module" in dir() else __import__("time").time()
+            if _now_ts - self._last_mover_scan >= self._mover_scan_interval:
+                self._last_mover_scan = _now_ts
+                try:
+                    from data_fetch_alpaca import get_top_movers
+                    movers = get_top_movers(n=15)
+                    new_syms = [m["symbol"] for m in movers if m["symbol"] not in watchlist]
+                    if new_syms:
+                        self._mover_watchlist = new_syms[:10]
+                        logger.info(
+                            f"[{format_ist_timestamp()}] Top movers added to scan: "
+                            f"{', '.join(self._mover_watchlist)}"
+                        )
+                except Exception as _me:
+                    logger.debug(f"top_movers refresh failed: {_me}")
+
+            # Merge movers into the front of the scan queue (highest priority)
+            combined_watchlist = self._mover_watchlist + [s for s in watchlist if s not in self._mover_watchlist]
+
             signals = self.signal_gen.scan_watchlist(
-                symbols=watchlist,
-                max_signals=min(max_new, 3)  # Max 3 new signals per cycle
+                symbols=combined_watchlist,
+                max_signals=min(max_new, 4)  # up to 4 signals per cycle (was 3)
             )
 
             # 4a2. Mean-reversion engine — runs in RANGING/CHOPPY regimes
@@ -1273,6 +1296,21 @@ class TradingBot:
                             )
                     except Exception as dep_err:
                         logger.debug(f"Deployment calc: {dep_err}")
+
+                # 5b-pre. A+ setup: boost risk to 1.5% (score ≥ 90, grade A+)
+                if (getattr(signal, "signal_score", 0) >= 90
+                        and getattr(signal, "quality_grade", "B") == "A+"):
+                    try:
+                        if self.risk_manager:
+                            self.risk_manager.max_risk_pct = min(0.015, config.MAX_RISK_PER_TRADE_PCT / 100 * 2)
+                    except Exception:
+                        pass
+                else:
+                    try:
+                        if self.risk_manager:
+                            self.risk_manager.max_risk_pct = config.MAX_RISK_PER_TRADE_PCT / 100
+                    except Exception:
+                        pass
 
                 # 5b. Apply FII/DII + overnight bias + directional day bias
                 try:

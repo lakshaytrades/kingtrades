@@ -53,11 +53,11 @@ GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 # ============================================================
 LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() in ("true", "1", "yes")
 
-# Capital (USD)
-MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "500"))
+# Capital (USD) — paper account ~$99K; deploy 25% for 13%/month maths
+MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "25000"))
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.0)
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.75"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
 
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)
@@ -80,10 +80,10 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.4
-ATR_TP_MULTIPLIER: float = 3.0   # T2 = 1:3 R:R
-ATR_TP_RUNNER: float = 5.0       # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
-ATR_TRAIL_MULTIPLIER: float = 0.8
+ATR_SL_MULTIPLIER: float = 1.2        # tighter SL → better R:R at same entry
+ATR_TP_MULTIPLIER: float = 3.0        # T2 = 1:3 R:R
+ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
+ATR_TRAIL_MULTIPLIER: float = 0.7     # trail tighter after T1 to lock gains
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
@@ -136,7 +136,7 @@ MAX_TRADES_PER_STOCK: int = 2
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
-BREAKEVEN_TRIGGER_PCT: float = 0.5
+BREAKEVEN_TRIGGER_PCT: float = 0.35   # move to BE after 0.35% gain (was 0.5%)
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
 CONSECUTIVE_LOSS_LIMIT: int = 3
 PAUSE_AFTER_LOSSES_MINUTES: int = 30
@@ -145,20 +145,32 @@ PAUSE_AFTER_LOSSES_MINUTES: int = 30
 # WATCHLIST — US liquid momentum stocks
 # ============================================================
 DEFAULT_WATCHLIST = [
-    # Mega-cap tech & momentum (liquid, tight spreads)
+    # Mega-cap tech & AI (deepest liquidity, daily 3–8% moves)
     "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-    "AMD", "NFLX", "COIN",
-    # ETFs — best for scalping (deepest liquidity)
-    "SPY", "QQQ", "IWM", "TQQQ", "SPXL",
-    # High-beta momentum plays
-    "MSTR", "PLTR", "SOFI",
-    "SMCI", "ARM", "MU", "QCOM",
-    # Financials & energy
-    "JPM", "GS", "BAC", "XOM", "CVX", "OXY",
+    # Semiconductors — highest beta, follow NVDA
+    "AMD", "MU", "QCOM", "ARM", "SMCI", "AVGO", "INTC", "MRVL", "ON", "LRCX",
+    # High-momentum growth / SaaS
+    "NFLX", "COIN", "PLTR", "MSTR", "CRWD", "PANW", "ZS", "DDOG", "NET", "NOW", "SNOW",
+    # Consumer & social momentum
+    "UBER", "SHOP", "ABNB", "MELI", "RBLX",
+    # Crypto miners (very high beta)
+    "MARA", "RIOT",
+    # Leveraged ETFs — 2-3x the index move (best for momentum breakouts)
+    "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL",
+    # Fintech / high-growth finance
+    "SOFI", "HOOD", "SQ",
+    # Big finance
+    "JPM", "GS", "MS",
+    # Energy
+    "XOM", "CVX", "OXY", "SLB",
+    # Biotech momentum
+    "MRNA", "HIMS",
 ]
-# IEX free-tier WebSocket limit is 30 symbols — keep DEFAULT_WATCHLIST ≤28
+# Bar data: Alpaca REST (unlimited symbols). WebSocket real-time: Alpaca stream.
+# 55 symbols — all liquid US stocks, min $5M daily dollar volume.
 
-DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "200"))
+DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "750"))
+# $750/day on $25K capital = 3.0%/day pace → 66%/month — actual target 13% (~$590/day)
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets
@@ -226,8 +238,8 @@ TRAINER_RESULTS_DIR: str = "trainer_results"
 BACKTEST_SLIPPAGE_PCT: float = 0.05
 BACKTEST_BROKERAGE_PCT: float = 0.01   # Alpaca ~$0 commission but spread cost
 BACKTEST_TAX_PCT: float = 0.0
-TARGET_MONTHLY_RETURN_PCT: float = 5.0
-TARGET_WIN_RATE: float = 55.0
+TARGET_MONTHLY_RETURN_PCT: float = 13.0  # hard target — 13%/month
+TARGET_WIN_RATE: float = 57.0            # slightly higher bar: 57%+ WR
 TARGET_SHARPE: float = 1.5
 MAX_DRAWDOWN_LIMIT: float = 8.0
 
@@ -251,19 +263,23 @@ MAX_PORTFOLIO_HEAT_PCT: float = 10.0   # was 3.0 — allows up to 10 concurrent 
 MAX_POSITIONS_PER_SECTOR: int = 5      # was 2 — allows more tech/momentum positions
 
 SESSION_SIZE_MULTIPLIERS = {
-    "OPENING_DRIVE": 1.00,   # 09:30-10:30 — peak momentum
-    "MORNING":       0.80,   # 10:30-11:30 — good but fading
-    "MIDDAY_CHOP":   0.50,   # 11:30-13:30 — chop zone
-    "AFTERNOON":     0.80,   # 13:30-15:30 — institutional resumption
-    "CLOSING":       0.30,   # 15:30-16:00 — risk-off
+    "OPENING_DRIVE": 1.20,   # 09:30-10:30 — peak momentum, size up
+    "MORNING":       1.00,   # 10:30-11:30 — good trend continuation
+    "MIDDAY_CHOP":   0.60,   # 11:30-13:30 — chop zone, smaller
+    "AFTERNOON":     1.00,   # 13:30-15:30 — institutional resumption
+    "CLOSING":       0.70,   # 15:30-16:00 — EOD momentum plays exist
 }
 
 # ============================================================
 # CONCURRENT SCANNING
 # ============================================================
-SCAN_MAX_WORKERS: int = 6
-SCAN_SYMBOL_TIMEOUT: int = 20
-SCAN_TOTAL_TIMEOUT: int = 90
+SCAN_MAX_WORKERS: int = 12          # more workers for 55-symbol watchlist
+SCAN_SYMBOL_TIMEOUT: int = 15       # tighter per-symbol timeout
+SCAN_TOTAL_TIMEOUT: int = 60        # full scan must finish in 60s for 30s cycle
+
+# ── RVOL mega-boost (rare: > 5x volume = explosive move imminent) ──────────
+RVOL_MEGA_THRESHOLD: float = 5.0    # > 5x average volume
+RVOL_MEGA_BOOST_PTS: float = 8.0    # bonus score points
 
 # ============================================================
 # TRAINER — ADVANCED
@@ -288,11 +304,11 @@ API_HEALTH_CHECK_ENABLED: bool = True
 
 # Day-of-week multipliers (US market patterns)
 DOW_SIZE_MULTIPLIERS: dict = {
-    0: 0.70,   # Monday   — gap-and-trap, cautious
-    1: 1.00,   # Tuesday  — best trend day
-    2: 1.00,   # Wednesday— trend continuation
-    3: 0.85,   # Thursday — can be choppy
-    4: 0.65,   # Friday   — early close risk, reduce size
+    0: 0.85,   # Monday   — gap reversals common, slightly cautious
+    1: 1.10,   # Tuesday  — best trend day, size up
+    2: 1.10,   # Wednesday— trend continuation, size up
+    3: 0.95,   # Thursday — good but watch for reversal
+    4: 0.80,   # Friday   — EOD risk, still tradeable
 }
 
 DOW_MIN_SCORE: dict = {

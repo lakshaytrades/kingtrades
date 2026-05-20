@@ -674,3 +674,87 @@ def get_vix_level() -> float:
     except Exception as e:
         logger.debug(f"VIX fetch failed: {e}")
     return _vix_cache.get("level") or 18.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# TOP MOVERS — Alpaca snapshot screener (gainers + high-RVOL)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_movers_cache: Dict = {"data": [], "ts": 0.0}
+_MOVERS_TTL = 1800.0  # 30-minute cache
+
+
+def get_top_movers(n: int = 15) -> List[Dict]:
+    """
+    Return today's top % gainers/losers with high relative volume.
+    Uses Alpaca's most-active snapshot, filtered for liquid US stocks.
+    Falls back to yfinance if Alpaca screener not available.
+
+    Returns list of dicts: {"symbol": str, "change_pct": float, "volume": int, "price": float}
+    """
+    global _movers_cache
+    now = _time.monotonic()
+    if now - _movers_cache["ts"] < _MOVERS_TTL and _movers_cache["data"]:
+        return _movers_cache["data"][:n]
+
+    results = []
+    try:
+        fetcher = get_fetcher()
+        client  = getattr(fetcher, "_data_client", None) or getattr(fetcher, "client", None)
+        # Try Alpaca screener (most_actives endpoint)
+        if client and hasattr(client, "get_stock_most_actives"):
+            from alpaca.data.requests import MostActivesRequest
+            req  = MostActivesRequest(top=50, by="volume")
+            resp = client.get_stock_most_actives(req)
+            for item in getattr(resp, "most_actives", []):
+                sym = getattr(item, "symbol", "")
+                if not sym or len(sym) > 5:
+                    continue
+                results.append({
+                    "symbol":     sym,
+                    "change_pct": float(getattr(item, "percent_change", 0) or 0),
+                    "volume":     int(getattr(item, "volume", 0) or 0),
+                    "price":      float(getattr(item, "price", 0) or 0),
+                })
+    except Exception as _e:
+        logger.debug(f"Alpaca most_actives failed: {_e}")
+
+    # yfinance fallback — screen S&P 500 for biggest movers
+    if not results:
+        try:
+            import yfinance as yf
+            _SCREEN = [
+                "AAPL","MSFT","NVDA","AMZN","GOOGL","META","TSLA","AMD","NFLX","COIN",
+                "CRWD","PANW","ZS","DDOG","NET","SNOW","AVGO","MU","ARM","SMCI",
+                "PLTR","MSTR","MARA","RIOT","SOFI","HOOD","SQ","UBER","SHOP","ABNB",
+                "MELI","RBLX","MRNA","HIMS","JPM","GS","MS","XOM","CVX","OXY",
+                "TQQQ","SPXL","SOXL","IWM","SPY","QQQ",
+            ]
+            tickers = yf.Tickers(" ".join(_SCREEN))
+            for sym in _SCREEN:
+                try:
+                    t = tickers.tickers.get(sym)
+                    if not t:
+                        continue
+                    info = t.fast_info
+                    price = float(getattr(info, "last_price", 0) or 0)
+                    prev  = float(getattr(info, "previous_close", 0) or 0)
+                    vol   = int(getattr(info, "three_month_average_volume", 0) or 0)
+                    if price > 0 and prev > 0:
+                        chg = (price - prev) / prev * 100
+                        results.append({"symbol": sym, "change_pct": chg, "volume": vol, "price": price})
+                except Exception:
+                    continue
+        except Exception as _e:
+            logger.debug(f"yfinance movers fallback failed: {_e}")
+
+    # Sort by absolute % change (biggest movers = most opportunity)
+    results.sort(key=lambda x: abs(x.get("change_pct", 0)), reverse=True)
+    # Filter: price > $5, at least some volume
+    results = [r for r in results if r.get("price", 0) > 5 and r.get("change_pct", 0) != 0]
+
+    if results:
+        _movers_cache = {"data": results, "ts": now}
+        logger.info(f"Top movers fetched: {[r['symbol'] for r in results[:8]]}")
+
+    return results[:n]
