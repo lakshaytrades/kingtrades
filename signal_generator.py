@@ -479,12 +479,10 @@ class SignalGenerator:
                 learner          = self._learner,
                 # ── Gates 6-10 parameters ─────────────────────────────
                 symbol           = symbol,
-                # Gate 6: daily_volume — get_quote() returns 5-min bar volume, not daily.
-                # Use 1_000_000 as safe default so Gate 6 passes for all liquid US stocks.
-                # Actual daily volume tracking would require summing all 5-min bars today.
+                # Gate 6: daily_volume — WebSocket quote "volume" = bid_size (tiny, not daily).
+                # Only use fields that represent true daily volume; default 1_000_000 passes
+                # Gate 6 for all standard US liquid stocks until real daily vol is available.
                 daily_volume     = float(stock_quote.get("daily_volume", 0) or
-                                         stock_quote.get("volume", 0) or
-                                         stock_quote.get("vol", 0) or
                                          stock_quote.get("traded_volume", 0) or 1_000_000),
                 ltp              = ltp_now,
                 prev_close       = float(stock_quote.get("prev_close", 0) or
@@ -927,7 +925,7 @@ class SignalGenerator:
 
         # Require 5m + at least one HTF confirming (not just neutral):
         # 5m(35) + 15m aligned(35) = 70 ✅  |  5m + two NEUTRALs = 60 ❌  |  5m + 1h opposing = 50 ❌
-        aligned = alignment_score >= 70
+        aligned = alignment_score >= 65
 
         return {
             "aligned": aligned,
