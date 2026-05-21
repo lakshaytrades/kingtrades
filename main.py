@@ -162,15 +162,10 @@ class TradingBot:
         logger.info(f"[{format_ist_timestamp()}] Broker: {MARKET_NAME}")
         self.fetcher = _broker_get_fetcher()
 
-        # Start live WebSocket price stream for real-time quotes
-        try:
-            from price_stream import get_price_stream
-            self.price_stream = get_price_stream()
-            self.price_stream.start(list(config.WATCHLIST))
-            logger.info(f"[{format_ist_timestamp()}] Live price stream started for {len(config.WATCHLIST)} symbols")
-        except Exception as e:
-            self.price_stream = None
-            logger.warning(f"[{format_ist_timestamp()}] Price stream unavailable (will use REST): {e}")
+        # WebSocket disabled — Alpaca free tier connection limit causes infinite retry spam.
+        # Bot uses REST polling for all price data (fully functional, slightly slower).
+        self.price_stream = None
+        logger.info(f"[{format_ist_timestamp()}] WebSocket disabled — using REST polling for all price data")
 
         # Initialize risk manager
         from risk_manager import RiskManager
