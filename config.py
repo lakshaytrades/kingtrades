@@ -54,7 +54,9 @@ GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() in ("true", "1", "yes")
 
 # Capital (USD) — paper account ~$99K; deploy 25% for 13%/month maths
-MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "25000"))
+MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
+# 0 = use full Alpaca account balance dynamically (recommended)
+# >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
 
 MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
