@@ -344,6 +344,11 @@ class PriceStream:
         stream.run() which blocks until the connection drops or stop() is
         called.
         """
+        if int(os.getenv("ALPACA_WS_SYMBOL_LIMIT", "25")) == 0:
+            logger.info(f"[{format_ist_timestamp()}] WebSocket disabled via ALPACA_WS_SYMBOL_LIMIT=0 — using REST polling only")
+            self._running = False
+            return
+
         while not self._stop_event.is_set():
             try:
                 from alpaca.data.live import StockDataStream
