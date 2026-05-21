@@ -22,7 +22,7 @@ if [ "$BEFORE" = "$AFTER" ]; then
     exit 0  # No changes — nothing to do
 fi
 
-TIMESTAMP=$(date '+%Y-%m-%d %H:%M:%S IST' --date='TZ="Asia/Kolkata"' 2>/dev/null || date '+%Y-%m-%d %H:%M:%S')
+TIMESTAMP=$(TZ="Asia/Kolkata" date '+%Y-%m-%d %H:%M:%S IST')
 SHORT_HASH=$(echo "$AFTER" | cut -c1-7)
 echo "[$TIMESTAMP] Deployed: $SHORT_HASH (was $( echo "$BEFORE" | cut -c1-7))" >> "$LOG"
 
