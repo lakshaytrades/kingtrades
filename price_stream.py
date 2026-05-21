@@ -102,11 +102,10 @@ class PriceStream:
     # ─────────────────────────────────────────────────────────────────────
 
     def start(self, symbols: List[str]) -> None:
-        """
-        Subscribe to real-time quotes for *symbols* and start the WebSocket
-        in a background thread.  Safe to call multiple times — adds new
-        symbols to an already-running stream.
-        """
+        """WebSocket disabled — Alpaca free tier only allows 1 connection."""
+        logger.debug(f"[{format_ist_timestamp()}] PriceStream.start() skipped — WebSocket disabled, using REST")
+        return
+
         if not symbols:
             logger.warning(f"[{format_ist_timestamp()}] PriceStream.start() called with empty symbol list")
             return
