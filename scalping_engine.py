@@ -176,8 +176,8 @@ class ScalpingEngine:
 
         logger.info(
             f"[{format_ist_timestamp()}] SCALP {direction} {symbol} | "
-            f"Entry: ₹{current_price:.2f} | SL: ₹{stop_loss:.2f} | "
-            f"Target: ₹{target:.2f} | {reason}"
+            f"Entry: ${current_price:.2f} | SL: ${stop_loss:.2f} | "
+            f"Target: ${target:.2f} | {reason}"
         )
         return ScalpSignal(
             symbol=symbol,
@@ -246,9 +246,9 @@ class ScalpingEngine:
         above_vwap = "YES" if "Above VWAP: YES" in sig.reason else "NO"
         return (
             f"⚡ SCALP SIGNAL — {sig.symbol} ({sig.direction}) {arrow}\n"
-            f"Entry: ₹{sig.entry_price:,.2f} | "
-            f"SL: ₹{sig.stop_loss:,.2f} (-{stop_pct:.1f}%)\n"
-            f"Target: ₹{sig.target:,.2f} (+{target_pct:.1f}%) | "
+            f"Entry: ${sig.entry_price:,.2f} | "
+            f"SL: ${sig.stop_loss:,.2f} (-{stop_pct:.1f}%)\n"
+            f"Target: ${sig.target:,.2f} (+{target_pct:.1f}%) | "
             f"Max hold: {sig.max_hold_minutes} min\n"
             f"Momentum: {sig.momentum_pct:+.2f}% burst | "
             f"Volume: {sig.volume_ratio:.1f}x\n"

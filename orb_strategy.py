@@ -185,9 +185,9 @@ class ORBStrategy:
         self._cache[symbol] = (setup, today)
         logger.info(
             f"[{format_ist_timestamp()}] ORB {direction} {symbol} | "
-            f"OR: ₹{or_low:.2f}–₹{or_high:.2f} ({or_width_pct:.2f}%) | "
-            f"Entry: ₹{entry_price:.2f} | SL: ₹{stop_loss:.2f} | "
-            f"Target: ₹{target:.2f} | Vol: {volume_ratio:.1f}x | Conf: {confidence:.0f}%"
+            f"OR: ${or_low:.2f}–${or_high:.2f} ({or_width_pct:.2f}%) | "
+            f"Entry: ${entry_price:.2f} | SL: ${stop_loss:.2f} | "
+            f"Target: ${target:.2f} | Vol: {volume_ratio:.1f}x | Conf: {confidence:.0f}%"
         )
         return setup
 
@@ -232,7 +232,7 @@ class ORBStrategy:
             signal_time=setup.formed_at,
             rationale=(
                 f"ORB {setup.breakout_direction} | "
-                f"OR: ₹{setup.or_low:.2f}–₹{setup.or_high:.2f} "
+                f"OR: ${setup.or_low:.2f}–${setup.or_high:.2f} "
                 f"({setup.or_width_pct:.2f}%) | "
                 f"Vol: {setup.volume_ratio:.1f}x surge | "
                 f"Confidence: {setup.confidence:.0f}%"
@@ -244,19 +244,19 @@ class ORBStrategy:
     def format_telegram_alert(self, setup: ORBSetup) -> str:
         arrow = "🟢" if setup.breakout_direction == "LONG" else "🔴"
         breakout_desc = (
-            f"Closed above ₹{setup.or_high:,.2f}"
+            f"Closed above ${setup.or_high:,.2f}"
             if setup.breakout_direction == "LONG"
-            else f"Closed below ₹{setup.or_low:,.2f}"
+            else f"Closed below ${setup.or_low:,.2f}"
         )
         rr = f"{self.RR_RATIO:.1f}:1"
         return (
             f"🎯 ORB BREAKOUT — {setup.symbol} ({setup.breakout_direction}) {arrow}\n"
-            f"OR Range: ₹{setup.or_low:,.2f} – ₹{setup.or_high:,.2f} "
+            f"OR Range: ${setup.or_low:,.2f} – ${setup.or_high:,.2f} "
             f"({setup.or_width_pct:.1f}% wide)\n"
             f"Breakout: {breakout_desc}\n"
-            f"Entry: ₹{setup.entry_price:,.2f} | "
-            f"SL: ₹{setup.stop_loss:,.2f} | "
-            f"Target: ₹{setup.target:,.2f}\n"
+            f"Entry: ${setup.entry_price:,.2f} | "
+            f"SL: ${setup.stop_loss:,.2f} | "
+            f"Target: ${setup.target:,.2f}\n"
             f"R:R {rr} | Volume: {setup.volume_ratio:.1f}x surge\n"
             f"Confidence: {setup.confidence:.0f}%\n"
             f"⚡ OPENING RANGE — First 30 min setup"
