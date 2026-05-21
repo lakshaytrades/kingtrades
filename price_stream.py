@@ -120,6 +120,13 @@ class PriceStream:
 
         # Deduplicate while preserving order
         new_symbols = [s.upper() for s in symbols if s.upper() not in self._symbols]
+        # Alpaca free tier: max 30 symbols via WebSocket. Cap here to avoid 405 errors.
+        # REST polling handles any symbols not in the stream.
+        WS_SYMBOL_LIMIT = int(os.getenv("ALPACA_WS_SYMBOL_LIMIT", "25"))
+        remaining_slots = max(0, WS_SYMBOL_LIMIT - len(self._symbols))
+        new_symbols = new_symbols[:remaining_slots]
+        if not new_symbols:
+            return
         self._symbols.extend(new_symbols)
 
         if self._running:
