@@ -336,22 +336,7 @@ class AlpacaDataFetcher:
         can switch to ``get_quote_live()`` for lower latency with zero other
         changes.
         """
-        stream = get_price_stream()
-        if stream.is_running():
-            cached = stream.get_quote(symbol)
-            if cached is not None:
-                return cached
-            # Stream running but no data yet for this symbol — subscribe it
-            # so the next call will hit the fast path.
-            if symbol.upper() not in stream.subscribed_symbols:
-                try:
-                    stream.start([symbol])
-                except Exception as exc:
-                    logger.debug(
-                        f"[{format_ist_timestamp()}] get_quote_live: "
-                        f"subscribe {symbol} failed: {exc}"
-                    )
-
+        # WebSocket disabled — always use REST polling
         # Fallback to REST poll
         logger.debug(
             f"[{format_ist_timestamp()}] get_quote_live({symbol}): "
