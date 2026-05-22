@@ -501,6 +501,105 @@ class TradingBot:
                 )
             return False
 
+    def _build_trading_plan(self, available: float) -> dict:
+        """
+        Compute today's trading plan from live capital and broadcast it via Telegram.
+
+        Capital tiers scale max positions, risk per trade, and daily loss limit so
+        the bot never over-sizes relative to account equity.
+
+        Returns a plan dict consumed by initialize_market_day.
+        """
+        # ── Tier classification ──────────────────────────────────────────────
+        if available < 500:
+            tier        = "⛔ INSUFFICIENT"
+            max_pos     = 0
+            risk_pct    = 0.0
+            loss_pct    = 1.0
+            note        = "Minimum $500 needed — trading disabled today"
+        elif available < 2_500:
+            tier        = "🟡 SMALL"
+            max_pos     = 2
+            risk_pct    = 0.5
+            loss_pct    = 1.5
+            note        = ""
+        elif available < 10_000:
+            tier        = "🟢 MEDIUM"
+            max_pos     = 4
+            risk_pct    = 0.75
+            loss_pct    = 2.0
+            note        = ""
+        elif available < 50_000:
+            tier        = "🔵 LARGE"
+            max_pos     = 8
+            risk_pct    = 1.0
+            loss_pct    = 2.0
+            note        = ""
+        else:
+            tier        = "💎 INSTITUTIONAL"
+            max_pos     = 15
+            risk_pct    = 1.0
+            loss_pct    = 2.5
+            note        = ""
+
+        # ── Dollar values ────────────────────────────────────────────────────
+        risk_per_trade      = available * (risk_pct / 100)
+        daily_loss_limit    = available * (loss_pct / 100)
+        per_pos_budget      = (available / max_pos) if max_pos > 0 else 0
+
+        # Daily target: env override or 2× risk-per-trade (minimum $50)
+        env_target = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
+        daily_target = env_target if env_target > 0 else max(risk_per_trade * 2 * max_pos, 50)
+
+        # ── Apply to risk manager ────────────────────────────────────────────
+        self.risk_manager.max_risk_pct          = min(risk_pct, 1.0)
+        self.risk_manager.daily_loss_limit_pct  = loss_pct
+        self.risk_manager.max_positions         = max_pos
+
+        plan = {
+            "available":         available,
+            "tier":              tier,
+            "max_positions":     max_pos,
+            "risk_pct":          risk_pct,
+            "risk_per_trade":    risk_per_trade,
+            "daily_loss_pct":    loss_pct,
+            "daily_loss_limit":  daily_loss_limit,
+            "per_pos_budget":    per_pos_budget,
+            "daily_target":      daily_target,
+        }
+
+        logger.info(
+            f"[{format_ist_timestamp()}] TRADING PLAN | "
+            f"Capital: ${available:,.2f} | Tier: {tier} | "
+            f"Positions: {max_pos} | Risk/trade: {risk_pct}% (${risk_per_trade:.2f}) | "
+            f"Daily loss limit: {loss_pct}% (${daily_loss_limit:.2f}) | "
+            f"Target: ${daily_target:,.2f}"
+        )
+
+        # ── Telegram broadcast ───────────────────────────────────────────────
+        if self.alerter and available > 0:
+            now_str  = get_current_ist_time().strftime("%Y-%m-%d")
+            mode_str = "⚡ LIVE" if config.LIVE_TRADING_ENABLED else "🔒 PAPER"
+            lines = [
+                f"📊 <b>TRADING PLAN — {now_str}</b>",
+                "",
+                f"💰 <b>Capital:</b>         ${available:,.2f}",
+                f"📊 <b>Tier:</b>            {tier}",
+                f"🔧 <b>Mode:</b>            {mode_str}",
+                "",
+                f"📈 <b>Max positions:</b>   {max_pos}",
+                f"💼 <b>Budget/position:</b> ${per_pos_budget:,.2f}",
+                "",
+                f"⚠️  <b>Risk per trade:</b>  ${risk_per_trade:.2f}  ({risk_pct}%)",
+                f"🛑 <b>Daily stop-out:</b>  ${daily_loss_limit:.2f}  ({loss_pct}%)",
+                f"🎯 <b>Daily target:</b>    ${daily_target:,.2f}",
+            ]
+            if note:
+                lines += ["", f"🚫 {note}"]
+            self.alerter.send_text("\n".join(lines))
+
+        return plan
+
     def initialize_market_day(self):
         """Called once at market open each day (9:30 AM ET)."""
         if self._day_initialized:
@@ -517,38 +616,34 @@ class TradingBot:
             )
             # Not fatal — allow the day to proceed but alert was sent
 
-        # Get live balance from Alpaca; fall back to auto-compounded capital
+        # ── Step 1: Fetch live capital ───────────────────────────────────────
         balance_info = self.fetcher.get_account_balance()
         available = balance_info.get("available", 0)
         if available == 0:
             available = self._load_compounded_capital()
 
-        # Sync any open positions from Alpaca (recovery after restart)
+        # ── Step 2: Build capital-based trading plan (sets risk params + Telegram) ──
+        plan = self._build_trading_plan(available)
+        daily_target = plan["daily_target"]
+
+        # ── Step 3: Sync open positions from broker (restart recovery) ──────
         self._sync_positions_from_groww()
 
-        # Get SPY opening price as market reference
+        # ── Step 4: Get SPY opening price as market reference ────────────────
         spy_q = self.fetcher.get_nifty_quote()
         spy_open = spy_q.get("ltp", 0) if spy_q else 0
 
-        # Initialize risk manager for the day
+        # ── Step 5: Initialize risk manager for the day ──────────────────────
         self.risk_manager.initialize_day(available, spy_open)
 
-        # Initialize Profit Engine for the day
+        # ── Step 6: Initialize Profit Engine with plan's daily target ────────
         try:
             if self.profit_engine:
-                daily_target = float(os.getenv("DAILY_PROFIT_TARGET", "200"))
                 self.profit_engine.initialize(available, daily_target=daily_target)
                 logger.info(
                     f"[{format_ist_timestamp()}] Profit Engine initialized | "
                     f"Balance: ${available:,.2f} | Target: ${daily_target:,.2f}"
                 )
-                if self.alerter:
-                    self.alerter.send_text(
-                        f"💰 <b>Daily Target Set: ${daily_target:,.2f}</b>\n"
-                        f"Balance: ${available:,.2f} | Buying power: ${available:,.2f}\n"
-                        f"🎯 Stretch: ${daily_target*1.5:,.2f} | Max: ${daily_target*2:,.2f}\n"
-                        f"Mode: NORMAL — Trading begins now"
-                    )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Profit engine day init failed: {e}")
 
