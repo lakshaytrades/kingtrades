@@ -520,26 +520,26 @@ class TradingBot:
         elif available < 2_500:
             tier        = "🟡 SMALL"
             max_pos     = 2
-            risk_pct    = 0.5
-            loss_pct    = 1.5
+            risk_pct    = 0.25   # low risk — protect small account
+            loss_pct    = 1.0
             note        = ""
         elif available < 10_000:
             tier        = "🟢 MEDIUM"
             max_pos     = 4
-            risk_pct    = 0.75
-            loss_pct    = 2.0
+            risk_pct    = 0.3    # conservative — max loss ~$30 per trade on $10K
+            loss_pct    = 1.5
             note        = ""
         elif available < 50_000:
             tier        = "🔵 LARGE"
-            max_pos     = 8
-            risk_pct    = 1.0
-            loss_pct    = 2.0
+            max_pos     = 6
+            risk_pct    = 0.5    # moderate — max loss ~$250 per trade on $50K
+            loss_pct    = 1.5
             note        = ""
         else:
             tier        = "💎 INSTITUTIONAL"
-            max_pos     = 15
-            risk_pct    = 1.0
-            loss_pct    = 2.5
+            max_pos     = 10
+            risk_pct    = 0.5    # controlled — large account still caps risk
+            loss_pct    = 2.0
             note        = ""
 
         # ── Dollar values ────────────────────────────────────────────────────

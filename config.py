@@ -87,10 +87,11 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.5        # tighter SL → better R:R at same entry
+ATR_SL_MULTIPLIER: float = 1.0        # 1x ATR stop — smaller loss, T1 hit faster
 ATR_TP_MULTIPLIER: float = 3.0        # T2 = 1:3 R:R
 ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
-ATR_TRAIL_MULTIPLIER: float = 0.8     # trail tighter after T1 to lock gains
+ATR_TRAIL_MULTIPLIER: float = 0.5     # tight trail — lock gains aggressively
+BREAKEVEN_TRIGGER_PCT: float = 0.3   # move SL to entry at 0.3% profit (was 0.5)
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
