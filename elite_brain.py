@@ -117,6 +117,8 @@ class EliteBrain:
         "overnight_bias":    1.0,   # Directional day bias
         "nse_data":          1.0,   # Delivery, bulk/block, 52wk
         "sentiment_ai":      0.8,   # News can be noisy — lower weight
+        "harmonic_alignment":    1.1,   # Harmonic pattern confluence
+        "market_breadth":        0.9,   # Market internals breadth
     }
 
     GRAND_SLAM_MIN_MODULES = 7
@@ -337,6 +339,32 @@ class EliteBrain:
                 score   = mtf_score if mtf_aligned else -mtf_score,
                 weight  = self._weights.get("mtf_alignment", 1.8),
                 reason  = f"MTF:{aligned_c}/3 aligned",
+            ))
+
+        # ── 13. Harmonic Pattern Alignment ───────────────────────────────
+        harmonic_score = ctx.get("harmonic_score", 0)
+        if harmonic_score != 0:
+            harm_aligned = harmonic_score > 0
+            votes.append(ModuleVote(
+                module  = "harmonic_alignment",
+                aligned = harm_aligned,
+                score   = abs(harmonic_score) * (1 if harm_aligned else -1),
+                weight  = self._weights.get("harmonic_alignment", 1.1),
+                reason  = f"harmonic={'bullish' if harm_aligned else 'bearish'} ({harmonic_score:+.0f})",
+            ))
+
+        # ── 14. Market Breadth / Internals ───────────────────────────────
+        breadth = ctx.get("breadth_score", 0)
+        if breadth != 0:
+            breadth_aligned = (breadth > 60 and direction == "LONG") or \
+                              (breadth < 40 and direction == "SHORT")
+            breadth_score_val = (breadth - 50) * 2  # -100 to +100
+            votes.append(ModuleVote(
+                module  = "market_breadth",
+                aligned = breadth_aligned,
+                score   = breadth_score_val if breadth_aligned else -abs(breadth_score_val) * 0.5,
+                weight  = self._weights.get("market_breadth", 0.9),
+                reason  = f"breadth={breadth:.0f}/100",
             ))
 
         # ── Fusion ────────────────────────────────────────────────────────

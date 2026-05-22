@@ -319,6 +319,21 @@ class SignalGenerator:
             # 5b. Institutional intelligence context (Option Chain + Volume Profile)
             inst_ctx = self._get_institutional_context(symbol, df_5m)
 
+            # 5b-ii. Extract harmonic score for EliteBrain module
+            _pat_objs_for_harm = analysis_5m.get("patterns", [])
+            _harm_keywords = ("OTE", "Gartley", "Butterfly", "Bat", "Crab", "ABCD", "Three Drives", "Cypher")
+            harm_long = sum(
+                getattr(p, "confidence", 0) for p in _pat_objs_for_harm
+                if getattr(p, "direction", "") == "LONG" and
+                any(k in getattr(p, "name", "") for k in _harm_keywords)
+            )
+            harm_short = sum(
+                getattr(p, "confidence", 0) for p in _pat_objs_for_harm
+                if getattr(p, "direction", "") == "SHORT" and
+                any(k in getattr(p, "name", "") for k in _harm_keywords)
+            )
+            inst_ctx["harmonic_score"] = min(harm_long - harm_short, 50)  # clip to ±50
+
             # 5c. Regime block — skip signal if regime is AVOID
             if inst_ctx.get("regime_block", False):
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: regime_block=True — skipping")
@@ -846,6 +861,7 @@ class SignalGenerator:
             "fii_size_mult":   self._fii_size_mult,
             "nse_score":       0,
             "nse_reason":      "",
+            "ltp":             float(df_5m["close"].iloc[-1]) if df_5m is not None and not df_5m.empty and "close" in df_5m.columns else 0.0,
         }
 
         # ── Option Chain ─────────────────────────────────
@@ -1275,6 +1291,127 @@ class SignalGenerator:
             score += min(relative_strength * 2, 8)
         elif direction == "SHORT" and relative_strength < -0.5:
             score += min(abs(relative_strength) * 2, 8)
+
+        # ── Extended Indicator Confluence (institutional toolbox) ──────────
+        close = ctx.get("ltp", 0.0)
+
+        if direction == "LONG":
+            # Ichimoku Cloud (institutional trend filter)
+            if ind.ichimoku_tenkan > 0 and ind.ichimoku_kijun > 0:
+                if ind.ichimoku_tenkan > ind.ichimoku_kijun:
+                    score += 3  # TK bullish cross
+                if close > 0 and ind.ichimoku_senkou_a > 0 and ind.ichimoku_senkou_b > 0:
+                    cloud_top = max(ind.ichimoku_senkou_a, ind.ichimoku_senkou_b)
+                    if close > cloud_top:
+                        score += 4  # Price above Kumo = institutional uptrend confirmed
+            # Parabolic SAR aligned
+            if ind.parabolic_sar_bull:
+                score += 3
+            # Money Flow (institutional accumulation signals)
+            if ind.cmf > 0.15:
+                score += 4  # Strong institutional buying
+            elif ind.cmf > 0.05:
+                score += 2
+            if ind.mfi < 30:
+                score += 3  # MFI oversold = accumulation zone
+            elif ind.mfi < 45:
+                score += 1
+            # Williams %R oversold zone
+            if ind.williams_r < -80:
+                score += 3  # Deep oversold = bounce setup
+            elif ind.williams_r < -60:
+                score += 1
+            # CCI recovering from oversold
+            if -100 < ind.cci < -50:
+                score += 2
+            elif 0 < ind.cci < 100:
+                score += 1  # Positive momentum building
+            # Stoch RSI oversold cross
+            if ind.stoch_rsi_k < 25 and ind.stoch_rsi_k > ind.stoch_rsi_d:
+                score += 3
+            # Keltner Squeeze (BB inside KC = imminent volatility expansion)
+            if (ind.keltner_upper > 0 and ind.keltner_lower > 0 and
+                    ind.bb_upper > 0 and ind.bb_lower > 0):
+                if ind.bb_upper < ind.keltner_upper and ind.bb_lower > ind.keltner_lower:
+                    score += 4  # Classic TTM squeeze — explosive move loading
+            # VWAP standard deviation bands (institutional buy zones)
+            if close > 0 and ind.vwap_lower_1 > 0:
+                if close <= ind.vwap_lower_1:
+                    score += 3  # At -1σ VWAP = institutional buy zone
+                elif close <= ind.vwap_lower_2 if ind.vwap_lower_2 > 0 else False:
+                    score += 5  # At -2σ VWAP = high-conviction reversal zone
+            # Pivot Point confluence (key institutional levels)
+            if close > 0 and ind.pivot_pp > 0:
+                above_pp = close > ind.pivot_pp
+                if above_pp and ind.pivot_r1 > 0 and close < ind.pivot_r1:
+                    score += 2  # Trading between PP and R1 = bullish structure
+                if ind.pivot_s1 > 0 and 0 <= (close - ind.pivot_s1) / close <= 0.005:
+                    score += 3  # Bouncing off S1 pivot support
+            # Liquidity levels (ICT concept)
+            if ind.eql:
+                score += 2  # Equal lows = liquidity pool below = bounce likely
+            # Volume Profile levels
+            if ind.at_hvn:
+                score += 2  # At HVN = institutional interest, high conviction area
+
+        else:  # SHORT
+            # Ichimoku Cloud
+            if ind.ichimoku_tenkan > 0 and ind.ichimoku_kijun > 0:
+                if ind.ichimoku_tenkan < ind.ichimoku_kijun:
+                    score += 3  # TK bearish cross
+                if close > 0 and ind.ichimoku_senkou_a > 0 and ind.ichimoku_senkou_b > 0:
+                    cloud_bottom = min(ind.ichimoku_senkou_a, ind.ichimoku_senkou_b)
+                    if close < cloud_bottom:
+                        score += 4  # Price below Kumo = institutional downtrend confirmed
+            # Parabolic SAR bearish
+            if not ind.parabolic_sar_bull:
+                score += 3
+            # Money Flow bearish
+            if ind.cmf < -0.15:
+                score += 4
+            elif ind.cmf < -0.05:
+                score += 2
+            if ind.mfi > 70:
+                score += 3  # MFI overbought = distribution zone
+            elif ind.mfi > 55:
+                score += 1
+            # Williams %R overbought
+            if ind.williams_r > -20:
+                score += 3
+            elif ind.williams_r > -40:
+                score += 1
+            # CCI overbought zone
+            if 50 < ind.cci < 100:
+                score += 2
+            elif -100 < ind.cci < 0:
+                score += 1
+            # Stoch RSI overbought cross
+            if ind.stoch_rsi_k > 75 and ind.stoch_rsi_k < ind.stoch_rsi_d:
+                score += 3
+            # Keltner Squeeze
+            if (ind.keltner_upper > 0 and ind.keltner_lower > 0 and
+                    ind.bb_upper > 0 and ind.bb_lower > 0):
+                if ind.bb_upper < ind.keltner_upper and ind.bb_lower > ind.keltner_lower:
+                    score += 4
+            # VWAP SD bands (distribution zones)
+            if close > 0 and ind.vwap_upper_1 > 0:
+                if close >= ind.vwap_upper_1:
+                    score += 3  # At +1σ VWAP = institutional sell zone
+                elif close >= ind.vwap_upper_2 if ind.vwap_upper_2 > 0 else False:
+                    score += 5  # At +2σ VWAP = high-conviction short zone
+            # Pivot Point confluence
+            if close > 0 and ind.pivot_pp > 0:
+                below_pp = close < ind.pivot_pp
+                if below_pp and ind.pivot_s1 > 0 and close > ind.pivot_s1:
+                    score += 2  # Trading between PP and S1 = bearish structure
+                if ind.pivot_r1 > 0 and 0 <= (ind.pivot_r1 - close) / close <= 0.005:
+                    score += 3  # Rejecting at R1 = resistance short
+            # Liquidity levels
+            if ind.eqh:
+                score += 2  # Equal highs = liquidity pool above = distribution likely
+            # Volume Profile
+            if ind.at_hvn:
+                score += 2
 
         # ── Time of day filter (US ET market hours) ──────────
         now_et   = get_current_ist_time()   # IST alias → ET after migration
