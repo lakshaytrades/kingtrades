@@ -151,7 +151,7 @@ class WatchlistManager:
                 _time.sleep(2.0)
 
         if not scores:
-            logger.warning(f"[{format_ist_timestamp()}] Momentum scan returned no results")
+            logger.info(f"[{format_ist_timestamp()}] Momentum scan: no new picks — using default watchlist ({len(config.DEFAULT_WATCHLIST)} symbols)")
             self._watchlist = config.DEFAULT_WATCHLIST[:top_n]
             return
 
@@ -217,9 +217,8 @@ class WatchlistManager:
                 score += 10
 
             tradeable = (
-                intraday_range_pct >= 0.5 and   # Some movement today
-                volume >= 50_000 and             # Minimum liquidity
-                ltp >= 1                         # Price filter
+                intraday_range_pct >= 0.3 and   # Some intraday movement
+                ltp >= 1                         # Price filter (not penny stock)
             )
 
             return {
