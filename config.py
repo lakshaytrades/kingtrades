@@ -213,10 +213,12 @@ NIFTY_GROWW_SYMBOL = BENCHMARK_SYMBOL  # alias for legacy references
 # LOGGING
 # ============================================================
 LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO").upper()
-LOG_DIR: str = os.getenv("LOG_DIR", "logs")
+# Use absolute path so logs land in the right place regardless of cwd
+_BASE_DIR = Path(__file__).parent.resolve()
+LOG_DIR: str = os.getenv("LOG_DIR", str(_BASE_DIR / "logs"))
 TRADE_LOG_DIR: str = f"{LOG_DIR}/trades"
 PERFORMANCE_LOG_DIR: str = f"{LOG_DIR}/performance"
-CHART_DIR: str = "charts"
+CHART_DIR: str = str(_BASE_DIR / "charts")
 
 for d in [LOG_DIR, TRADE_LOG_DIR, PERFORMANCE_LOG_DIR, CHART_DIR]:
     Path(d).mkdir(parents=True, exist_ok=True)
