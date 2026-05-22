@@ -194,6 +194,11 @@ class SignalGenerator:
             MarketRegimeDetector() if _REGIME_AVAILABLE else None
         )
 
+        # Session-level no-data tracker: symbols with 3+ consecutive 0-bar
+        # failures are skipped for the rest of the session to avoid log spam.
+        self._no_data_strikes: Dict[str, int] = {}
+        self._session_skip: set = set()
+
         # Concurrent scanning config
         self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
 
@@ -237,6 +242,11 @@ class SignalGenerator:
         Returns TradeSignal if confidence >= min_score, else None.
         """
         try:
+            # Skip symbols that have repeatedly returned no data this session
+            if symbol in self._session_skip:
+                logger.debug(f"{symbol}: skipped — no data available (session blacklist)")
+                return None
+
             logger.info(f"[{format_ist_timestamp()}] Analyzing {symbol}...")
 
             # 1. Fetch multi-timeframe data
@@ -245,9 +255,28 @@ class SignalGenerator:
             df_15m = mtf_data.get("15m")
             df_1h  = mtf_data.get("1h")
 
-            if df_5m is None or len(df_5m) < 30:
-                logger.info(f"[{format_ist_timestamp()}] {symbol}: insufficient 5m data (got {len(df_5m) if df_5m is not None else 0} bars)")
+            bar_count = len(df_5m) if df_5m is not None else 0
+            if bar_count < 10:
+                strikes = self._no_data_strikes.get(symbol, 0) + 1
+                self._no_data_strikes[symbol] = strikes
+                if strikes >= 3:
+                    self._session_skip.add(symbol)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: no 5m data after {strikes} attempts "
+                        f"— skipping for rest of session"
+                    )
+                else:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: insufficient 5m data "
+                        f"(got {bar_count} bars, attempt {strikes}/3)"
+                    )
                 return None
+
+            # Data is available — reset strike counter
+            self._no_data_strikes.pop(symbol, None)
+
+            if bar_count < 30:
+                logger.info(f"[{format_ist_timestamp()}] {symbol}: only {bar_count} bars — proceeding with limited history")
 
             # 2. Pattern analysis on each timeframe
             analysis_5m  = self.recognizer.analyze(df_5m)

@@ -703,11 +703,11 @@ class TradingBot:
                 logger.info(f"[{format_ist_timestamp()}] {sector_summary}")
                 if self.alerter:
                     self.alerter.send_text(sector_summary)
-                # Concentrate watchlist on hot sectors
-                watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=3)
+                # Score sectors but keep broad watchlist — top_n=8 avoids over-concentration
+                watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=8)
                 logger.info(
                     f"[{format_ist_timestamp()}] Sector-filtered watchlist: "
-                    f"{len(watchlist)} stocks in top 3 sectors"
+                    f"{len(watchlist)} stocks in top 8 sectors"
                 )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Sector rotation failed: {e}")

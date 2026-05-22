@@ -418,18 +418,21 @@ class EliteBrain:
         else:
             min_agree = max(2, round(total_modules * 0.5))
 
-        # Hard reject if conviction too low or too few modules aligned
+        # AVOID strategy: reduce size but don't hard-block — high_accuracy_filter
+        # already validated the regime with its own gate. Trust the filter.
+        if strategy == "AVOID":
+            size_mult *= 0.5   # Half size in AVOID regime
+            logger.debug(f"[{format_ist_timestamp()}] EliteBrain: AVOID regime — half size for {symbol}")
+
+        # Reject only on low conviction or zero aligned modules
         approved = (
             final_score >= self.MIN_CONVICTION_SCORE and
-            aligned_count >= min_agree and
-            strategy != "AVOID"
+            aligned_count >= min_agree
         )
 
         reject_reason = ""
         if not approved:
-            if strategy == "AVOID":
-                reject_reason = f"EliteBrain: regime strategy=AVOID"
-            elif aligned_count < min_agree:
+            if aligned_count < min_agree:
                 reject_reason = f"EliteBrain: only {aligned_count}/{total_modules} modules agree (need {min_agree})"
             else:
                 reject_reason = f"EliteBrain: low conviction {final_score:.0f}/100"
