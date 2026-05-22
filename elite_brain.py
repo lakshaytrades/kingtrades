@@ -377,20 +377,23 @@ class EliteBrain:
         # Size multiplier from alignment count
         if aligned_count >= 10:
             size_mult = 3.0
-        elif aligned_count >= 8:
-            size_mult = 2.5
-        elif aligned_count >= self.GRAND_SLAM_MIN_MODULES:
+        # Scale size by fraction of active modules aligned (relative, not absolute)
+        agree_ratio = aligned_count / max(1, total_modules)
+        if agree_ratio >= 1.0:
+            size_mult = 2.5        # All active modules agree → max conviction
+        elif agree_ratio >= 0.75:
             size_mult = 2.0
-        elif aligned_count >= 5:
-            size_mult = 1.5 + (aligned_count - 5) * 0.1
-        elif aligned_count >= 3:
+        elif agree_ratio >= 0.60:
+            size_mult = 1.5
+        elif agree_ratio >= 0.50:
             size_mult = 1.0
         else:
-            size_mult = max(0.5, aligned_count * 0.25)
+            size_mult = max(0.5, agree_ratio * 2)
 
-        # Grand Slam check
+        # Grand Slam: all active modules aligned + high conviction
         grand_slam = (
-            aligned_count >= self.GRAND_SLAM_MIN_MODULES and
+            agree_ratio >= 1.0 and
+            aligned_count >= 2 and
             final_score >= 78.0 and
             self._can_grand_slam()
         )
@@ -407,10 +410,16 @@ class EliteBrain:
                 f"(size={size_mult:.1f}x)"
             )
 
+        # Dynamic consensus threshold: require ≥50% of active modules to agree.
+        # Hard floor of 2 so we never approve on a single vote.
+        # Many modules (FII/DII, NSE data, sentiment) produce no vote for US stocks,
+        # so basing the threshold on total_modules (active voters) not a fixed 12.
+        min_agree = max(2, round(total_modules * 0.5))
+
         # Hard reject if conviction too low or too few modules aligned
         approved = (
             final_score >= self.MIN_CONVICTION_SCORE and
-            aligned_count >= 3 and
+            aligned_count >= min_agree and
             strategy != "AVOID"
         )
 
@@ -418,8 +427,8 @@ class EliteBrain:
         if not approved:
             if strategy == "AVOID":
                 reject_reason = f"EliteBrain: regime strategy=AVOID"
-            elif aligned_count < 3:
-                reject_reason = f"EliteBrain: only {aligned_count}/12 modules agree"
+            elif aligned_count < min_agree:
+                reject_reason = f"EliteBrain: only {aligned_count}/{total_modules} modules agree (need {min_agree})"
             else:
                 reject_reason = f"EliteBrain: low conviction {final_score:.0f}/100"
 
