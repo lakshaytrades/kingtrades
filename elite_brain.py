@@ -120,7 +120,7 @@ class EliteBrain:
     }
 
     GRAND_SLAM_MIN_MODULES = 7
-    MIN_CONVICTION_SCORE   = 48.0   # was 55 — lowered to pass more A-grade setups
+    MIN_CONVICTION_SCORE   = 60.0   # raised to 60 — filters low-conviction entries
     WEIGHTS_FILE           = "data/elite_brain_weights.json"
 
     def __init__(self):

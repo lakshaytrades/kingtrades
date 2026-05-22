@@ -1240,6 +1240,10 @@ class SignalGenerator:
         if direction == "LONG":
             if 30 < ind.rsi < 50:
                 score += 5  # RSI in buy zone but not extreme
+            elif 15 < ind.rsi <= 30:
+                score += 3  # deep oversold bounce setup
+            elif 50 <= ind.rsi < 65:
+                score += 2  # momentum continuation zone
             if ind.macd_hist > 0:
                 score += 4
             if ind.ema9 > ind.ema21:
@@ -1275,8 +1279,8 @@ class SignalGenerator:
         # ── Time of day filter (US ET market hours) ──────────
         now_et   = get_current_ist_time()   # IST alias → ET after migration
         time_val = now_et.hour + now_et.minute / 60
-        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop — strong penalty
-            score -= 8
+        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop — mild penalty
+            score -= 3
         elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone
             score += 8
         elif 14.5 <= time_val <= 16.0:  # 2:30–4:00 PM ET: Power Hour
