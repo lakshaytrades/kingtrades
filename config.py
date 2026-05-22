@@ -96,7 +96,7 @@ PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.5       # Top-1% rule: never trade below 2.5:1 R:R
+MIN_RISK_REWARD: float = 2.0       # Intraday standard: 2:1 R:R minimum (was 2.5 — too strict)
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 

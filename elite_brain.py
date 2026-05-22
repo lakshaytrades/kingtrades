@@ -374,9 +374,6 @@ class EliteBrain:
         final_score = round(base_score * 0.4 + conviction * 0.6, 1)
         final_score = max(0.0, min(100.0, final_score))
 
-        # Size multiplier from alignment count
-        if aligned_count >= 10:
-            size_mult = 3.0
         # Scale size by fraction of active modules aligned (relative, not absolute)
         agree_ratio = aligned_count / max(1, total_modules)
         if agree_ratio >= 1.0:
@@ -410,11 +407,16 @@ class EliteBrain:
                 f"(size={size_mult:.1f}x)"
             )
 
-        # Dynamic consensus threshold: require ≥50% of active modules to agree.
-        # Hard floor of 2 so we never approve on a single vote.
-        # Many modules (FII/DII, NSE data, sentiment) produce no vote for US stocks,
-        # so basing the threshold on total_modules (active voters) not a fixed 12.
-        min_agree = max(2, round(total_modules * 0.5))
+        # Consensus threshold scales with how many modules actively vote.
+        # When ≤4 modules vote (typical for US stocks where FII/NSE/sentiment
+        # produce no data), requiring 50% would mean 2+ out of 4 — too strict
+        # when the disagreeing modules simply lack data.
+        # The high_accuracy_filter already validated the setup with 13 gates;
+        # EliteBrain adds a conviction quality check, not a second 13-gate filter.
+        if total_modules <= 4:
+            min_agree = 1   # Any aligned module is sufficient; conviction score governs
+        else:
+            min_agree = max(2, round(total_modules * 0.5))
 
         # Hard reject if conviction too low or too few modules aligned
         approved = (
