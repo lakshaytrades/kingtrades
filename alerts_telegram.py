@@ -483,12 +483,19 @@ class TelegramAlerter:
 
         state     = getattr(risk_manager, "state", None)
         positions = state.positions      if state else {}
-        daily_pnl = state.daily_pnl     if state else 0
         capital   = state.daily_capital if state else 0
         n_trades  = state.daily_trades  if state else 0
         wins      = state.winning_trades if state else 0
         wr_pct    = (wins / n_trades * 100) if n_trades > 0 else 0.0
         paused    = state.trading_paused if state else False
+
+        # Use broker equity change as truth when live balance is available.
+        # Avoids discrepancy between trade-level P&L (can drift due to slippage)
+        # and the actual account equity change shown in Alpaca/broker UI.
+        if balance_available and capital > 0:
+            daily_pnl = balance_available - capital
+        else:
+            daily_pnl = state.daily_pnl if state else 0
 
         pnl_emoji = E["profit"] if daily_pnl >= 0 else E["loss"]
         pnl_str   = f"+{_CUR}{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-{_CUR}{abs(daily_pnl):,.0f}"

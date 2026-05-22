@@ -61,8 +61,8 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.5"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 1.0)   # hard cap: never risk more than 1% in a day
 
 # Intraday leverage multiplier (Alpaca supports up to 4x for PDT accounts).
 # 2x is conservative — doubles position capacity without excessive risk.
@@ -91,7 +91,7 @@ ATR_SL_MULTIPLIER: float = 1.0        # 1x ATR stop — smaller loss, T1 hit fas
 ATR_TP_MULTIPLIER: float = 3.0        # T2 = 1:3 R:R
 ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
 ATR_TRAIL_MULTIPLIER: float = 0.5     # tight trail — lock gains aggressively
-BREAKEVEN_TRIGGER_PCT: float = 0.3   # move SL to entry at 0.3% profit (was 0.5)
+BREAKEVEN_TRIGGER_PCT: float = 0.08  # move SL to entry at 0.08% profit — near-zero loss
 PARTIAL_EXIT_T1_PCT: float = 50.0
 PARTIAL_EXIT_T2_PCT: float = 30.0
 RUNNER_PCT: float = 20.0
