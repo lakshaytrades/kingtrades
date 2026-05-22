@@ -3214,6 +3214,14 @@ class TradingBot:
 # ENTRY POINT
 # ============================================================
 
+class _SuppressYFNoise(logging.Filter):
+    """Drop yfinance 404/fundamentals noise for ETFs — not actionable."""
+    _PATTERNS = ("No fundamentals data found", "HTTP Error 404", "No data found for")
+    def filter(self, record):
+        msg = record.getMessage()
+        return not any(p in msg for p in self._PATTERNS)
+
+
 def main():
     # Setup IST logging
     setup_logging(
@@ -3221,6 +3229,7 @@ def main():
         level=config.LOG_LEVEL,
         module_name="kingtrades"
     )
+    logging.getLogger("yfinance").addFilter(_SuppressYFNoise())
 
     # Auto-update: pull latest code so bot is always current
     try:

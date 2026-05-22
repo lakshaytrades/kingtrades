@@ -131,9 +131,9 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 75.0
-HIGH_CONFIDENCE_SCORE: float = 80.0
-PREMIUM_SCORE: float = 90.0
+MIN_SIGNAL_SCORE: float = 65.0
+HIGH_CONFIDENCE_SCORE: float = 75.0
+PREMIUM_SCORE: float = 85.0
 MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = True
 REQUIRE_POWER_HOUR: bool = False
@@ -322,11 +322,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 75.0,   # Monday
-    1: 75.0,   # Tuesday
-    2: 75.0,   # Wednesday
-    3: 75.0,   # Thursday
-    4: 78.0,   # Friday — higher (early close risk, no new positions after 3 PM)
+    0: 65.0,   # Monday
+    1: 65.0,   # Tuesday
+    2: 65.0,   # Wednesday
+    3: 65.0,   # Thursday
+    4: 70.0,   # Friday — slightly higher (early close risk, no new positions after 3 PM)
 }
 
 DOW_MAX_TRADES: dict = {
