@@ -144,7 +144,6 @@ MAX_TRADES_PER_STOCK: int = 2
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
-BREAKEVEN_TRIGGER_PCT: float = 0.55   # move to BE after 0.35% gain (was 0.5%)
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
 CONSECUTIVE_LOSS_LIMIT: int = 3
 PAUSE_AFTER_LOSSES_MINUTES: int = 30
