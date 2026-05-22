@@ -666,6 +666,14 @@ class RiskManager:
         }
         trail_dist = grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER) * atr
 
+        # ── Time-decay tightening (top 1% rule: protect gains before close) ─
+        now_et = get_current_ist_time()
+        et_min = now_et.hour * 60 + now_et.minute
+        if et_min >= 915:       # After 3:15 PM ET: 70% tighter (market closes in <45 min)
+            trail_dist *= 0.30
+        elif et_min >= 870:     # After 2:30 PM ET: 50% tighter
+            trail_dist *= 0.50
+
         be_trigger = getattr(_config, "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
 
         if position.direction == "LONG":
@@ -743,6 +751,13 @@ class RiskManager:
                 position.price_history.append(current_price)
                 if len(position.price_history) > 20:
                     position.price_history.pop(0)
+
+                # Extended-profit tightening: when very profitable, protect more
+                total_profit_atr = profit / atr if atr > 0 else 0
+                if total_profit_atr >= 3.0:
+                    trail_dist *= 0.35   # At 3x ATR profit: ultra-tight trail
+                elif total_profit_atr >= 2.0:
+                    trail_dist *= 0.55   # At 2x ATR profit: tight trail
 
                 atr_trail = position.max_price - trail_dist
 
@@ -839,6 +854,11 @@ class RiskManager:
 
             # Runner
             if position.trailing_active and position.t2_done:
+                total_profit_atr = profit / atr if atr > 0 else 0
+                if total_profit_atr >= 3.0:
+                    trail_dist *= 0.35
+                elif total_profit_atr >= 2.0:
+                    trail_dist *= 0.55
                 new_trail = position.min_price + trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
