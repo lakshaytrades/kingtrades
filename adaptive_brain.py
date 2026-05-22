@@ -311,14 +311,17 @@ class AdaptiveBrain:
         if s.day_capital > 0:
             day_pct = (s.day_pnl / s.day_capital) * 100
 
-            if day_pct <= -1.5:
-                s.current_min_score = MIN_SCORE_CEIL  # Max tightness
+            if day_pct <= -2.5:
+                # Deep loss — max tightness (daily circuit breaker fires at -1% anyway,
+                # so this only triggers if daily_loss_limit was manually raised above 2.5%)
+                s.current_min_score = MIN_SCORE_CEIL
                 s.size_multiplier   = 0.5
                 msg.append(f"Day P&L {day_pct:.1f}% → defensive mode score={MIN_SCORE_CEIL:.0f} size=0.5x")
 
-            elif day_pct <= -1.0:
+            elif day_pct <= -1.5:
+                # Approaching daily loss limit — tighten score slightly, reduce size
                 s.current_min_score = max(s.current_min_score, DEFAULT_SCORE + 5.0)
-                s.size_multiplier   = max(s.size_multiplier * 0.7, 0.5)
+                s.size_multiplier   = max(s.size_multiplier * 0.8, 0.6)
                 msg.append(f"Day P&L {day_pct:.1f}% → raising bar score≥{s.current_min_score:.0f}")
 
             elif day_pct >= 2.0:

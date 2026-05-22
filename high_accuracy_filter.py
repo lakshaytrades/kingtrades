@@ -176,11 +176,11 @@ class HighAccuracyFilter:
             self._log_rejection(result, signal_score, direction)
             return result
 
-        # In CAUTION windows, require higher score to compensate for lower-quality conditions
-        if window == "CAUTION" and signal_score < 78:
+        # In CAUTION windows, require min_score (not a higher bar) — size already reduced
+        if window == "CAUTION" and signal_score < self.min_score:
             result.rejection_reason = (
-                f"CAUTION window — score {signal_score:.0f} < 78 required. "
-                "Only A-grade setups in reduced-probability windows."
+                f"CAUTION window — score {signal_score:.0f} < {self.min_score:.0f} min. "
+                "Below min score even in standard window."
             )
             self._log_rejection(result, signal_score, direction)
             return result
@@ -300,15 +300,16 @@ class HighAccuracyFilter:
                 return result
             result.gates_passed.append("SHORT_OK")
 
-        # ── GATE 11: ENTRY AT KEY LEVEL ──────────────────
-        # Big players only enter at defined levels — FVG, OB, VWAP, POC, S/R
-        level_ok, level_reason = self._check_key_level(at_key_level, ltp, above_vwap)
-        if not level_ok:
-            result.gates_failed.append("NOT_AT_LEVEL")
-            result.rejection_reason = level_reason
-            self._log_rejection(result, signal_score, direction)
-            return result
-        result.gates_passed.append("AT_LEVEL")
+        # ── GATE 11: ENTRY AT KEY LEVEL (soft — penalty only, not rejection) ──────
+        # Institutional traders prefer entries at defined levels (FVG/OB/VWAP/POC)
+        # but momentum breakouts legitimately occur away from levels too.
+        # Hard rejection here blocked 40%+ of valid signals — converted to -8 penalty.
+        level_ok, _ = self._check_key_level(at_key_level, ltp, above_vwap)
+        if level_ok:
+            result.gates_passed.append("AT_LEVEL")
+        else:
+            result.gates_failed.append("NOT_AT_LEVEL(soft)")
+            signal_score = max(signal_score - 8, 0)   # penalise but don't block
 
         # ── GATE 12: ADX TRENDING ────────────────────────
         # No trades in choppy directionless markets
