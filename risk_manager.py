@@ -265,16 +265,16 @@ class RiskManager:
             h, m = now.hour, now.minute
             total_min = h * 60 + m
             # ET thresholds — mirrors NSE opening/midday/afternoon structure
-            if 570 <= total_min < 630:    # 09:30-10:30 Opening drive
-                return 1.0, "OPENING_DRIVE"
-            elif 630 <= total_min < 690:  # 10:30-11:30 Morning session
-                return 0.80, "MORNING"
-            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop
-                return 0.50, "MIDDAY_CHOP"
-            elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend
-                return 0.80, "AFTERNOON"
+            if 570 <= total_min < 630:    # 09:30-10:30 Opening drive — peak momentum
+                return 2.0, "OPENING_DRIVE"
+            elif 630 <= total_min < 690:  # 10:30-11:30 Morning session — trend continuation
+                return 1.5, "MORNING"
+            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — NO new positions
+                return 0.0, "MIDDAY_CHOP"
+            elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend — institutional flow
+                return 1.5, "AFTERNOON"
             elif 930 <= total_min < 960:  # 15:30-16:00 Closing risk
-                return 0.30, "CLOSING"
+                return 0.8, "CLOSING"
             else:
                 return 0.0, "AFTER_HOURS"
         else:
@@ -1088,12 +1088,12 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Any loss → pause new entries for 30 min (first-loss protection)
-            # Small slippage losses (<$2) are ignored to avoid over-triggering
-            if abs(pnl) >= 2.0:
+            # Real loss protection: pause 15 min on losses ≥$10 to prevent revenge trades.
+            # Trivial slippage (<$10) doesn't pause — keep hunting good setups.
+            if abs(pnl) >= 10.0:
                 self._pause_trading(
-                    f"loss protection: ${pnl:+.2f} on {symbol} — pausing new entries",
-                    minutes=30
+                    f"loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
+                    minutes=15
                 )
             # Hard consecutive loss limit still applies
             elif self.state.consecutive_losses >= self.consecutive_loss_limit:

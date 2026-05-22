@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 65.0    # Floor matches config.MIN_SIGNAL_SCORE
+MIN_SCORE_FLOOR  = 70.0    # Floor matches config.MIN_SIGNAL_SCORE
 MIN_SCORE_CEIL   = 85.0    # Cap — room to tighten but not strangle signal flow
-DEFAULT_SCORE    = 65.0    # Day-start score
+DEFAULT_SCORE    = 70.0    # Day-start score
 
 
 @dataclass

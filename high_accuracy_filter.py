@@ -434,20 +434,25 @@ class HighAccuracyFilter:
             return result
 
         # Grade the setup — institutional quality tiers
-        if result.final_score >= 92:
+        # Thresholds: relative to min_score so they scale with config changes
+        _ap_thresh = max(self.min_score + 15, 85)   # A+ = min_score+15 or 85, whichever higher
+        _a_thresh  = max(self.min_score + 8,  78)   # A  = min_score+8  or 78
+
+        if result.final_score >= _ap_thresh:
             result.quality_grade   = "A+"
-            result.size_multiplier = min(result.size_multiplier * 1.3, 2.0)
-        elif result.final_score >= 82:
+            result.size_multiplier = min(result.size_multiplier * 2.0, 2.5)   # aggressive size on best setups
+        elif result.final_score >= _a_thresh:
             result.quality_grade   = "A"
-            result.size_multiplier = min(result.size_multiplier * 1.15, 1.5)
+            result.size_multiplier = min(result.size_multiplier * 1.5, 2.0)   # solid size
         elif result.final_score >= self.min_score:
             result.quality_grade   = "B"
+            result.size_multiplier = min(result.size_multiplier * 1.0, 1.5)   # standard
         else:
             result.quality_grade   = "C"
             result.size_multiplier *= 0.75
 
         # Hard cap size multiplier
-        result.size_multiplier = round(min(result.size_multiplier, 2.0), 2)
+        result.size_multiplier = round(min(result.size_multiplier, 2.5), 2)
 
         self._pass_count += 1
         logger.info(

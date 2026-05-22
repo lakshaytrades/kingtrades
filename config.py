@@ -61,8 +61,8 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "0.5"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 1.0)   # hard cap: never risk more than 1% in a day
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "1.0"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 1.5)   # max 1.5% — need room to trade
 
 # Intraday leverage multiplier (Alpaca supports up to 4x for PDT accounts).
 # 2x is conservative — doubles position capacity without excessive risk.
@@ -87,17 +87,17 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.0        # 1x ATR stop — smaller loss, T1 hit faster
-ATR_TP_MULTIPLIER: float = 3.0        # T2 = 1:3 R:R
+ATR_SL_MULTIPLIER: float = 0.8          # tighter stop = smaller risk per dollar target
+ATR_TP_MULTIPLIER: float = 4.0          # wider target = bigger wins when right
 ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
-ATR_TRAIL_MULTIPLIER: float = 0.5     # tight trail — lock gains aggressively
-BREAKEVEN_TRIGGER_PCT: float = 0.08  # move SL to entry at 0.08% profit — near-zero loss
-PARTIAL_EXIT_T1_PCT: float = 50.0
-PARTIAL_EXIT_T2_PCT: float = 30.0
-RUNNER_PCT: float = 20.0
+ATR_TRAIL_MULTIPLIER: float = 0.4       # tighter trail = lock gains fast
+BREAKEVEN_TRIGGER_PCT: float = 0.5      # let trade breathe before breakeven (0.08 killed all profits)
+PARTIAL_EXIT_T1_PCT: float = 35.0       # exit less at T1 — let more ride to T2/T3
+PARTIAL_EXIT_T2_PCT: float = 35.0       # bigger T2 exit
+RUNNER_PCT: float = 30.0                # bigger runner to T3 (was 20%)
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.0       # Intraday standard: 2:1 R:R minimum (was 2.5 — too strict)
+MIN_RISK_REWARD: float = 2.5       # Intraday standard: 2.5:1 R:R minimum
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 
@@ -131,12 +131,12 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 65.0
+MIN_SIGNAL_SCORE: float = 70.0
 HIGH_CONFIDENCE_SCORE: float = 75.0
 PREMIUM_SCORE: float = 85.0
 MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = True
-REQUIRE_POWER_HOUR: bool = False
+REQUIRE_POWER_HOUR: bool = True
 HEIKIN_ASHI_CONFIRM: bool = False
 MAX_TRADES_PER_DAY: int = 15
 MAX_TRADES_PER_STOCK: int = 2
@@ -273,11 +273,11 @@ MAX_PORTFOLIO_HEAT_PCT: float = 10.0   # was 3.0 — allows up to 10 concurrent 
 MAX_POSITIONS_PER_SECTOR: int = 5      # was 2 — allows more tech/momentum positions
 
 SESSION_SIZE_MULTIPLIERS = {
-    "OPENING_DRIVE": 1.20,   # 09:30-10:30 — peak momentum, size up
-    "MORNING":       1.00,   # 10:30-11:30 — good trend continuation
-    "MIDDAY_CHOP":   0.60,   # 11:30-13:30 — chop zone, smaller
-    "AFTERNOON":     1.00,   # 13:30-15:30 — institutional resumption
-    "CLOSING":       0.70,   # 15:30-16:00 — EOD momentum plays exist
+    "OPENING_DRIVE": 2.0,    # 9:30-10:30 ET — maximum conviction, full aggression
+    "MORNING":       1.5,    # 10:30-11:30 ET — trend continuation
+    "MIDDAY_CHOP":   0.0,    # 11:30-13:30 ET — no new positions (random noise)
+    "AFTERNOON":     1.5,    # 13:30-15:30 ET — institutional resumption
+    "CLOSING":       0.8,    # 15:30-16:00 ET — EOD momentum only
 }
 
 # ============================================================
@@ -322,11 +322,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 65.0,   # Monday
-    1: 65.0,   # Tuesday
-    2: 65.0,   # Wednesday
-    3: 65.0,   # Thursday
-    4: 70.0,   # Friday — slightly higher (early close risk, no new positions after 3 PM)
+    0: 70.0,   # Monday
+    1: 70.0,   # Tuesday
+    2: 70.0,   # Wednesday
+    3: 70.0,   # Thursday
+    4: 73.0,   # Friday — slightly higher (early close risk)
 }
 
 DOW_MAX_TRADES: dict = {

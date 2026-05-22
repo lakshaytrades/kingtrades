@@ -1091,6 +1091,23 @@ class TradingBot:
                 )
                 return
 
+            # 4c. Power hour gate — only enter new positions during high-probability windows
+            if config.REQUIRE_POWER_HOUR:
+                from datetime import time as _time
+                et_now = now_ist  # utils aliases ET time as IST for US market
+                h, m   = et_now.hour, et_now.minute
+                total_min = h * 60 + m
+                in_power = (
+                    (570 <= total_min < 690) or   # 9:30–11:30 ET opening + morning
+                    (810 <= total_min < 960)       # 13:30–16:00 ET afternoon + closing
+                )
+                if not in_power:
+                    logger.debug(
+                        f"[{format_ist_timestamp()}] MIDDAY — skipping new entries "
+                        f"(power hour gate, {et_now.strftime('%H:%M')} ET)"
+                    )
+                    return
+
             # SystemHealthChecker: pre-scan safety gate
             if hasattr(self, "health_checker") and self.health_checker:
                 try:
