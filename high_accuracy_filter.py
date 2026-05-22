@@ -516,7 +516,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 35:
+        if alignment_score < 30:
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
@@ -526,12 +526,11 @@ class HighAccuracyFilter:
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
         """
         Volume participation gate.
-        Hard minimum 0.5x — blocks genuinely dead/illiquid situations.
-        Top-1% note: mega-cap SMA is cross-session biased (closing bars inflate
-        denominator), so 0.5-1.0x at mid-morning on established stocks is normal.
+        Minimum 0.3x — REST polling underreports intraday volume vs daily SMA
+        (closing bars inflate the denominator). Only block truly dead stocks.
         Bonus awarded for genuine surges above 1.5x.
         """
-        if volume_ratio < 0.5:
+        if volume_ratio < 0.3:
             return False, 0
         if volume_ratio < 1.0:
             return True, 0                        # pass but no bonus

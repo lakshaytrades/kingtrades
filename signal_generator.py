@@ -923,9 +923,9 @@ class SignalGenerator:
         else:
             alignment_score -= 15  # 1h opposing means counter-trend — risky
 
-        # Require 5m + at least one HTF confirming (not just neutral):
-        # 5m(35) + 15m aligned(35) = 70 ✅  |  5m + two NEUTRALs = 60 ❌  |  5m + 1h opposing = 50 ❌
-        aligned = alignment_score >= 65
+        # Require 5m + at least partial HTF confirmation:
+        # 5m(35) + 15m aligned(35) = 70 ✅  |  5m + two NEUTRALs = 55 ✅  |  5m + 1h opposing = 50 ❌
+        aligned = alignment_score >= 55
 
         return {
             "aligned": aligned,
