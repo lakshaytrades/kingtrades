@@ -647,12 +647,14 @@ class EODSelfTrainer:
         improved    = bool((improvement >= 0.05 or baseline_sharpe == 0.0) and meets_quality)
 
         # Adaptive min_score: tighten if win rate is high, loosen if low
-        # Floor at 88 — never take weak setups regardless of recent performance
+        # Floor = config floor; ceil = config floor + 20 (never strangle signal flow)
+        score_floor = _cfg.MIN_SIGNAL_SCORE          # respects config.py (currently 65)
+        score_ceil  = _cfg.MIN_SIGNAL_SCORE + 20.0   # max the trainer can push to (85)
         current_min = baseline.get("min_score", _cfg.MIN_SIGNAL_SCORE)
         if avg_wr >= 65:
-            new_min_score = min(current_min + 1.0, 98.0)   # Getting better → tighten
+            new_min_score = min(current_min + 1.0, score_ceil)  # Getting better → tighten
         elif avg_wr <= 50:
-            new_min_score = max(current_min - 1.0, 88.0)   # Getting worse → loosen (never below 88)
+            new_min_score = max(current_min - 1.0, score_floor) # Getting worse → loosen
         else:
             new_min_score = current_min
 

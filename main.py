@@ -2882,8 +2882,13 @@ class TradingBot:
                     self.risk_manager.max_risk_pct = config.MAX_RISK_PER_TRADE_PCT
 
             # Apply trained min_score to signal generator
+            # Clamp to [config floor, config floor+20] so stored stale params
+            # (e.g. min_score=90) cannot override a manually lowered config value.
             if "min_score" in params and self.signal_gen:
-                self.signal_gen.min_score = float(params["min_score"])
+                trained = float(params["min_score"])
+                clamped = max(config.MIN_SIGNAL_SCORE,
+                              min(trained, config.MIN_SIGNAL_SCORE + 20.0))
+                self.signal_gen.min_score = clamped
 
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ EOD params applied (trained {date_str}): "
