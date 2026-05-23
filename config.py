@@ -64,9 +64,13 @@ MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — be
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — covers 1 full loss + buffer
 
-# Intraday leverage multiplier (Alpaca supports up to 4x for PDT accounts).
-# 2x is conservative — doubles position capacity without excessive risk.
-ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "2.0"))
+# Intraday leverage multiplier.
+# ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.
+#     Bot does 10-30 trades/day → PDT frozen on day 1 if margin account.
+# SAFE OPTION (< $25K): Use Alpaca CASH account → no PDT, no leverage (1x).
+# FULL POWER ($25K+):   Margin account → 4x intraday, no PDT restriction.
+# Default 1.0 = cash account safe mode. Set to 4.0 only when account ≥ $25,000.
+ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
 ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
 
 MAX_POSITIONS: int = 15
