@@ -58,11 +58,11 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # 0 = use full Alpaca account balance dynamically (recommended)
 # >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.5)   # allow up to 1.5% for A+ setups
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.0"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "1.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 1.5)   # max 1.5% — need room to trade
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — covers 1 full loss + buffer
 
 # Intraday leverage multiplier (Alpaca supports up to 4x for PDT accounts).
 # 2x is conservative — doubles position capacity without excessive risk.
@@ -87,17 +87,17 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 0.8          # tighter stop = smaller risk per dollar target
-ATR_TP_MULTIPLIER: float = 4.0          # wider target = bigger wins when right
-ATR_TP_RUNNER: float = 5.0            # T3 runner for A+ setups (score ≥ 92) = 1:5 R:R
-ATR_TRAIL_MULTIPLIER: float = 0.4       # tighter trail = lock gains fast
-BREAKEVEN_TRIGGER_PCT: float = 0.5      # let trade breathe before breakeven (0.08 killed all profits)
-PARTIAL_EXIT_T1_PCT: float = 35.0       # exit less at T1 — let more ride to T2/T3
-PARTIAL_EXIT_T2_PCT: float = 35.0       # bigger T2 exit
-RUNNER_PCT: float = 30.0                # bigger runner to T3 (was 20%)
+ATR_SL_MULTIPLIER: float = 0.6          # tight stop — move to breakeven fast, limit downside
+ATR_TP_MULTIPLIER: float = 5.0          # 5:1 R:R max target — let winners run far
+ATR_TP_RUNNER: float = 7.0             # T3 runner for A+ setups — ride the full move
+ATR_TRAIL_MULTIPLIER: float = 0.35      # very tight trail = lock gains aggressively
+BREAKEVEN_TRIGGER_PCT: float = 0.3      # move to breakeven at 0.3% profit — fast zero-risk
+PARTIAL_EXIT_T1_PCT: float = 40.0       # take 40% off at T1 — lock profit early
+PARTIAL_EXIT_T2_PCT: float = 35.0       # 35% at T2 = 75% of position secured
+RUNNER_PCT: float = 25.0                # 25% runner rides to T3 with tight trail
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.5       # Intraday standard: 2.5:1 R:R minimum
+MIN_RISK_REWARD: float = 3.0       # Aggressive: only 3:1+ setups — bigger wins per trade
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 
@@ -180,14 +180,14 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.0"))
-# 1.0%/day × 22 trading days = 22% capacity → 13% MINIMUM even with 5 flat/loss days
-# Math: 17 win days × 1% - 3 loss days × 0.5% = 17% - 1.5% = 15.5% (worst realistic month)
-# On $1,000: $10/day target. On $5,000: $50/day. Auto-compounds as balance grows.
-# Bot enters PROTECTION mode (A-grade+) after target hit, LOCK mode at 2× target, STOP at 3×.
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "2.0"))
+# 2.0%/day target: hits on 15 days = 30% monthly, even 10 target days = 18% monthly
+# On $1,000: $20/day target → PROTECTION (A-grade) → LOCK at $40 → STOP at $60 (6%)
+# One A+ trade hitting T2 at 5:1 R:R with 2% risk = $100 profit = 10% in one trade
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "13.0"))
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "15.0"))
 # Used by monthly tracker to compute daily catchup targets when behind pace.
+# 15% minimum / month — math: 10 target days × 2% - 2 loss days × 2% = 16% worst case
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets

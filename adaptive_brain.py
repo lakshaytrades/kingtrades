@@ -283,22 +283,30 @@ class AdaptiveBrain:
                 s.current_min_score = new_score
                 msg.append(f"2 loss streak → score↑{new_score:.0f}")
 
-        elif s.consecutive_wins >= 5:
-            # 5+ wins — confidence, soften score and restore size
+        elif s.consecutive_wins >= 7:
+            # 7+ wins — hot streak, maximum aggression
             new_score = max(s.current_min_score - 3.0, MIN_SCORE_FLOOR)
-            new_size  = min(s.size_multiplier * 1.15, 1.5)
+            new_size  = min(s.size_multiplier * 1.15, 2.5)   # up to 2.5× on fire
             s.current_min_score = new_score
             s.size_multiplier   = new_size
-            msg.append(f"5 win streak → score↓{new_score:.0f} size↑{new_size:.1f}x")
+            msg.append(f"7 win streak — MAXIMUM SIZE {new_size:.1f}x → score↓{new_score:.0f}")
+
+        elif s.consecutive_wins >= 5:
+            # 5 wins — hot, press it
+            new_score = max(s.current_min_score - 3.0, MIN_SCORE_FLOOR)
+            new_size  = min(s.size_multiplier * 1.2, 2.0)    # 2.0× at 5-win streak
+            s.current_min_score = new_score
+            s.size_multiplier   = new_size
+            msg.append(f"5 win streak — pressing: size↑{new_size:.1f}x score↓{new_score:.0f}")
 
         elif s.consecutive_wins >= 3:
-            # 3 wins — restore score toward default, increase size
+            # 3 wins — momentum building, increase size materially
             new_score = max(s.current_min_score - 2.0, DEFAULT_SCORE)
-            new_size  = min(s.size_multiplier * 1.1, 1.3)
+            new_size  = min(s.size_multiplier * 1.3, 1.6)    # 1.6× after 3 wins (was 1.3×)
             if new_score != s.current_min_score or new_size != s.size_multiplier:
                 s.current_min_score = new_score
                 s.size_multiplier   = new_size
-                msg.append(f"3 win streak → score↓{new_score:.0f} size↑{new_size:.1f}x")
+                msg.append(f"3 win streak → size↑{new_size:.1f}x score↓{new_score:.0f}")
 
         elif s.consecutive_wins >= 1:
             # Any win after a loss streak — start recovering immediately
@@ -324,10 +332,15 @@ class AdaptiveBrain:
                 s.size_multiplier   = max(s.size_multiplier * 0.8, 0.6)
                 msg.append(f"Day P&L {day_pct:.1f}% → raising bar score≥{s.current_min_score:.0f}")
 
+            elif day_pct >= 4.0:
+                # Exceptional day — lock gains at 4%+ (STOP mode in profit engine handles this)
+                s.size_multiplier = min(s.size_multiplier, 0.6)
+                msg.append(f"Day P&L +{day_pct:.1f}% — exceptional, locking gains size=0.6x")
             elif day_pct >= 2.0:
-                # Locking profit — reduce risk
-                s.size_multiplier = min(s.size_multiplier, 0.7)
-                msg.append(f"Day P&L +{day_pct:.1f}% target hit → locking gains size=0.7x")
+                # Target hit — keep pressing with A-grade (PROTECTION mode)
+                # Don't retreat — this is exactly when pros SIZE UP
+                s.size_multiplier = min(s.size_multiplier * 1.05, 1.3)
+                msg.append(f"Day P&L +{day_pct:.1f}% target hit → continue pressing size={s.size_multiplier:.1f}x")
 
         # ── Pattern-level adaptation ──────────────────────────────────────
         pat = outcome.pattern or "UNKNOWN"

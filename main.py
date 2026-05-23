@@ -519,10 +519,10 @@ class TradingBot:
             note        = "Minimum $500 needed — trading disabled today"
         elif available < 2_500:
             tier        = "🟡 SMALL ($500-$2.5K)"
-            max_pos     = 5     # 5 concurrent positions — need volume to hit 1%/day
-            risk_pct    = 1.0   # 1% risk per trade ($10 on $1K) — meaningful size
-            loss_pct    = 0.75  # 0.75% daily loss limit ($7.50 on $1K)
-            note        = "Fractional shares — 1%/day target = 13% minimum/month"
+            max_pos     = 6     # 6 concurrent positions — more shots at the target
+            risk_pct    = 2.0   # 2% risk per trade ($20 on $1K) — aggressive extraction
+            loss_pct    = 2.0   # 2% daily loss limit ($20 on $1K) — covers 1 full losing trade
+            note        = "Aggressive mode — 2%+/day target, 0.3% breakeven stops"
         elif available < 10_000:
             tier        = "🟢 MEDIUM"
             max_pos     = 4
