@@ -93,9 +93,9 @@ ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't over
 ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
 ATR_TRAIL_MULTIPLIER: float = 0.35      # very tight trail = lock gains aggressively
 BREAKEVEN_TRIGGER_PCT: float = 0.2      # free trade at 0.2% profit — even faster zero-risk
-PARTIAL_EXIT_T1_PCT: float = 70.0       # book 70% at T1 — capture the bulk of the move
-PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — small continuation slice
-RUNNER_PCT: float = 10.0                # tiny 10% runner rides to T3 with tight trail
+PARTIAL_EXIT_T1_PCT: float = 55.0       # 55% at T1 — capture core, leave 45% to run to T2/T3
+PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful slice on the continuation
+RUNNER_PCT: float = 20.0                # 20% runner — real trailing profit on the best moves
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
 MIN_RISK_REWARD: float = 1.5       # Scalping: 1.5:1 minimum — more trades, consistent small wins
@@ -132,12 +132,12 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 70.0
-HIGH_CONFIDENCE_SCORE: float = 75.0
-PREMIUM_SCORE: float = 85.0
+MIN_SIGNAL_SCORE: float = 65.0        # lowered from 70 — captures valid mid-tier scalps
+HIGH_CONFIDENCE_SCORE: float = 73.0
+PREMIUM_SCORE: float = 83.0
 MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
-REQUIRE_POWER_HOUR: bool = True
+REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
 MAX_TRADES_PER_DAY: int = 30          # scalping: more trades needed for 2-4%/day
 MAX_TRADES_PER_STOCK: int = 4         # scalping: re-enter same stock after T1 booking
@@ -285,8 +285,8 @@ MAX_POSITIONS_PER_SECTOR: int = 5      # was 2 — allows more tech/momentum pos
 SESSION_SIZE_MULTIPLIERS = {
     "OPENING_DRIVE": 2.0,    # 9:30-10:30 ET — maximum conviction, full aggression
     "MORNING":       1.5,    # 10:30-11:30 ET — trend continuation
-    "MIDDAY_CHOP":   0.0,    # 11:30-13:30 ET — no new positions (random noise)
-    "AFTERNOON":     1.5,    # 13:30-15:30 ET — institutional resumption
+    "MIDDAY_CHOP":   0.5,    # 11:30-13:30 ET — reduced size but NOT zero; lunch reversals are real
+    "AFTERNOON":     1.8,    # 13:30-15:30 ET — institutional resumption, almost as aggressive as open
     "CLOSING":       0.8,    # 15:30-16:00 ET — EOD momentum only
 }
 

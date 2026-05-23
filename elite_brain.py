@@ -122,7 +122,7 @@ class EliteBrain:
     }
 
     GRAND_SLAM_MIN_MODULES = 7
-    MIN_CONVICTION_SCORE   = 60.0   # raised to 60 — filters low-conviction entries
+    MIN_CONVICTION_SCORE   = 50.0   # 50 — signal_generator's 65 gate already filters; don't double-block
     WEIGHTS_FILE           = "data/elite_brain_weights.json"
 
     def __init__(self):

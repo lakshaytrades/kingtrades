@@ -79,8 +79,8 @@ class ProfitEngineConfig:
     c_capital_pct:         float = 10.0      # C  setup
 
     # Compounding
-    compound_bonus_pct:    float = 20.0      # After T1 hit: 20% bigger next trade
-    win_streak_bonus_pct:  float = 10.0      # Per-trade bonus during win streak (cap 3)
+    compound_bonus_pct:    float = 50.0      # After T1 hit: 50% bigger next trade — real snowball
+    win_streak_bonus_pct:  float = 15.0      # Per-trade bonus during win streak (cap 3 = +45%)
 
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
@@ -569,11 +569,11 @@ class DailyProfitEngine:
 
     def _get_mode_size_multiplier(self) -> float:
         return {
-            TradingMode.AGGRESSIVE:  1.30,   # hot streak: press harder
+            TradingMode.AGGRESSIVE:  1.40,   # hot streak — press hard, size up 40%
             TradingMode.NORMAL:      1.00,
             TradingMode.CAUTION:     0.80,
-            TradingMode.PROTECTION:  1.00,   # target hit but keep full size — push to 4%
-            TradingMode.LOCK:        0.70,   # 2× target hit — slight reduction, not full stop
+            TradingMode.PROTECTION:  1.00,   # target hit — keep full size, push to 2×
+            TradingMode.LOCK:        1.00,   # 2× target — still full size, only A-grade filter
             TradingMode.DEFENSIVE:   0.60,
             TradingMode.STOP:        0.00,
         }.get(self.state.mode, 1.00)
