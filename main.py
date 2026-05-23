@@ -586,11 +586,15 @@ class TradingBot:
             now_str  = get_current_ist_time().strftime("%Y-%m-%d")
             mode_str = "⚡ LIVE" if config.LIVE_TRADING_ENABLED else "🔒 PAPER"
 
-            # Compounding projections (13%/month = ×1.13 each month)
-            m1  = available * 1.13
-            m3  = available * (1.13 ** 3)
-            m6  = available * (1.13 ** 6)
-            m12 = available * (1.13 ** 12)
+            # Compounding projections — 3 scenarios based on daily target
+            # Minimum: 15%/month (5 clean days × 3%), Realistic: 20%, Best: 25%
+            _m_min  = config.MONTHLY_TARGET_PCT / 100   # 15% floor
+            _m_real = 0.20                               # realistic scalping
+            _m_best = 0.25                               # best case (hot streaks)
+            min_m1  = available * (1 + _m_min);   min_m12 = available * ((1 + _m_min) ** 12)
+            real_m1 = available * (1 + _m_real);  real_m6 = available * ((1 + _m_real) ** 6)
+            real_m12= available * ((1 + _m_real) ** 12)
+            best_m12= available * ((1 + _m_best) ** 12)
 
             lines = [
                 f"📊 <b>TRADING PLAN — {now_str}</b>",
@@ -606,11 +610,11 @@ class TradingBot:
                 f"🛑 <b>Daily stop-out:</b>  ${daily_loss_limit:.2f}  ({loss_pct}%)",
                 f"🎯 <b>Daily target:</b>    ${daily_target:,.2f}  ({config.DAILY_PROFIT_TARGET_PCT:.1f}%)",
                 "",
-                f"📈 <b>COMPOUNDING @ 13%/MONTH:</b>",
-                f"   1 month  → <b>${m1:,.0f}</b>",
-                f"   3 months → <b>${m3:,.0f}</b>",
-                f"   6 months → <b>${m6:,.0f}</b>",
-                f"   12 months → <b>${m12:,.0f}</b>",
+                f"📈 <b>COMPOUNDING PROJECTIONS (daily auto-reinvest):</b>",
+                f"   Minimum  15%/mo: 1m <b>${min_m1:,.0f}</b> → 12m <b>${min_m12:,.0f}</b>",
+                f"   Realistic 20%/mo: 1m <b>${real_m1:,.0f}</b> → 6m <b>${real_m6:,.0f}</b> → 12m <b>${real_m12:,.0f}</b>",
+                f"   Best case 25%/mo: 12m <b>${best_m12:,.0f}</b>",
+                f"   ⚡ Balance auto-reads from Alpaca daily — compounds every session",
             ]
             if note:
                 lines += ["", f"ℹ️ {note}"]
