@@ -332,15 +332,19 @@ class AdaptiveBrain:
                 s.size_multiplier   = max(s.size_multiplier * 0.8, 0.6)
                 msg.append(f"Day P&L {day_pct:.1f}% → raising bar score≥{s.current_min_score:.0f}")
 
-            elif day_pct >= 4.0:
-                # Exceptional day — lock gains at 4%+ (STOP mode in profit engine handles this)
+            elif day_pct >= 8.0:
+                # LOCK mode threshold — 2× daily target, now preserve gains
                 s.size_multiplier = min(s.size_multiplier, 0.6)
-                msg.append(f"Day P&L +{day_pct:.1f}% — exceptional, locking gains size=0.6x")
+                msg.append(f"Day P&L +{day_pct:.1f}% — LOCK level, preserving gains size=0.6x")
+            elif day_pct >= 4.0:
+                # Hit the 4% minimum target — keep pressing in PROTECTION mode
+                # This is the daily floor, not a ceiling — continue with A-grade setups
+                s.size_multiplier = min(s.size_multiplier * 1.08, 1.4)
+                msg.append(f"Day P&L +{day_pct:.1f}% minimum hit → pressing harder size={s.size_multiplier:.1f}x")
             elif day_pct >= 2.0:
-                # Target hit — keep pressing with A-grade (PROTECTION mode)
-                # Don't retreat — this is exactly when pros SIZE UP
+                # Halfway to target — keep pushing
                 s.size_multiplier = min(s.size_multiplier * 1.05, 1.3)
-                msg.append(f"Day P&L +{day_pct:.1f}% target hit → continue pressing size={s.size_multiplier:.1f}x")
+                msg.append(f"Day P&L +{day_pct:.1f}% halfway → pressing size={s.size_multiplier:.1f}x")
 
         # ── Pattern-level adaptation ──────────────────────────────────────
         pat = outcome.pattern or "UNKNOWN"

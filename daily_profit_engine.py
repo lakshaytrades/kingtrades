@@ -275,7 +275,7 @@ class DailyProfitEngine:
             # Only boost target when BEHIND pace — never reduce (base target is already the floor)
             pct_of_base = pace_target / base_target if base_target > 0 else 1.0
             if pct_of_base > 1.2 and monthly_pnl < monthly_target * 0.5:
-                adjusted = base_target * 1.2   # max 20% boost — don't over-risk
+                adjusted = base_target * 1.5   # max 50% boost — push hard when behind
                 logger.info(
                     f"[{format_ist_timestamp()}] Monthly catchup: behind pace "
                     f"(monthly_pnl=${monthly_pnl:+.2f}, need ${remaining_needed:.2f} in {trading_days_left} days) "
@@ -497,7 +497,7 @@ class DailyProfitEngine:
     def get_min_signal_score(self) -> float:
         """Minimum signal score to consider based on current mode."""
         score_map = {
-            TradingMode.AGGRESSIVE:  self.cfg.score_normal - 2,  # 66
+            TradingMode.AGGRESSIVE:  self.cfg.score_normal - 5,  # 63 — more trades approved
             TradingMode.NORMAL:      self.cfg.score_normal,       # 68
             TradingMode.CAUTION:     self.cfg.score_caution,      # 73
             TradingMode.PROTECTION:  self.cfg.score_protection,   # 78
@@ -529,23 +529,9 @@ class DailyProfitEngine:
         elif pnl <= -self.cfg.caution_loss:
             self.state.mode = TradingMode.CAUTION
         else:
-            # Below target — check if aggressive conditions met
-            now_ist = get_current_ist_time()
-            et_hour = (now_ist.hour - 4) % 24  # IST→ET rough conversion (IST-9:30 = ET)
-            behind_at_afternoon = (
-                pnl < self._daily_target * 0.5
-                and et_hour >= 13
-                and et_hour < 15
-            )
-            hot_streak = (
-                self.state.consecutive_wins >= 1
-                and et_hour < 12
-                and pnl >= 0
-            )
-            if behind_at_afternoon or hot_streak:
-                self.state.mode = TradingMode.AGGRESSIVE
-            else:
-                self.state.mode = TradingMode.NORMAL
+            # Below target — always AGGRESSIVE to hit the 4% minimum
+            # CAUTION/DEFENSIVE above already handle downside protection
+            self.state.mode = TradingMode.AGGRESSIVE
 
         if self.state.mode != prev_mode:
             logger.info(
