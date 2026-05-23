@@ -519,10 +519,10 @@ class TradingBot:
             note        = "Minimum $500 needed — trading disabled today"
         elif available < 2_500:
             tier        = "🟡 SMALL ($500-$2.5K)"
-            max_pos     = 3     # 3 concurrent positions
-            risk_pct    = 0.5   # 0.5% risk per trade — meaningful with fractional shares
-            loss_pct    = 0.5   # 0.5% daily loss = stop at first $5 loss on $1K
-            note        = "Fractional shares enabled — targeting 0.6%/day"
+            max_pos     = 5     # 5 concurrent positions — need volume to hit 1%/day
+            risk_pct    = 1.0   # 1% risk per trade ($10 on $1K) — meaningful size
+            loss_pct    = 0.75  # 0.75% daily loss limit ($7.50 on $1K)
+            note        = "Fractional shares — 1%/day target = 13% minimum/month"
         elif available < 10_000:
             tier        = "🟢 MEDIUM"
             max_pos     = 4
@@ -2202,6 +2202,15 @@ class TradingBot:
 
         # Update weekly P&L tracker (4-day profit mode)
         self._update_weekly_pnl()
+
+        # Save daily P&L to monthly tracker for 13%/month compounding
+        if self.profit_engine:
+            try:
+                today_str = get_current_ist_time().strftime("%Y-%m-%d")
+                today_pnl = self.risk_manager.state.daily_pnl if self.risk_manager else 0
+                self.profit_engine.record_eod_pnl(today_str, today_pnl)
+            except Exception as _e:
+                logger.debug(f"[suppressed] record_eod_pnl: {_e}")
 
         # Save compounded capital for tomorrow
         self._save_compounded_capital()

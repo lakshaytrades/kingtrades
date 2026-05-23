@@ -180,10 +180,14 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "0.6"))
-# 0.6%/day × 22 trading days = 13.2% monthly compounded
-# On $1,000: $6/day target. On $5,000: $30/day. Scales automatically with balance.
-# Bot STOPS new trades once daily target is hit — locks in the gain.
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.0"))
+# 1.0%/day × 22 trading days = 22% capacity → 13% MINIMUM even with 5 flat/loss days
+# Math: 17 win days × 1% - 3 loss days × 0.5% = 17% - 1.5% = 15.5% (worst realistic month)
+# On $1,000: $10/day target. On $5,000: $50/day. Auto-compounds as balance grows.
+# Bot enters PROTECTION mode (A-grade+) after target hit, LOCK mode at 2× target, STOP at 3×.
+
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "13.0"))
+# Used by monthly tracker to compute daily catchup targets when behind pace.
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets

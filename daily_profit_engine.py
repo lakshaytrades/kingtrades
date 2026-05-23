@@ -196,10 +196,19 @@ class DailyProfitEngine:
         """Call once at 9:15 AM market open."""
         today = get_current_ist_time().strftime("%Y-%m-%d")
         self._available_balance = available_balance
+
+        # ── Monthly pacing: adjust today's target to stay on 13%/month pace ─
+        daily_target = self._apply_monthly_catchup(daily_target, available_balance, today)
+
         self._daily_target = daily_target
-        self.cfg.daily_target = daily_target
-        self.cfg.daily_stretch_target = daily_target * 1.5
-        self.cfg.daily_max_target     = daily_target * 2.0
+        self.cfg.daily_target          = daily_target
+        self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
+        self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
+
+        # Percentage-based loss thresholds (scales with account size)
+        self.cfg.caution_loss   = max(available_balance * 0.003, 2.0)   # 0.3%
+        self.cfg.defensive_loss = max(available_balance * 0.005, 3.0)   # 0.5%
+        self.cfg.daily_loss_limit = max(available_balance * 0.0075, 5.0) # 0.75%
 
         # Load or reset state
         saved = self._load_state()
@@ -218,6 +227,90 @@ class DailyProfitEngine:
                 f"Buying power: ${available_balance:,.2f}"
             )
         self._update_mode()
+
+    # ─────────────────────────────────────────────
+    # MONTHLY PACING — CATCH-UP ENGINE
+    # ─────────────────────────────────────────────
+
+    _MONTHLY_FILE = _DATA_DIR / "monthly_pnl.json"
+
+    def _apply_monthly_catchup(
+        self, base_target: float, balance: float, today: str
+    ) -> float:
+        """
+        Read monthly P&L history and boost today's target if behind 13%/month pace.
+        Reduces target slightly when already well ahead (protect the month).
+        """
+        try:
+            import json as _json
+            from pathlib import Path as _Path
+            now = get_current_ist_time()
+            month_key = now.strftime("%Y-%m")
+
+            data: dict = {}
+            if self._MONTHLY_FILE.exists():
+                data = _json.loads(self._MONTHLY_FILE.read_text())
+
+            month_data = data.get(month_key, {})
+            monthly_pnl = sum(month_data.values())  # sum of all daily P&Ls this month
+
+            # How many trading days have elapsed this month (rough: count recorded days)
+            days_elapsed = max(len(month_data), 1)
+            # Target pace: 13% monthly = monthly_target_pct × balance
+            try:
+                import config as _cfg
+                monthly_target_pct = _cfg.MONTHLY_TARGET_PCT
+            except Exception:
+                monthly_target_pct = 13.0
+            monthly_target = balance * monthly_target_pct / 100
+
+            # Remaining trading days estimate: 22 total - days elapsed
+            trading_days_left = max(22 - days_elapsed, 1)
+            remaining_needed  = monthly_target - monthly_pnl
+
+            # Pace-based daily target
+            pace_target = remaining_needed / trading_days_left
+
+            # Only boost target when BEHIND pace — never reduce (base target is already the floor)
+            pct_of_base = pace_target / base_target if base_target > 0 else 1.0
+            if pct_of_base > 1.2 and monthly_pnl < monthly_target * 0.5:
+                adjusted = base_target * 1.2   # max 20% boost — don't over-risk
+                logger.info(
+                    f"[{format_ist_timestamp()}] Monthly catchup: behind pace "
+                    f"(monthly_pnl=${monthly_pnl:+.2f}, need ${remaining_needed:.2f} in {trading_days_left} days) "
+                    f"→ target boosted ${base_target:.2f}→${adjusted:.2f}"
+                )
+            else:
+                adjusted = base_target   # on pace or ahead — keep base target
+
+            return round(adjusted, 2)
+
+        except Exception as e:
+            logger.debug(f"Monthly catchup calc failed: {e}")
+            return base_target
+
+    def record_eod_pnl(self, date_str: str, daily_pnl: float) -> None:
+        """Call at end of day to persist daily P&L for monthly tracking."""
+        try:
+            import json as _json
+            month_key = date_str[:7]  # "2026-05"
+            data: dict = {}
+            if self._MONTHLY_FILE.exists():
+                data = _json.loads(self._MONTHLY_FILE.read_text())
+            if month_key not in data:
+                data[month_key] = {}
+            data[month_key][date_str] = round(daily_pnl, 4)
+            # Keep only last 3 months
+            keys = sorted(data.keys())
+            if len(keys) > 3:
+                for old in keys[:-3]:
+                    del data[old]
+            self._MONTHLY_FILE.write_text(_json.dumps(data, indent=2))
+            logger.info(
+                f"[{format_ist_timestamp()}] Monthly tracker: {date_str} P&L=${daily_pnl:+.2f} saved"
+            )
+        except Exception as e:
+            logger.debug(f"record_eod_pnl failed: {e}")
 
     def update_balance(self, balance: float) -> None:
         if balance > 0:
@@ -452,11 +545,13 @@ class DailyProfitEngine:
             )
 
     def _get_min_grade_for_mode(self) -> str:
+        # PROTECTION: keep trading with A-grade — bot earned the right to hunt more
+        # LOCK: only A+ — preserve 2× day target, don't give it back
         return {
             TradingMode.AGGRESSIVE:  "B",
             TradingMode.NORMAL:      "B",
             TradingMode.CAUTION:     "A",
-            TradingMode.PROTECTION:  "A+",
+            TradingMode.PROTECTION:  "A",    # was A+ — now keeps taking A-grade setups
             TradingMode.LOCK:        "A+",
             TradingMode.DEFENSIVE:   "A+",
             TradingMode.STOP:        "NONE",
