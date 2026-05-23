@@ -638,42 +638,54 @@ class RiskManager:
 
     def update_trailing_stop(self, position: Position, current_price: float) -> Dict:
         """
-        Update trailing stop with 50/30/20 partial exit strategy.
+        SL staircase — ratchets up with every milestone, never back down.
 
-        Exit sequence:
-          T1 hit → exit 50% (t1_qty), move SL to entry (breakeven)
-          T2 hit → exit 30% (t2_qty), activate tight runner trail
-          Runner → 20% rides with grade-adaptive trailing stop
-          T2 full → exit remaining if T2 not done (grade C: exit all)
+        Stage 1  Entry          Original ATR stop (0.6× ATR below entry)
+        Stage 2  +0.3% profit   SL → entry (breakeven, zero risk)
+        Stage 3  +1× ATR profit Early trail activated (pre-T1 protection)
+        Stage 4  T1 hit (1.5:1) Exit 40% | SL → entry + 30% of T1 gain (partial lock)
+        Stage 5  T1 → T2        Trail ratchets up below max price (standard trail)
+        Stage 6  T2 hit (2.5:1) Exit 25% | Runner SL starts at T1 price (locked profit)
+        Stage 7  Runner (5:1)   35% rides wide trail — A+: 1.5 ATR, A: 1.25 ATR
+        Stage 8  3× ATR profit  Runner trail tightens to 65% (was 35% — too aggressive)
+        Stage 9  4× ATR profit  Runner trail tightens to 35% (near the 5× target)
+        Stage 10 3:15 PM ET     Time-decay tightening — protect EOD gains
 
-        Trail aggressiveness by grade:
-          A+ / A: trail at 0.5x ATR (let winner run)
-          B:      trail at 0.8x ATR
-          C:      trail at 1.0x ATR (tighter — lower conviction)
-
-        Returns:
-            {action, new_sl, reason, exit_qty}
+        Grade-adaptive trails:
+          Pre-T2  A+: 0.30 ATR  A: 0.40 ATR  B: 0.50 ATR  — protect gains before T2
+          Runner  A+: 1.50 ATR  A: 1.25 ATR  B: 1.00 ATR  — wide trail, capture full move
         """
         from config import ATR_TRAIL_MULTIPLIER
         position.current_price = current_price
         atr = position.atr
 
-        # Grade-adaptive trail distance
+        # ── Pre-T2 trail (tight — protect entry/T1 gains) ─────────────────
         grade_trail = {
-            "A+": ATR_TRAIL_MULTIPLIER * 0.6,   # Tightest — best setups deserve room
+            "A+": ATR_TRAIL_MULTIPLIER * 0.6,
             "A":  ATR_TRAIL_MULTIPLIER * 0.8,
             "B":  ATR_TRAIL_MULTIPLIER,
-            "C":  ATR_TRAIL_MULTIPLIER * 1.3,   # Widest — low conviction, protect early
+            "C":  ATR_TRAIL_MULTIPLIER * 1.3,
         }
         trail_dist = grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER) * atr
 
-        # ── Time-decay tightening (top 1% rule: protect gains before close) ─
+        # ── Runner trail (wide — let 35% runner reach the full 5× ATR target) ─
+        runner_grade_trail = {
+            "A+": ATR_TRAIL_MULTIPLIER * 3.0,   # 1.50 ATR — widest, 80% win rate earns this
+            "A":  ATR_TRAIL_MULTIPLIER * 2.5,   # 1.25 ATR
+            "B":  ATR_TRAIL_MULTIPLIER * 2.0,   # 1.00 ATR
+            "C":  ATR_TRAIL_MULTIPLIER * 1.5,   # 0.75 ATR
+        }
+        runner_trail_dist = runner_grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER * 2.0) * atr
+
+        # ── Time-decay tightening (EOD — protect gains before close) ──────
         now_et = get_current_ist_time()
         et_min = now_et.hour * 60 + now_et.minute
-        if et_min >= 915:       # After 3:15 PM ET: 70% tighter (market closes in <45 min)
-            trail_dist *= 0.30
+        if et_min >= 915:       # After 3:15 PM ET: 70% tighter
+            trail_dist       *= 0.30
+            runner_trail_dist *= 0.30
         elif et_min >= 870:     # After 2:30 PM ET: 50% tighter
-            trail_dist *= 0.50
+            trail_dist       *= 0.50
+            runner_trail_dist *= 0.50
 
         be_trigger = getattr(_config, "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
 
@@ -708,18 +720,18 @@ class RiskManager:
                     "reason": f"Breakeven: price +{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
                 }
 
-            # ── T1: 50% exit at Target 1 ──────────────────────
+            # ── T1: 40% exit | SL → entry + 30% of T1 gain (partial profit locked) ─
             if not position.t1_done and current_price >= position.target_1:
                 position.t1_done = True
                 position.partial_exit_done = True
-                # Move SL to breakeven after T1
-                if position.direction == "LONG":
-                    position.stop_loss = max(position.stop_loss, position.entry_price)
+                t1_gain = position.target_1 - position.entry_price
+                locked_sl = position.entry_price + t1_gain * 0.30  # lock 30% of T1 profit
+                position.stop_loss = max(position.stop_loss, locked_sl)
                 return {
                     "action": "PARTIAL_EXIT_T1",
-                    "new_sl": position.entry_price,
+                    "new_sl": locked_sl,
                     "exit_qty": position.t1_qty,
-                    "reason": f"T1 hit ${position.target_1:.2f} — exit {position.t1_qty} qty (50%), SL→breakeven"
+                    "reason": f"T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (T1 gain 30% locked)"
                 }
 
             # ── T2: 30% exit at Target 2 ──────────────────────
@@ -732,35 +744,38 @@ class RiskManager:
                         "exit_qty": position.t2_qty + position.runner_qty,
                         "reason": f"T2 hit ${position.target_2:.2f} — exit all remaining"
                     }
-                # Grade A+/A/B: activate runner trailing
+                # Grade A+/A/B: runner SL starts at T1 price (profit locked from T1 level)
+                runner_sl = max(position.target_1, current_price - runner_trail_dist)
                 position.trailing_active = True
-                position.trailing_stop   = current_price - trail_dist
+                position.trailing_stop   = runner_sl
                 logger.info(
                     f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"T2 hit — runner trail activated ${position.trailing_stop:.2f}"
+                    f"T2 hit — runner trail @ ${runner_sl:.2f} (SL locked at T1 level, wide {position.quality_grade} trail)"
                 )
                 return {
                     "action": "PARTIAL_EXIT_T2",
-                    "new_sl": position.trailing_stop,
+                    "new_sl": runner_sl,
                     "exit_qty": position.t2_qty,
-                    "reason": f"T2 hit ${position.target_2:.2f} — exit {position.t2_qty} qty (30%), runner active"
+                    "reason": f"T2 ${position.target_2:.2f} — exit {position.t2_qty}qty (25%), runner SL=${runner_sl:.2f} (T1 locked)"
                 }
 
-            # ── Runner trailing stop (post-T2): ATR trail OR swing low ──────
+            # ── Runner trailing stop (post-T2): wide trail, staircase tightening ─
             if position.trailing_active and position.t2_done:
-                # Track price history for swing-low detection (rolling 20 bars)
                 position.price_history.append(current_price)
                 if len(position.price_history) > 20:
                     position.price_history.pop(0)
 
-                # Extended-profit tightening: when very profitable, protect more
+                # Staircase tightening — narrows as runner approaches T3 (5× ATR)
+                # Less aggressive than before: let the 35% runner capture the full move
                 total_profit_atr = profit / atr if atr > 0 else 0
-                if total_profit_atr >= 3.0:
-                    trail_dist *= 0.35   # At 3x ATR profit: ultra-tight trail
+                if total_profit_atr >= 4.0:
+                    runner_trail_dist *= 0.35   # Near T3: tighten hard, protect ~4 ATR gain
+                elif total_profit_atr >= 3.0:
+                    runner_trail_dist *= 0.65   # 3× ATR: moderate tighten (was 0.35 — too tight)
                 elif total_profit_atr >= 2.0:
-                    trail_dist *= 0.55   # At 2x ATR profit: tight trail
+                    runner_trail_dist *= 0.80   # 2× ATR: slight tighten (was 0.55 — too tight)
 
-                atr_trail = position.max_price - trail_dist
+                atr_trail = position.max_price - runner_trail_dist
 
                 # Swing low: lowest low in last 5 bars of history (if enough data)
                 swing_trail = 0.0
@@ -823,16 +838,18 @@ class RiskManager:
                     "reason": f"Short breakeven: price -{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
                 }
 
-            # T1: 50%
+            # T1: 40% exit | SL → entry - 30% of T1 gain (partial profit locked)
             if not position.t1_done and current_price <= position.target_1:
                 position.t1_done = True
                 position.partial_exit_done = True
-                position.stop_loss = min(position.stop_loss, position.entry_price)
+                t1_gain = position.entry_price - position.target_1
+                locked_sl = position.entry_price - t1_gain * 0.30
+                position.stop_loss = min(position.stop_loss, locked_sl)
                 return {
                     "action": "PARTIAL_EXIT_T1",
-                    "new_sl": position.entry_price,
+                    "new_sl": locked_sl,
                     "exit_qty": position.t1_qty,
-                    "reason": f"Short T1 hit ${position.target_1:.2f} — 50% exit, SL→breakeven"
+                    "reason": f"Short T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (T1 gain 30% locked)"
                 }
 
             # T2: 30%
@@ -844,23 +861,27 @@ class RiskManager:
                         "exit_qty": position.t2_qty + position.runner_qty,
                         "reason": f"Short T2 hit ${position.target_2:.2f} — full exit (grade C)"
                     }
+                # Runner SL starts at T1 price (profit locked from T1 level)
+                runner_sl = min(position.target_1, current_price + runner_trail_dist)
                 position.trailing_active = True
-                position.trailing_stop   = current_price + trail_dist
+                position.trailing_stop   = runner_sl
                 return {
                     "action": "PARTIAL_EXIT_T2",
-                    "new_sl": position.trailing_stop,
+                    "new_sl": runner_sl,
                     "exit_qty": position.t2_qty,
-                    "reason": f"Short T2 hit ${position.target_2:.2f} — 30% exit, runner active"
+                    "reason": f"Short T2 ${position.target_2:.2f} — exit {position.t2_qty}qty (25%), runner SL=${runner_sl:.2f} (T1 locked)"
                 }
 
-            # Runner
+            # Runner — staircase tightening, wide trail for A/A+
             if position.trailing_active and position.t2_done:
                 total_profit_atr = profit / atr if atr > 0 else 0
-                if total_profit_atr >= 3.0:
-                    trail_dist *= 0.35
+                if total_profit_atr >= 4.0:
+                    runner_trail_dist *= 0.35
+                elif total_profit_atr >= 3.0:
+                    runner_trail_dist *= 0.65
                 elif total_profit_atr >= 2.0:
-                    trail_dist *= 0.55
-                new_trail = position.min_price + trail_dist
+                    runner_trail_dist *= 0.80
+                new_trail = position.min_price + runner_trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
                     return {
