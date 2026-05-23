@@ -156,8 +156,8 @@ class RiskManager:
         pause_minutes: int = 30,
     ):
         self.max_daily_capital = max_daily_capital
-        self.max_risk_pct = min(max_risk_pct, 1.0)   # Hard cap at 1%
-        self.daily_loss_limit_pct = min(daily_loss_limit_pct, 1.0)   # hard cap: max 1% daily loss
+        self.max_risk_pct = min(max_risk_pct, 1.0)        # scalping cap: 1% per trade
+        self.daily_loss_limit_pct = min(daily_loss_limit_pct, 3.0)   # config cap: up to 3%
         self.max_positions = max_positions
         self.nifty_circuit_pct = nifty_circuit_pct
         self.consecutive_loss_limit = consecutive_loss_limit

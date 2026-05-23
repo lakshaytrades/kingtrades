@@ -1160,7 +1160,7 @@ class TradingBot:
                     return
 
             # Refresh dynamic top-movers hourly — fresh opportunity set each hour
-            _now_ts = time_module.time() if "time_module" in dir() else __import__("time").time()
+            _now_ts = time.time()
             if _now_ts - self._last_mover_scan >= self._mover_scan_interval:
                 self._last_mover_scan = _now_ts
                 try:
