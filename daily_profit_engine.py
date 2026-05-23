@@ -73,10 +73,10 @@ class ProfitEngineConfig:
     defensive_loss:        float = 50.0    # Switch to A+ only, 60% size
 
     # Capital deployment (% of available capital per trade)
-    a_plus_capital_pct:    float = 25.0      # A+ setup
-    a_capital_pct:         float = 18.0      # A  setup
-    b_capital_pct:         float = 12.0      # B  setup
-    c_capital_pct:         float = 8.0       # C  setup
+    a_plus_capital_pct:    float = 30.0      # A+ setup — bigger size for highest conviction
+    a_capital_pct:         float = 23.0      # A  setup
+    b_capital_pct:         float = 16.0      # B  setup
+    c_capital_pct:         float = 10.0      # C  setup
 
     # Compounding
     compound_bonus_pct:    float = 20.0      # After T1 hit: 20% bigger next trade
@@ -205,10 +205,11 @@ class DailyProfitEngine:
         self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
         self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
 
-        # Percentage-based loss thresholds (scales with account size)
-        self.cfg.caution_loss   = max(available_balance * 0.003, 2.0)   # 0.3%
-        self.cfg.defensive_loss = max(available_balance * 0.005, 3.0)   # 0.5%
-        self.cfg.daily_loss_limit = max(available_balance * 0.0075, 5.0) # 0.75%
+        # Percentage-based loss thresholds aligned with DAILY_LOSS_LIMIT_PCT
+        # Tight limits were killing trades after 1 bad scalp on small accounts
+        self.cfg.caution_loss   = max(available_balance * 0.005, 3.0)   # 0.5% — 1 full loss
+        self.cfg.defensive_loss = max(available_balance * 0.010, 5.0)   # 1.0% — 2 losses
+        self.cfg.daily_loss_limit = max(available_balance * 0.020, 10.0) # 2.0% — hard stop
 
         # Load or reset state
         saved = self._load_state()
@@ -530,9 +531,18 @@ class DailyProfitEngine:
         else:
             # Below target — check if aggressive conditions met
             now_ist = get_current_ist_time()
-            if (self.state.consecutive_wins >= 2
-                    and now_ist.hour < 11
-                    and pnl >= 0):
+            et_hour = (now_ist.hour - 4) % 24  # IST→ET rough conversion (IST-9:30 = ET)
+            behind_at_afternoon = (
+                pnl < self._daily_target * 0.5
+                and et_hour >= 13
+                and et_hour < 15
+            )
+            hot_streak = (
+                self.state.consecutive_wins >= 1
+                and et_hour < 12
+                and pnl >= 0
+            )
+            if behind_at_afternoon or hot_streak:
                 self.state.mode = TradingMode.AGGRESSIVE
             else:
                 self.state.mode = TradingMode.NORMAL
@@ -559,11 +569,11 @@ class DailyProfitEngine:
 
     def _get_mode_size_multiplier(self) -> float:
         return {
-            TradingMode.AGGRESSIVE:  1.20,
+            TradingMode.AGGRESSIVE:  1.30,   # hot streak: press harder
             TradingMode.NORMAL:      1.00,
             TradingMode.CAUTION:     0.80,
-            TradingMode.PROTECTION:  0.90,
-            TradingMode.LOCK:        0.60,
+            TradingMode.PROTECTION:  1.00,   # target hit but keep full size — push to 4%
+            TradingMode.LOCK:        0.70,   # 2× target hit — slight reduction, not full stop
             TradingMode.DEFENSIVE:   0.60,
             TradingMode.STOP:        0.00,
         }.get(self.state.mode, 1.00)

@@ -181,10 +181,10 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "2.0"))
-# 2.0%/day target: hits on 15 days = 30% monthly, even 10 target days = 18% monthly
-# On $1,000: $20/day target → PROTECTION (A-grade) → LOCK at $40 → STOP at $60 (6%)
-# One A+ trade hitting T2 at 5:1 R:R with 2% risk = $100 profit = 10% in one trade
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "3.0"))
+# 3.0%/day target: minimum floor 2%, push to 4% (LOCK mode). Scalping math:
+# 8 trades × 1% risk × 1.5:1 R:R × 70% T1 exit × 60% win rate = ~2.5% net/day
+# On $1,000: $30/day target → PROTECTION at $30 → LOCK at $60 (6%) → STOP at $90 (9%)
 
 MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "15.0"))
 # Used by monthly tracker to compute daily catchup targets when behind pace.
@@ -347,9 +347,9 @@ DOW_MAX_TRADES: dict = {
     4: 10,   # Friday — slightly lower (early close risk)
 }
 
-WEEKLY_PROFIT_TARGET_PCT: float = 2.0
-WEEKLY_PROFIT_LOCK_PCT: float = 1.5
-WEEKLY_LOSS_STOP_PCT: float = 2.5
+WEEKLY_PROFIT_TARGET_PCT: float = 12.0   # 4 good days × 3%/day = 12%
+WEEKLY_PROFIT_LOCK_PCT: float = 8.0     # reduce aggression after 8% weekly
+WEEKLY_LOSS_STOP_PCT: float = 4.0       # weekly stop-out at -4%
 WEEKLY_DATA_FILE: str = "data/weekly_pnl.json"
 
 # NSE-specific fields kept as stubs so any remaining references don't crash
