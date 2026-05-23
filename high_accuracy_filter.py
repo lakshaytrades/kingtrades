@@ -435,22 +435,20 @@ class HighAccuracyFilter:
             return result
 
         # Grade the setup — institutional quality tiers
-        # Thresholds: relative to min_score so they scale with config changes
-        _ap_thresh = max(self.min_score + 15, 85)   # A+ = min_score+15 or 85, whichever higher
-        _a_thresh  = max(self.min_score + 8,  78)   # A  = min_score+8  or 78
+        # A+ = min_score+8 or 88 (whichever higher) — elite setups, maximum size
+        # A  = min_score (everything that passes the gate) — no B/C dilution
+        # B/C grades are never emitted here because the score gate above already
+        # rejects anything below min_score.  Grade "B" still exists in the
+        # dataclass default so callers don't crash on legacy paths, but we never
+        # assign it from this filter — that was the bug that blocked all trades.
+        _ap_thresh = max(self.min_score + 8, 88)    # A+ = min_score+8 or 88
 
         if result.final_score >= _ap_thresh:
             result.quality_grade   = "A+"
             result.size_multiplier = min(result.size_multiplier * 2.0, 2.5)   # aggressive size on best setups
-        elif result.final_score >= _a_thresh:
-            result.quality_grade   = "A"
-            result.size_multiplier = min(result.size_multiplier * 1.5, 2.0)   # solid size
-        elif result.final_score >= self.min_score:
-            result.quality_grade   = "B"
-            result.size_multiplier = min(result.size_multiplier * 1.0, 1.5)   # standard
         else:
-            result.quality_grade   = "C"
-            result.size_multiplier *= 0.75
+            result.quality_grade   = "A"
+            result.size_multiplier = min(result.size_multiplier * 1.5, 2.0)   # solid size on all passing signals
 
         # Hard cap size multiplier
         result.size_multiplier = round(min(result.size_multiplier, 2.5), 2)

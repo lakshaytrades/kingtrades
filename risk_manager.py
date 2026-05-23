@@ -907,14 +907,19 @@ class RiskManager:
 
     def setup_partial_exits(self, position: Position) -> Position:
         """
-        Calculate 50/30/20 partial exit quantities.
-        18yr rule: Take half off at T1 to guarantee profit, let runner work.
+        Calculate 40/25/35 partial exit quantities (T1 / T2 / runner).
+        18yr rule: Take 40% off at T1 to guarantee profit, let runner work.
         A+ grade: runner stays alive longer with tighter trail.
         """
         from config import PARTIAL_EXIT_T1_PCT, PARTIAL_EXIT_T2_PCT, RUNNER_PCT
         qty = position.quantity
         t1_qty = max(1, round(qty * PARTIAL_EXIT_T1_PCT / 100))
+        # Ensure t1_qty never exceeds qty
+        t1_qty = min(t1_qty, qty)
         t2_qty = max(1, round(qty * PARTIAL_EXIT_T2_PCT / 100))
+        # Ensure t1 + t2 never exceeds total qty (small positions)
+        if t1_qty + t2_qty > qty:
+            t2_qty = max(0, qty - t1_qty)
         runner_qty = max(0, qty - t1_qty - t2_qty)
         position.t1_qty     = t1_qty
         position.t2_qty     = t2_qty

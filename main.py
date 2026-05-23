@@ -1112,6 +1112,35 @@ class TradingBot:
                     else dow_min
                 )
                 self.signal_gen.min_score = max(dow_min, brain_score)
+
+                # ── Dynamic score relaxation: never sit idle all day ──────
+                # If no trades by key times, gently lower the bar on the best
+                # available setups. Floor is 72 — never below this for safety.
+                _n_trades = self.risk_manager.state.daily_trades
+                if _n_trades == 0 and self.profit_engine.state.mode not in ("STOP", "DEFENSIVE"):
+                    try:
+                        from utils import get_current_et_time
+                        _et = get_current_et_time()
+                    except Exception:
+                        _et = now_ist
+                    _et_min = _et.hour * 60 + _et.minute
+                    if _et_min >= 810:      # 1:30 PM ET — afternoon, still zero trades
+                        _floor = max(self.signal_gen.min_score - 8, 72)
+                        if self.signal_gen.min_score != _floor:
+                            self.signal_gen.min_score = _floor
+                            logger.info(
+                                f"[{format_ist_timestamp()}] No trades by 1:30 PM — "
+                                f"score relaxed to {_floor:.0f} (best available, floor=72)"
+                            )
+                    elif _et_min >= 630:    # 10:30 AM ET — morning over, still zero trades
+                        _floor = max(self.signal_gen.min_score - 4, 75)
+                        if self.signal_gen.min_score != _floor:
+                            self.signal_gen.min_score = _floor
+                            logger.debug(
+                                f"[{format_ist_timestamp()}] No trades by 10:30 AM — "
+                                f"score relaxed to {_floor:.0f}"
+                            )
+
             if self.risk_manager.state.daily_trades >= dow_max_trades:
                 logger.info(
                     f"[{format_ist_timestamp()}] DOW max trades "

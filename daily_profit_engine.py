@@ -1,34 +1,32 @@
 """
-daily_profit_engine.py — ₹5,000-₹10,000 Daily Profit Management System
+daily_profit_engine.py — Daily Profit Management System (4%/day target)
 
 The gap between an average trader and a profitable trader is NOT the strategy —
 it is capital deployment, profit protection, and intraday compounding.
 
-This engine does 5 things that make ₹5-10k/day achievable:
+This engine does 5 things that make the 4%/day target achievable:
 
 1. CAPITAL DEPLOYMENT OPTIMIZER
-   - A+ signal: Deploy 25% of capital (full MIS leverage = 5× exposure)
-   - A  signal: Deploy 18% of capital
-   - B  signal: Deploy 12% of capital
-   - C  signal: Deploy 8%  of capital (reduced)
+   - A+ signal: Deploy 45% of daily capital allocation
+   - A  signal: Deploy 38% of daily capital allocation
+   - B  signal: Deploy 20% (blocked by grade gate in AGGRESSIVE/NORMAL)
+   - C  signal: Deploy 12% (blocked by grade gate in all modes)
 
 2. INTRADAY PROFIT COMPOUNDING
-   - First trade hits T1: 50% booking → lock profit → SIZE UP next trade
-   - Morning profitable (>₹1k): Increase afternoon position sizes by 20%
+   - First trade hits T1: 40% booking → lock profit → SIZE UP next trade
+   - Morning profitable: Increase afternoon position sizes by 20%
    - Win streak (3+): Allow 1 extra concurrent position
 
 3. DAILY PROFIT TARGET MANAGEMENT
-   - Target: ₹5,000 (default, configurable)
-   - Stretch: ₹7,500
-   - Max:     ₹10,000
-   - At ₹5,000: Switch to PROTECTION mode — only A+ entries
-   - At ₹7,500: Switch to LOCK mode — 60% size, only A+ entries
-   - At ₹10,000: STOP trading. Protect the profit. Done for the day.
+   - Target: 4% of balance (configurable via DAILY_PROFIT_TARGET_PCT)
+   - At 2× target: Switch to PROTECTION mode — A-grade minimum
+   - At 3× target: Switch to LOCK mode — 60% size, A+ only
+   - At 4× target: STOP trading. Protect the profit. Done for the day.
 
 4. LOSS PROTECTION ESCALATION
-   - -₹1,000: Caution mode — A-grade minimum
-   - -₹2,000: Defensive mode — only A+ signals, 60% size
-   - -₹3,000: Emergency stop — no new entries, exit at T1
+   - -1.0%: Caution mode — A-grade minimum
+   - -1.5%: Defensive mode — only A+ signals, 60% size
+   - -2.5%: Emergency stop — no new entries, exit at T1
 
 5. INTRADAY PERFORMANCE SCORING
    - Scores bot's real-time performance vs expected
@@ -262,7 +260,7 @@ class DailyProfitEngine:
                 import config as _cfg
                 monthly_target_pct = _cfg.MONTHLY_TARGET_PCT
             except Exception:
-                monthly_target_pct = 13.0
+                monthly_target_pct = 30.0
             monthly_target = balance * monthly_target_pct / 100
 
             # Remaining trading days estimate: 22 total - days elapsed
