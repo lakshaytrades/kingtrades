@@ -515,14 +515,14 @@ class TradingBot:
             tier        = "⛔ INSUFFICIENT"
             max_pos     = 0
             risk_pct    = 0.0
-            loss_pct    = 1.0
+            loss_pct    = 0.5
             note        = "Minimum $500 needed — trading disabled today"
         elif available < 2_500:
-            tier        = "🟡 SMALL"
-            max_pos     = 2
-            risk_pct    = 0.25   # low risk — protect small account
-            loss_pct    = 1.0
-            note        = ""
+            tier        = "🟡 SMALL ($500-$2.5K)"
+            max_pos     = 3     # 3 concurrent positions
+            risk_pct    = 0.5   # 0.5% risk per trade — meaningful with fractional shares
+            loss_pct    = 0.5   # 0.5% daily loss = stop at first $5 loss on $1K
+            note        = "Fractional shares enabled — targeting 0.6%/day"
         elif available < 10_000:
             tier        = "🟢 MEDIUM"
             max_pos     = 4
@@ -547,9 +547,14 @@ class TradingBot:
         daily_loss_limit    = available * (loss_pct / 100)
         per_pos_budget      = (available / max_pos) if max_pos > 0 else 0
 
-        # Daily target: env override or 2× risk-per-trade (minimum $50)
-        env_target = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
-        daily_target = env_target if env_target > 0 else max(risk_per_trade * 2 * max_pos, 50)
+        # Daily target: fixed override → percentage of balance → fallback floor
+        env_target = config.DAILY_PROFIT_TARGET  # 0 = auto-compute
+        if env_target > 0:
+            daily_target = env_target   # explicit fixed dollar target
+        else:
+            # Percentage-based: 0.6%/day × balance = 13%/month compounded
+            pct_target   = available * config.DAILY_PROFIT_TARGET_PCT / 100
+            daily_target = max(pct_target, risk_per_trade * 1.5)  # never below 1.5× one risk unit
 
         # ── Apply to risk manager ────────────────────────────────────────────
         self.risk_manager.max_risk_pct          = min(risk_pct, 1.0)
@@ -580,6 +585,13 @@ class TradingBot:
         if self.alerter and available > 0:
             now_str  = get_current_ist_time().strftime("%Y-%m-%d")
             mode_str = "⚡ LIVE" if config.LIVE_TRADING_ENABLED else "🔒 PAPER"
+
+            # Compounding projections (13%/month = ×1.13 each month)
+            m1  = available * 1.13
+            m3  = available * (1.13 ** 3)
+            m6  = available * (1.13 ** 6)
+            m12 = available * (1.13 ** 12)
+
             lines = [
                 f"📊 <b>TRADING PLAN — {now_str}</b>",
                 "",
@@ -592,10 +604,16 @@ class TradingBot:
                 "",
                 f"⚠️  <b>Risk per trade:</b>  ${risk_per_trade:.2f}  ({risk_pct}%)",
                 f"🛑 <b>Daily stop-out:</b>  ${daily_loss_limit:.2f}  ({loss_pct}%)",
-                f"🎯 <b>Daily target:</b>    ${daily_target:,.2f}",
+                f"🎯 <b>Daily target:</b>    ${daily_target:,.2f}  ({config.DAILY_PROFIT_TARGET_PCT:.1f}%)",
+                "",
+                f"📈 <b>COMPOUNDING @ 13%/MONTH:</b>",
+                f"   1 month  → <b>${m1:,.0f}</b>",
+                f"   3 months → <b>${m3:,.0f}</b>",
+                f"   6 months → <b>${m6:,.0f}</b>",
+                f"   12 months → <b>${m12:,.0f}</b>",
             ]
             if note:
-                lines += ["", f"🚫 {note}"]
+                lines += ["", f"ℹ️ {note}"]
             self.alerter.send_text("\n".join(lines))
 
         return plan

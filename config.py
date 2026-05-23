@@ -176,8 +176,14 @@ DEFAULT_WATCHLIST = [
 # Bar data: Alpaca REST (unlimited symbols). WebSocket real-time: Alpaca stream.
 # 55 symbols — all liquid US stocks, min $5M daily dollar volume.
 
-DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "750"))
-# $750/day on $25K capital = 3.0%/day pace → 66%/month — actual target 13% (~$590/day)
+DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
+# 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
+# >0 = fixed dollar target (overrides percentage calculation)
+
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "0.6"))
+# 0.6%/day × 22 trading days = 13.2% monthly compounded
+# On $1,000: $6/day target. On $5,000: $30/day. Scales automatically with balance.
+# Bot STOPS new trades once daily target is hit — locks in the gain.
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets
