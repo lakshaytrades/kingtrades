@@ -383,7 +383,7 @@ class DailyProfitEngine:
 
         # Final % of capital to deploy
         final_pct = base_pct * total_mult / 100.0
-        final_pct = max(0.05, min(final_pct, 0.55))  # 5%–55% hard limits — bigger on elite trades
+        final_pct = max(0.05, min(final_pct, 0.30))  # 5%–30% — matches MAX_CAPITAL_PER_TRADE_PCT
 
         capital_usd = self._available_balance * final_pct
         # Minimum trade: $10

@@ -606,9 +606,9 @@ class RiskManager:
         if symbol in self.state.positions:
             return {"allowed": False, "reason": f"Already have open position in {symbol}"}
 
-        # 6. Sufficient capital?
-        if self._available_balance < 1000:
-            return {"allowed": False, "reason": "Insufficient balance"}
+        # 6. Sufficient capital? (guard against API returning 0 / uninitialized balance)
+        if self._available_balance <= 50:
+            return {"allowed": False, "reason": f"Balance ${self._available_balance:.2f} too low to trade safely"}
 
         # 7. Portfolio heat limit
         import config as _cfg

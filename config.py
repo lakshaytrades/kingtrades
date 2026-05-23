@@ -75,7 +75,7 @@ ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
 
 MAX_POSITIONS: int = 15
 MIN_POSITIONS: int = 1
-MAX_CAPITAL_PER_TRADE_PCT: float = 20.0
+MAX_CAPITAL_PER_TRADE_PCT: float = 30.0   # 30% = $300 on $1K; risk_mgr still limits by ATR-SL
 
 # ============================================================
 # STRATEGY PARAMETERS
