@@ -97,9 +97,9 @@ ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't over
 ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
 ATR_TRAIL_MULTIPLIER: float = 0.50      # wider trail = let winners breathe before stopping out
 BREAKEVEN_TRIGGER_PCT: float = 0.30     # free trade at 0.3% profit — gives room before locking in
-PARTIAL_EXIT_T1_PCT: float = 55.0       # 55% at T1 — capture core, leave 45% to run to T2/T3
-PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful slice on the continuation
-RUNNER_PCT: float = 20.0                # 20% runner — real trailing profit on the best moves
+PARTIAL_EXIT_T1_PCT: float = 40.0       # 40% at T1 — lock some profit, keep 60% running
+PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful second slice
+RUNNER_PCT: float = 35.0                # 35% runner — bigger slice on high-conviction trades
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
 MIN_RISK_REWARD: float = 1.5       # Scalping: 1.5:1 minimum — more trades, consistent small wins
@@ -136,15 +136,15 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 65.0        # lowered from 70 — captures valid mid-tier scalps
-HIGH_CONFIDENCE_SCORE: float = 73.0
+MIN_SIGNAL_SCORE: float = 78.0        # high-accuracy gate — only near-perfect setups
+HIGH_CONFIDENCE_SCORE: float = 84.0   # elite tier above the 78 floor
 PREMIUM_SCORE: float = 83.0
 MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 40          # scalping: high-frequency, capture every clean setup
-MAX_TRADES_PER_STOCK: int = 6         # re-enter strong movers up to 6× per day
+MAX_TRADES_PER_DAY: int = 20          # quality over quantity — 20 perfect trades > 40 marginal ones
+MAX_TRADES_PER_STOCK: int = 3         # re-enter only on confirmed continuation setups
 
 # ============================================================
 # CIRCUIT BREAKERS
@@ -336,11 +336,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 70.0,   # Monday
-    1: 70.0,   # Tuesday
-    2: 70.0,   # Wednesday
-    3: 70.0,   # Thursday
-    4: 70.0,   # Friday — same standard, early close managed by smaller size multiplier
+    0: 78.0,   # Monday
+    1: 78.0,   # Tuesday
+    2: 78.0,   # Wednesday
+    3: 78.0,   # Thursday
+    4: 78.0,   # Friday — same high standard every day
 }
 
 DOW_MAX_TRADES: dict = {

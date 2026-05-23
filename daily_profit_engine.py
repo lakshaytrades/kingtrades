@@ -73,10 +73,10 @@ class ProfitEngineConfig:
     defensive_loss:        float = 50.0    # Switch to A+ only, 60% size
 
     # Capital deployment (% of available capital per trade)
-    a_plus_capital_pct:    float = 40.0      # A+ setup — maximum capital on highest conviction
-    a_capital_pct:         float = 30.0      # A  setup
-    b_capital_pct:         float = 20.0      # B  setup
-    c_capital_pct:         float = 12.0      # C  setup
+    a_plus_capital_pct:    float = 45.0      # A+ setup — maximum capital, only perfect setups taken
+    a_capital_pct:         float = 38.0      # A  setup — fewer trades means more per winner
+    b_capital_pct:         float = 20.0      # B  setup — blocked by grade gate (kept for fallback)
+    c_capital_pct:         float = 12.0      # C  setup — blocked by grade gate (kept for fallback)
 
     # Compounding
     compound_bonus_pct:    float = 80.0      # After T1 hit: 80% bigger next trade — aggressive snowball
@@ -86,10 +86,10 @@ class ProfitEngineConfig:
     mis_leverage:          float = 1.0
 
     # Min signal scores by mode
-    score_normal:          float = 68.0
-    score_caution:         float = 73.0
-    score_protection:      float = 78.0
-    score_lock:            float = 82.0
+    score_normal:          float = 78.0   # matches MIN_SIGNAL_SCORE — consistent floor
+    score_caution:         float = 82.0
+    score_protection:      float = 84.0
+    score_lock:            float = 88.0
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -385,7 +385,7 @@ class DailyProfitEngine:
 
         # Final % of capital to deploy
         final_pct = base_pct * total_mult / 100.0
-        final_pct = max(0.04, min(final_pct, 0.45))  # 4%–45% hard limits
+        final_pct = max(0.05, min(final_pct, 0.55))  # 5%–55% hard limits — bigger on elite trades
 
         capital_usd = self._available_balance * final_pct
         # Minimum trade: $10
@@ -497,12 +497,12 @@ class DailyProfitEngine:
     def get_min_signal_score(self) -> float:
         """Minimum signal score to consider based on current mode."""
         score_map = {
-            TradingMode.AGGRESSIVE:  self.cfg.score_normal - 5,  # 63 — more trades approved
-            TradingMode.NORMAL:      self.cfg.score_normal,       # 68
-            TradingMode.CAUTION:     self.cfg.score_caution,      # 73
-            TradingMode.PROTECTION:  self.cfg.score_protection,   # 78
-            TradingMode.LOCK:        self.cfg.score_lock,         # 82
-            TradingMode.DEFENSIVE:   self.cfg.score_protection,   # 78
+            TradingMode.AGGRESSIVE:  self.cfg.score_normal,        # 78 — no discount, quality always required
+            TradingMode.NORMAL:      self.cfg.score_normal,        # 78
+            TradingMode.CAUTION:     self.cfg.score_caution,      # 82
+            TradingMode.PROTECTION:  self.cfg.score_protection,   # 84
+            TradingMode.LOCK:        self.cfg.score_lock,         # 88
+            TradingMode.DEFENSIVE:   self.cfg.score_protection,   # 84
             TradingMode.STOP:        999,                         # No trades
         }
         return score_map.get(self.state.mode, self.cfg.score_normal)
@@ -544,18 +544,18 @@ class DailyProfitEngine:
         # PROTECTION: keep trading with A-grade — bot earned the right to hunt more
         # LOCK: only A+ — preserve 2× day target, don't give it back
         return {
-            TradingMode.AGGRESSIVE:  "B",
-            TradingMode.NORMAL:      "B",
-            TradingMode.CAUTION:     "A",
-            TradingMode.PROTECTION:  "A",    # was A+ — now keeps taking A-grade setups
+            TradingMode.AGGRESSIVE:  "A",    # minimum A-grade — no B or C trades ever
+            TradingMode.NORMAL:      "A",    # minimum A-grade
+            TradingMode.CAUTION:     "A+",   # only best setups when in loss
+            TradingMode.PROTECTION:  "A",    # target hit — keep pressing with A-grade
             TradingMode.LOCK:        "A+",
             TradingMode.DEFENSIVE:   "A+",
             TradingMode.STOP:        "NONE",
-        }.get(self.state.mode, "B")
+        }.get(self.state.mode, "A")
 
     def _get_mode_size_multiplier(self) -> float:
         return {
-            TradingMode.AGGRESSIVE:  1.60,   # hot streak — press maximum, size up 60%
+            TradingMode.AGGRESSIVE:  1.80,   # hot streak — press maximum, size up 80%
             TradingMode.NORMAL:      1.00,
             TradingMode.CAUTION:     0.80,
             TradingMode.PROTECTION:  1.10,   # target hit — keep pressing, slight bonus
