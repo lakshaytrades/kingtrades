@@ -49,7 +49,7 @@ from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
 
-_MAX_GRAND_SLAMS_PER_DAY = 3
+_MAX_GRAND_SLAMS_PER_DAY = 6
 
 
 # ─────────────────────────────────────────────────────────────────────────────

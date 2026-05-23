@@ -524,17 +524,17 @@ class TradingBot:
             loss_pct    = 2.0   # 2% daily loss limit ($20 on $1K) — covers 2 full losses
             note        = "Scalping mode — many 1.5:1 R:R trades, 70% exit at T1, 2-4%/day"
         elif available < 10_000:
-            tier        = "🟢 MEDIUM"
-            max_pos     = 4
-            risk_pct    = 0.3    # conservative — max loss ~$30 per trade on $10K
-            loss_pct    = 1.5
-            note        = ""
+            tier        = "🟢 MEDIUM ($2.5K-$10K)"
+            max_pos     = 8      # same shots as SMALL — scalping needs volume of trades
+            risk_pct    = 0.8    # scales with capital, not cliff-drop
+            loss_pct    = 2.0
+            note        = "Scaling mode — same scalping approach, 2-4%/day target"
         elif available < 50_000:
-            tier        = "🔵 LARGE"
-            max_pos     = 6
-            risk_pct    = 0.5    # moderate — max loss ~$250 per trade on $50K
-            loss_pct    = 1.5
-            note        = ""
+            tier        = "🔵 LARGE ($10K-$50K)"
+            max_pos     = 10     # more capital = more simultaneous positions
+            risk_pct    = 0.7    # slightly tighter % but larger $$ per trade
+            loss_pct    = 2.0
+            note        = "Momentum mode — full signal suite, 2-3%/day target"
         else:
             tier        = "💎 INSTITUTIONAL"
             max_pos     = 10

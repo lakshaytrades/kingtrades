@@ -269,8 +269,9 @@ class RiskManager:
                 return 2.0, "OPENING_DRIVE"
             elif 630 <= total_min < 690:  # 10:30-11:30 Morning session — trend continuation
                 return 1.5, "MORNING"
-            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — NO new positions
-                return 0.0, "MIDDAY_CHOP"
+            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — reduced size per config
+                _midday_mult = config.SESSION_SIZE_MULTIPLIERS.get("MIDDAY_CHOP", 0.5)
+                return _midday_mult, "MIDDAY_CHOP"
             elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend — institutional flow
                 return 1.5, "AFTERNOON"
             elif 930 <= total_min < 960:  # 15:30-16:00 Closing risk

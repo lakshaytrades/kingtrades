@@ -95,8 +95,8 @@ ATR_SL_MULTIPLIER: float = 0.6          # tight stop — move to breakeven fast,
 ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book target at 1.5:1 R:R (scalping)
 ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't overstay
 ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
-ATR_TRAIL_MULTIPLIER: float = 0.35      # very tight trail = lock gains aggressively
-BREAKEVEN_TRIGGER_PCT: float = 0.2      # free trade at 0.2% profit — even faster zero-risk
+ATR_TRAIL_MULTIPLIER: float = 0.50      # wider trail = let winners breathe before stopping out
+BREAKEVEN_TRIGGER_PCT: float = 0.30     # free trade at 0.3% profit — gives room before locking in
 PARTIAL_EXIT_T1_PCT: float = 55.0       # 55% at T1 — capture core, leave 45% to run to T2/T3
 PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful slice on the continuation
 RUNNER_PCT: float = 20.0                # 20% runner — real trailing profit on the best moves
@@ -151,7 +151,7 @@ MAX_TRADES_PER_STOCK: int = 4         # scalping: re-enter same stock after T1 b
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
 CONSECUTIVE_LOSS_LIMIT: int = 3
-PAUSE_AFTER_LOSSES_MINUTES: int = 30
+PAUSE_AFTER_LOSSES_MINUTES: int = 15   # was 30 — half the wait, back in game faster
 
 # ============================================================
 # WATCHLIST — US liquid momentum stocks
@@ -340,15 +340,15 @@ DOW_MIN_SCORE: dict = {
     1: 70.0,   # Tuesday
     2: 70.0,   # Wednesday
     3: 70.0,   # Thursday
-    4: 73.0,   # Friday — slightly higher (early close risk)
+    4: 70.0,   # Friday — same standard, early close managed by smaller size multiplier
 }
 
 DOW_MAX_TRADES: dict = {
-    0: 15,   # Monday
-    1: 15,   # Tuesday
-    2: 15,   # Wednesday
-    3: 15,   # Thursday
-    4: 10,   # Friday — slightly lower (early close risk)
+    0: 25,   # Monday
+    1: 30,   # Tuesday — best trend day
+    2: 30,   # Wednesday — trend continuation
+    3: 25,   # Thursday
+    4: 20,   # Friday — EOD risk managed by 0.8× size, not trade count
 }
 
 WEEKLY_PROFIT_TARGET_PCT: float = 12.0   # 4 good days × 3%/day = 12%
