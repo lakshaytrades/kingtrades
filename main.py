@@ -872,7 +872,7 @@ class TradingBot:
     # --------------------------------------------------------
 
     def run(self):
-        """Main bot run loop. Blocks until market close."""
+        """Main bot run loop. Blocks until stopped. systemd Restart=always handles process-level restarts."""
         self.running = True
         logger.info(f"[{format_ist_timestamp()}] Bot running. Waiting for market open...")
 
@@ -988,6 +988,12 @@ class TradingBot:
 
         except KeyboardInterrupt:
             logger.info(f"[{format_ist_timestamp()}] Bot stopped by user (Ctrl+C)")
+        except Exception as _fatal:
+            import traceback
+            logger.critical(
+                f"[{format_ist_timestamp()}] FATAL main loop error: {_fatal}\n"
+                f"{traceback.format_exc()}"
+            )
         finally:
             self._cleanup()
 
@@ -1643,7 +1649,11 @@ class TradingBot:
                 self.dashboard.print_positions(self.risk_manager)
 
         except Exception as e:
-            logger.error(f"[{format_ist_timestamp()}] Trading cycle error: {e}")
+            import traceback
+            logger.error(
+                f"[{format_ist_timestamp()}] Trading cycle error: {e}\n"
+                f"{traceback.format_exc()}"
+            )
 
     # --------------------------------------------------------
     # POSITION MANAGEMENT
@@ -2554,20 +2564,26 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _start_telegram_listener(self):
-        """Start Telegram bot command listener in background thread."""
+        """Start Telegram bot command listener in background thread with auto-restart watchdog."""
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
             logger.warning(f"[{format_ist_timestamp()}] Telegram not configured — command listener disabled")
             return
 
         def listener_thread():
-            try:
-                asyncio.run(self._telegram_listener())
-            except Exception as e:
-                logger.error(f"Telegram listener error: {e}")
+            backoff = 5
+            while self.running:
+                try:
+                    asyncio.run(self._telegram_listener())
+                except Exception as e:
+                    logger.error(f"Telegram listener crashed: {e} — restarting in {backoff}s")
+                    time.sleep(backoff)
+                    backoff = min(backoff * 2, 60)  # cap at 60s between retries
+                else:
+                    backoff = 5  # reset on clean exit
 
-        t = threading.Thread(target=listener_thread, daemon=True)
-        t.start()
-        logger.info(f"[{format_ist_timestamp()}] Telegram command listener started")
+        self._tg_thread = threading.Thread(target=listener_thread, daemon=True, name="tg-listener")
+        self._tg_thread.start()
+        logger.info(f"[{format_ist_timestamp()}] Telegram command listener started (auto-restart watchdog active)")
 
     async def _telegram_listener(self):
         """
@@ -2989,15 +3005,31 @@ class TradingBot:
             logger.warning(f"Capital load error: {e}")
         return base
 
+    @staticmethod
+    def _atomic_write(path: Path, data: dict) -> None:
+        """Write JSON atomically — write to .tmp then rename. Safe on crash/power loss."""
+        tmp = path.with_suffix(".tmp")
+        tmp.write_text(json.dumps(data, indent=2))
+        tmp.replace(path)   # atomic on Linux (same filesystem)
+
+    def _safe_read_json(self, path: Path) -> dict:
+        """Read JSON with corruption recovery — returns {} on any error."""
+        try:
+            if path.exists():
+                return json.loads(path.read_text())
+        except Exception as e:
+            logger.warning(f"JSON read failed ({path.name}): {e} — using empty dict")
+        return {}
+
     def _save_capital_intraday(self):
         """Write capital.json mid-day so supervisor/optimizer see live P&L data."""
         try:
             if not self.risk_manager:
                 return
             rm = self.risk_manager
-            existing = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+            existing = self._safe_read_json(self._capital_file)
             self._capital_file.parent.mkdir(exist_ok=True)
-            self._capital_file.write_text(json.dumps({
+            self._atomic_write(self._capital_file, {
                 **existing,
                 "daily_pnl":          round(rm.state.daily_pnl, 2),
                 "total_equity":       round(rm.state.daily_capital, 2),
@@ -3006,7 +3038,7 @@ class TradingBot:
                 "losses":             rm.state.losing_trades,
                 "daily_trades":       rm.state.daily_trades,
                 "consecutive_losses": rm.state.consecutive_losses,
-            }, indent=2))
+            })
         except Exception as _e:
             logger.debug(f"Intraday capital save skipped: {_e}")
 
@@ -3022,7 +3054,7 @@ class TradingBot:
             daily_trades= self.risk_manager.state.daily_trades
             cons_losses = self.risk_manager.state.consecutive_losses
             base        = config.MAX_DAILY_CAPITAL
-            existing    = json.loads(self._capital_file.read_text()) if self._capital_file.exists() else {}
+            existing    = self._safe_read_json(self._capital_file)
             prev        = float(existing.get("compounded_capital", daily_cap or base))
             new_capital = max(base * 0.8, prev + today_pnl)
 
@@ -3034,7 +3066,7 @@ class TradingBot:
                 month_pnl = 0.0   # reset on new month
             month_pnl += today_pnl
 
-            self._capital_file.write_text(json.dumps({
+            self._atomic_write(self._capital_file, {
                 "date":               get_current_ist_time().strftime("%Y-%m-%d"),
                 "base_capital":       base,
                 "daily_capital":      round(daily_cap, 2),   # actual broker equity
@@ -3052,7 +3084,7 @@ class TradingBot:
                 "monthly_target_pct": 13.0,
                 "monthly_target_usd": round(daily_cap * 0.13, 2),
                 "monthly_pace_pct":   round(month_pnl / max(daily_cap, 1) * 100, 2),
-            }, indent=2))
+            })
             logger.info(
                 f"[{format_ist_timestamp()}] Capital saved: "
                 f"${prev:,.2f} + P&L ${today_pnl:+,.2f} = ${new_capital:,.2f}"
