@@ -58,7 +58,7 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # 0 = use full Alpaca account balance dynamically (recommended)
 # >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.0"))
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
 
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
@@ -88,16 +88,17 @@ MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
 ATR_SL_MULTIPLIER: float = 0.6          # tight stop — move to breakeven fast, limit downside
-ATR_TP_MULTIPLIER: float = 5.0          # 5:1 R:R max target — let winners run far
-ATR_TP_RUNNER: float = 7.0             # T3 runner for A+ setups — ride the full move
+ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book target at 1.5:1 R:R (scalping)
+ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't overstay
+ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
 ATR_TRAIL_MULTIPLIER: float = 0.35      # very tight trail = lock gains aggressively
-BREAKEVEN_TRIGGER_PCT: float = 0.3      # move to breakeven at 0.3% profit — fast zero-risk
-PARTIAL_EXIT_T1_PCT: float = 40.0       # take 40% off at T1 — lock profit early
-PARTIAL_EXIT_T2_PCT: float = 35.0       # 35% at T2 = 75% of position secured
-RUNNER_PCT: float = 25.0                # 25% runner rides to T3 with tight trail
+BREAKEVEN_TRIGGER_PCT: float = 0.2      # free trade at 0.2% profit — even faster zero-risk
+PARTIAL_EXIT_T1_PCT: float = 70.0       # book 70% at T1 — capture the bulk of the move
+PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — small continuation slice
+RUNNER_PCT: float = 10.0                # tiny 10% runner rides to T3 with tight trail
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 3.0       # Aggressive: only 3:1+ setups — bigger wins per trade
+MIN_RISK_REWARD: float = 1.5       # Scalping: 1.5:1 minimum — more trades, consistent small wins
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 
@@ -138,8 +139,8 @@ MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = True
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 15
-MAX_TRADES_PER_STOCK: int = 2
+MAX_TRADES_PER_DAY: int = 30          # scalping: more trades needed for 2-4%/day
+MAX_TRADES_PER_STOCK: int = 4         # scalping: re-enter same stock after T1 booking
 
 # ============================================================
 # CIRCUIT BREAKERS

@@ -1498,7 +1498,7 @@ class SignalGenerator:
         pm_score: Optional["ProfitMaxScore"] = None,
     ) -> TradeSignal:
         """Build complete TradeSignal with entry, SL, TP levels."""
-        from config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER
+        from config import ATR_SL_MULTIPLIER, ATR_TP_MULTIPLIER, ATR_T1_MULTIPLIER
         curr = df_5m.iloc[-1]
         ltp = float(curr["close"])
         atr = max(ind.atr, ltp * 0.003)  # Minimum 0.3% ATR
@@ -1506,12 +1506,12 @@ class SignalGenerator:
         if direction == "LONG":
             entry     = round_to_tick_size(ltp)
             stop_loss = round_to_tick_size(entry - ATR_SL_MULTIPLIER * atr)
-            target_1  = round_to_tick_size(entry + 2.0 * (entry - stop_loss))
+            target_1  = round_to_tick_size(entry + ATR_T1_MULTIPLIER * (entry - stop_loss))
             target_2  = round_to_tick_size(entry + ATR_TP_MULTIPLIER * (entry - stop_loss))
         else:  # SHORT
             entry     = round_to_tick_size(ltp)
             stop_loss = round_to_tick_size(entry + ATR_SL_MULTIPLIER * atr)
-            target_1  = round_to_tick_size(entry - 2.0 * (stop_loss - entry))
+            target_1  = round_to_tick_size(entry - ATR_T1_MULTIPLIER * (stop_loss - entry))
             target_2  = round_to_tick_size(entry - ATR_TP_MULTIPLIER * (stop_loss - entry))
 
         sl_distance = abs(entry - stop_loss)
