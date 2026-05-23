@@ -77,15 +77,15 @@ class RegimeState:
         return mapping.get(self.regime, "📊")
 
 
-# Session windows (IST)
-OPENING_DRIVE_START = time(9, 15)
-OPENING_DRIVE_END   = time(10, 0)
-MORNING_END         = time(11, 0)
-MIDDAY_START        = time(11, 0)
-MIDDAY_END          = time(13, 0)
+# Session windows (US ET — get_current_ist_time() returns ET via IST=ET alias)
+OPENING_DRIVE_START = time(9, 30)    # NYSE open
+OPENING_DRIVE_END   = time(10, 30)   # First hour
+MORNING_END         = time(11, 30)
+MIDDAY_START        = time(11, 30)
+MIDDAY_END          = time(13, 30)
 AFTERNOON_START     = time(13, 30)
-AFTERNOON_END       = time(15, 0)
-EOD_START           = time(15, 0)
+AFTERNOON_END       = time(15, 50)
+EOD_START           = time(15, 50)   # Last 10 min — reduce new entries
 
 
 class MarketRegimeDetector:

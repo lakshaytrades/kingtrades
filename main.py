@@ -1122,7 +1122,8 @@ class TradingBot:
                 # If no trades by key times, gently lower the bar.
                 # Floor is 67 — never below this, that's noise territory.
                 _n_trades = self.risk_manager.state.daily_trades
-                if _n_trades == 0 and self.profit_engine.state.mode not in ("STOP", "DEFENSIVE"):
+                _pe_mode  = self.profit_engine.state.mode if self.profit_engine else "STOP"
+                if _n_trades == 0 and _pe_mode not in ("STOP", "DEFENSIVE"):
                     try:
                         from utils import get_current_et_time
                         _et = get_current_et_time()
@@ -1495,18 +1496,18 @@ class TradingBot:
                     except Exception as dep_err:
                         logger.debug(f"Deployment calc: {dep_err}")
 
-                # 5b-pre. A+ setup: boost risk to 1.5% (score ≥ 90, grade A+)
-                if (getattr(signal, "signal_score", 0) >= 90
+                # 5b-pre. A+ setup: allow up to 2× normal risk (capped at 3%)
+                if (getattr(signal, "signal_score", 0) >= 88
                         and getattr(signal, "quality_grade", "B") == "A+"):
                     try:
                         if self.risk_manager:
-                            self.risk_manager.max_risk_pct = min(0.015, config.MAX_RISK_PER_TRADE_PCT / 100 * 2)
+                            self.risk_manager.max_risk_pct = min(config.MAX_RISK_PER_TRADE_PCT * 2, 3.0)
                     except Exception:
                         pass
                 else:
                     try:
                         if self.risk_manager:
-                            self.risk_manager.max_risk_pct = config.MAX_RISK_PER_TRADE_PCT / 100
+                            self.risk_manager.max_risk_pct = config.MAX_RISK_PER_TRADE_PCT
                     except Exception:
                         pass
 

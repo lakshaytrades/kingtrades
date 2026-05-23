@@ -508,7 +508,8 @@ class SignalGenerator:
             filter_result = self.ha_filter.evaluate(
                 signal_score     = ai_score,
                 direction        = "BUY" if direction == "LONG" else "SELL",
-                regime           = alignment.get("regime", "UNKNOWN"),
+                # inst_ctx holds the actual regime string; alignment dict has no "regime" key
+                regime           = inst_ctx.get("regime_name", "UNKNOWN"),
                 mtf_alignment    = alignment,
                 volume_ratio     = ind.volume_ratio,
                 pattern_names    = pattern_names,
@@ -523,11 +524,12 @@ class SignalGenerator:
                 learner          = self._learner,
                 # ── Gates 6-10 parameters ─────────────────────────────
                 symbol           = symbol,
-                # Gate 6: daily_volume — WebSocket quote "volume" = bid_size (tiny, not daily).
-                # Only use fields that represent true daily volume; default 1_000_000 passes
-                # Gate 6 for all standard US liquid stocks until real daily vol is available.
+                # Gate 6: daily_volume — use real daily volume fields; fall back to 0
+                # so Gate 6 only passes when data is actually available, not silently.
+                # The watchlist's liquid stocks (NVDA, SPY, etc.) always have daily_volume.
                 daily_volume     = float(stock_quote.get("daily_volume", 0) or
-                                         stock_quote.get("traded_volume", 0) or 1_000_000),
+                                         stock_quote.get("traded_volume", 0) or
+                                         stock_quote.get("volume", 0) or 0),
                 ltp              = ltp_now,
                 prev_close       = float(stock_quote.get("prev_close", 0) or
                                          stock_quote.get("previous_close", 0) or
@@ -538,9 +540,8 @@ class SignalGenerator:
                 at_key_level     = (
                     getattr(ind, "at_hvn", False)
                     or getattr(ind, "at_lvn", False)
-                    # VWAP-proximity: within 2% of VWAP is a valid level; fail open when VWAP unavailable
-                    or (ind.vwap <= 0)
-                    or (abs(ltp_now - ind.vwap) / ind.vwap <= 0.02)
+                    # VWAP-proximity: within 2% only when VWAP data is actually available
+                    or (ind.vwap > 0 and abs(ltp_now - ind.vwap) / ind.vwap <= 0.02)
                 ),
                 adx              = getattr(ind, "adx", 0.0),
                 spy_bullish      = spy_bullish,

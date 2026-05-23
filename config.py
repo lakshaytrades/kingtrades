@@ -51,7 +51,7 @@ GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 # ============================================================
 # TRADING CONFIGURATION
 # ============================================================
-LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() in ("true", "1", "yes")
+LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "False").lower() in ("true", "1", "yes")
 
 # Capital (USD) — paper account ~$99K; deploy 25% for 13%/month maths
 MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))

@@ -469,16 +469,18 @@ class HighAccuracyFilter:
     # ─────────────────────────────────────────────────────────
 
     def _check_time_window(self, t: time) -> Tuple[str, float]:
+        # AVOID checked first — its windows are subsets of POWER and would be
+        # shadowed if POWER ran first (e.g., 15:50-16:00 sits inside 14:30-16:00).
+        for start, end in AVOID_WINDOWS:
+            if start <= t < end:
+                return "AVOID", 0.0
         for start, end in POWER_WINDOWS:
             if start <= t < end:
                 return "POWER", 1.0
         for start, end in CAUTION_WINDOWS:
             if start <= t < end:
                 return "CAUTION", 0.6
-        for start, end in AVOID_WINDOWS:
-            if start <= t < end:
-                return "AVOID", 0.0
-        return "POWER", 1.0   # Outside all windows (at exact boundaries)
+        return "AVOID", 0.0   # Pre-market / post-close: never trade outside defined windows
 
     def _check_regime(self, regime: str, direction: str) -> Tuple[bool, float]:
         """Only trade momentum-friendly regimes."""
