@@ -58,10 +58,10 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # 0 = use full Alpaca account balance dynamically (recommended)
 # >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.5"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.5"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — covers 1 full loss + buffer
 
 # Intraday leverage multiplier.
@@ -143,8 +143,8 @@ MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 30          # scalping: more trades needed for 2-4%/day
-MAX_TRADES_PER_STOCK: int = 4         # scalping: re-enter same stock after T1 booking
+MAX_TRADES_PER_DAY: int = 40          # scalping: high-frequency, capture every clean setup
+MAX_TRADES_PER_STOCK: int = 6         # re-enter strong movers up to 6× per day
 
 # ============================================================
 # CIRCUIT BREAKERS
@@ -185,14 +185,14 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "3.0"))
-# 3.0%/day target: minimum floor 2%, push to 4% (LOCK mode). Scalping math:
-# 8 trades × 1% risk × 1.5:1 R:R × 70% T1 exit × 60% win rate = ~2.5% net/day
-# On $1,000: $30/day target → PROTECTION at $30 → LOCK at $60 (6%) → STOP at $90 (9%)
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "4.0"))
+# 4.0%/day target: bot stays in NORMAL/AGGRESSIVE mode until 4% hit, LOCK at 8%, STOP at 12%
+# Scalping math: 15 trades × 1.5% risk × 1.5:1 R:R × 55% win rate = ~3.7% net/day
+# On $1,500: $60/day target → PROTECTION at $60 → LOCK at $120 (8%) → STOP at $180 (12%)
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "15.0"))
-# Used by monthly tracker to compute daily catchup targets when behind pace.
-# 15% minimum / month — math: 10 target days × 2% - 2 loss days × 2% = 16% worst case
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "30.0"))
+# 30% monthly target — catch-up engine boosts daily target when behind this pace
+# Math: 22 days × 4%/day compounded = 138% (well above 30%) — very achievable floor
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets
@@ -287,11 +287,11 @@ MAX_PORTFOLIO_HEAT_PCT: float = 10.0   # was 3.0 — allows up to 10 concurrent 
 MAX_POSITIONS_PER_SECTOR: int = 5      # was 2 — allows more tech/momentum positions
 
 SESSION_SIZE_MULTIPLIERS = {
-    "OPENING_DRIVE": 2.0,    # 9:30-10:30 ET — maximum conviction, full aggression
-    "MORNING":       1.5,    # 10:30-11:30 ET — trend continuation
-    "MIDDAY_CHOP":   0.5,    # 11:30-13:30 ET — reduced size but NOT zero; lunch reversals are real
-    "AFTERNOON":     1.8,    # 13:30-15:30 ET — institutional resumption, almost as aggressive as open
-    "CLOSING":       0.8,    # 15:30-16:00 ET — EOD momentum only
+    "OPENING_DRIVE": 2.2,    # 9:30-10:30 ET — maximum conviction, full aggression
+    "MORNING":       1.8,    # 10:30-11:30 ET — trend continuation, push harder
+    "MIDDAY_CHOP":   0.6,    # 11:30-13:30 ET — reduced size but NOT zero; lunch reversals are real
+    "AFTERNOON":     2.0,    # 13:30-15:30 ET — institutional resumption, near-peak aggression
+    "CLOSING":       1.0,    # 15:30-16:00 ET — EOD momentum, full size on confirmed moves
 }
 
 # ============================================================
@@ -351,9 +351,9 @@ DOW_MAX_TRADES: dict = {
     4: 20,   # Friday — EOD risk managed by 0.8× size, not trade count
 }
 
-WEEKLY_PROFIT_TARGET_PCT: float = 12.0   # 4 good days × 3%/day = 12%
-WEEKLY_PROFIT_LOCK_PCT: float = 8.0     # reduce aggression after 8% weekly
-WEEKLY_LOSS_STOP_PCT: float = 4.0       # weekly stop-out at -4%
+WEEKLY_PROFIT_TARGET_PCT: float = 8.0    # 30%/mo ÷ 4.33 weeks = 6.9%/wk — use 8% as target
+WEEKLY_PROFIT_LOCK_PCT: float = 15.0    # don't throttle size until 15% weekly gain secured
+WEEKLY_LOSS_STOP_PCT: float = 5.0       # weekly stop-out at -5% — slightly more runway
 WEEKLY_DATA_FILE: str = "data/weekly_pnl.json"
 
 # NSE-specific fields kept as stubs so any remaining references don't crash

@@ -73,14 +73,14 @@ class ProfitEngineConfig:
     defensive_loss:        float = 50.0    # Switch to A+ only, 60% size
 
     # Capital deployment (% of available capital per trade)
-    a_plus_capital_pct:    float = 30.0      # A+ setup — bigger size for highest conviction
-    a_capital_pct:         float = 23.0      # A  setup
-    b_capital_pct:         float = 16.0      # B  setup
-    c_capital_pct:         float = 10.0      # C  setup
+    a_plus_capital_pct:    float = 40.0      # A+ setup — maximum capital on highest conviction
+    a_capital_pct:         float = 30.0      # A  setup
+    b_capital_pct:         float = 20.0      # B  setup
+    c_capital_pct:         float = 12.0      # C  setup
 
     # Compounding
-    compound_bonus_pct:    float = 50.0      # After T1 hit: 50% bigger next trade — real snowball
-    win_streak_bonus_pct:  float = 15.0      # Per-trade bonus during win streak (cap 3 = +45%)
+    compound_bonus_pct:    float = 80.0      # After T1 hit: 80% bigger next trade — aggressive snowball
+    win_streak_bonus_pct:  float = 20.0      # Per-trade bonus during win streak (3 wins = +60%)
 
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
@@ -205,11 +205,11 @@ class DailyProfitEngine:
         self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
         self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
 
-        # Percentage-based loss thresholds aligned with DAILY_LOSS_LIMIT_PCT
-        # Tight limits were killing trades after 1 bad scalp on small accounts
-        self.cfg.caution_loss   = max(available_balance * 0.005, 3.0)   # 0.5% — 1 full loss
-        self.cfg.defensive_loss = max(available_balance * 0.010, 5.0)   # 1.0% — 2 losses
-        self.cfg.daily_loss_limit = max(available_balance * 0.020, 10.0) # 2.0% — hard stop
+        # Percentage-based loss thresholds — scaled for 1.5% risk/trade
+        # One full stop-out = 1.5%, so caution at 1.0% gives room before first stop
+        self.cfg.caution_loss   = max(available_balance * 0.010, 5.0)   # 1.0% — switch to A-grade
+        self.cfg.defensive_loss = max(available_balance * 0.015, 8.0)   # 1.5% — one full stop hit
+        self.cfg.daily_loss_limit = max(available_balance * 0.025, 12.0) # 2.5% — hard stop
 
         # Load or reset state
         saved = self._load_state()
@@ -374,18 +374,18 @@ class DailyProfitEngine:
         # Compounding bonus (after T1 hits)
         comp_mult = self.state.compounding_bonus if self.state.compounding_active else 1.0
 
-        # Win streak bonus (up to +30%)
-        streak_bonus = min(self.state.consecutive_wins * self.cfg.win_streak_bonus_pct / 100, 0.30)
+        # Win streak bonus (up to +45%)
+        streak_bonus = min(self.state.consecutive_wins * self.cfg.win_streak_bonus_pct / 100, 0.45)
 
-        # Score bonus: 85+ score → +10% size
-        score_bonus = 0.10 if signal_score >= 85 else (0.05 if signal_score >= 78 else 0.0)
+        # Score bonus: 85+ score → +15% size, 78+ → +8% size
+        score_bonus = 0.15 if signal_score >= 85 else (0.08 if signal_score >= 78 else 0.0)
 
         # External size_multiplier from filter
         total_mult = mode_mult * comp_mult * (1 + streak_bonus + score_bonus) * size_multiplier
 
         # Final % of capital to deploy
         final_pct = base_pct * total_mult / 100.0
-        final_pct = max(0.04, min(final_pct, 0.35))  # 4%–35% hard limits
+        final_pct = max(0.04, min(final_pct, 0.45))  # 4%–45% hard limits
 
         capital_usd = self._available_balance * final_pct
         # Minimum trade: $10
@@ -569,11 +569,11 @@ class DailyProfitEngine:
 
     def _get_mode_size_multiplier(self) -> float:
         return {
-            TradingMode.AGGRESSIVE:  1.40,   # hot streak — press hard, size up 40%
+            TradingMode.AGGRESSIVE:  1.60,   # hot streak — press maximum, size up 60%
             TradingMode.NORMAL:      1.00,
             TradingMode.CAUTION:     0.80,
-            TradingMode.PROTECTION:  1.00,   # target hit — keep full size, push to 2×
-            TradingMode.LOCK:        1.00,   # 2× target — still full size, only A-grade filter
+            TradingMode.PROTECTION:  1.10,   # target hit — keep pressing, slight bonus
+            TradingMode.LOCK:        1.00,   # 2× target — full size, A-grade filter
             TradingMode.DEFENSIVE:   0.60,
             TradingMode.STOP:        0.00,
         }.get(self.state.mode, 1.00)

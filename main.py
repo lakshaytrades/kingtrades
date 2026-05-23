@@ -519,22 +519,22 @@ class TradingBot:
             note        = "Minimum $500 needed — trading disabled today"
         elif available < 2_500:
             tier        = "🟡 SMALL ($500-$2.5K)"
-            max_pos     = 8     # 8 concurrent positions — scalping needs more shots
-            risk_pct    = 1.0   # 1% risk per trade ($10 on $1K) — small risk, many trades
-            loss_pct    = 2.0   # 2% daily loss limit ($20 on $1K) — covers 2 full losses
-            note        = "Scalping mode — many 1.5:1 R:R trades, 70% exit at T1, 2-4%/day"
+            max_pos     = 8     # 8 concurrent positions — scalping needs volume of trades
+            risk_pct    = 1.5   # 1.5% risk per trade — larger reward per winner
+            loss_pct    = 2.5   # 2.5% daily loss limit — room for 1 full stop + recovery trades
+            note        = "Scalping mode — 1.5:1 R:R, 55% exit at T1, targeting 4%/day"
         elif available < 10_000:
             tier        = "🟢 MEDIUM ($2.5K-$10K)"
             max_pos     = 8      # same shots as SMALL — scalping needs volume of trades
-            risk_pct    = 0.8    # scales with capital, not cliff-drop
-            loss_pct    = 2.0
-            note        = "Scaling mode — same scalping approach, 2-4%/day target"
+            risk_pct    = 1.2    # scales with capital
+            loss_pct    = 2.5
+            note        = "Scaling mode — same scalping approach, 4%+/day target"
         elif available < 50_000:
             tier        = "🔵 LARGE ($10K-$50K)"
             max_pos     = 10     # more capital = more simultaneous positions
-            risk_pct    = 0.7    # slightly tighter % but larger $$ per trade
-            loss_pct    = 2.0
-            note        = "Momentum mode — full signal suite, 2-3%/day target"
+            risk_pct    = 1.0    # 1% risk, larger $$ per trade
+            loss_pct    = 2.5
+            note        = "Momentum mode — full signal suite, 4%+/day target"
         else:
             tier        = "💎 INSTITUTIONAL"
             max_pos     = 10
@@ -557,7 +557,7 @@ class TradingBot:
             daily_target = max(pct_target, risk_per_trade * 1.5)  # never below 1.5× one risk unit
 
         # ── Apply to risk manager ────────────────────────────────────────────
-        self.risk_manager.max_risk_pct          = min(risk_pct, 1.0)
+        self.risk_manager.max_risk_pct          = min(risk_pct, 2.0)
         self.risk_manager.daily_loss_limit_pct  = loss_pct
         self.risk_manager.max_positions         = max_pos
 
