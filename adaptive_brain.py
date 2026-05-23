@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 80.0    # Hard floor — mathematically optimal, win streaks cannot lower below 80
-MIN_SCORE_CEIL   = 92.0    # Cap — loss streaks tighten to 92 (A+ only)
-DEFAULT_SCORE    = 80.0    # Every day starts at the 80 quality gate
+MIN_SCORE_FLOOR  = 72.0    # Hard floor — real market ceiling is 72-75; 14-gate HAF is the quality guard
+MIN_SCORE_CEIL   = 88.0    # Cap — on defensive days tighten to 88 (A+ only)
+DEFAULT_SCORE    = 72.0    # Every day starts at 72; brain tightens dynamically on losses
 
 
 @dataclass

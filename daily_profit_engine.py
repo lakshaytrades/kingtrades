@@ -83,11 +83,11 @@ class ProfitEngineConfig:
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
 
-    # Min signal scores by mode
-    score_normal:          float = 80.0   # optimal: 68% win rate, Sharpe 3.88, 10 trades/day
-    score_caution:         float = 84.0
-    score_protection:      float = 86.0
-    score_lock:            float = 90.0
+    # Min signal scores by mode — calibrated to real market (best setups score 72-75)
+    score_normal:          float = 72.0   # base quality gate — 14-gate HAF filters noise
+    score_caution:         float = 78.0   # caution: raised +6 above normal
+    score_protection:      float = 82.0   # protection: only clean setups +10 above normal
+    score_lock:            float = 86.0   # lock: near A+ territory, almost no trades
 
 
 # ─────────────────────────────────────────────────────────────────────────────

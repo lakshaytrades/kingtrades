@@ -136,9 +136,9 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 80.0        # mathematically optimal — 68% win rate, Sharpe 3.88, 10 trades/day
-HIGH_CONFIDENCE_SCORE: float = 86.0   # elite tier above the 80 floor
-PREMIUM_SCORE: float = 83.0
+MIN_SIGNAL_SCORE: float = 72.0        # calibrated to real market — best setups score 70-75; 14-gate HAF is the quality guard
+HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ tier: only hit on strong regime + full MTF + volume surge days
+PREMIUM_SCORE: float = 76.0
 MIN_VOLUME_RATIO: float = 1.8
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
@@ -336,11 +336,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 80.0,   # Monday
-    1: 80.0,   # Tuesday
-    2: 80.0,   # Wednesday
-    3: 80.0,   # Thursday
-    4: 80.0,   # Friday — same high standard every day
+    0: 72.0,   # Monday
+    1: 72.0,   # Tuesday — best trend day
+    2: 72.0,   # Wednesday — trend continuation
+    3: 72.0,   # Thursday
+    4: 74.0,   # Friday — slightly stricter: EOD gap risk, no new runners
 }
 
 DOW_MAX_TRADES: dict = {
