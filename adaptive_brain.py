@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 78.0    # Hard floor — win streaks can never lower quality below 78
+MIN_SCORE_FLOOR  = 80.0    # Hard floor — mathematically optimal, win streaks cannot lower below 80
 MIN_SCORE_CEIL   = 92.0    # Cap — loss streaks tighten to 92 (A+ only)
-DEFAULT_SCORE    = 78.0    # Every day starts at the 78 quality gate
+DEFAULT_SCORE    = 80.0    # Every day starts at the 80 quality gate
 
 
 @dataclass
