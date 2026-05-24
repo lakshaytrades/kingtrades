@@ -378,7 +378,7 @@ class SignalGenerator:
             rs = self._get_relative_strength(symbol)
 
             # 5b. Institutional intelligence context (Option Chain + Volume Profile)
-            inst_ctx = self._get_institutional_context(symbol, df_5m)
+            inst_ctx = self._get_institutional_context(symbol, df_5m, direction=direction)
 
             # 5b-ii. Extract harmonic score for EliteBrain module
             _pat_objs_for_harm = analysis_5m.get("patterns", [])
@@ -906,7 +906,7 @@ class SignalGenerator:
     # --------------------------------------------------------
 
     def _get_institutional_context(
-        self, symbol: str, df_5m=None
+        self, symbol: str, df_5m=None, direction: str = "LONG"
     ) -> Dict:
         """
         Gather Option Chain + Volume Profile context for this symbol.

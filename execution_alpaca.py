@@ -504,6 +504,34 @@ class AlpacaExecutor:
     # CANCEL
     # ─────────────────────────────────────────────────────────────────────
 
+    def close_position(self, symbol: str, reason: str = "FORCE_CLOSE") -> OrderResult:
+        """
+        Force-close an entire position by symbol — used for scalp time-exits and EOD.
+        Looks up the open position, determines qty and direction, then market-exits.
+        """
+        if not self.live_enabled:
+            logger.info(f"[{format_ist_timestamp()}] PAPER close_position: {symbol} ({reason})")
+            return OrderResult(True, message=f"Paper close {symbol}")
+        try:
+            trading_client = self._auth.get_trading_client()
+            # Alpaca close_position endpoint: atomically closes the entire position
+            trading_client.close_position(symbol)
+            logger.info(f"[{format_ist_timestamp()}] CLOSED POSITION: {symbol} ({reason})")
+            return OrderResult(True, message=f"Position {symbol} closed")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] close_position({symbol}) failed: {e}")
+            # Fallback: manual market order
+            try:
+                positions = get_data_fetcher().get_positions()
+                for p in positions:
+                    if p["symbol"] == symbol:
+                        direction = "LONG" if p["side"] == "long" else "SHORT"
+                        qty = abs(p["qty"])
+                        return self.place_exit_order(symbol, qty, direction, reason=reason, use_market_order=True)
+            except Exception as _fe:
+                logger.error(f"close_position fallback failed {symbol}: {_fe}")
+            return OrderResult(False, message=str(e))
+
     def cancel_order(self, order_id: str) -> bool:
         try:
             trading_client = self._auth.get_trading_client()

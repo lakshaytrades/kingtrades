@@ -1775,6 +1775,50 @@ class TradingBot:
                 except Exception as _e:
                     logger.debug(f"[suppressed] {_e}")
 
+                # ── Time-stop: exit if no meaningful move after time_stop_minutes ──
+                # Top-1% rule: dead money is wasted capital — free it for better setups.
+                try:
+                    entry_time = getattr(pos, "entry_time", None)
+                    time_stop_mins = getattr(pos, "time_stop_minutes", 30)
+                    if entry_time and time_stop_mins > 0 and not getattr(pos, "t1_done", False):
+                        from datetime import datetime as _dt2
+                        if isinstance(entry_time, str):
+                            try:
+                                entry_dt = _dt2.fromisoformat(entry_time).replace(tzinfo=ET)
+                            except Exception:
+                                entry_dt = None
+                        else:
+                            entry_dt = entry_time
+                        if entry_dt:
+                            mins_held = (_dt2.now(ET) - entry_dt).total_seconds() / 60
+                            if mins_held >= time_stop_mins:
+                                pnl_pct = ((ltp - pos.entry_price) / pos.entry_price * 100
+                                           if pos.direction == "LONG"
+                                           else (pos.entry_price - ltp) / pos.entry_price * 100)
+                                # Only time-stop if trade is flat or losing (< 0.2% profit)
+                                if pnl_pct < 0.2:
+                                    logger.info(
+                                        f"[{format_ist_timestamp()}] TIME-STOP: {pos.symbol} "
+                                        f"held {mins_held:.0f}min with only {pnl_pct:+.2f}% — exiting"
+                                    )
+                                    result = self.executor.place_exit_order(
+                                        symbol=pos.symbol, quantity=pos.quantity,
+                                        direction=pos.direction, reason="TIME_STOP",
+                                        use_market_order=True,
+                                    )
+                                    if result.success:
+                                        actual_exit = result.fill_price if result.fill_price > 0 else ltp
+                                        pnl_val = pos.pnl
+                                        self.risk_manager.close_position(pos.symbol, actual_exit, "TIME_STOP")
+                                        self._save_capital_intraday()
+                                        self.alerter.send_exit_alert(
+                                            pos.symbol, pos.direction, pos.entry_price,
+                                            actual_exit, pos.quantity, pnl_val, "TIME_STOP"
+                                        )
+                                    continue
+                except Exception as _ts_err:
+                    logger.debug(f"[suppressed] time_stop {pos.symbol}: {_ts_err}")
+
                 health = self.risk_manager.check_position_health(pos, ltp, recent_candles)
 
                 if health["action"] == "EXIT_NOW":
