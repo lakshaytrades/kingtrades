@@ -77,6 +77,14 @@ MAX_POSITIONS: int = 15
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 30.0   # 30% = $300 on $1K; risk_mgr still limits by ATR-SL
 
+# Fractional shares: Alpaca supports fractional/notional orders on most symbols.
+# When enabled, stocks too expensive for 1 whole share use a notional ($ amount) order.
+FRACTIONAL_SHARES_ENABLED: bool = os.getenv("FRACTIONAL_SHARES_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# Data delay: free Alpaca SIP feed = 15-min delay. Set 16 for free plan, 1 for Unlimited.
+# Default 1: free-plan Alpaca calls return 0 bars and fall through to yfinance (BarCache).
+ALPACA_DATA_DELAY_MINUTES: int = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "1"))
+
 # ============================================================
 # STRATEGY PARAMETERS
 # ============================================================

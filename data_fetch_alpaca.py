@@ -17,6 +17,7 @@ Leverage note:
 """
 
 import logging
+import os
 import threading
 import time as _time
 from datetime import datetime, timedelta
@@ -294,18 +295,42 @@ class AlpacaDataFetcher:
                 # Fallback: intra-bar change when prev_close unavailable
                 change_pct = round((float(b.close) - float(b.open)) / max(float(b.open), 0.01) * 100, 2)
 
+            # Compute VWAP and cumulative daily volume from cached 5-min bars
+            above_vwap  = ltp >= float(b.open)   # default: price vs today's open
+            vwap_val    = float(b.open)           # default fallback
+            daily_volume = int(b.volume)
+            try:
+                cache        = get_bar_cache()
+                df_5m        = cache.get(symbol, "5minute", 1)
+                if not df_5m.empty:
+                    session_open = datetime.now(ET).replace(hour=9, minute=30, second=0, microsecond=0)
+                    df_sess = df_5m[df_5m.index >= session_open]
+                    if not df_sess.empty:
+                        tp  = (df_sess["high"] + df_sess["low"] + df_sess["close"]) / 3
+                        vol = df_sess["volume"]
+                        cum_vol = vol.sum()
+                        if cum_vol > 0:
+                            vwap_val    = float((tp * vol).sum() / cum_vol)
+                            above_vwap  = ltp > vwap_val
+                            daily_volume = int(cum_vol)
+            except Exception:
+                pass
+
             result = {
-                "ltp":        ltp,
-                "bid":        float(q.bid_price),
-                "ask":        float(q.ask_price),
-                "volume":     int(b.volume),
-                "open":       float(b.open),
-                "high":       float(b.high),
-                "low":        float(b.low),
-                "close":      float(b.close),
-                "prev_close": prev_close,
-                "change_pct": change_pct,
-                "symbol":     symbol,
+                "ltp":          ltp,
+                "bid":          float(q.bid_price),
+                "ask":          float(q.ask_price),
+                "volume":       int(b.volume),
+                "daily_volume": daily_volume,
+                "open":         float(b.open),
+                "high":         float(b.high),
+                "low":          float(b.low),
+                "close":        float(b.close),
+                "prev_close":   prev_close,
+                "change_pct":   change_pct,
+                "symbol":       symbol,
+                "vwap":         round(vwap_val, 4),
+                "above_vwap":   above_vwap,
             }
             self._quote_cache[symbol] = result
             self._quote_ts[symbol]    = now
@@ -315,8 +340,9 @@ class AlpacaDataFetcher:
             logger.debug(f"get_quote({symbol}) failed: {e}")
             return {
                 "ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0,
-                "open": 0.0, "high": 0.0, "low": 0.0, "close": 0.0,
-                "change_pct": 0.0, "symbol": symbol,
+                "daily_volume": 0, "open": 0.0, "high": 0.0, "low": 0.0,
+                "close": 0.0, "change_pct": 0.0, "symbol": symbol,
+                "vwap": 0.0, "above_vwap": False,
             }
 
     def get_ltp(self, symbol: str) -> float:
@@ -409,9 +435,11 @@ class AlpacaDataFetcher:
             tf = tf_map.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
 
             now_et  = datetime.now(ET)
-            # Free Alpaca plan: SIP data available with 15-min delay.
-            # Setting end to 16 min ago avoids "recent SIP data" restriction.
-            end_et  = now_et - timedelta(minutes=16)
+            # Data delay: free SIP plan needs 15-min delay; paid Unlimited plan can use 1 min.
+            # Set ALPACA_DATA_DELAY_MINUTES=16 for free plan, 1 for Unlimited plan.
+            # Default 1: free-plan calls get 0 bars and fall through to BarCache (yfinance).
+            _delay  = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "1"))
+            end_et  = now_et - timedelta(minutes=max(1, _delay))
             start   = now_et - timedelta(days=lookback_days + 2)  # +2 for weekends
 
             req  = StockBarsRequest(

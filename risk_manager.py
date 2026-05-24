@@ -547,6 +547,22 @@ class RiskManager:
         cap_pct = getattr(_cfg, "MAX_CAPITAL_PER_TRADE_PCT", 20.0) / 100.0
         max_by_capital = int((capital * cap_pct) / entry_price)
         quantity = min(quantity, max_by_capital)
+        if quantity <= 0:
+            # Stock too expensive for even 1 whole share within the capital cap.
+            if getattr(_cfg, "FRACTIONAL_SHARES_ENABLED", True):
+                # Use notional ($ amount) — Alpaca will convert to fractional shares.
+                notional_amt = round(min(risk_amount * 2, capital * cap_pct), 2)
+                return {
+                    "quantity":     0,
+                    "notional":     notional_amt,
+                    "capital_used": notional_amt,
+                    "risk_amount":  round(notional_amt * (sl_distance / entry_price), 2),
+                    "reason":       f"Fractional: ${notional_amt:.0f} notional (1 share=${entry_price:.0f} > cap ${capital*cap_pct:.0f})",
+                }
+            return {
+                "quantity": 0,
+                "reason": f"Stock too expensive (${entry_price:.0f}): 1 share exceeds ${capital*cap_pct:.0f} capital cap",
+            }
         quantity = max(quantity, 1)
 
         # 7. Hard total-risk guard: ensure final risk never exceeds 2× max_risk_pct

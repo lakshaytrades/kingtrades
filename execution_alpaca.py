@@ -150,6 +150,8 @@ class AlpacaExecutor:
         self.risk_manager = risk_manager
         self.live_enabled = live_enabled
         self._auth        = get_auth_manager()
+        self._day_trade_count = 0
+        self._day_trade_date  = ""   # "YYYY-MM-DD" — resets each trading day
 
     # ─────────────────────────────────────────────────────────────────────
     # ENTRY
@@ -173,7 +175,16 @@ class AlpacaExecutor:
                 size_multiplier = getattr(signal, "size_multiplier", 1.0),
                 signal_rr       = getattr(signal, "risk_reward", 2.0),
             )
-            qty = sizing.get("quantity", 0)
+            qty          = sizing.get("quantity", 0)
+            notional_amt = sizing.get("notional", 0.0)
+            if qty <= 0 and notional_amt > 0:
+                # Fractional share paper fill: convert notional to fractional qty
+                frac_qty = round(notional_amt / signal.entry_price, 6)
+                logger.info(
+                    f"[{format_ist_timestamp()}] PAPER FRACTIONAL {direction} {symbol} "
+                    f"notional=${notional_amt:.2f} → {frac_qty:.4f} shares @ ${signal.entry_price:.2f}"
+                )
+                return OrderResult(True, fill_price=signal.entry_price, quantity=0, message=f"Paper fractional fill ${notional_amt:.2f}")
             if qty <= 0:
                 logger.info(
                     f"[{format_ist_timestamp()}] PAPER {direction} {symbol} "
@@ -216,7 +227,23 @@ class AlpacaExecutor:
             size_multiplier = getattr(signal, "size_multiplier", 1.0),
             signal_rr       = getattr(signal, "risk_reward", 2.0),
         )
-        quantity = sizing.get("quantity", 0)
+        quantity       = sizing.get("quantity", 0)
+        notional_order = sizing.get("notional", 0.0)
+
+        if quantity <= 0 and notional_order > 0:
+            # Fractional share path: stock too expensive for 1 whole share within cap limit.
+            logger.info(
+                f"[{format_ist_timestamp()}] FRACTIONAL {direction} {symbol} "
+                f"notional=${notional_order:.2f} (1 share=${signal.entry_price:.2f})"
+            )
+            result = self._submit_order(
+                symbol=symbol, qty=0, direction=direction,
+                order_type="MARKET", notional=notional_order,
+            )
+            if result.success:
+                self._record_day_trade(symbol)
+            return result
+
         if quantity <= 0:
             return OrderResult(
                 False,
@@ -315,6 +342,8 @@ class AlpacaExecutor:
             f"qty={quantity} @ ${result.fill_price:.2f} "
             f"[{result.order_type}] order_id={result.order_id}"
         )
+
+        self._record_day_trade(symbol)
 
         # Note: entry alert is sent by main.py's _trading_cycle after add_position()
         # Duplicate alert removed to avoid double-sending.
@@ -608,6 +637,21 @@ class AlpacaExecutor:
     # INTERNAL HELPERS
     # ─────────────────────────────────────────────────────────────────────
 
+    def _record_day_trade(self, symbol: str) -> None:
+        """Track day-trade count and warn when approaching PDT limit (margin accounts only)."""
+        from datetime import date as _date
+        today = str(_date.today())
+        if self._day_trade_date != today:
+            self._day_trade_count = 0
+            self._day_trade_date  = today
+        self._day_trade_count += 1
+        if self._day_trade_count >= 3:
+            logger.warning(
+                f"[{format_ist_timestamp()}] ⚠️ PDT ALERT: {self._day_trade_count} day trades today "
+                f"({symbol}). Margin accounts <$25K are limited to 3 day-trades per 5-day window. "
+                "Cash accounts are exempt — no PDT restriction applies."
+            )
+
     def _submit_order(
         self,
         symbol:      str,
@@ -615,6 +659,7 @@ class AlpacaExecutor:
         direction:   str,   # "LONG" or "SHORT"
         order_type:  str,   # "LIMIT" or "MARKET"
         limit_price: Optional[float] = None,
+        notional:    Optional[float] = None,   # USD notional for fractional-share orders
     ) -> OrderResult:
         try:
             from alpaca.trading.enums import OrderSide, TimeInForce, OrderType
@@ -624,7 +669,15 @@ class AlpacaExecutor:
 
             trading_client = self._auth.get_trading_client()
 
-            if order_type == "LIMIT" and limit_price:
+            if notional and notional > 0:
+                # Notional (fractional share) order — Alpaca converts $ amount to shares
+                req = MarketOrderRequest(
+                    symbol        = symbol,
+                    notional      = round(notional, 2),
+                    side          = side,
+                    time_in_force = TimeInForce.DAY,
+                )
+            elif order_type == "LIMIT" and limit_price:
                 req = LimitOrderRequest(
                     symbol         = symbol,
                     qty            = qty,
