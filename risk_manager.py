@@ -173,6 +173,11 @@ class RiskManager:
         self._oc_mult:   float = 1.0   # Option chain bias: 0.9–1.1×
         self._inst_mult: float = 1.0   # Combined: fii_mult × oc_mult
 
+        # Morning intelligence attrs — set by morning_intelligence.apply_to_risk_manager()
+        self.size_multiplier: float = 1.0   # Day-level size modifier (DEFENSIVE=0.5, AGGRESSIVE=1.5)
+        self.trading_mode: str = "NORMAL"   # NORMAL / CAUTIOUS / DEFENSIVE / AGGRESSIVE
+        self.day_thesis = None              # DayThesis object — reference for diagnostics
+
         logger.info(
             f"[{format_ist_timestamp()}] RiskManager initialized | "
             f"Capital: {format_currency(max_daily_capital)} | "
@@ -543,6 +548,11 @@ class RiskManager:
         # 4c. Signal grade / profit engine size multiplier (A+=1.25, A=1.1, etc.)
         if size_multiplier != 1.0:
             quantity = max(1, int(quantity * size_multiplier))
+
+        # 4d. Morning intelligence day-level size multiplier (DEFENSIVE=0.5, AGGRESSIVE=1.5)
+        mi_mult = getattr(self, "size_multiplier", 1.0)
+        if mi_mult != 1.0:
+            quantity = max(1, int(quantity * mi_mult))
 
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)

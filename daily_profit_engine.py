@@ -277,7 +277,7 @@ class DailyProfitEngine:
 
             # Only boost target when BEHIND pace — never reduce (base target is already the floor)
             pct_of_base = pace_target / base_target if base_target > 0 else 1.0
-            if pct_of_base > 1.2 and monthly_pnl < monthly_target * 0.5:
+            if pct_of_base > 1.2 and monthly_pnl < monthly_target * 0.8:
                 adjusted = base_target * 1.5   # max 50% boost — push hard when behind
                 logger.info(
                     f"[{format_ist_timestamp()}] Monthly catchup: behind pace "
