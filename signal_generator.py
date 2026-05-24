@@ -177,6 +177,9 @@ class SignalGenerator:
         self._learner = None          # Set by main.py: generator.set_learner(learner)
         self._orb_direction: str = "" # Set by main.py after ORB is established
         self._nifty_change_pct: float = 0.0
+        self._daily_htf_cache: dict = {}  # instance-level — no cross-instance contamination
+        self._open_position_symbols: list = []  # updated by main.py before each scan
+        self._last_inst_ctx: dict = {}          # last inst_ctx — exposes regime_name to main.py
 
         # ── Institutional intelligence (auto-init) ──────────────
         self._oc: Optional["OptionChainAnalyzer"] = (
@@ -538,17 +541,6 @@ class SignalGenerator:
             except Exception:
                 pass
 
-            # 6i. 52-week high breakout bonus — momentum continuation play
-            try:
-                _q52 = self.fetcher.get_quote(symbol) or {}
-                _high52 = float(_q52.get("week_52_high", 0) or _q52.get("high_52w", 0) or 0)
-                _ltp52  = float(df_5m.iloc[-1]["close"])
-                if _high52 > 0 and _ltp52 >= _high52 * 0.995 and direction == "LONG":
-                    ai_score = min(100.0, ai_score + 10.0)
-                    logger.info(f"[{format_ist_timestamp()}] {symbol}: 52W high breakout +10 pts")
-            except Exception:
-                pass
-
             if ai_score is None or ai_score < self.min_score:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
                 try:
@@ -568,6 +560,23 @@ class SignalGenerator:
 
             stock_quote      = self.fetcher.get_quote(symbol) or {}
             stock_change_pct = stock_quote.get("change_pct", 0.0)
+
+            # 6i. 52-week high breakout bonus — reuse already-fetched stock_quote (no duplicate call)
+            try:
+                _high52 = float(stock_quote.get("week_52_high", 0) or stock_quote.get("high_52w", 0) or 0)
+                _ltp52  = float(df_5m.iloc[-1]["close"])
+                if _high52 > 0 and _ltp52 >= _high52 * 0.995 and direction == "LONG":
+                    ai_score = min(100.0, ai_score + 10.0)
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: 52W high breakout +10 pts")
+            except Exception:
+                pass
+
+            # Expose spy_trend in inst_ctx so EliteBrain nifty_trend module gets correct value
+            inst_ctx["spy_trend"] = self._nifty_change_pct
+            # Expose mtf_alignment dict in inst_ctx for EliteBrain's MTF module (weight 1.8)
+            inst_ctx["mtf_alignment"] = alignment
+            # Cache for main.py regime-routing (mean-reversion engine)
+            self._last_inst_ctx = inst_ctx
 
             # Gate 13: SPY direction — determine bullish/bearish state
             spy_bullish: Optional[bool] = None
@@ -614,6 +623,8 @@ class SignalGenerator:
                 ),
                 adx              = getattr(ind, "adx", 0.0),
                 spy_bullish      = spy_bullish,
+                # Gate 14: pass open position symbols for correlation check
+                open_positions   = list(getattr(self, "_open_position_symbols", [])),
             )
 
             if not filter_result.passed:
@@ -1103,8 +1114,6 @@ class SignalGenerator:
         except Exception:
             return 0.0
 
-    _daily_htf_cache: dict = {}
-
     def _get_daily_htf_penalty(self, symbol: str, direction: str) -> Optional[float]:
         """
         Grok #8 — Multi-Timeframe Bias Enforcement.
@@ -1161,14 +1170,14 @@ class SignalGenerator:
                 elif above_sma:
                     result = -8.0    # Above SMA but no HH/HL — partial penalty
                 else:
-                    result = -12.0   # Below SMA — heavy penalty but still tradeable (gaps change structure)
+                    result = None    # Below SMA: daily structure strongly opposes LONG — hard block
             else:  # SHORT
                 if bearish_structure:
                     result = 0.0
                 elif not above_sma:
                     result = -8.0
                 else:
-                    result = -12.0   # Strong bull — heavy penalty but still tradeable for shorts
+                    result = None    # Daily bull structure strongly opposes SHORT — hard block
 
         except Exception as e:
             logger.debug(f"Daily HTF check {symbol}: {e}")

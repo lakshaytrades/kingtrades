@@ -41,7 +41,7 @@ IST = ZoneInfo("Asia/Kolkata")
 # ─────────────────────────────────────────────────────────────────────────────
 
 MIN_CONDITIONS   = 4     # Minimum burst conditions required
-MIN_PRICE        = 100   # NSE minimum price filter
+MIN_PRICE        = 5     # US minimum price filter (was 100 NSE — blocks most US high-beta stocks)
 MIN_RVOL         = 2.0   # Minimum relative volume for burst confirmation
 BB_SQUEEZE_PCT   = 20    # BB width below this percentile = squeeze
 BURST_STOP_PCT   = 0.015 # 1.5% stop loss
@@ -123,14 +123,18 @@ class MomentumBurstDetector:
             afternoon = (13, 30) <= (h, m) <= (14, 45)
         return opening or afternoon
 
-    def scan(self, symbols: List[str], fetcher) -> List[BurstSetup]:
+    def scan(self, symbols: List[str], fetcher, active_symbols: set = None) -> List[BurstSetup]:
         """
         Scan symbols for burst setups.
+        active_symbols: set of symbols already in open positions (skip to avoid duplicates).
         Returns list sorted by burst_score descending.
         """
+        skip = set(active_symbols or [])
         results: List[BurstSetup] = []
 
         for symbol in symbols:
+            if symbol in skip:
+                continue
             try:
                 setup = self._evaluate(symbol, fetcher)
                 if setup:
@@ -216,8 +220,7 @@ class MomentumBurstDetector:
         # ── Condition 4: Inside Bar Breakout ──────────────────────────────
         ib_break, ib_direction = self._check_inside_bar_breakout(high, low, close)
         if ib_break:
-            if ib_direction == direction or direction not in ("LONG", "SHORT"):
-                direction = ib_direction
+            direction = ib_direction  # IB breakout is the most precise directional signal
             conditions.append(f"INSIDE_BAR_{ib_direction}")
             score += 18
 
@@ -359,25 +362,21 @@ class MomentumBurstDetector:
         return False, "LONG"
 
     def _check_ema_stack(self, close: np.ndarray) -> tuple:
-        """EMA9 > EMA21 > EMA50 = bullish stack. Inverted = bearish."""
-        if len(close) < 50:
+        """EMA9 > EMA21 > EMA50 = bullish stack. Inverted = bearish.
+        Uses pandas ewm on full history so EMA50 converges correctly."""
+        if len(close) < 12:
             return False, "LONG"
-
-        def ema(arr, n):
-            k = 2 / (n + 1)
-            e = arr[0]
-            for x in arr[1:]:
-                e = x * k + e * (1 - k)
-            return e
-
-        e9  = ema(close[-50:], 9)
-        e21 = ema(close[-50:], 21)
-        e50 = ema(close[-50:], 50)
-
-        if e9 > e21 > e50:
-            return True, "LONG"
-        elif e9 < e21 < e50:
-            return True, "SHORT"
+        try:
+            s   = pd.Series(close)
+            e9  = float(s.ewm(span=9,  adjust=False).mean().iloc[-1])
+            e21 = float(s.ewm(span=21, adjust=False).mean().iloc[-1])
+            e50 = float(s.ewm(span=50, adjust=False).mean().iloc[-1])
+            if e9 > e21 > e50:
+                return True, "LONG"
+            elif e9 < e21 < e50:
+                return True, "SHORT"
+        except Exception:
+            pass
         return False, "LONG"
 
     def _check_rsi_reset(self, close: np.ndarray) -> tuple:

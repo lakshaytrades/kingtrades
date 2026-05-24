@@ -37,10 +37,17 @@ class ORBSetup:
 class ORBStrategy:
     OR_CANDLES          = 3
     MAX_OR_WIDTH_PCT    = 3.0
-    MAX_GAP_PCT         = 3.0
     MIN_VOLUME_RATIO    = 1.5
     RR_RATIO            = 2.5
     VALID_UNTIL_MINUTES = 30
+
+    @property
+    def MAX_GAP_PCT(self) -> float:
+        try:
+            import config
+            return getattr(config, "MAX_GAP_PCT", 3.0)
+        except Exception:
+            return 3.0
 
     def __init__(self):
         # symbol -> (ORBSetup, date, formed_datetime) — date check + VALID_UNTIL_MINUTES expiry
@@ -231,9 +238,9 @@ class ORBStrategy:
             atr=round(setup.or_high - setup.or_low, 2),
             patterns=["ORB_BREAKOUT"],
             timeframe_alignment={
-                "5m": setup.breakout_direction,
-                "15m": "NEUTRAL",
-                "1h": "NEUTRAL",
+                "5m":  setup.breakout_direction,
+                "15m": setup.breakout_direction,  # ORB breakout implies same 15m trend
+                "1h":  "NEUTRAL",                 # don't claim 1h alignment without data
             },
             signal_time=setup.formed_at,
             rationale=(

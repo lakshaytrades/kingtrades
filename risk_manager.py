@@ -61,6 +61,7 @@ class Position:
     size_multiplier: float = 1.0     # From HighAccuracyFilter
     price_history: list = field(default_factory=list)  # Rolling 20 bars for swing detection
     realized_pnl: float = 0.0        # Accumulated P&L from T1/T2 partial exits
+    time_stop_minutes: int = 30      # Exit if flat/losing after this many minutes (0=disabled)
 
     def __post_init__(self):
         if not self.entry_time:
@@ -318,7 +319,10 @@ class RiskManager:
         if len(recent) < 5:
             # Bootstrap using signal's R:R with 55% estimated win rate
             kelly = 0.55 - 0.45 / max(signal_rr, 1.0)
-            return max(0.08, min(kelly * 0.5, 0.18))
+            # Return 0 when Kelly is negative (no edge) rather than forcing minimum
+            if kelly <= 0:
+                return 0.0
+            return min(kelly * 0.5, 0.18)
 
         wins   = [t for t in recent if t.get("pnl", 0) > 0]
         losses = [t for t in recent if t.get("pnl", 0) <= 0]
@@ -338,7 +342,10 @@ class RiskManager:
 
         # Half-Kelly for safety (industry standard, reduces drawdown ~40%)
         half_kelly = kelly * 0.5
-        return max(0.08, min(half_kelly, 0.22))
+        # Return 0 when edge is negative — don't force-trade when Kelly says stop
+        if half_kelly <= 0:
+            return 0.0
+        return min(half_kelly, 0.22)
 
     # --------------------------------------------------------
     # SECTOR CORRELATION GUARD
@@ -483,7 +490,6 @@ class RiskManager:
         if sl_distance <= 0:
             return {"quantity": 0, "reason": "Invalid SL distance"}
 
-        import config as _cfg
         LEVERAGE = getattr(_cfg, "ALPACA_LEVERAGE", 1.0)
         buying_power = capital * LEVERAGE  # effective capital for position sizing
 

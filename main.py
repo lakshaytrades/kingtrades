@@ -1264,6 +1264,9 @@ class TradingBot:
             # Merge movers into the front of the scan queue (highest priority)
             combined_watchlist = self._mover_watchlist + [s for s in watchlist if s not in self._mover_watchlist]
 
+            # Expose current open positions to signal_gen for Gate 14 correlation check
+            self.signal_gen._open_position_symbols = list(self.risk_manager.state.positions.keys())
+
             signals = self.signal_gen.scan_watchlist(
                 symbols=combined_watchlist,
                 max_signals=min(max_new, 4)  # up to 4 signals per cycle (was 3)
@@ -1274,10 +1277,12 @@ class TradingBot:
             if not signals:
                 try:
                     from mean_reversion import get_mean_reversion_engine
-                    from market_regime import get_market_regime
                     mr_engine = get_mean_reversion_engine()
-                    regime_obj = get_market_regime()
-                    current_regime = getattr(regime_obj, "current_regime", "UNKNOWN")
+                    # Use signal_gen's already-initialized MarketRegimeDetector
+                    current_regime = "UNKNOWN"
+                    if self.signal_gen and self.signal_gen._regime:
+                        _regime_ctx = (self.signal_gen._last_inst_ctx or {}) if hasattr(self.signal_gen, "_last_inst_ctx") else {}
+                        current_regime = _regime_ctx.get("regime_name", "UNKNOWN")
                     if current_regime in ("RANGING", "LOW_VOLATILITY", "MIDDAY_CHOP", "HIGH_VOLATILITY"):
                         mr_signals = mr_engine.scan(watchlist[:30], self.fetcher, current_regime)
                         if mr_signals:
@@ -1484,7 +1489,10 @@ class TradingBot:
             # 4h. Momentum Burst Detector (opening 9:30-10:30 ET + afternoon 13:00-14:30 ET)
             if self.burst_detector and self.burst_detector.is_burst_time():
                 try:
-                    burst_setups = self.burst_detector.scan(watchlist[:20], self.fetcher)
+                    burst_setups = self.burst_detector.scan(
+                        watchlist[:20], self.fetcher,
+                        active_symbols=set(self.risk_manager.state.positions.keys())
+                    )
                     for bs in burst_setups:
                         burst_ts = self.burst_detector.to_trade_signal(bs)
                         if burst_ts:
@@ -1662,17 +1670,18 @@ class TradingBot:
                         fill_price = result.fill_price if result.fill_price > 0 else signal.entry_price
                         fill_qty   = result.quantity   if result.quantity   > 0 else getattr(signal, "quantity", 1)
                         position = Position(
-                            symbol          = signal.symbol,
-                            direction       = signal.direction,
-                            quantity        = fill_qty,
-                            entry_price     = fill_price,
-                            stop_loss       = signal.stop_loss,
-                            target_1        = signal.target_1,
-                            target_2        = signal.target_2,
-                            atr             = getattr(signal, "atr", fill_price * 0.01),
-                            entry_time      = format_ist_timestamp(),
-                            quality_grade   = getattr(signal, "quality_grade", "B"),
-                            size_multiplier = getattr(signal, "size_multiplier", 1.0),
+                            symbol            = signal.symbol,
+                            direction         = signal.direction,
+                            quantity          = fill_qty,
+                            entry_price       = fill_price,
+                            stop_loss         = signal.stop_loss,
+                            target_1          = signal.target_1,
+                            target_2          = signal.target_2,
+                            atr               = getattr(signal, "atr", fill_price * 0.01),
+                            entry_time        = format_ist_timestamp(),
+                            quality_grade     = getattr(signal, "quality_grade", "B"),
+                            size_multiplier   = getattr(signal, "size_multiplier", 1.0),
+                            time_stop_minutes = getattr(signal, "time_stop_minutes", 30),
                         )
                         self.risk_manager.add_position(position)
                     except Exception as _pe:

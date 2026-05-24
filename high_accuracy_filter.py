@@ -415,12 +415,17 @@ class HighAccuracyFilter:
             bonus_score -= 6
             result.bonuses.append("ORB_CONFLICT")
 
-        # Bonus 7: Premium ICT/institutional patterns
+        # Bonus 7: Premium ICT/institutional patterns — names must match PatternRecognizer output exactly
         premium_patterns = {
-            "ORB_BREAKOUT", "VWAP_RECLAIM", "BULLISH_ENGULFING",
-            "BEARISH_ENGULFING", "VOLUME_SURGE_BREAKOUT", "FLAG_BREAKOUT",
-            "BOS_BULLISH", "BOS_BEARISH", "FVG_FILL", "OB_BOUNCE",
-            "JUDAS_SWING", "INDUCEMENT_TRAP",
+            "Bullish FVG", "Bearish FVG",
+            "Bullish Order Block", "Bearish Order Block",
+            "BOS — Higher High (Trend Continues)", "BOS — Lower Low (Trend Continues)",
+            "Bullish Engulfing", "Bearish Engulfing",
+            "Judas Swing Bullish", "Judas Swing Bearish",
+            "Gap & Go Long", "Gap & Go Short",
+            "VWAP Bounce", "VWAP Rejection",
+            "ORB_BREAKOUT",  # keep legacy for ORB signals that directly set pattern name
+            "Flag Breakout", "Bull Flag", "Bear Flag",
         }
         if any(p in premium_patterns for p in pattern_names):
             bonus_score += 6
