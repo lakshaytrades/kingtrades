@@ -83,6 +83,24 @@ try:
 except ImportError:
     _REGIME_AVAILABLE = False
 
+try:
+    from global_market_context import GlobalMarketContext, get_global_market_context
+    _GLOBAL_CTX_AVAILABLE = True
+except ImportError:
+    _GLOBAL_CTX_AVAILABLE = False
+
+try:
+    from sector_rotation import SectorRotationEngine, get_sector_rotation
+    _SECTOR_ROT_AVAILABLE = True
+except ImportError:
+    _SECTOR_ROT_AVAILABLE = False
+
+try:
+    from economic_calendar import EconomicCalendar, get_economic_calendar
+    _ECON_CAL_AVAILABLE = True
+except ImportError:
+    _ECON_CAL_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")   # server is UTC; all time checks use ET
 
@@ -202,6 +220,26 @@ class SignalGenerator:
         # Concurrent scanning config
         self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
 
+        # ── World market intelligence (global context + sector rotation + calendar) ──
+        self._global_ctx: Optional["GlobalMarketContext"] = None
+        self._sector_rot: Optional["SectorRotationEngine"] = None
+        self._econ_cal: Optional["EconomicCalendar"] = None
+        if _GLOBAL_CTX_AVAILABLE:
+            try:
+                self._global_ctx = get_global_market_context(data_fetcher)
+            except Exception as _e:
+                logger.debug(f"GlobalMarketContext init failed: {_e}")
+        if _SECTOR_ROT_AVAILABLE:
+            try:
+                self._sector_rot = get_sector_rotation(data_fetcher)
+            except Exception as _e:
+                logger.debug(f"SectorRotationEngine init failed: {_e}")
+        if _ECON_CAL_AVAILABLE:
+            try:
+                self._econ_cal = get_economic_calendar()
+            except Exception as _e:
+                logger.debug(f"EconomicCalendar init failed: {_e}")
+
     def set_learner(self, learner) -> None:
         """Inject self-learning engine for adaptive pattern weights."""
         self._learner = learner
@@ -216,8 +254,8 @@ class SignalGenerator:
 
     def refresh_institutional_context(self) -> None:
         """
-        Refresh FII/DII flow and option chain before each scan cycle.
-        Called once per scan — not per symbol — for efficiency.
+        Refresh FII/DII flow, global market context, and economic calendar
+        before each scan cycle. Called once per scan — not per symbol.
         """
         if self._fii_dii:
             try:
@@ -231,6 +269,29 @@ class SignalGenerator:
                 logger.warning(f"FII/DII refresh failed: {e}")
                 self._fii_adjustment = 0.0
                 self._fii_size_mult  = 1.0
+
+        # Refresh global market context (inter-market: VIX, gold, yields, futures)
+        if self._global_ctx:
+            try:
+                self._global_ctx.refresh()
+                vix_regime, vix_mult = self._global_ctx.get_vix_regime()
+                logger.info(
+                    f"[{format_ist_timestamp()}] Global: VIX={vix_regime} "
+                    f"size_mult={vix_mult:.2f} | {self._global_ctx.format_one_line()}"
+                )
+            except Exception as _ge:
+                logger.debug(f"GlobalMarketContext refresh failed: {_ge}")
+
+        # Refresh sector rotation (hot/cold sectors based on 5-day ETF momentum)
+        if self._sector_rot:
+            try:
+                self._sector_rot.refresh()
+                logger.debug(
+                    f"[{format_ist_timestamp()}] Sector rotation: "
+                    f"HOT={self._sector_rot.hot_sectors} COLD={self._sector_rot.cold_sectors}"
+                )
+            except Exception as _se:
+                logger.debug(f"SectorRotation refresh failed: {_se}")
 
     # --------------------------------------------------------
     # MAIN SIGNAL GENERATION
@@ -337,6 +398,14 @@ class SignalGenerator:
             # 5c. Regime block — skip signal if regime is AVOID
             if inst_ctx.get("regime_block", False):
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: regime_block=True — skipping")
+                return None
+
+            # 5c-alt. Economic Calendar hard block (FOMC/CPI/NFP before release)
+            if inst_ctx.get("calendar_ok") is False:
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: CALENDAR BLOCK — "
+                    f"{inst_ctx.get('calendar_note', 'high-impact event window')}"
+                )
                 return None
 
             # 5d. Daily HTF bias enforcement (Grok #8):
@@ -893,6 +962,36 @@ class SignalGenerator:
 
         # ── NSE supplementary data — disabled for US/Alpaca mode ──
         # NSEDataFetcher connects to nseindia.com which is irrelevant here.
+
+        # ── Global Market Context (inter-market: VIX, gold, yields, futures) ──
+        if self._global_ctx:
+            try:
+                gmc_adj, gmc_reasons = self._global_ctx.get_score_adjustment(symbol, direction)
+                ctx["gmc_score"]   = gmc_adj
+                ctx["gmc_reasons"] = gmc_reasons
+                _, vix_mult = self._global_ctx.get_vix_regime()
+                ctx["vix_size_mult"] = vix_mult
+            except Exception as _ge:
+                logger.debug(f"GlobalMarketContext score failed for {symbol}: {_ge}")
+
+        # ── Economic Calendar (FOMC/CPI/NFP proximity) ───────────
+        if self._econ_cal:
+            try:
+                cal_adj, cal_note, trading_ok = self._econ_cal.get_calendar_score_adjustment()
+                ctx["calendar_score"] = cal_adj
+                ctx["calendar_note"]  = cal_note
+                ctx["calendar_ok"]    = trading_ok
+            except Exception as _ce:
+                logger.debug(f"EconomicCalendar score failed: {_ce}")
+
+        # ── Sector Rotation (hot/cold sector bias) ────────────────
+        if self._sector_rot:
+            try:
+                sector_adj, sector_name = self._sector_rot.get_sector_bias(symbol)
+                ctx["sector_adj"]  = sector_adj
+                ctx["sector_name"] = sector_name
+            except Exception as _sre:
+                logger.debug(f"SectorRotation score failed for {symbol}: {_sre}")
 
         # ── Market Regime Detection ───────────────────────────
         if self._regime and df_5m is not None and not df_5m.empty:
@@ -1506,6 +1605,25 @@ class SignalGenerator:
         else:
             # AVOID/RANGING: position sizing reduced by regime (0.4x), score penalty kept small
             score -= 8
+
+        # ── Global Market Context (inter-market: VIX, gold, yields, calendar) ──
+        gmc_adj = ctx.get("gmc_score", 0.0)
+        if gmc_adj != 0.0:
+            score += max(-20, min(gmc_adj, 20))   # cap ±20
+            if abs(gmc_adj) >= 5:
+                logger.debug(f"GMC adj={gmc_adj:+.1f} | {ctx.get('gmc_reasons', [])[:2]}")
+
+        # ── Economic Calendar (FOMC/CPI/NFP) ─────────────
+        cal_adj = ctx.get("calendar_score", 0.0)
+        if cal_adj != 0.0:
+            score += max(-20, min(cal_adj, 10))   # hard cap: no trading bonuses > 10 from calendar
+            logger.debug(f"Calendar adj={cal_adj:+.1f} | {ctx.get('calendar_note', '')}")
+
+        # ── Sector Rotation bias ──────────────────────────
+        sector_adj = ctx.get("sector_adj", 0.0)
+        if sector_adj != 0.0:
+            score += max(-10, min(sector_adj, 10))
+            logger.debug(f"Sector adj={sector_adj:+.1f} ({ctx.get('sector_name', '?')})")
 
         return min(round(score, 1), 100)
 

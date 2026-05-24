@@ -729,21 +729,52 @@ class TradingBot:
             logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
             self.gap_analyzer = None
 
-        # ── Sector rotation: score sectors and filter watchlist ───────
+        # ── Sector rotation: score sectors and prioritize hot-sector stocks ──
         try:
             if self.sector_rotation:
-                sector_summary = self.sector_rotation.format_telegram_summary()
-                logger.info(f"[{format_ist_timestamp()}] {sector_summary}")
-                if self.alerter:
-                    self.alerter.send_text(sector_summary)
-                # Score sectors but keep broad watchlist — top_n=8 avoids over-concentration
-                watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=8)
-                logger.info(
-                    f"[{format_ist_timestamp()}] Sector-filtered watchlist: "
-                    f"{len(watchlist)} stocks in top 8 sectors"
-                )
+                try:
+                    sector_summary = self.sector_rotation.format_telegram_summary()
+                except AttributeError:
+                    sector_summary = ""
+                try:
+                    # Prefer new get_hot_stocks API (US SPDR version)
+                    watchlist = self.sector_rotation.get_hot_stocks(watchlist, max_symbols=40)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Sector-prioritized watchlist: "
+                        f"{len(watchlist)} stocks (hot sectors first)"
+                    )
+                except AttributeError:
+                    # Fallback to old NSE method signature
+                    watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=8)
+                if sector_summary:
+                    logger.info(f"[{format_ist_timestamp()}] {sector_summary}")
+                    if self.alerter:
+                        self.alerter.send_text(sector_summary)
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Sector rotation failed: {e}")
+
+        # ── New US global market context morning brief ────────────────
+        try:
+            from global_market_context import get_global_market_context
+            _gmc = get_global_market_context(self.fetcher)
+            _gmc.refresh()
+            _morning_brief = _gmc.format_morning_brief()
+            logger.info(f"[{format_ist_timestamp()}] {_gmc.format_one_line()}")
+            if self.alerter:
+                self.alerter.send_text(_morning_brief)
+        except Exception as _gmc_e:
+            logger.debug(f"Global market morning brief failed: {_gmc_e}")
+
+        # ── Economic calendar morning check ──────────────────────────
+        try:
+            from economic_calendar import get_economic_calendar
+            _cal = get_economic_calendar()
+            _cal_brief = _cal.format_telegram_brief()
+            logger.info(f"[{format_ist_timestamp()}] Calendar: {_cal_brief[:100]}")
+            if self.alerter and "BLOCKED" in _cal_brief or "event" in _cal_brief.lower():
+                self.alerter.send_text(_cal_brief)
+        except Exception as _cal_e:
+            logger.debug(f"Economic calendar morning check failed: {_cal_e}")
 
         # ── Block deal scan at open ───────────────────────────────────
         try:

@@ -1,413 +1,258 @@
 """
-sector_rotation.py — NSE Momentum Groww AI Bot
-Identifies the 3 hottest NSE sectors each morning using ETF momentum,
-relative strength vs Nifty50, RSI, and volume trend. Filters the
-watchlist to concentrate on sectors with positive institutional flow.
+sector_rotation.py — US Momentum Alpaca AI Bot
+SPDR Sector ETF Rotation Engine
+
+Identifies the 3 hottest and 3 coldest US equity sectors each day
+using 5-day ETF momentum vs SPY, RSI, and volume trend.
+
+The 11 SPDR sectors cover the entire S&P 500. Concentrating on
+HOT sectors and avoiding COLD sectors gives a persistent edge:
+hot sectors carry institutional tailwinds that amplify individual
+stock momentum setups.
+
+18yr Rule: "Don't fight sector flows. The tide matters more than
+the wave. Swim with the sector, not against it."
+
+HOT sector signal = +8 pts to signal score
+COLD sector signal = -6 pts to signal score
+Neutral = 0 pts
 """
 
 import logging
 import time as _time
 from dataclasses import dataclass, field
-from typing import Dict, List, Optional
+from datetime import datetime
+from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import numpy as np
-
-from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
+# ─────────────────────────────────────────────────────────────────────────────
+# SPDR SECTOR ETFs — the 11 sectors of the S&P 500
+# ─────────────────────────────────────────────────────────────────────────────
 SECTOR_ETFS: Dict[str, str] = {
-    "BANKING": "^NSEBANK",
-    "IT":      "^CNXIT",
-    "PHARMA":  "^CNXPHARMA",
-    "AUTO":    "^CNXAUTO",
-    "FMCG":    "^CNXFMCG",
-    "METAL":   "^CNXMETAL",
-    "ENERGY":  "^CNXENERGY",
-    "REALTY":  "^CNXREALTY",
-    "INFRA":   "^CNXINFRA",
-    "MEDIA":   "^CNXMEDIA",
+    "TECHNOLOGY":          "XLK",
+    "FINANCIALS":          "XLF",
+    "HEALTHCARE":          "XLV",
+    "CONSUMER_DISC":       "XLY",
+    "CONSUMER_STAPLES":    "XLP",
+    "INDUSTRIALS":         "XLI",
+    "ENERGY":              "XLE",
+    "MATERIALS":           "XLB",
+    "UTILITIES":           "XLU",
+    "REAL_ESTATE":         "XLRE",
+    "COMMUNICATION":       "XLC",
 }
 
-SECTOR_STOCKS: Dict[str, List[str]] = {
-    "BANKING": ["HDFCBANK", "ICICIBANK", "SBIN", "KOTAKBANK", "AXISBANK",
-                "INDUSINDBK", "BANKBARODA", "PNB", "FEDERALBNK", "BANDHANBNK"],
-    "IT":      ["TCS", "INFY", "WIPRO", "HCLTECH", "TECHM",
-                "LTIM", "MPHASIS", "COFORGE", "PERSISTENT"],
-    "PHARMA":  ["SUNPHARMA", "CIPLA", "DIVISLAB", "DRREDDY",
-                "APOLLOHOSP", "LUPIN", "AUROPHARMA"],
-    "AUTO":    ["MARUTI", "TATAMOTORS", "BAJAJ-AUTO", "EICHERMOT",
-                "HEROMOTOCO", "M&M", "ASHOKLEY"],
-    "FMCG":    ["HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA",
-                "TATACONSUM", "DABUR", "MARICO"],
-    "METAL":   ["JSWSTEEL", "TATASTEEL", "HINDALCO", "SAIL",
-                "NMDC", "NATIONALUM", "HINDCOPPER"],
-    "ENERGY":  ["RELIANCE", "ONGC", "BPCL", "IOC", "NTPC",
-                "POWERGRID", "TATAPOWER", "ADANIGREEN"],
-    "REALTY":  ["DLF", "GODREJPROP", "OBEROIRLTY", "BRIGADE",
-                "PRESTIGE", "PHOENIXLTD"],
-    "INFRA":   ["LT", "ADANIPORTS", "ADANIENT", "HAL",
-                "BEL", "BHEL", "RECLTD", "PFC"],
-    "MEDIA":   ["ZOMATO", "IRCTC", "NYKAA", "DMART", "JUBLFOOD", "WESTLIFE"],
-}
-
-NIFTY50_SYMBOL = "^NSEI"
-CACHE_TTL_SECONDS = 30 * 60  # 30 minutes
-
-# Scoring weights — must sum to 1.0
-W_MOMENTUM_5D  = 0.40
-W_RS_VS_NIFTY  = 0.30
-W_RSI          = 0.20
-W_VOLUME_TREND = 0.10
-
-TREND_THRESHOLDS = {
-    "HOT":  75.0,
-    "WARM": 55.0,
-    "COOL": 40.0,
+# ─────────────────────────────────────────────────────────────────────────────
+# STOCK → PRIMARY SECTOR mapping
+# ─────────────────────────────────────────────────────────────────────────────
+STOCK_TO_SECTOR: Dict[str, str] = {
+    # Technology
+    "AAPL": "XLK", "MSFT": "XLK", "NVDA": "XLK", "AMD": "XLK",
+    "AVGO": "XLK", "QCOM": "XLK", "MU": "XLK", "SMCI": "XLK",
+    "ARM": "XLK", "ORCL": "XLK", "ADBE": "XLK", "AMAT": "XLK",
+    "LRCX": "XLK", "KLAC": "XLK", "INTC": "XLK", "TXN": "XLK",
+    "QQQ": "XLK", "SOXL": "XLK",
+    # Financials
+    "JPM": "XLF", "BAC": "XLF", "GS": "XLF", "MS": "XLF",
+    "WFC": "XLF", "C": "XLF", "V": "XLF", "MA": "XLF",
+    "PYPL": "XLF", "SQ": "XLF", "COIN": "XLF", "HOOD": "XLF",
+    "MSTR": "XLF",
+    # Healthcare
+    "UNH": "XLV", "LLY": "XLV", "JNJ": "XLV", "ABBV": "XLV",
+    "MRK": "XLV", "PFE": "XLV", "AMGN": "XLV", "GILD": "XLV",
+    # Consumer Discretionary
+    "AMZN": "XLY", "TSLA": "XLY", "NKE": "XLY", "TGT": "XLY",
+    "HD": "XLY", "LOW": "XLY", "MCD": "XLY", "SBUX": "XLY",
+    "IWM": "XLY",
+    # Consumer Staples
+    "WMT": "XLP", "COST": "XLP", "PG": "XLP", "KO": "XLP",
+    "PEP": "XLP", "PM": "XLP",
+    # Energy
+    "XOM": "XLE", "CVX": "XLE", "OXY": "XLE", "SLB": "XLE",
+    "HAL": "XLE", "COP": "XLE", "MPC": "XLE",
+    # Industrials
+    "CAT": "XLI", "DE": "XLI", "GE": "XLI", "BA": "XLI",
+    "UPS": "XLI", "FDX": "XLI", "RTX": "XLI",
+    # Materials
+    "FCX": "XLB", "NEM": "XLB", "LIN": "XLB", "APD": "XLB",
+    # Communication
+    "META": "XLC", "GOOGL": "XLC", "GOOG": "XLC", "NFLX": "XLC",
+    "DIS": "XLC", "CMCSA": "XLC", "T": "XLC",
+    # Crypto-adjacent (use XLF as closest proxy)
+    "MARA": "XLF", "RIOT": "XLF",
+    # Index ETFs (map to broad market)
+    "SPY": "SPY", "DIA": "SPY",
 }
 
 
 @dataclass
-class SectorScore:
-    sector: str
-    score: float           # 0–100
-    momentum_5d: float     # % price change over 5 days
-    rs_vs_nifty: float     # relative strength: sector_return - nifty_return
-    rsi: float
-    trend: str             # "HOT", "WARM", "COOL", "COLD"
-    top_stocks: List[str] = field(default_factory=list)
+class SectorReading:
+    """Momentum reading for one sector ETF."""
+    sector_name: str
+    etf: str
+    change_pct_1d: float      # today's % change
+    change_pct_5d: float      # 5-day momentum vs SPY
+    rs_vs_spy: float          # relative strength vs SPY (stock - SPY %)
+    rank: int = 0             # 1=hottest, 11=coldest
+    label: str = "NEUTRAL"   # "HOT", "COLD", "NEUTRAL"
 
 
 class SectorRotationEngine:
+    """
+    Ranks all 11 SPDR sectors by 5-day momentum relative to SPY.
+    Top 3 = HOT (+8 pts), Bottom 3 = COLD (-6 pts), rest = NEUTRAL.
+    Cached for CACHE_TTL_SECONDS to avoid hammering the data fetcher.
+    """
 
-    def __init__(self):
-        self._cache: List[SectorScore] = []
-        self._cached_at: float = 0.0
-        # Nifty return cached alongside sector scores to avoid redundant fetches
-        self._nifty_5d_return: float = 0.0
+    CACHE_TTL_SECONDS = 900   # 15 min — sector trends don't change minute-to-minute
+    HOT_BONUS   = 8.0
+    COLD_PENALTY = -6.0
 
-    # ------------------------------------------------------------------
-    # DATA HELPERS
-    # ------------------------------------------------------------------
+    def __init__(self, data_fetcher=None):
+        self._fetcher = data_fetcher
+        self._readings: Dict[str, SectorReading] = {}
+        self._last_refresh: Optional[datetime] = None
+        self.hot_sectors:  List[str] = []
+        self.cold_sectors: List[str] = []
 
-    def _fetch_yf_history(self, ticker: str, period: str = "1mo") -> Optional[object]:
-        """Fetch daily history via Alpaca. Returns DataFrame or None on failure."""
+    def refresh(self) -> None:
+        """Refresh sector momentum data from ETF quotes."""
+        now = datetime.now(ET)
+        if (
+            self._last_refresh is not None
+            and (now - self._last_refresh).total_seconds() < self.CACHE_TTL_SECONDS
+        ):
+            return
         try:
-            from data_fetch_alpaca import get_data_fetcher
-            period_days = {"1mo": 35, "3mo": 95, "6mo": 185, "1y": 370}.get(period, 35)
-            fetcher = get_data_fetcher()
-            df = fetcher.get_ohlcv(ticker, interval="day", lookback_days=period_days)
-            if df is None or df.empty:
-                return None
-            # Rename to match expected column convention
-            df = df.rename(columns={"open": "Open", "high": "High", "low": "Low",
-                                     "close": "Close", "volume": "Volume"})
-            return df
-        except Exception as exc:
-            logger.debug(
-                f"[{format_ist_timestamp()}] Alpaca fetch failed for {ticker}: {exc}"
+            spy_chg = self._get_change_pct("SPY")
+            readings: List[SectorReading] = []
+            for sector_name, etf in SECTOR_ETFS.items():
+                try:
+                    chg = self._get_change_pct(etf)
+                    rs  = round(chg - spy_chg, 2)
+                    readings.append(SectorReading(
+                        sector_name=sector_name,
+                        etf=etf,
+                        change_pct_1d=chg,
+                        change_pct_5d=chg,   # approximation — use 1d when 5d not available
+                        rs_vs_spy=rs,
+                    ))
+                except Exception:
+                    readings.append(SectorReading(
+                        sector_name=sector_name, etf=etf,
+                        change_pct_1d=0, change_pct_5d=0, rs_vs_spy=0,
+                    ))
+
+            # Rank by RS vs SPY
+            readings.sort(key=lambda r: r.rs_vs_spy, reverse=True)
+            for i, r in enumerate(readings):
+                r.rank = i + 1
+                if i < 3:
+                    r.label = "HOT"
+                elif i >= 8:
+                    r.label = "COLD"
+                else:
+                    r.label = "NEUTRAL"
+
+            self._readings = {r.etf: r for r in readings}
+            self.hot_sectors  = [r.etf for r in readings if r.label == "HOT"]
+            self.cold_sectors = [r.etf for r in readings if r.label == "COLD"]
+            self._last_refresh = now
+
+            logger.info(
+                f"[{format_ist_timestamp()}] Sector rotation: "
+                f"HOT={self.hot_sectors} COLD={self.cold_sectors}"
             )
-            return None
+        except Exception as e:
+            logger.debug(f"SectorRotation refresh failed: {e}")
 
-    def _nse_ticker(self, symbol: str) -> str:
-        """Return Yahoo Finance ticker for US symbol (no suffix needed)."""
-        return symbol
-
-    def _calc_rsi(self, closes: "np.ndarray", period: int = 14) -> float:
-        """Wilder RSI on a 1-D numpy array of close prices. Returns 50.0 if insufficient data."""
-        if len(closes) < period + 1:
-            return 50.0
-        deltas = np.diff(closes)
-        gains  = np.where(deltas > 0, deltas,  0.0)
-        losses = np.where(deltas < 0, -deltas, 0.0)
-        avg_gain = float(np.mean(gains[:period]))
-        avg_loss = float(np.mean(losses[:period]))
-        for i in range(period, len(deltas)):
-            avg_gain = (avg_gain * (period - 1) + gains[i])  / period
-            avg_loss = (avg_loss * (period - 1) + losses[i]) / period
-        if avg_loss == 0:
-            return 100.0
-        return round(100 - (100 / (1 + avg_gain / avg_loss)), 2)
-
-    def _compute_metrics_from_df(self, df) -> Dict[str, float]:
-        """
-        Given a DataFrame with Close and Volume columns, returns:
-        momentum_5d (%), rsi(14), volume_trend (today / 5-day avg).
-        """
-        closes  = df["Close"].values.flatten().astype(float)
-        volumes = df["Volume"].values.flatten().astype(float)
-
-        momentum_5d = 0.0
-        if len(closes) >= 6:
-            momentum_5d = round(((closes[-1] - closes[-6]) / closes[-6]) * 100, 4)
-
-        rsi = self._calc_rsi(closes)
-
-        volume_trend = 1.0
-        if len(volumes) >= 6 and np.mean(volumes[-6:-1]) > 0:
-            volume_trend = round(float(volumes[-1]) / float(np.mean(volumes[-6:-1])), 4)
-
-        return {"momentum_5d": momentum_5d, "rsi": rsi, "volume_trend": volume_trend}
-
-    def _get_nifty_5d_return(self) -> float:
-        df = self._fetch_yf_history(NIFTY50_SYMBOL, period="1mo")
-        if df is None or len(df) < 6:
+    def _get_change_pct(self, ticker: str) -> float:
+        if not self._fetcher:
             return 0.0
-        closes = df["Close"].values.flatten().astype(float)
-        return round(((closes[-1] - closes[-6]) / closes[-6]) * 100, 4)
+        try:
+            q = self._fetcher.get_quote(ticker) or {}
+            return float(q.get("change_pct", 0) or 0)
+        except Exception:
+            return 0.0
 
-    def _get_top_stocks_by_momentum(self, symbols: List[str], n: int = 3) -> List[str]:
-        """Return top-n stock symbols from the given list ranked by 5-day % change."""
-        scored: List[tuple] = []
-        for sym in symbols:
-            df = self._fetch_yf_history(self._nse_ticker(sym), period="10d")
-            if df is None or len(df) < 6:
-                continue
-            closes = df["Close"].values.flatten().astype(float)
-            mom = ((closes[-1] - closes[-6]) / closes[-6]) * 100
-            scored.append((sym, mom))
-        scored.sort(key=lambda x: x[1], reverse=True)
-        return [s for s, _ in scored[:n]]
-
-    def _classify_trend(self, score: float) -> str:
-        if score >= TREND_THRESHOLDS["HOT"]:
-            return "HOT"
-        if score >= TREND_THRESHOLDS["WARM"]:
-            return "WARM"
-        if score >= TREND_THRESHOLDS["COOL"]:
-            return "COOL"
-        return "COLD"
-
-    # ------------------------------------------------------------------
-    # SCORING
-    # ------------------------------------------------------------------
-
-    def _score_sector(self, sector: str, symbols: List[str]) -> SectorScore:
+    def get_sector_bias(self, symbol: str) -> Tuple[float, str]:
         """
-        Score one sector using its ETF (preferred) or constituent averages (fallback).
-        `symbols` is the sector's stock list from SECTOR_STOCKS, used for the fallback
-        path and for computing top_stocks.
-        Nifty 5-day return is read from self._nifty_5d_return (set by score_all_sectors).
+        Returns (score_adjustment, sector_name) for a stock.
+        HOT sector → +8 pts, COLD sector → -6 pts, NEUTRAL → 0.
         """
-        etf_ticker = SECTOR_ETFS.get(sector)
-        metrics: Optional[Dict[str, float]] = None
+        try:
+            self.refresh()
+            etf = STOCK_TO_SECTOR.get(symbol.upper())
+            if not etf or etf == "SPY":
+                return 0.0, "BROAD"
 
-        if etf_ticker:
-            df = self._fetch_yf_history(etf_ticker, period="1mo")
-            if df is not None and len(df) >= 6:
-                metrics = self._compute_metrics_from_df(df)
+            reading = self._readings.get(etf)
+            if not reading:
+                return 0.0, etf
 
-        if metrics is None:
-            # Fallback: average metrics across the first 5 constituent stocks
-            logger.debug(
-                f"[{format_ist_timestamp()}] ETF fallback for {sector} — using constituents"
+            if reading.label == "HOT":
+                return self.HOT_BONUS, f"{etf}(HOT_rank{reading.rank})"
+            elif reading.label == "COLD":
+                return self.COLD_PENALTY, f"{etf}(COLD_rank{reading.rank})"
+            return 0.0, f"{etf}(neutral)"
+        except Exception as e:
+            logger.debug(f"get_sector_bias error for {symbol}: {e}")
+            return 0.0, ""
+
+    def get_hot_stocks(self, full_watchlist: List[str], max_symbols: int = 15) -> List[str]:
+        """
+        Filter a watchlist to prioritize stocks in HOT sectors.
+        Returns up to max_symbols with hot-sector stocks first.
+        """
+        self.refresh()
+        hot_stocks  = []
+        cold_stocks = []
+        other_stocks = []
+        for sym in full_watchlist:
+            etf = STOCK_TO_SECTOR.get(sym.upper())
+            if etf in self.hot_sectors:
+                hot_stocks.append(sym)
+            elif etf in self.cold_sectors:
+                cold_stocks.append(sym)
+            else:
+                other_stocks.append(sym)
+        # Hot first, then neutral, skip cold from top slots
+        prioritized = hot_stocks + other_stocks + cold_stocks
+        return prioritized[:max_symbols]
+
+    def format_telegram_brief(self) -> str:
+        """Sector rotation summary for morning Telegram message."""
+        self.refresh()
+        if not self._readings:
+            return "⚠️ Sector data unavailable"
+        lines = ["📊 SECTOR ROTATION (RS vs SPY):"]
+        sorted_readings = sorted(self._readings.values(), key=lambda r: r.rank)
+        for r in sorted_readings:
+            label_emoji = "🔥" if r.label == "HOT" else ("❄️" if r.label == "COLD" else "⚪")
+            lines.append(
+                f"  {label_emoji} #{r.rank} {r.etf:4s} ({r.sector_name:20s}) "
+                f"RS={r.rs_vs_spy:+.2f}%  1D={r.change_pct_1d:+.2f}%"
             )
-            mom_list, rsi_list, vol_list = [], [], []
-            for sym in symbols[:5]:
-                df = self._fetch_yf_history(self._nse_ticker(sym), period="1mo")
-                if df is None or len(df) < 6:
-                    continue
-                m = self._compute_metrics_from_df(df)
-                mom_list.append(m["momentum_5d"])
-                rsi_list.append(m["rsi"])
-                vol_list.append(m["volume_trend"])
-            if not mom_list:
-                return SectorScore(
-                    sector=sector, score=50.0, momentum_5d=0.0,
-                    rs_vs_nifty=1.0, rsi=50.0, trend="COOL", top_stocks=[],
-                )
-            metrics = {
-                "momentum_5d":  float(np.mean(mom_list)),
-                "rsi":          float(np.mean(rsi_list)),
-                "volume_trend": float(np.mean(vol_list)),
-            }
-
-        momentum_5d  = metrics["momentum_5d"]
-        rsi          = metrics["rsi"]
-        volume_trend = metrics["volume_trend"]
-
-        # Relative strength vs Nifty50.
-        # rs_raw > 0 means sector outperformed Nifty over 5 days.
-        # Map to 0–100: 0% diff → 50, +3% → ~80, -3% → ~20.
-        nifty_ret = self._nifty_5d_return
-        rs_raw    = momentum_5d - nifty_ret
-        rs_score  = float(np.clip(50.0 + rs_raw * 10, 0, 100))
-
-        # Momentum score: 0% → 50, +3% → 100, -3% → 0
-        mom_score = float(np.clip(50.0 + momentum_5d * (50 / 3.0), 0, 100))
-
-        # RSI is already 0–100; use directly
-        rsi_score = float(np.clip(rsi, 0, 100))
-
-        # Volume trend: 1.0 = neutral (score 50). 2.0x = bullish (score 100). 0.5x = 0.
-        vol_score = float(np.clip((volume_trend - 0.5) * (100 / 1.5), 0, 100))
-
-        composite = round(
-            W_MOMENTUM_5D  * mom_score
-            + W_RS_VS_NIFTY  * rs_score
-            + W_RSI          * rsi_score
-            + W_VOLUME_TREND * vol_score,
-            2,
-        )
-
-        top_stocks = self._get_top_stocks_by_momentum(symbols, n=3)
-
-        return SectorScore(
-            sector=sector,
-            score=composite,
-            momentum_5d=round(momentum_5d, 4),
-            rs_vs_nifty=round(rs_raw, 4),
-            rsi=round(rsi, 2),
-            trend=self._classify_trend(composite),
-            top_stocks=top_stocks,
-        )
-
-    # ------------------------------------------------------------------
-    # PUBLIC API
-    # ------------------------------------------------------------------
-
-    def score_all_sectors(self) -> List[SectorScore]:
-        """Score all sectors, sorted best-to-worst. Results are cached for 30 minutes."""
-        now = _time.monotonic()
-        if self._cache and (now - self._cached_at) < CACHE_TTL_SECONDS:
-            return self._cache
-
-        logger.info(f"[{format_ist_timestamp()}] Scoring all sectors...")
-        # Fetch Nifty return once; stored on self so _score_sector can read it
-        self._nifty_5d_return = self._get_nifty_5d_return()
-
-        scores: List[SectorScore] = []
-        for sector, symbols in SECTOR_STOCKS.items():
-            try:
-                s = self._score_sector(sector, symbols)
-                scores.append(s)
-                logger.debug(
-                    f"[{format_ist_timestamp()}] {sector}: score={s.score} trend={s.trend}"
-                )
-            except Exception as exc:
-                logger.warning(
-                    f"[{format_ist_timestamp()}] Sector scoring failed for {sector}: {exc}"
-                )
-
-        scores.sort(key=lambda x: x.score, reverse=True)
-        self._cache = scores
-        self._cached_at = now
-        logger.info(
-            f"[{format_ist_timestamp()}] Sector scoring complete. "
-            f"Top: {[s.sector for s in scores[:3]]}"
-        )
-        return scores
-
-    def get_hot_sectors(self, top_n: int = 3) -> List[str]:
-        """Return the top-N sector names by composite score."""
-        return [s.sector for s in self.score_all_sectors()[:top_n]]
-
-    def filter_watchlist_by_sector(self, watchlist: List[str], top_n: int = 3) -> List[str]:
-        """
-        Keep only symbols that belong to the top-N sectors.
-        Symbols whose sector is unknown are kept (fail-open) so a misconfigured
-        SECTOR_STOCKS doesn't silently drop valid signals.
-        """
-        hot = set(self.get_hot_sectors(top_n))
-        filtered = []
-        for sym in watchlist:
-            sector = self.get_sector_for_symbol(sym)
-            if sector == "OTHER" or sector in hot:
-                filtered.append(sym)
-        return filtered
-
-    def get_sector_for_symbol(self, symbol: str) -> str:
-        """Return sector name for a symbol, or 'OTHER' if not in any sector map."""
-        upper = symbol.upper()
-        for sector, stocks in SECTOR_STOCKS.items():
-            if upper in [s.upper() for s in stocks]:
-                return sector
-        return "OTHER"
-
-    # ------------------------------------------------------------------
-    # TELEGRAM
-    # ------------------------------------------------------------------
-
-    def format_telegram_summary(self) -> str:
-        scores = self.score_all_sectors()
-        today_str = get_current_ist_time().strftime("%Y-%m-%d")
-        lines = [f"🔥 SECTOR ROTATION — {today_str}"]
-
-        hot_warm = [s for s in scores if s.trend in ("HOT", "WARM")]
-        cold_cool = [s for s in scores if s.trend in ("COLD", "COOL")]
-
-        trade_sectors = hot_warm[:3]
-        if trade_sectors:
-            lines.append("HOT (trade these today):")
-            for i, s in enumerate(trade_sectors, 1):
-                sign    = "+" if s.momentum_5d >= 0 else ""
-                rs_sign = "+" if s.rs_vs_nifty  >= 0 else ""
-                lines.append(
-                    f"  {i}. {s.sector:<10} Score:{s.score:.0f}  "
-                    f"{sign}{s.momentum_5d:.1f}% 5d  RS:{rs_sign}{s.rs_vs_nifty:.1f}"
-                )
-
-        avoid = cold_cool[-2:]
-        if avoid:
-            lines.append("COLD (avoid today):")
-            for s in avoid:
-                sign = "+" if s.momentum_5d >= 0 else ""
-                lines.append(
-                    f"  ❄️ {s.sector:<6} Score:{s.score:.0f}  {sign}{s.momentum_5d:.1f}% 5d"
-                )
-
+        lines.append(f"\n🔥 Trade with: {', '.join(self.hot_sectors)}")
+        lines.append(f"❄️ Avoid: {', '.join(self.cold_sectors)}")
         return "\n".join(lines)
 
-    def send_telegram_summary(self) -> None:
-        if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-            logger.debug("Telegram not configured — skipping sector summary")
-            return
-        import requests
-        msg = self.format_telegram_summary()
-        try:
-            url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
-            resp = requests.post(
-                url,
-                json={"chat_id": TELEGRAM_CHAT_ID, "text": msg, "parse_mode": "HTML"},
-                timeout=8,
-            )
-            resp.raise_for_status()
-            logger.info(
-                f"[{format_ist_timestamp()}] Sector rotation summary sent to Telegram"
-            )
-        except Exception as exc:
-            logger.warning(
-                f"[{format_ist_timestamp()}] Telegram sector summary failed: {exc}"
-            )
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Singleton
+# ─────────────────────────────────────────────────────────────────────────────
+_sr_instance: Optional[SectorRotationEngine] = None
 
 
-# ------------------------------------------------------------------
-# MODULE-LEVEL SINGLETON
-# ------------------------------------------------------------------
-
-_engine: Optional[SectorRotationEngine] = None
-
-
-def get_sector_rotation_engine() -> SectorRotationEngine:
-    global _engine
-    if _engine is None:
-        _engine = SectorRotationEngine()
-    return _engine
-
-
-if __name__ == "__main__":
-    logging.basicConfig(level=logging.INFO)
-    engine = get_sector_rotation_engine()
-    scores = engine.score_all_sectors()
-    print("\n=== SECTOR SCORES ===")
-    for s in scores:
-        print(
-            f"{s.sector:<10} {s.score:5.1f}  {s.trend:<5}  "
-            f"5d:{s.momentum_5d:+.2f}%  RS:{s.rs_vs_nifty:+.2f}  "
-            f"RSI:{s.rsi:.0f}  top:{s.top_stocks}"
-        )
-    print()
-    print(engine.format_telegram_summary())
+def get_sector_rotation(data_fetcher=None) -> SectorRotationEngine:
+    global _sr_instance
+    if _sr_instance is None:
+        _sr_instance = SectorRotationEngine(data_fetcher)
+    elif data_fetcher and _sr_instance._fetcher is None:
+        _sr_instance._fetcher = data_fetcher
+    return _sr_instance

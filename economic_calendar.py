@@ -1,301 +1,436 @@
 """
-economic_calendar.py — NSE Momentum Groww AI Bot
-NSE Economic Event Calendar + Impact Learning Engine
+economic_calendar.py — US Momentum Alpaca AI Bot
+US Economic Event Calendar + Trading-Impact Engine
 
-Tracks high-impact events and learns their historical market impact.
-18yr Rule: "Know the calendar before the market opens.
-One RBI announcement can wipe out a week of gains in 30 minutes."
+Tracks ALL high-impact US economic releases and enforces trading
+blackout windows around them. Protects capital from data-driven
+volatility spikes that crush momentum setups.
 
-Events tracked:
-- RBI Monetary Policy (6x per year) — BIGGEST mover
-- Union Budget (Feb 1) — most volatile day of year
-- GDP/CPI/WPI releases
-- NSE F&O expiry (last Thursday monthly) — manipulation zone
-- Nifty50 earnings (Apr/Jul/Oct/Jan quarters)
-- US Fed FOMC (8x per year) — impacts FII flows
-- SGX/Gift Nifty settlement days
-- NSE/BSE circuit breaker history
+18yr Rule: "One Fed meeting can undo 3 weeks of gains. Know the
+calendar BEFORE you trade. Never be caught holding positions into
+a surprise move."
+
+Events tracked (2025-2026):
+- FOMC meetings (8×/year) — BIGGEST market mover
+- NFP (Non-Farm Payrolls) — first Friday of month, 8:30 AM ET
+- CPI (Consumer Price Index) — mid-month, 8:30 AM ET
+- PPI (Producer Price Index) — one day after CPI
+- GDP (Advance Estimate) — quarterly, 8:30 AM ET
+- Retail Sales — mid-month, 8:30 AM ET
+
+Behavior:
+  - Before high-impact release: BLOCK new entries (trading_ok=False)
+  - After release + 15 min: ALLOW with bonus score (direction confirmed)
+  - FOMC day pre-2PM: BLOCK all new entries
+  - FOMC day post-2:30PM: ALLOW with score bonus
+
+Score adjustments returned to signal_generator._compute_ai_score().
 """
 
-import json
 import logging
-import sqlite3
-from datetime import date, datetime, timedelta
-from pathlib import Path
+from datetime import datetime, date, timedelta, time as dtime
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 
-import requests
-
-from utils import format_ist_timestamp, get_current_ist_time, get_current_ist_date
+from utils import format_ist_timestamp, get_current_ist_time
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
-CALENDAR_DB = Path("data/economic_calendar.db")
-CALENDAR_DB.parent.mkdir(exist_ok=True)
+# ─────────────────────────────────────────────────────────────────────────────
+# HARD-CODED 2025-2026 US ECONOMIC CALENDAR
+# ─────────────────────────────────────────────────────────────────────────────
 
-# ── Hard-coded high-impact NSE events 2025-2026 ────────────────────────────
-HARDCODED_EVENTS = [
-    # RBI MPC (Monetary Policy Committee) dates 2025
-    {"date": "2025-04-09", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2025-06-06", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2025-08-08", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2025-10-08", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2025-12-05", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2026-02-06", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    {"date": "2026-04-09", "event": "RBI MPC Decision",        "impact": "HIGH",  "avoid_minutes": 60},
-    # Budget
-    {"date": "2026-02-01", "event": "Union Budget 2026-27",    "impact": "EXTREME","avoid_minutes": 120},
-    # US Fed FOMC 2025 (approximate)
-    {"date": "2025-05-07", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-06-18", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-07-30", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-09-17", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-11-05", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-12-17", "event": "US Fed FOMC",             "impact": "MEDIUM","avoid_minutes": 30},
-    # India GDP/CPI
-    {"date": "2025-05-30", "event": "India GDP Q4 FY25",       "impact": "MEDIUM","avoid_minutes": 30},
-    {"date": "2025-08-29", "event": "India GDP Q1 FY26",       "impact": "MEDIUM","avoid_minutes": 30},
-    # NSE holidays 2025
-    {"date": "2025-04-14", "event": "NSE Holiday - Ambedkar Jayanti", "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-04-18", "event": "NSE Holiday - Good Friday",      "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-05-01", "event": "NSE Holiday - Maharashtra Day",  "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-08-15", "event": "NSE Holiday - Independence Day", "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-10-02", "event": "NSE Holiday - Gandhi Jayanti",   "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-10-24", "event": "NSE Holiday - Dussehra",         "impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-11-05", "event": "NSE Holiday - Diwali Laxmi Puja","impact": "HOLIDAY", "avoid_minutes": 0},
-    {"date": "2025-12-25", "event": "NSE Holiday - Christmas",        "impact": "HOLIDAY", "avoid_minutes": 0},
+FOMC_DATES: Dict[str, str] = {
+    "2025-01-29": "FOMC Rate Decision",
+    "2025-03-19": "FOMC Rate Decision",
+    "2025-05-07": "FOMC Rate Decision",
+    "2025-06-18": "FOMC Rate Decision",
+    "2025-07-30": "FOMC Rate Decision",
+    "2025-09-17": "FOMC Rate Decision",
+    "2025-11-05": "FOMC Rate Decision",
+    "2025-12-17": "FOMC Rate Decision",
+    "2026-01-28": "FOMC Rate Decision",
+    "2026-03-18": "FOMC Rate Decision",
+    "2026-05-06": "FOMC Rate Decision",
+    "2026-06-17": "FOMC Rate Decision",
+    "2026-07-29": "FOMC Rate Decision",
+    "2026-09-16": "FOMC Rate Decision",
+    "2026-11-04": "FOMC Rate Decision",
+    "2026-12-16": "FOMC Rate Decision",
+}
+
+NFP_DATES: Dict[str, str] = {
+    "2025-01-10": "Non-Farm Payrolls",
+    "2025-02-07": "Non-Farm Payrolls",
+    "2025-03-07": "Non-Farm Payrolls",
+    "2025-04-04": "Non-Farm Payrolls",
+    "2025-05-02": "Non-Farm Payrolls",
+    "2025-06-06": "Non-Farm Payrolls",
+    "2025-07-03": "Non-Farm Payrolls",
+    "2025-08-01": "Non-Farm Payrolls",
+    "2025-09-05": "Non-Farm Payrolls",
+    "2025-10-03": "Non-Farm Payrolls",
+    "2025-11-07": "Non-Farm Payrolls",
+    "2025-12-05": "Non-Farm Payrolls",
+    "2026-01-09": "Non-Farm Payrolls",
+    "2026-02-06": "Non-Farm Payrolls",
+    "2026-03-06": "Non-Farm Payrolls",
+    "2026-04-03": "Non-Farm Payrolls",
+    "2026-05-01": "Non-Farm Payrolls",
+    "2026-06-05": "Non-Farm Payrolls",
+}
+
+CPI_DATES: Dict[str, str] = {
+    "2025-01-15": "CPI Report",
+    "2025-02-12": "CPI Report",
+    "2025-03-12": "CPI Report",
+    "2025-04-10": "CPI Report",
+    "2025-05-13": "CPI Report",
+    "2025-06-11": "CPI Report",
+    "2025-07-15": "CPI Report",
+    "2025-08-12": "CPI Report",
+    "2025-09-10": "CPI Report",
+    "2025-10-15": "CPI Report",
+    "2025-11-12": "CPI Report",
+    "2025-12-10": "CPI Report",
+    "2026-01-14": "CPI Report",
+    "2026-02-11": "CPI Report",
+    "2026-03-11": "CPI Report",
+    "2026-04-09": "CPI Report",
+    "2026-05-13": "CPI Report",
+    "2026-06-10": "CPI Report",
+}
+
+PPI_DATES: Dict[str, str] = {
+    "2025-01-14": "PPI Report",
+    "2025-02-13": "PPI Report",
+    "2025-03-13": "PPI Report",
+    "2025-04-11": "PPI Report",
+    "2025-05-15": "PPI Report",
+    "2025-06-12": "PPI Report",
+    "2025-07-16": "PPI Report",
+    "2025-08-13": "PPI Report",
+    "2025-09-11": "PPI Report",
+    "2025-10-16": "PPI Report",
+    "2025-11-13": "PPI Report",
+    "2025-12-11": "PPI Report",
+    "2026-01-15": "PPI Report",
+    "2026-02-12": "PPI Report",
+    "2026-03-12": "PPI Report",
+    "2026-04-10": "PPI Report",
+    "2026-05-14": "PPI Report",
+    "2026-06-11": "PPI Report",
+}
+
+GDP_DATES: Dict[str, str] = {
+    "2025-04-30": "GDP Advance Estimate Q1-2025",
+    "2025-07-30": "GDP Advance Estimate Q2-2025",
+    "2025-10-29": "GDP Advance Estimate Q3-2025",
+    "2026-01-28": "GDP Advance Estimate Q4-2025",
+    "2026-04-29": "GDP Advance Estimate Q1-2026",
+    "2026-07-29": "GDP Advance Estimate Q2-2026",
+}
+
+RETAIL_SALES_DATES: Dict[str, str] = {
+    "2025-01-16": "Retail Sales",
+    "2025-02-14": "Retail Sales",
+    "2025-03-17": "Retail Sales",
+    "2025-04-16": "Retail Sales",
+    "2025-05-15": "Retail Sales",
+    "2025-06-17": "Retail Sales",
+    "2025-07-17": "Retail Sales",
+    "2025-08-15": "Retail Sales",
+    "2025-09-16": "Retail Sales",
+    "2025-10-17": "Retail Sales",
+    "2025-11-14": "Retail Sales",
+    "2025-12-16": "Retail Sales",
+    "2026-01-15": "Retail Sales",
+    "2026-02-13": "Retail Sales",
+    "2026-03-16": "Retail Sales",
+    "2026-04-15": "Retail Sales",
+    "2026-05-15": "Retail Sales",
+}
+
+# Quad Witching (3rd Friday of March/June/Sep/Dec)
+QUAD_WITCH_DATES: set = {
+    "2025-03-21", "2025-06-20", "2025-09-19", "2025-12-19",
+    "2026-03-20", "2026-06-19", "2026-09-18", "2026-12-18",
+}
+
+# FOMC minutes release dates (approximately 3 weeks after each FOMC)
+FOMC_MINUTES_DATES: Dict[str, str] = {
+    "2025-02-19": "FOMC Minutes",
+    "2025-04-09": "FOMC Minutes",
+    "2025-05-28": "FOMC Minutes",
+    "2025-07-09": "FOMC Minutes",
+    "2025-08-20": "FOMC Minutes",
+    "2025-10-08": "FOMC Minutes",
+    "2025-11-26": "FOMC Minutes",
+    "2026-01-07": "FOMC Minutes",
+}
+
+
+class EconomicEvent:
+    """A single economic event with trading impact rules."""
+
+    def __init__(
+        self,
+        name: str,
+        impact: str,            # "EXTREME", "HIGH", "MEDIUM", "LOW"
+        release_time_et: str,   # "08:30" or "14:00" (24h format)
+        pre_blackout_minutes: int,
+        post_resume_minutes: int,
+        pre_score_adj: float,
+        post_score_adj: float,
+    ):
+        self.name = name
+        self.impact = impact
+        self.release_time_et = release_time_et
+        self.pre_blackout_minutes = pre_blackout_minutes
+        self.post_resume_minutes = post_resume_minutes
+        self.pre_score_adj = pre_score_adj
+        self.post_score_adj = post_score_adj
+
+    def get_status(self, now_et: datetime) -> Tuple[str, float, bool]:
+        """
+        Returns (status, score_adj, trading_ok).
+        status: "PRE_BLACKOUT" | "IN_RELEASE" | "POST_RESUME" | "CLEAR"
+        """
+        h, m = self.release_time_et.split(":")
+        release_time = now_et.replace(hour=int(h), minute=int(m), second=0, microsecond=0)
+        minutes_to = (release_time - now_et).total_seconds() / 60
+        minutes_since = -minutes_to
+
+        if 0 <= minutes_to <= self.pre_blackout_minutes:
+            return "PRE_BLACKOUT", self.pre_score_adj, False
+        if 0 < minutes_since <= 5:
+            return "IN_RELEASE", self.pre_score_adj * 0.5, False
+        if 5 < minutes_since <= self.post_resume_minutes:
+            return "POST_RESUME", self.post_score_adj * 0.5, True
+        if minutes_since > self.post_resume_minutes:
+            return "POST_CLEAR", self.post_score_adj, True
+        return "CLEAR", 0.0, True
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# EVENT DEFINITIONS
+# ─────────────────────────────────────────────────────────────────────────────
+EVENT_TEMPLATES: Dict[str, EconomicEvent] = {
+    "FOMC": EconomicEvent(
+        name="FOMC Rate Decision", impact="EXTREME",
+        release_time_et="14:00",
+        pre_blackout_minutes=240,   # block 9:30 AM - 2:00 PM (whole morning)
+        post_resume_minutes=30,
+        pre_score_adj=-20.0,
+        post_score_adj=10.0,
+    ),
+    "NFP": EconomicEvent(
+        name="Non-Farm Payrolls", impact="HIGH",
+        release_time_et="08:30",
+        pre_blackout_minutes=999,   # block from open until 9:45 ET (block until market digests)
+        post_resume_minutes=15,
+        pre_score_adj=-20.0,
+        post_score_adj=12.0,
+    ),
+    "CPI": EconomicEvent(
+        name="CPI Report", impact="HIGH",
+        release_time_et="08:30",
+        pre_blackout_minutes=999,   # block pre-market; allow after 9:30 AM
+        post_resume_minutes=15,
+        pre_score_adj=-18.0,
+        post_score_adj=8.0,
+    ),
+    "PPI": EconomicEvent(
+        name="PPI Report", impact="MEDIUM",
+        release_time_et="08:30",
+        pre_blackout_minutes=999,
+        post_resume_minutes=10,
+        pre_score_adj=-10.0,
+        post_score_adj=5.0,
+    ),
+    "GDP": EconomicEvent(
+        name="GDP Advance Estimate", impact="HIGH",
+        release_time_et="08:30",
+        pre_blackout_minutes=999,
+        post_resume_minutes=20,
+        pre_score_adj=-12.0,
+        post_score_adj=8.0,
+    ),
+    "RETAIL_SALES": EconomicEvent(
+        name="Retail Sales", impact="MEDIUM",
+        release_time_et="08:30",
+        pre_blackout_minutes=999,
+        post_resume_minutes=10,
+        pre_score_adj=-8.0,
+        post_score_adj=4.0,
+    ),
+    "FOMC_MINUTES": EconomicEvent(
+        name="FOMC Minutes", impact="MEDIUM",
+        release_time_et="14:00",
+        pre_blackout_minutes=60,
+        post_resume_minutes=20,
+        pre_score_adj=-10.0,
+        post_score_adj=5.0,
+    ),
+}
+
+# Map from date-string dict → event template key
+DATE_TO_EVENT: List[Tuple[Dict[str, str], str]] = [
+    (FOMC_DATES,          "FOMC"),
+    (NFP_DATES,           "NFP"),
+    (CPI_DATES,           "CPI"),
+    (PPI_DATES,           "PPI"),
+    (GDP_DATES,           "GDP"),
+    (RETAIL_SALES_DATES,  "RETAIL_SALES"),
+    (FOMC_MINUTES_DATES,  "FOMC_MINUTES"),
 ]
-
-# F&O expiry is always last Thursday of each month
-def _get_monthly_expiry_dates(start_year: int = 2025, months: int = 24) -> List[Dict]:
-    events = []
-    from calendar import monthrange
-    today = date.today()
-    for m in range(months):
-        year  = start_year + (m // 12)
-        month = (m % 12) + 1
-        # Find last Thursday (weekday=3)
-        last_day = monthrange(year, month)[1]
-        for d in range(last_day, 0, -1):
-            if date(year, month, d).weekday() == 3:
-                events.append({
-                    "date":           str(date(year, month, d)),
-                    "event":          "NSE F&O Monthly Expiry",
-                    "impact":         "MEDIUM",
-                    "avoid_minutes":  45,
-                })
-                break
-    return events
 
 
 class EconomicCalendar:
     """
-    Manages the economic event calendar with impact learning.
-    Learns how each event type historically affected NSE.
+    Main calendar engine. Checks today's events and returns:
+    - Score adjustment for the current moment
+    - Whether new entries are allowed (trading_ok)
+    - Today's events list for the morning brief
     """
 
     def __init__(self):
-        self._init_db()
-        self._seed_events()
+        self._today_events: Optional[List[Tuple[EconomicEvent, str]]] = None  # (event, date_str)
+        self._last_check_date: Optional[date] = None
 
-    def _init_db(self):
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS events (
-                    id             INTEGER PRIMARY KEY AUTOINCREMENT,
-                    date_ist       TEXT NOT NULL,
-                    event_name     TEXT NOT NULL,
-                    impact_level   TEXT DEFAULT 'MEDIUM',
-                    avoid_minutes  INTEGER DEFAULT 30,
-                    time_ist       TEXT DEFAULT '10:00',
-                    source         TEXT DEFAULT 'hardcoded'
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS event_outcomes (
-                    event_name     TEXT NOT NULL,
-                    date_ist       TEXT NOT NULL,
-                    nifty_change   REAL,
-                    vix_change     REAL,
-                    intraday_range REAL,
-                    outcome_note   TEXT,
-                    recorded_at    TEXT,
-                    PRIMARY KEY (event_name, date_ist)
-                )
-            """)
-            conn.execute("""
-                CREATE TABLE IF NOT EXISTS event_impact_stats (
-                    event_name     TEXT PRIMARY KEY,
-                    avg_nifty_move REAL,
-                    avg_range      REAL,
-                    bearish_count  INTEGER DEFAULT 0,
-                    bullish_count  INTEGER DEFAULT 0,
-                    total_count    INTEGER DEFAULT 0,
-                    last_updated   TEXT
-                )
-            """)
-            conn.commit()
+    def _load_today_events(self) -> List[Tuple[EconomicEvent, str]]:
+        """Load all events for today from the hard-coded calendar."""
+        today_str = str(get_current_ist_time().date())
+        events = []
+        for date_dict, template_key in DATE_TO_EVENT:
+            if today_str in date_dict:
+                event = EVENT_TEMPLATES.get(template_key)
+                if event:
+                    events.append((event, today_str))
+        return events
 
-    def _seed_events(self):
-        """Populate DB with hardcoded events + F&O expiry dates."""
-        all_events = HARDCODED_EVENTS + _get_monthly_expiry_dates()
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            for ev in all_events:
-                conn.execute(
-                    "INSERT OR IGNORE INTO events (date_ist, event_name, impact_level, avoid_minutes) "
-                    "VALUES (?,?,?,?)",
-                    (ev["date"], ev["event"], ev["impact"], ev.get("avoid_minutes", 30))
-                )
-            conn.commit()
+    def get_today_events(self) -> List[EconomicEvent]:
+        """Get all events for today."""
+        today = get_current_ist_time().date()
+        if self._last_check_date != today:
+            self._today_events = self._load_today_events()
+            self._last_check_date = today
+        return [e for e, _ in (self._today_events or [])]
 
-    # ── QUERY ──────────────────────────────────────────────
-
-    def get_today_events(self) -> List[Dict]:
-        today = str(get_current_ist_date())
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            rows = conn.execute(
-                "SELECT date_ist, event_name, impact_level, avoid_minutes, time_ist "
-                "FROM events WHERE date_ist=? ORDER BY time_ist",
-                (today,)
-            ).fetchall()
-        return [{"date": r[0], "event": r[1], "impact": r[2],
-                 "avoid_minutes": r[3], "time_ist": r[4]} for r in rows]
-
-    def get_upcoming_events(self, days: int = 7) -> List[Dict]:
-        today  = str(get_current_ist_date())
-        future = str(get_current_ist_date() + timedelta(days=days))
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            rows = conn.execute(
-                "SELECT date_ist, event_name, impact_level, avoid_minutes "
-                "FROM events WHERE date_ist BETWEEN ? AND ? ORDER BY date_ist",
-                (today, future)
-            ).fetchall()
-        return [{"date": r[0], "event": r[1], "impact": r[2], "avoid_minutes": r[3]} for r in rows]
-
-    def is_blackout_now(self) -> Tuple[bool, str]:
+    def get_calendar_score_adjustment(self) -> Tuple[float, str, bool]:
         """
-        Check if current IST time is within blackout window of any event.
-        Returns (True, reason) or (False, "").
+        Main entry point for signal_generator.
+        Returns (score_adjustment, note, trading_ok).
+        - score_adjustment: float (negative = caution, positive = post-release bonus)
+        - note: human-readable reason
+        - trading_ok: False = hard block on new entries
         """
-        events = self.get_today_events()
-        if not events:
-            return False, ""
-        now_ist = get_current_ist_time()
-        for ev in events:
-            if ev["impact"] == "HOLIDAY":
-                return True, f"NSE Holiday: {ev['event']}"
-            try:
-                h, m    = map(int, ev["time_ist"].split(":"))
-                ev_time = now_ist.replace(hour=h, minute=m, second=0)
-                window  = ev.get("avoid_minutes", 30)
-                start   = ev_time - timedelta(minutes=window)
-                end_t   = ev_time + timedelta(minutes=window)
-                if start <= now_ist <= end_t:
-                    return True, (
-                        f"Event blackout: {ev['event']} "
-                        f"({window}min window around {ev['time_ist']} IST)"
-                    )
-            except Exception as _e:
-                logger.debug(f"[suppressed] {_e}")
-        return False, ""
-
-    def is_fno_expiry_today(self) -> bool:
-        events = self.get_today_events()
-        return any("Expiry" in ev["event"] for ev in events)
-
-    def is_holiday_today(self) -> bool:
-        events = self.get_today_events()
-        return any(ev["impact"] == "HOLIDAY" for ev in events)
-
-    # ── LEARNING: record what actually happened ─────────────
-
-    def record_event_outcome(self, event_name: str, nifty_change: float,
-                              intraday_range: float, note: str = ""):
-        today = str(get_current_ist_date())
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            conn.execute(
-                "INSERT OR REPLACE INTO event_outcomes VALUES (?,?,?,NULL,?,?,?)",
-                (event_name, today, nifty_change, intraday_range, note, format_ist_timestamp())
-            )
-            # Update rolling stats
-            conn.execute("""
-                INSERT INTO event_impact_stats
-                    (event_name, avg_nifty_move, avg_range,
-                     bearish_count, bullish_count, total_count, last_updated)
-                VALUES (?, ?, ?, ?, ?, 1, ?)
-                ON CONFLICT(event_name) DO UPDATE SET
-                    avg_nifty_move = (avg_nifty_move * total_count + excluded.avg_nifty_move)
-                                     / (total_count + 1),
-                    avg_range      = (avg_range * total_count + excluded.avg_range)
-                                     / (total_count + 1),
-                    bearish_count  = bearish_count + excluded.bearish_count,
-                    bullish_count  = bullish_count + excluded.bullish_count,
-                    total_count    = total_count + 1,
-                    last_updated   = excluded.last_updated
-            """, (
-                event_name,
-                abs(nifty_change), intraday_range,
-                1 if nifty_change < 0 else 0,
-                1 if nifty_change > 0 else 0,
-                format_ist_timestamp(),
-            ))
-            conn.commit()
-
-    def get_event_impact_stats(self, event_name: str) -> Optional[Dict]:
-        with sqlite3.connect(CALENDAR_DB) as conn:
-            row = conn.execute(
-                "SELECT * FROM event_impact_stats WHERE event_name=?",
-                (event_name,)
-            ).fetchone()
-        if row:
-            return {
-                "event":        row[0], "avg_move":   row[1],
-                "avg_range":    row[2], "bearish_pct": row[3] / max(row[5], 1) * 100,
-                "total_events": row[5],
-            }
-        return None
-
-    def format_upcoming_events(self) -> str:
-        events = self.get_upcoming_events(days=7)
-        if not events:
-            return "📅 No major events in next 7 days"
-        lines = ["📅 Upcoming Events (7 days):"]
-        for ev in events:
-            icon = {"HIGH": "🔴", "EXTREME": "🚨", "MEDIUM": "🟡", "HOLIDAY": "⛔"}.get(ev["impact"], "📌")
-            lines.append(f"  {icon} {ev['date']}: {ev['event']} ({ev['impact']})")
-        return "\n".join(lines)
-
-    # ── FETCH LIVE EVENTS FROM INVESTING.COM RSS ────────────
-
-    def refresh_from_web(self):
-        """Pull upcoming economic events from free RSS feeds."""
         try:
-            import feedparser
-            feed = feedparser.parse("https://in.investing.com/rss/market_overview_Fundamental_Analysis.rss")
-            today = get_current_ist_date()
-            with sqlite3.connect(CALENDAR_DB) as conn:
-                for entry in feed.entries[:20]:
-                    title = entry.get("title", "")
-                    if any(kw in title.upper() for kw in ["RBI", "CPI", "GDP", "INFLATION", "BUDGET", "FOMC"]):
-                        impact = "HIGH" if any(k in title.upper() for k in ["RBI", "BUDGET", "FOMC"]) else "MEDIUM"
-                        conn.execute(
-                            "INSERT OR IGNORE INTO events (date_ist, event_name, impact_level, source) "
-                            "VALUES (?,?,?,'rss')",
-                            (str(today), title[:100], impact)
-                        )
-                conn.commit()
-            logger.info(f"[{format_ist_timestamp()}] Calendar refreshed from RSS")
+            now_et = get_current_ist_time()
+            today_str = str(now_et.date())
+            events = self.get_today_events()
+
+            if not events:
+                # Check quad witch
+                if today_str in QUAD_WITCH_DATES:
+                    return -15.0, "QUAD_WITCH(extreme_noise)", True
+                return 0.0, "", True
+
+            # Evaluate all today's events and take the WORST (most restrictive)
+            worst_score = 0.0
+            worst_note  = ""
+            trading_ok  = True
+
+            for event in events:
+                status, adj, ok = event.get_status(now_et)
+                if not ok:
+                    trading_ok = False
+                if adj < worst_score:
+                    worst_score = adj
+                    worst_note  = f"{event.name}:{status}"
+                elif adj > 0 and worst_score == 0:
+                    worst_score = adj
+                    worst_note  = f"{event.name}:{status}(post_release)"
+
+            return worst_score, worst_note, trading_ok
+
         except Exception as e:
-            logger.debug(f"Calendar RSS refresh failed: {e}")
+            logger.debug(f"EconomicCalendar.get_calendar_score_adjustment error: {e}")
+            return 0.0, "", True
+
+    def is_high_impact_window(self, buffer_minutes: int = 30) -> bool:
+        """True if within buffer_minutes of a high-impact release."""
+        _, _, trading_ok = self.get_calendar_score_adjustment()
+        return not trading_ok
+
+    def days_to_next_event(self) -> Tuple[str, int]:
+        """(event_name, days_away) for the next upcoming event."""
+        try:
+            today = get_current_ist_time().date()
+            nearest_date = None
+            nearest_event = ""
+            nearest_days = 999
+
+            for date_dict, template_key in DATE_TO_EVENT:
+                for date_str in sorted(date_dict.keys()):
+                    d = date.fromisoformat(date_str)
+                    if d >= today:
+                        days = (d - today).days
+                        if days < nearest_days:
+                            nearest_days = days
+                            nearest_date = date_str
+                            nearest_event = date_dict[date_str]
+                        break  # sorted, so first future date is nearest for this event type
+            return nearest_event or "None", nearest_days
+        except Exception:
+            return "Unknown", 999
+
+    def format_telegram_brief(self) -> str:
+        """Calendar section for morning Telegram message."""
+        try:
+            events = self.get_today_events()
+            today_str = str(get_current_ist_time().date())
+            is_quad = today_str in QUAD_WITCH_DATES
+
+            lines = ["📅 ECONOMIC CALENDAR:"]
+
+            if is_quad:
+                lines.append("  ⚠️ QUAD WITCH DAY — extreme volume/volatility")
+
+            if not events and not is_quad:
+                lines.append("  ✅ No high-impact events today — clean tape")
+            else:
+                for event in events:
+                    impact_emoji = {
+                        "EXTREME": "🚨", "HIGH": "⚠️",
+                        "MEDIUM": "📊", "LOW": "ℹ️",
+                    }.get(event.impact, "📊")
+                    lines.append(
+                        f"  {impact_emoji} {event.name} @ {event.release_time_et} ET"
+                        f" ({event.impact} impact)"
+                    )
+                lines.append("")
+                lines.append("  ⏸️ New entries BLOCKED before release")
+                lines.append("  ✅ Trading resumes after release + 15 min")
+
+            next_event, next_days = self.days_to_next_event()
+            if next_days > 0:
+                lines.append(f"\n  📆 Next: {next_event} in {next_days} day(s)")
+
+            return "\n".join(lines)
+        except Exception as e:
+            return f"⚠️ Calendar unavailable: {e}"
 
 
+# ─────────────────────────────────────────────────────────────────────────────
 # Singleton
-_calendar: Optional[EconomicCalendar] = None
+# ─────────────────────────────────────────────────────────────────────────────
+_cal_instance: Optional[EconomicCalendar] = None
 
-def get_calendar() -> EconomicCalendar:
-    global _calendar
-    if _calendar is None:
-        _calendar = EconomicCalendar()
-    return _calendar
+
+def get_economic_calendar() -> EconomicCalendar:
+    global _cal_instance
+    if _cal_instance is None:
+        _cal_instance = EconomicCalendar()
+    return _cal_instance
