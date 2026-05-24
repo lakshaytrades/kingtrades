@@ -17,7 +17,7 @@ Features:
 
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, time
 from typing import Optional, Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
@@ -440,7 +440,9 @@ class RiskManager:
 
         loss_arr = np.array(losses)
         var_95   = float(np.percentile(-loss_arr, 95))
-        cvar_95  = float(np.mean(-loss_arr[-loss_arr >= var_95])) if var_95 > 0 else 0
+        # Use boolean mask correctly: loss_arr[mask] not loss_arr[bool_array as index]
+        _neg_loss = -loss_arr
+        cvar_95  = float(np.mean(_neg_loss[_neg_loss >= var_95])) if var_95 > 0 else 0
 
         return {
             "var_95":   round(max(var_95, 0), 2),
@@ -636,7 +638,10 @@ class RiskManager:
         if not sector_check["allowed"]:
             return sector_check
 
-        # 9. Session gate — no new entries after 3:00 PM IST
+        # 9. Hard time gate — no new entries at or after 3:30 PM ET regardless of session mult
+        _now_et = get_current_ist_time()  # aliased to ET
+        if _now_et.time() >= time(15, 30):
+            return {"allowed": False, "reason": "Hard time gate: no new entries after 3:30 PM ET"}
         sess_mult, session = self._get_session_multiplier()
         if sess_mult == 0.0:
             return {"allowed": False, "reason": f"Session gate: {session}"}
@@ -883,8 +888,10 @@ class RiskManager:
                         "exit_qty": position.t2_qty + position.runner_qty,
                         "reason": f"Short T2 hit ${position.target_2:.2f} — full exit (grade C)"
                     }
-                # Runner SL starts at T1 price (profit locked from T1 level)
-                runner_sl = min(position.target_1, current_price + runner_trail_dist)
+                # Runner SL starts at T1 price (profit locked from T1 level).
+                # For SHORT: T1 is below entry; runner_sl is a ceiling ABOVE current_price.
+                # Use max() so SL is at LEAST as high as T1 (locks T1 profit).
+                runner_sl = max(position.target_1, current_price + runner_trail_dist)
                 position.trailing_active = True
                 position.trailing_stop   = runner_sl
                 return {
@@ -946,13 +953,22 @@ class RiskManager:
         """
         from config import PARTIAL_EXIT_T1_PCT, PARTIAL_EXIT_T2_PCT, RUNNER_PCT
         qty = position.quantity
+        # Small position guard: qty=1 exits at T1 entirely; qty=2 splits 1+1
+        if qty <= 1:
+            position.t1_qty     = qty
+            position.t2_qty     = 0
+            position.runner_qty = 0
+            return position
+        if qty == 2:
+            position.t1_qty     = 1
+            position.t2_qty     = 1
+            position.runner_qty = 0
+            return position
         t1_qty = max(1, round(qty * PARTIAL_EXIT_T1_PCT / 100))
-        # Ensure t1_qty never exceeds qty
-        t1_qty = min(t1_qty, qty)
-        t2_qty = max(1, round(qty * PARTIAL_EXIT_T2_PCT / 100))
-        # Ensure t1 + t2 never exceeds total qty (small positions)
-        if t1_qty + t2_qty > qty:
-            t2_qty = max(0, qty - t1_qty)
+        t1_qty = min(t1_qty, qty - 1)  # must leave at least 1 for remainder
+        t2_qty = max(0, round(qty * PARTIAL_EXIT_T2_PCT / 100))
+        if t1_qty + t2_qty >= qty:
+            t2_qty = max(0, qty - t1_qty - 1)  # always leave 1 for runner
         runner_qty = max(0, qty - t1_qty - t2_qty)
         position.t1_qty     = t1_qty
         position.t2_qty     = t2_qty
@@ -1170,11 +1186,10 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Pause only after a large single loss (≥3% of daily capital), not every normal SL hit.
-            # At 1.5% risk per trade, a 1× stop-out = 1.5% loss — do NOT pause on that.
-            # Only pause if the loss is >= 2× the per-trade risk (i.e. slippage or bad fill).
+            # Pause only after a large LOSS (≥3% of daily capital), not wins.
+            # abs() was previously used which also paused on big profitable trades — wrong.
             _pause_floor = self.state.daily_capital * 0.03
-            if abs(pnl) >= max(_pause_floor, 25.0):
+            if pnl < 0 and abs(pnl) >= max(_pause_floor, 25.0):
                 self._pause_trading(
                     f"large loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
                     minutes=15

@@ -441,7 +441,7 @@ class HighAccuracyFilter:
         # rejects anything below min_score.  Grade "B" still exists in the
         # dataclass default so callers don't crash on legacy paths, but we never
         # assign it from this filter — that was the bug that blocked all trades.
-        _ap_thresh = max(self.min_score + 8, 88)    # A+ = min_score+8 or 88
+        _ap_thresh = 88.0    # A+ always at 88 — min_score+8 breaks when min_score=90
 
         if result.final_score >= _ap_thresh:
             result.quality_grade   = "A+"

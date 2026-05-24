@@ -47,7 +47,7 @@ from zoneinfo import ZoneInfo
 from utils import format_ist_timestamp, get_current_ist_time, format_currency
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
 # ─── Directory for persistence ────────────────────────────────────────────────
 _DATA_DIR = Path("data")
@@ -174,7 +174,7 @@ class DailyProfitEngine:
 
       # Before each trade:
       deployment = engine.get_capital_deployment(quality_grade="A+", signal_score=88)
-      capital_to_use = deployment.capital_rupees
+      capital_to_use = deployment.capital_usd
 
       # After T1 exit:
       engine.record_partial_exit(symbol, profit)
@@ -341,14 +341,14 @@ class DailyProfitEngine:
         Accounts for current mode, compounding bonus, and win streak.
 
         Returns DeploymentPlan with:
-          - capital_rupees: how much $ to allocate from account balance
+          - capital_usd: how much $ to allocate from account balance
           - effective_buying_power: capital (no leverage)
           - blocked: True if mode says STOP trading
           - reason: explanation
         """
         if self.state.mode == TradingMode.STOP:
             return DeploymentPlan(
-                capital_rupees=0, effective_buying_power=0,
+                capital_usd=0, effective_buying_power=0,
                 blocked=True, reason=TradingMode.DESCRIPTIONS[TradingMode.STOP]
             )
 
@@ -366,7 +366,7 @@ class DailyProfitEngine:
         grade_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
         if grade_rank.get(quality_grade, 0) < grade_rank.get(min_grade, 0):
             return DeploymentPlan(
-                capital_rupees=0, effective_buying_power=0,
+                capital_usd=0, effective_buying_power=0,
                 blocked=True,
                 reason=f"Mode {self.state.mode}: requires {min_grade}+ grade"
             )
@@ -397,7 +397,7 @@ class DailyProfitEngine:
         buying_power = capital_usd * self.cfg.mis_leverage
 
         return DeploymentPlan(
-            capital_rupees=round(capital_usd, 2),
+            capital_usd=round(capital_usd, 2),
             effective_buying_power=round(buying_power, 2),
             blocked=False,
             base_pct=base_pct,
@@ -633,8 +633,8 @@ class DailyProfitEngine:
 
 @dataclass
 class DeploymentPlan:
-    capital_rupees: float        # ₹ to allocate from account balance
-    effective_buying_power: float  # capital × 5x MIS leverage
+    capital_usd: float           # $ to allocate from account balance
+    effective_buying_power: float  # capital × leverage
     blocked: bool = False
     reason: str = ""
     base_pct: float = 0.0
@@ -645,36 +645,48 @@ class DeploymentPlan:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Expanded NSE Watchlist — Top 50 liquid momentum stocks
+# US Equity Watchlist — Top liquid NYSE/NASDAQ momentum stocks
 # ─────────────────────────────────────────────────────────────────────────────
 
-NSE_TOP50_WATCHLIST = [
-    # NIFTY 50 / Large Cap — institutional liquidity guaranteed
-    "RELIANCE", "TCS", "HDFCBANK", "ICICIBANK", "INFY",
-    "SBIN", "BHARTIARTL", "ITC", "KOTAKBANK", "LT",
-    "WIPRO", "HCLTECH", "AXISBANK", "MARUTI", "SUNPHARMA",
-    "TATAMOTORS", "BAJFINANCE", "ADANIENT", "ULTRACEMCO", "TITAN",
-    "NTPC", "POWERGRID", "ONGC", "BPCL", "IOC",
-    "DRREDDY", "CIPLA", "DIVISLAB", "APOLLOHOSP", "HINDUNILVR",
+US_TOP50_WATCHLIST = [
+    # Mega-cap tech — deepest liquidity, always tradeable
+    "AAPL", "MSFT", "NVDA", "GOOGL", "AMZN", "META", "TSLA",
+    "AVGO", "ORCL", "ADBE",
 
-    # High-Beta NSE intraday favorites (best for momentum)
-    "INDUSINDBK", "BANDHANBNK", "FEDERALBNK", "PNB", "BANKBARODA",
-    "TATASTEEL", "JSWSTEEL", "HINDALCO", "SAIL", "NMDC",
-    "ADANIPORTS", "ADANIGREEN", "TATAPOWER", "GAIL", "COALINDIA",
-    "ZOMATO", "PAYTM", "NYKAA", "DMART", "IRCTC",
+    # High-beta semis and AI plays — best for momentum
+    "AMD", "QCOM", "MU", "SMCI", "ARM", "AMAT", "LRCX", "KLAC",
 
-    # Mid-cap movers with good liquidity
-    "MUTHOOTFIN", "CHOLAFIN", "BAJAJFINSV", "SBICARD", "HDFCLIFE",
+    # Finance — liquid, mean-reverting breakouts
+    "JPM", "BAC", "GS", "MS", "V", "MA", "PYPL", "SQ",
+
+    # Energy & commodities — high volatility days
+    "XOM", "CVX", "OXY", "SLB", "HAL",
+
+    # Healthcare & biotech movers
+    "UNH", "LLY", "JNJ", "ABBV", "MRK",
+
+    # Consumer / retail momentum
+    "AMZN", "COST", "WMT", "TGT", "NKE",
+
+    # High-beta growth / crypto-adjacent
+    "COIN", "MARA", "RIOT", "MSTR", "HOOD",
+
+    # ETFs for index plays and SPY surrogate
+    "SPY", "QQQ", "IWM", "SOXL",
 ]
 
 # Daily bias watchlist (top 15 for concentrated bets on best day)
-NSE_DAILY_BIAS_WATCHLIST = [
-    "HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK",     # Banking — highest liquidity
-    "RELIANCE", "BHARTIARTL", "ITC",                  # Large cap momentum
-    "TATAMOTORS", "BAJFINANCE", "INDUSINDBK",          # High beta
-    "INFY", "TCS", "WIPRO",                            # IT sector
-    "ADANIENT", "TITAN",                               # Volatile movers
+US_DAILY_BIAS_WATCHLIST = [
+    "NVDA", "AMD", "TSLA", "AAPL", "MSFT",    # Highest intraday volume + beta
+    "META", "GOOGL", "AMZN",                    # Mega-cap momentum
+    "COIN", "MARA",                              # High-beta crypto-adjacent
+    "SPY", "QQQ",                               # Index ETFs for macro trend
+    "JPM", "BAC", "GS",                         # Finance — react to macro
 ]
+
+# Legacy aliases so any code still referencing the old NSE names doesn't crash
+NSE_TOP50_WATCHLIST = US_TOP50_WATCHLIST
+NSE_DAILY_BIAS_WATCHLIST = US_DAILY_BIAS_WATCHLIST
 
 
 # ─────────────────────────────────────────────────────────────────────────────

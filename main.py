@@ -985,7 +985,7 @@ class TradingBot:
                     # Waiting for market
                     mins = minutes_until_market_open()
                     if mins > 0:
-                        sleep_secs = min(30, max(5, mins * 30))
+                        sleep_secs = min(300, max(10, mins * 60))  # up to 5 min when far from open
                         logger.debug(
                             f"[{format_ist_timestamp()}] Market closed. "
                             f"Opens in {mins:.0f} min. Sleeping {sleep_secs:.0f}s..."
@@ -1248,7 +1248,7 @@ class TradingBot:
                     regime_obj = get_market_regime()
                     current_regime = getattr(regime_obj, "current_regime", "UNKNOWN")
                     if current_regime in ("RANGING", "LOW_VOLATILITY", "MIDDAY_CHOP", "HIGH_VOLATILITY"):
-                        mr_signals = mr_engine.scan(watchlist[:10], self.fetcher, current_regime)
+                        mr_signals = mr_engine.scan(watchlist[:30], self.fetcher, current_regime)
                         if mr_signals:
                             # Convert MeanReversionSignal → TradeSignal format
                             from signal_generator import TradeSignal
@@ -1269,6 +1269,11 @@ class TradingBot:
                     logger.debug(f"Mean-reversion scan error: {e}")
 
             eff_min_score = getattr(self.signal_gen, "min_score", dow_min)
+            # Apply DOW size multiplier to every signal before filtering
+            _dow_mult = config.DOW_SIZE_MULTIPLIERS.get(now_ist.weekday(), 1.0)
+            if _dow_mult != 1.0:
+                for _s in signals:
+                    _s.size_multiplier = round(_s.size_multiplier * _dow_mult, 3)
             before_filter = len(signals)
             signals = [s for s in signals if s.signal_score >= eff_min_score]
             if self._weekly_mode == "PROTECT":
@@ -1417,6 +1422,18 @@ class TradingBot:
                     scalp_signals = self.scalping_engine.scan(
                         watchlist, self.fetcher, nifty_change_pct=spy_chg
                     )
+                    # Force-close Alpaca positions for scalps that expired (>15 min held)
+                    for _exp_sym in self.scalping_engine.expired_symbols:
+                        try:
+                            self.executor.close_position(_exp_sym)
+                            logger.info(
+                                f"[{format_ist_timestamp()}] SCALP TIME-EXIT: {_exp_sym} "
+                                "force-closed (max hold exceeded)"
+                            )
+                        except Exception as _ce:
+                            logger.warning(
+                                f"[{format_ist_timestamp()}] SCALP TIME-EXIT failed {_exp_sym}: {_ce}"
+                            )
                     for ss in scalp_signals:
                         if self.alerter:
                             self.alerter.send_text(
@@ -1490,10 +1507,10 @@ class TradingBot:
                             )
                             continue
                         # Override size_multiplier based on engine's capital plan
-                        # Translate capital_rupees → size multiplier relative to default
+                        # Translate capital_usd → size multiplier relative to default
                         if self.profit_engine._available_balance > 0:
                             default_pct = config.MAX_CAPITAL_PER_TRADE_PCT / 100
-                            engine_pct  = deployment.capital_rupees / max(
+                            engine_pct  = deployment.capital_usd / max(
                                 self.profit_engine._available_balance, 1
                             )
                             signal.size_multiplier = round(
@@ -1667,13 +1684,13 @@ class TradingBot:
                         except Exception as _oe:
                             logger.debug(f"Options piggyback failed for {signal.symbol}: {_oe}")
 
-            # ── Standalone UOA scan (every 15 min) ────────────────────────
-            if self.options_scalper:
+            # ── Standalone UOA scan (every 15 min — gated) ───────────────
+            if self.options_scalper and now_ist.minute % 15 < 1:
                 try:
                     bal   = self.fetcher.get_account_balance()
                     avail = bal.get("available", 0)
                     uoa_signals = self.options_scalper.scan_unusual_activity(
-                        symbols           = list(watchlist) if 'watchlist' in dir() else [],
+                        symbols           = list(watchlist),
                         available_capital = avail,
                     )
                     if uoa_signals:
@@ -3386,8 +3403,12 @@ def main():
     logger.info("=" * 60)
 
     bot = TradingBot()
-    if not bot.initialize():
-        logger.critical("Bot initialization failed. Exiting.")
+    try:
+        if not bot.initialize():
+            logger.critical("Bot initialization failed. Exiting.")
+            sys.exit(1)
+    except Exception as _init_exc:
+        logger.critical(f"Bot initialization raised exception: {_init_exc}", exc_info=True)
         sys.exit(1)
 
     # Handle system signals gracefully

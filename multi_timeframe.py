@@ -396,7 +396,7 @@ class MultiTimeframeAnalyzer:
 
         last_close = float(df_5m["close"].iloc[-1])
         last_swing_high = max(highs, key=lambda x: x.index).price
-        last_swing_low  = min(lows,  key=lambda x: x.index).price
+        last_swing_low  = max(lows,  key=lambda x: x.index).price  # most recent low, not oldest
 
         # Bullish BoS: close above last significant swing high
         if last_close > last_swing_high * 1.001:

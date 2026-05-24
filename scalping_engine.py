@@ -49,6 +49,8 @@ class ScalpingEngine:
     def __init__(self):
         # symbol -> entry_time for tracking active scalps
         self._active_scalps: Dict[str, datetime] = {}
+        # Symbols auto-expired in the most recent scan — caller (main.py) should force-close these
+        self.expired_symbols: List[str] = []
 
     def is_scalp_time(self) -> bool:
         from datetime import datetime as _dt
@@ -298,7 +300,7 @@ class ScalpingEngine:
     def active_scalp_count(self) -> int:
         return len(self._active_scalps)
 
-    def _expire_stale_scalps(self) -> None:
+    def _expire_stale_scalps(self) -> List[str]:
         now_et = datetime.now(ET)
         stale = [
             sym for sym, entry_time in self._active_scalps.items()
@@ -311,6 +313,8 @@ class ScalpingEngine:
                 f"(>{self.MAX_HOLD_MINUTES}min)"
             )
             del self._active_scalps[sym]
+        self.expired_symbols = stale   # caller (main.py) should force-close these Alpaca positions
+        return stale
 
     def _fetch_5m_data(self, symbol: str, data_fetcher) -> Optional[pd.DataFrame]:
         if data_fetcher is not None and hasattr(data_fetcher, "get_ohlcv"):
@@ -412,13 +416,19 @@ class ScalpingEngine:
             from signal_generator import TradeSignal
             from pattern_recognition import IndicatorSet
             ind = IndicatorSet(rsi=sig.rsi, volume_ratio=sig.volume_ratio)
+            # T1 = 0.4% (2:1), T2 = 0.6% (3:1) — different targets so exits don't fire simultaneously
+            t2_pct = self.SCALP_TARGET_PCT * 1.5 / 100
+            if sig.direction == "LONG":
+                target_2 = round(sig.entry_price * (1 + t2_pct), 2)
+            else:
+                target_2 = round(sig.entry_price * (1 - t2_pct), 2)
             ts = TradeSignal(
                 symbol=sig.symbol,
                 direction=sig.direction,
                 entry_price=sig.entry_price,
                 stop_loss=sig.stop_loss,
                 target_1=sig.target,
-                target_2=sig.target,
+                target_2=target_2,
                 signal_score=sig.confidence,
                 patterns=["SCALP_MOMENTUM"],
                 indicators=ind,

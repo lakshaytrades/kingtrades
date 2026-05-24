@@ -1,5 +1,5 @@
 from dataclasses import dataclass
-from datetime import datetime, time, date
+from datetime import datetime, time, date, timedelta
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
 import logging
@@ -43,8 +43,8 @@ class ORBStrategy:
     VALID_UNTIL_MINUTES = 30
 
     def __init__(self):
-        # symbol -> (ORBSetup, date) — prevents recalculating the same symbol twice per day
-        self._cache: Dict[str, Tuple[ORBSetup, date]] = {}
+        # symbol -> (ORBSetup, date, formed_datetime) — date check + VALID_UNTIL_MINUTES expiry
+        self._cache: Dict[str, Tuple[ORBSetup, date, datetime]] = {}
 
     def is_orb_time(self) -> bool:
         from datetime import datetime as _dt
@@ -77,9 +77,13 @@ class ORBStrategy:
     def analyze_symbol(self, symbol: str, data_fetcher) -> Optional[ORBSetup]:
         from datetime import datetime as _dt
         today = _dt.now(ET).date()
-        cached_setup, cached_date = self._cache.get(symbol, (None, None))
-        if cached_setup is not None and cached_date == today:
-            return cached_setup
+        now_et = _dt.now(ET)
+        cached_setup, cached_date, cached_time = self._cache.get(symbol, (None, None, None))
+        if cached_setup is not None and cached_date == today and cached_time is not None:
+            age_minutes = (now_et - cached_time).total_seconds() / 60
+            if age_minutes <= self.VALID_UNTIL_MINUTES:
+                return cached_setup
+            # expired — fall through and recompute
 
         df = self._fetch_5m_data(symbol, data_fetcher)
         if df is None or len(df) < self.OR_CANDLES + 1:
@@ -108,7 +112,7 @@ class ORBStrategy:
                 candles_used=self.OR_CANDLES, formed_at=format_ist_timestamp(),
                 is_valid=False,
             )
-            self._cache[symbol] = (s, today)
+            self._cache[symbol] = (s, today, now_et)
             return s
 
         if or_width_pct > self.MAX_OR_WIDTH_PCT:
@@ -146,18 +150,18 @@ class ORBStrategy:
                 candles_used=self.OR_CANDLES, formed_at=format_ist_timestamp(),
                 is_valid=True,
             )
-            self._cache[symbol] = (setup, today)
+            self._cache[symbol] = (setup, today, now_et)
             return setup
 
         sl_dist: float
         if direction == "LONG":
-            entry_price = breakout_price
-            stop_loss   = or_low
+            entry_price = round(or_high + 0.01, 2)       # limit just above OR high — not breakout close (inflated)
+            stop_loss   = round(or_low - 0.02, 2)        # 2-cent buffer below OR low — stop-hunt protection
             sl_dist     = entry_price - stop_loss
             target      = round(entry_price + self.RR_RATIO * sl_dist, 2)
         else:
-            entry_price = breakout_price
-            stop_loss   = or_high
+            entry_price = round(or_low - 0.01, 2)        # limit just below OR low
+            stop_loss   = round(or_high + 0.02, 2)       # 2-cent buffer above OR high
             sl_dist     = stop_loss - entry_price
             target      = round(entry_price - self.RR_RATIO * sl_dist, 2)
 
@@ -184,7 +188,7 @@ class ORBStrategy:
             formed_at=format_ist_timestamp(),
             is_valid=True,
         )
-        self._cache[symbol] = (setup, today)
+        self._cache[symbol] = (setup, today, now_et)
         logger.info(
             f"[{format_ist_timestamp()}] ORB {direction} {symbol} | "
             f"OR: ${or_low:.2f}–${or_high:.2f} ({or_width_pct:.2f}%) | "
@@ -286,17 +290,22 @@ class ORBStrategy:
         if post_or.empty:
             return "NONE", 0.0, 0.0
 
-        # Use the most recent post-OR candle (the one that may have confirmed)
-        breakout_candle = post_or.iloc[-1]
-        close_price  = float(breakout_candle["close"])
-        candle_vol   = float(breakout_candle.get("volume", 0))
+        # Scan ALL post-OR candles — return the FIRST confirmed breakout candle.
+        # Using only the last candle missed early breakouts and returned stale data.
+        for _, candle in post_or.iterrows():
+            close_price  = float(candle["close"])
+            candle_vol   = float(candle.get("volume", 0))
+            volume_ratio = candle_vol / avg_volume if avg_volume > 0 else 0.0
+
+            if close_price > or_high and volume_ratio >= self.MIN_VOLUME_RATIO:
+                return "LONG", close_price, volume_ratio
+            if close_price < or_low and volume_ratio >= self.MIN_VOLUME_RATIO:
+                return "SHORT", close_price, volume_ratio
+
+        last_candle  = post_or.iloc[-1]
+        close_price  = float(last_candle["close"])
+        candle_vol   = float(last_candle.get("volume", 0))
         volume_ratio = candle_vol / avg_volume if avg_volume > 0 else 0.0
-
-        if close_price > or_high and volume_ratio >= self.MIN_VOLUME_RATIO:
-            return "LONG", close_price, volume_ratio
-        if close_price < or_low and volume_ratio >= self.MIN_VOLUME_RATIO:
-            return "SHORT", close_price, volume_ratio
-
         return "NONE", close_price, volume_ratio
 
     def _fetch_5m_data(self, symbol: str, data_fetcher) -> Optional[pd.DataFrame]:
@@ -328,7 +337,9 @@ class ORBStrategy:
                 if df.index.tz is None:
                     df.index = df.index.tz_localize("UTC")
                 df.index = df.index.tz_convert(ET)
-                filtered = df[df.index.date == today_et]
+                market_open = _dt(today_et.year, today_et.month, today_et.day, 9, 30, tzinfo=ET)
+                # Exclude pre-market — OR range must be built from regular-session candles only
+                filtered = df[(df.index.date == today_et) & (df.index >= market_open)]
                 return filtered if not filtered.empty else None
             return df
         except Exception as e:

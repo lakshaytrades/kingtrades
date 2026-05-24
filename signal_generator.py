@@ -84,7 +84,7 @@ except ImportError:
     _REGIME_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")   # server is UTC; all time checks use ET
 
 
 @dataclass
@@ -145,8 +145,8 @@ class SignalGenerator:
         self,
         data_fetcher: GrowwDataFetcher,
         news_filter=None,
-        min_signal_score: float = 90.0,
-        high_confidence_score: float = 80.0,
+        min_signal_score: float = config.MIN_SIGNAL_SCORE,
+        high_confidence_score: float = getattr(config, "HIGH_CONFIDENCE_SCORE", 80.0),
     ):
         self.fetcher = data_fetcher
         self.news_filter = news_filter
@@ -332,7 +332,7 @@ class SignalGenerator:
                 if getattr(p, "direction", "") == "SHORT" and
                 any(k in getattr(p, "name", "") for k in _harm_keywords)
             )
-            inst_ctx["harmonic_score"] = min(harm_long - harm_short, 50)  # clip to ±50
+            inst_ctx["harmonic_score"] = max(-50, min(harm_long - harm_short, 50))  # clip ±50
 
             # 5c. Regime block — skip signal if regime is AVOID
             if inst_ctx.get("regime_block", False):
@@ -495,15 +495,15 @@ class SignalGenerator:
             pattern_scores = [getattr(p, "confidence", 70.0) for p in pattern_objs]
 
             ltp_now   = float(df_5m.iloc[-1]["close"])
-            above_vwap = ltp_now >= ind.vwap if ind.vwap and ind.vwap > 0 else True
+            above_vwap = (ltp_now >= ind.vwap) if (ind.vwap and ind.vwap > 0) else None  # None = no VWAP data, not bullish
 
             stock_quote      = self.fetcher.get_quote(symbol) or {}
             stock_change_pct = stock_quote.get("change_pct", 0.0)
 
             # Gate 13: SPY direction — determine bullish/bearish state
             spy_bullish: Optional[bool] = None
-            if self._nifty_change_pct != 0.0:
-                spy_bullish = self._nifty_change_pct >= 0.0
+            if abs(self._nifty_change_pct) >= 0.1:   # neutral band: ignore ±0.1% moves
+                spy_bullish = self._nifty_change_pct > 0.0
 
             filter_result = self.ha_filter.evaluate(
                 signal_score     = ai_score,
@@ -880,7 +880,7 @@ class SignalGenerator:
                     ltp = float(df_5m["close"].iloc[-1]) if "close" in df_5m.columns else 0
                     if ltp > 0:
                         # We'll pass direction="LONG" to get generic score; caller adjusts
-                        vp_ctx = self._vp.get_signal_context(vp_result, ltp, "LONG")
+                        vp_ctx = self._vp.get_signal_context(vp_result, ltp, direction)  # use actual direction
                         ctx["vp_score"]  = vp_ctx.get("score_adjustment", 0.0)
                         ctx["vp_notes"]  = vp_ctx.get("notes", [])
                         ctx["vp_levels"] = {
@@ -1130,11 +1130,9 @@ class SignalGenerator:
 
     def _minutes_since_open(self) -> float:
         """Minutes elapsed since 9:30 AM ET market open (0.0 before open)."""
-        from datetime import datetime as _dt
-        from zoneinfo import ZoneInfo as _ZI
         now_et = get_current_ist_time()  # alias returns ET
-        ET = _ZI("America/New_York")
-        market_open = _dt(now_et.year, now_et.month, now_et.day, 9, 30, 0, tzinfo=ET)
+        # replace() preserves DST fold state; avoids ambiguity at DST transitions
+        market_open = now_et.replace(hour=9, minute=30, second=0, microsecond=0)
         return max(0.0, (now_et - market_open).total_seconds() / 60)
 
     # --------------------------------------------------------
@@ -1415,16 +1413,17 @@ class SignalGenerator:
                 score += 2
 
         # ── Time of day filter (US ET market hours) ──────────
-        now_et   = datetime.now(ZoneInfo("America/New_York"))
+        now_et   = get_current_ist_time()   # aliased to ET
         time_val = now_et.hour + now_et.minute / 60
-        if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop — mild penalty
-            score -= 3
+        # Check EOD penalty FIRST — must never be shadowed by Power Hour branch
+        if time_val >= 15.75:           # After 3:45 PM ET: NO new positions
+            score -= 12
+        elif 14.5 <= time_val < 15.75:  # 2:30–3:45 PM ET: Power Hour (pre-EOD)
+            score += 6
         elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone
             score += 8
-        elif 14.5 <= time_val <= 16.0:  # 2:30–4:00 PM ET: Power Hour
-            score += 6
-        elif time_val >= 15.75:         # After 3:45 PM ET: avoid new positions
-            score -= 12
+        elif 11.5 <= time_val < 14.5:   # 11:30 AM–2:30 PM ET: midday chop
+            score -= 3
 
         # ── [NEW] Option Chain direction bias ─────────────
         oc_score = ctx.get("oc_score", 0.0)
