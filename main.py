@@ -771,7 +771,7 @@ class TradingBot:
             _cal = get_economic_calendar()
             _cal_brief = _cal.format_telegram_brief()
             logger.info(f"[{format_ist_timestamp()}] Calendar: {_cal_brief[:100]}")
-            if self.alerter and "BLOCKED" in _cal_brief or "event" in _cal_brief.lower():
+            if self.alerter and ("BLOCKED" in _cal_brief or "event" in _cal_brief.lower()):
                 self.alerter.send_text(_cal_brief)
         except Exception as _cal_e:
             logger.debug(f"Economic calendar morning check failed: {_cal_e}")
@@ -1264,6 +1264,9 @@ class TradingBot:
             # Merge movers into the front of the scan queue (highest priority)
             combined_watchlist = self._mover_watchlist + [s for s in watchlist if s not in self._mover_watchlist]
 
+            if not self.signal_gen:
+                return
+
             # Expose current open positions to signal_gen for Gate 14 correlation check
             self.signal_gen._open_position_symbols = list(self.risk_manager.state.positions.keys())
 
@@ -1418,9 +1421,9 @@ class TradingBot:
                             f"buy targets — immediate scan: {new_buys}"
                         )
                         # Scan only the hot block-deal stocks right now for signals
-                        _bd_signals = self.signal_gen.scan_watchlist(
+                        _bd_signals = (self.signal_gen.scan_watchlist(
                             symbols=new_buys, max_signals=len(new_buys)
-                        )
+                        ) if self.signal_gen else [])
                         for _bd_sig in _bd_signals:
                             _bd_sig.rationale = "[BLOCK-DEAL] " + _bd_sig.rationale
                             _bd_sig.size_multiplier = min(
@@ -1697,7 +1700,7 @@ class TradingBot:
                     try:
                         from risk_manager import Position
                         fill_price = result.fill_price if result.fill_price > 0 else signal.entry_price
-                        fill_qty   = result.quantity   if result.quantity   > 0 else getattr(signal, "quantity", 1)
+                        fill_qty   = result.quantity   if result.quantity   > 0 else max(getattr(signal, "quantity", 0), 1)
                         position = Position(
                             symbol            = signal.symbol,
                             direction         = signal.direction,
@@ -1822,7 +1825,9 @@ class TradingBot:
                         from datetime import datetime as _dt2
                         if isinstance(entry_time, str):
                             try:
-                                entry_dt = _dt2.fromisoformat(entry_time).replace(tzinfo=ET)
+                                entry_dt = _dt2.fromisoformat(
+                                    entry_time.replace(" ET", "").strip()
+                                ).replace(tzinfo=ET)
                             except Exception:
                                 entry_dt = None
                         else:

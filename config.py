@@ -389,6 +389,11 @@ def validate_config() -> list:
             "CRITICAL: LIVE_TRADING_ENABLED=True but ALPACA_BASE_URL points to paper endpoint. "
             "Set ALPACA_BASE_URL=https://api.alpaca.markets for real trading."
         )
+    if LIVE_TRADING_ENABLED and os.getenv("ALPACA_PAPER", "true").lower() != "false":
+        issues.append(
+            "CRITICAL: LIVE_TRADING_ENABLED=True but ALPACA_PAPER is not 'false'. "
+            "Auth client will route to paper endpoint. Add ALPACA_PAPER=false to .env."
+        )
     return issues
 
 

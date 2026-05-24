@@ -81,7 +81,7 @@ class Position:
 
     @property
     def pnl_pct(self) -> float:
-        if self.entry_price == 0:
+        if self.entry_price == 0 or self.quantity == 0:
             return 0
         return (self.pnl / (self.entry_price * self.quantity)) * 100
 
