@@ -1238,10 +1238,15 @@ class SignalGenerator:
         ctx   = institutional_ctx or {}
 
         # ── Timeframe pattern scores ──────────────────────
+        # When 15m/1h data is unavailable (fetcher returned nothing) treat as neutral (50)
+        # so the 5m pattern signal carries its full weight rather than being discarded.
+        # Missing data ≠ opposing data — neutral fallback avoids the 40%-weight penalty.
         key = "long" if direction == "LONG" else "short"
+        _s15  = score_15m.get(key, 0) if score_15m else 50
+        _s1h  = score_1h.get(key, 0)  if score_1h  else 50
         score += score_5m.get(key, 0) * 0.40
-        score += score_15m.get(key, 0) * 0.30 if score_15m else 0
-        score += score_1h.get(key, 0) * 0.20 if score_1h else 0
+        score += _s15 * 0.30
+        score += _s1h * 0.20
 
         # ── MTF alignment bonus ───────────────────────────
         if alignment.get("full_alignment"):
@@ -1284,6 +1289,32 @@ class SignalGenerator:
             score += 8
         elif ind.volume_ratio >= 1.5:
             score += 4
+
+        # ── Multi-indicator confluence bonus ─────────────────────────────────
+        # 4+ indicators simultaneously aligned = institutional-grade confirmation;
+        # this fires independently of pattern detection so strong-indicator / no-pattern
+        # setups (common at opening drive) are scored appropriately.
+        _conf_count = 0
+        if direction == "LONG":
+            if ind.rsi and 30 < ind.rsi < 65:                      _conf_count += 1
+            if ind.macd_hist and ind.macd_hist > 0:                 _conf_count += 1
+            if ind.ema9 and ind.ema21 and ind.ema9 > ind.ema21:     _conf_count += 1
+            if ind.supertrend_dir == 1:                              _conf_count += 1
+            if ind.adx and ind.adx > 20:                            _conf_count += 1
+            if ind.volume_ratio and ind.volume_ratio >= 1.5:        _conf_count += 1
+        else:
+            if ind.rsi and 35 < ind.rsi < 70:                      _conf_count += 1
+            if ind.macd_hist and ind.macd_hist < 0:                 _conf_count += 1
+            if ind.ema9 and ind.ema21 and ind.ema9 < ind.ema21:     _conf_count += 1
+            if ind.supertrend_dir == -1:                             _conf_count += 1
+            if ind.adx and ind.adx > 20:                            _conf_count += 1
+            if ind.volume_ratio and ind.volume_ratio >= 1.5:        _conf_count += 1
+        if _conf_count >= 6:
+            score += 12   # All 6 aligned — maximum institutional conviction
+        elif _conf_count >= 5:
+            score += 8
+        elif _conf_count >= 4:
+            score += 5
 
         # ── Relative strength vs Nifty ────────────────────
         if direction == "LONG" and relative_strength > 0.5:
@@ -1420,8 +1451,10 @@ class SignalGenerator:
             score -= 12
         elif 14.5 <= time_val < 15.75:  # 2:30–3:45 PM ET: Power Hour (pre-EOD)
             score += 6
-        elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone
-            score += 8
+        elif 9.5 <= time_val <= 10.75:  # 9:30–10:45 AM ET: NY Open Kill Zone — highest-probability window
+            score += 12
+        elif 10.75 < time_val <= 11.5:  # 10:45–11:30 AM ET: late opening continuation
+            score += 4
         elif 11.5 <= time_val < 14.5:   # 11:30 AM–2:30 PM ET: midday chop
             score -= 3
 

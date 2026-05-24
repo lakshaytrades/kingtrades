@@ -309,7 +309,7 @@ class HighAccuracyFilter:
             result.gates_passed.append("AT_LEVEL")
         else:
             result.gates_failed.append("NOT_AT_LEVEL(soft)")
-            signal_score = max(signal_score - 8, 0)   # penalise but don't block
+            signal_score = max(signal_score - 4, 0)   # reduced from -8 — momentum breakouts are naturally away from prior levels
 
         # ── GATE 12: ADX TRENDING ────────────────────────
         # No trades in choppy directionless markets
@@ -360,17 +360,23 @@ class HighAccuracyFilter:
                 bonus_score -= 3
                 result.bonuses.append(f"HA_WEAK({ha_note})")
 
-        # Bonus 2: VWAP position
-        if direction == "BUY" and above_vwap:
-            bonus_score += 6
-            result.bonuses.append("ABOVE_VWAP")
-        elif direction == "SELL" and not above_vwap:
-            bonus_score += 6
-            result.bonuses.append("BELOW_VWAP")
-        elif direction == "BUY" and not above_vwap:
-            bonus_score -= 5
-            result.size_multiplier *= 0.8
-            result.bonuses.append("BELOW_VWAP(weak_buy)")
+        # Bonus 2: VWAP position — use `is True`/`is False` so None (VWAP data unavailable) is neutral
+        if above_vwap is True:
+            if direction == "BUY":
+                bonus_score += 6
+                result.bonuses.append("ABOVE_VWAP")
+            else:  # SELL above VWAP = fighting trend
+                bonus_score -= 3
+                result.bonuses.append("ABOVE_VWAP(weak_sell)")
+        elif above_vwap is False:
+            if direction == "SELL":
+                bonus_score += 6
+                result.bonuses.append("BELOW_VWAP")
+            else:  # BUY below VWAP = lower confidence
+                bonus_score -= 5
+                result.size_multiplier *= 0.8
+                result.bonuses.append("BELOW_VWAP(weak_buy)")
+        # above_vwap is None = VWAP data unavailable — no adjustment either way
 
         # Bonus 3: RSI momentum zone
         rsi_bonus = self._rsi_bonus(rsi, direction)
