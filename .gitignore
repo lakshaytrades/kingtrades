@@ -97,3 +97,4 @@ optimization_results/
 groww_tokens/
 auth_tokens/
 session_data/
+.claude/
