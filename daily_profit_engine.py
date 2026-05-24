@@ -437,11 +437,12 @@ class DailyProfitEngine:
             self.state.realised_pnl += pnl
         self.state.trades_taken += 1
 
-        now_ist = get_current_ist_time()
-        if now_ist.hour < 12:
-            self.state.morning_pnl += pnl
-        else:
-            self.state.afternoon_pnl += pnl
+        if not was_partial:  # avoid double-counting session buckets for partial exits
+            now_ist = get_current_ist_time()
+            if now_ist.hour < 12:
+                self.state.morning_pnl += pnl
+            else:
+                self.state.afternoon_pnl += pnl
 
         if pnl > 0:
             self.state.winning_trades += 1
@@ -531,10 +532,12 @@ class DailyProfitEngine:
             self.state.mode = TradingMode.DEFENSIVE
         elif pnl <= -self.cfg.caution_loss:
             self.state.mode = TradingMode.CAUTION
-        else:
-            # Below target — always AGGRESSIVE to hit the 4% minimum
-            # CAUTION/DEFENSIVE above already handle downside protection
+        elif self.state.consecutive_wins >= 2:
+            # Hot streak (2+ wins in a row): press harder with 1.80× size
             self.state.mode = TradingMode.AGGRESSIVE
+        else:
+            # Normal day: 1.0× size, solid A-grade setups
+            self.state.mode = TradingMode.NORMAL
 
         if self.state.mode != prev_mode:
             logger.info(

@@ -286,6 +286,15 @@ class AlpacaExecutor:
                 filled = self._wait_for_fill(result.order_id, wait=10)
                 if filled:
                     result.fill_price = filled
+                elif result.order_id:
+                    # Order submitted but fill not confirmed within 10s.
+                    # Order IS live at Alpaca — use signal_price as estimated fill.
+                    # Never return failure here: that would leave an untracked live position.
+                    result.fill_price = signal_price
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] {symbol}: market fill unconfirmed "
+                        f"after 10s — using signal_price ${signal_price:.2f} as fill estimate"
+                    )
                 break
 
         if not result.success or result.fill_price == 0:
@@ -406,7 +415,7 @@ class AlpacaExecutor:
         use_market_order=True forces MARKET order (bypasses limit attempt).
         """
         if not self.live_enabled:
-            # Paper mode: simulate a market fill so risk_manager closes the position correctly
+            # Paper mode: simulate fill. Caller uses ltp as fallback when fill_price=0.
             fill = limit_price if (limit_price and limit_price > 0) else 0.0
             logger.info(
                 f"[{format_ist_timestamp()}] PAPER EXIT: {symbol} "
@@ -543,7 +552,6 @@ class AlpacaExecutor:
                 symbol        = symbol,
                 qty           = pos_qty,
                 side          = stop_side,
-                type          = OrderType.STOP,
                 time_in_force = TimeInForce.DAY,
                 stop_price    = round(new_sl, 2),
             )
@@ -580,7 +588,6 @@ class AlpacaExecutor:
                 symbol        = symbol,
                 qty           = qty,
                 side          = stop_side,
-                type          = OrderType.STOP,
                 time_in_force = TimeInForce.DAY,
                 stop_price    = round(stop_price, 2),
             )

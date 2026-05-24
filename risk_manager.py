@@ -24,7 +24,7 @@ from zoneinfo import ZoneInfo
 import numpy as np
 
 import config as _config
-from utils import format_ist_timestamp, get_current_ist_time, format_currency
+from utils import format_ist_timestamp, get_current_ist_time, get_current_et_time, format_currency
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -267,18 +267,18 @@ class RiskManager:
             now = get_current_et_time()
             h, m = now.hour, now.minute
             total_min = h * 60 + m
-            # ET thresholds — mirrors NSE opening/midday/afternoon structure
+            _sm = _config.SESSION_SIZE_MULTIPLIERS
+            # ET thresholds — all multipliers read from config.SESSION_SIZE_MULTIPLIERS
             if 570 <= total_min < 630:    # 09:30-10:30 Opening drive — peak momentum
-                return 2.0, "OPENING_DRIVE"
+                return _sm.get("OPENING_DRIVE", 2.0), "OPENING_DRIVE"
             elif 630 <= total_min < 690:  # 10:30-11:30 Morning session — trend continuation
-                return 1.5, "MORNING"
-            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — reduced size per config
-                _midday_mult = _config.SESSION_SIZE_MULTIPLIERS.get("MIDDAY_CHOP", 0.5)
-                return _midday_mult, "MIDDAY_CHOP"
+                return _sm.get("MORNING", 1.5), "MORNING"
+            elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — reduced size
+                return _sm.get("MIDDAY_CHOP", 0.6), "MIDDAY_CHOP"
             elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend — institutional flow
-                return 1.5, "AFTERNOON"
+                return _sm.get("AFTERNOON", 1.5), "AFTERNOON"
             elif 930 <= total_min < 960:  # 15:30-16:00 Closing risk
-                return 0.8, "CLOSING"
+                return _sm.get("CLOSING", 0.8), "CLOSING"
             else:
                 return 0.0, "AFTER_HOURS"
         else:
@@ -488,9 +488,9 @@ class RiskManager:
         risk_amount = capital * (self.max_risk_pct / 100)
         risk_qty    = int(risk_amount / sl_distance)
 
-        # 2. Dynamic Half-Kelly (on buying power) — uses signal's R:R
+        # 2. Dynamic Half-Kelly (on actual capital, not leveraged — prevents Kelly bypass on margin)
         kelly_frac  = self._dynamic_kelly_fraction(signal_rr=signal_rr)
-        kelly_qty   = int((buying_power * kelly_frac) / entry_price)
+        kelly_qty   = int((capital * kelly_frac) / entry_price)
 
         # More conservative of the two
         quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
@@ -539,11 +539,18 @@ class RiskManager:
                 ),
             }
 
-        # 6. Capital cap: max MAX_CAPITAL_PER_TRADE_PCT% of buying power per position
+        # 6. Capital cap: max MAX_CAPITAL_PER_TRADE_PCT% of ACTUAL capital per position
+        # (use capital, not buying_power — prevents 4× leverage from giving 120% concentration)
         cap_pct = getattr(_cfg, "MAX_CAPITAL_PER_TRADE_PCT", 20.0) / 100.0
-        max_by_capital = int((buying_power * cap_pct) / entry_price)
+        max_by_capital = int((capital * cap_pct) / entry_price)
         quantity = min(quantity, max_by_capital)
         quantity = max(quantity, 1)
+
+        # 7. Hard total-risk guard: ensure final risk never exceeds 2× max_risk_pct
+        # (prevents session/dow/inst multiplier cascade from blowing past the risk budget)
+        max_allowed_risk = capital * (self.max_risk_pct / 100) * 2.0
+        if sl_distance > 0 and quantity * sl_distance > max_allowed_risk:
+            quantity = max(1, int(max_allowed_risk / sl_distance))
 
         capital_used     = entry_price * quantity
         actual_risk      = sl_distance * quantity
@@ -681,7 +688,7 @@ class RiskManager:
         runner_trail_dist = runner_grade_trail.get(position.quality_grade, ATR_TRAIL_MULTIPLIER * 2.0) * atr
 
         # ── Time-decay tightening (EOD — protect gains before close) ──────
-        now_et = get_current_ist_time()
+        now_et = get_current_et_time()
         et_min = now_et.hour * 60 + now_et.minute
         if et_min >= 915:       # After 3:15 PM ET: 70% tighter
             trail_dist       *= 0.30
@@ -791,6 +798,13 @@ class RiskManager:
 
                 if new_trail > position.trailing_stop:
                     position.trailing_stop = new_trail
+                    # Check if price already hit the newly-raised stop on this same bar
+                    if current_price <= new_trail:
+                        return {
+                            "action": "EXIT", "new_sl": new_trail,
+                            "exit_qty": position.runner_qty,
+                            "reason": f"Runner trail hit ${current_price:.2f} (stop raised to ${new_trail:.2f})"
+                        }
                     trail_source = "swing-low" if swing_trail > atr_trail else "ATR"
                     return {
                         "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
@@ -811,6 +825,10 @@ class RiskManager:
                     f"[{format_ist_timestamp()}] {position.symbol}: "
                     f"Early trail activated at ${position.trailing_stop:.2f}"
                 )
+                return {
+                    "action": "UPDATE_SL", "new_sl": position.trailing_stop, "exit_qty": 0,
+                    "reason": f"Pre-T1 early trail activated at ${position.trailing_stop:.2f}"
+                }
 
         else:  # SHORT
             position.min_price = min(position.min_price, current_price)
@@ -887,6 +905,13 @@ class RiskManager:
                 new_trail = position.min_price + runner_trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
+                    # Check if price already hit the newly-lowered stop on this same bar
+                    if current_price >= new_trail:
+                        return {
+                            "action": "EXIT", "new_sl": new_trail,
+                            "exit_qty": position.runner_qty,
+                            "reason": f"Short runner trail hit ${current_price:.2f} (stop lowered to ${new_trail:.2f})"
+                        }
                     return {
                         "action": "UPDATE_SL", "new_sl": new_trail, "exit_qty": 0,
                         "reason": f"Short runner trail ${new_trail:.2f}"
@@ -901,6 +926,10 @@ class RiskManager:
             if not position.t1_done and not position.trailing_active and profit >= atr:
                 position.trailing_active = True
                 position.trailing_stop   = current_price + trail_dist
+                return {
+                    "action": "UPDATE_SL", "new_sl": position.trailing_stop, "exit_qty": 0,
+                    "reason": f"Short pre-T1 early trail activated at ${position.trailing_stop:.2f}"
+                }
 
         return {"action": "HOLD", "new_sl": position.active_sl, "exit_qty": 0, "reason": "Hold"}
 
@@ -943,17 +972,18 @@ class RiskManager:
         """Return how many minutes this position has been open."""
         try:
             now = get_current_ist_time()
+            IST_TZ = ZoneInfo("America/New_York")  # aliased to ET in this bot
             entry_str = pos.entry_time[:19]   # trim trailing " IST" or zone suffix
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
                 try:
-                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=ET)
+                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=IST_TZ)
                     return max(0.0, (now - entry_dt).total_seconds() / 60)
                 except ValueError:
                     continue
             # ISO fallback
             entry_dt = datetime.fromisoformat(pos.entry_time)
             if entry_dt.tzinfo is None:
-                entry_dt = entry_dt.replace(tzinfo=ET)
+                entry_dt = entry_dt.replace(tzinfo=IST_TZ)
             return max(0.0, (now - entry_dt).total_seconds() / 60)
         except Exception:
             return 0.0
