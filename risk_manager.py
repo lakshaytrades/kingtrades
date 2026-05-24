@@ -324,19 +324,27 @@ class RiskManager:
                 return 0.0
             return min(kelly * 0.5, 0.18)
 
-        wins   = [t for t in recent if t.get("pnl", 0) > 0]
-        losses = [t for t in recent if t.get("pnl", 0) <= 0]
+        wins   = [t for t in recent if t.get("total_pnl", t.get("pnl", 0)) > 0]
+        losses = [t for t in recent if t.get("total_pnl", t.get("pnl", 0)) <= 0]
         if not wins or not losses:
             return 0.12   # Minimum safe fraction
 
         wr      = len(wins) / len(recent)
-        avg_win = abs(sum(t["pnl"] for t in wins)   / len(wins))
-        avg_los = abs(sum(t["pnl"] for t in losses) / len(losses))
-        if avg_los < 1:
-            return 0.12
+        # Prefer R-multiple for Kelly R ratio (more accurate than raw PnL)
+        win_r   = [t.get("r_multiple", 0) for t in wins   if t.get("r_multiple", 0) > 0]
+        loss_r  = [abs(t.get("r_multiple", 0)) for t in losses if t.get("r_multiple", 0) < 0]
+        if win_r and loss_r:
+            avg_win_r = sum(win_r) / len(win_r)
+            avg_los_r = sum(loss_r) / len(loss_r) if loss_r else 1.0
+            hist_rr = avg_win_r / max(avg_los_r, 0.1)
+        else:
+            avg_win = abs(sum(t.get("total_pnl", t.get("pnl", 0)) for t in wins)  / len(wins))
+            avg_los = abs(sum(t.get("total_pnl", t.get("pnl", 0)) for t in losses) / len(losses))
+            if avg_los < 1:
+                return 0.12
+            hist_rr = avg_win / avg_los
 
         # Use max of historical R:R and current signal R:R
-        hist_rr = avg_win / avg_los
         R = max(hist_rr, signal_rr * 0.7)   # Trust signal R:R partially
         kelly = wr - (1 - wr) / R
 
@@ -571,9 +579,11 @@ class RiskManager:
             }
         quantity = max(quantity, 1)
 
-        # 7. Hard total-risk guard: ensure final risk never exceeds 2× max_risk_pct
-        # (prevents session/dow/inst multiplier cascade from blowing past the risk budget)
-        max_allowed_risk = capital * (self.max_risk_pct / 100) * 2.0
+        # 7. Hard total-risk guard: ensure final risk never exceeds absolute max_risk_pct of capital
+        # Use the config value directly — don't inflate by multipliers that have already been applied.
+        # This prevents session mult (2.2×) + A+ doubling → 6% risk per trade on small accounts.
+        _hard_risk_pct = getattr(_cfg, "MAX_RISK_PER_TRADE_PCT", self.max_risk_pct)
+        max_allowed_risk = capital * (_hard_risk_pct / 100)
         if sl_distance > 0 and quantity * sl_distance > max_allowed_risk:
             quantity = max(1, int(max_allowed_risk / sl_distance))
 
@@ -975,6 +985,17 @@ class RiskManager:
         """
         from config import PARTIAL_EXIT_T1_PCT, PARTIAL_EXIT_T2_PCT, RUNNER_PCT
         qty = position.quantity
+        # Fractional/notional position: qty=0 means Alpaca is tracking notional shares.
+        # Partial exits use notional fractions; set t1_qty=-1 as sentinel for notional exit.
+        if qty <= 0:
+            position.t1_qty     = -1   # sentinel: "notional T1 — exit 40% by notional"
+            position.t2_qty     = -2   # sentinel: "notional T2 — exit 25% by notional"
+            position.runner_qty = -3   # sentinel: "notional runner — 35% remaining"
+            logger.info(
+                f"[{format_ist_timestamp()}] {position.symbol} fractional partial exits: "
+                f"T1=40% T2=25% Runner=35% (notional-based)"
+            )
+            return position
         # Small position guard: qty=1 exits at T1 entirely; qty=2 splits 1+1
         if qty <= 1:
             position.t1_qty     = qty
@@ -1228,6 +1249,9 @@ class RiskManager:
         drawdown = self.state.peak_pnl - self.state.daily_pnl
         self.state.max_drawdown = max(self.state.max_drawdown, drawdown)
 
+        # R-multiple: actual PnL relative to initial risk — key metric for Kelly calibration
+        _initial_risk = abs(pos.entry_price - pos.stop_loss) * max(pos.quantity, 1)
+        _r_mult = round((pnl + pos.realized_pnl) / max(_initial_risk, 0.01), 2)
         trade_record = {
             "symbol": symbol,
             "direction": pos.direction,
@@ -1235,6 +1259,8 @@ class RiskManager:
             "exit": exit_price,
             "quantity": pos.quantity,
             "pnl": round(pnl, 2),
+            "total_pnl": round(pnl + pos.realized_pnl, 2),  # includes T1/T2 partial profits
+            "r_multiple": _r_mult,
             "pnl_pct": round(pos.pnl_pct, 2),
             "entry_time": pos.entry_time,
             "exit_time": format_ist_timestamp(),

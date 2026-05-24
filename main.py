@@ -1305,11 +1305,16 @@ class TradingBot:
                     logger.debug(f"Mean-reversion scan error: {e}")
 
             eff_min_score = getattr(self.signal_gen, "min_score", dow_min)
+            # Apply AdaptiveBrain size_multiplier to every signal (loss streak → reduce size)
+            _brain_size_mult = 1.0
+            if hasattr(self, "adaptive_brain") and self.adaptive_brain:
+                _brain_size_mult = self.adaptive_brain.get_size_multiplier()
             # Apply DOW size multiplier to every signal before filtering
             _dow_mult = config.DOW_SIZE_MULTIPLIERS.get(now_ist.weekday(), 1.0)
-            if _dow_mult != 1.0:
+            _combined_mult = round(_dow_mult * _brain_size_mult, 3)
+            if _combined_mult != 1.0:
                 for _s in signals:
-                    _s.size_multiplier = round(_s.size_multiplier * _dow_mult, 3)
+                    _s.size_multiplier = round(_s.size_multiplier * _combined_mult, 3)
             before_filter = len(signals)
             signals = [s for s in signals if s.signal_score >= eff_min_score]
             if self._weekly_mode == "PROTECT":
