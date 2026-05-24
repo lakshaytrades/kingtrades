@@ -533,7 +533,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 30:
+        if alignment_score < 55:   # match signal_generator._check_mtf_alignment threshold
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:

@@ -313,7 +313,7 @@ class ScalpingEngine:
                 f"(>{self.MAX_HOLD_MINUTES}min)"
             )
             del self._active_scalps[sym]
-        self.expired_symbols = stale   # caller (main.py) should force-close these Alpaca positions
+        self.expired_symbols.extend(stale)   # accumulate; main.py clears after consuming
         return stale
 
     def _fetch_5m_data(self, symbol: str, data_fetcher) -> Optional[pd.DataFrame]:

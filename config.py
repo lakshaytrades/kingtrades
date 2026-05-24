@@ -110,7 +110,8 @@ PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful second slice
 RUNNER_PCT: float = 35.0                # 35% runner — bigger slice on high-conviction trades
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 1.5       # Scalping: 1.5:1 minimum — more trades, consistent small wins
+MIN_RISK_REWARD: float = 2.0       # Minimum R:R measured at T2 target (2.5x SL) — previously
+                                    # measured at T1 (1.5x) which was always exactly the minimum
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
 

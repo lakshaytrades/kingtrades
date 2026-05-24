@@ -1442,6 +1442,17 @@ class TradingBot:
                     for setup in orb_setups:
                         orb_sig = self.orb_strategy.to_trade_signal(setup)
                         if orb_sig:
+                            # Apply ProfitMaximizer enhancements — was only wired into MTF signals
+                            try:
+                                from profit_maximizer import get_profit_maximizer
+                                _pm = get_profit_maximizer()
+                                _df5 = self.fetcher.get_today_candles(setup.symbol)
+                                if _df5 is not None and not _df5.empty:
+                                    _pm_res = _pm.enhance(setup.symbol, setup.breakout_direction, _df5)
+                                    if _pm_res and _pm_res.total_bonus > 0:
+                                        orb_sig.signal_score = min(100.0, orb_sig.signal_score + _pm_res.total_bonus)
+                            except Exception:
+                                pass
                             signals.append(orb_sig)
                         if self.alerter:
                             self.alerter.send_text(
@@ -1464,7 +1475,9 @@ class TradingBot:
                         watchlist, self.fetcher, nifty_change_pct=spy_chg
                     )
                     # Force-close Alpaca positions for scalps that expired (>15 min held)
-                    for _exp_sym in self.scalping_engine.expired_symbols:
+                    _pending_expirations = list(self.scalping_engine.expired_symbols)
+                    self.scalping_engine.expired_symbols.clear()   # consume once
+                    for _exp_sym in _pending_expirations:
                         try:
                             self.executor.close_position(_exp_sym)
                             logger.info(
@@ -1501,6 +1514,17 @@ class TradingBot:
                     for bs in burst_setups:
                         burst_ts = self.burst_detector.to_trade_signal(bs)
                         if burst_ts:
+                            # Apply ProfitMaximizer enhancements
+                            try:
+                                from profit_maximizer import get_profit_maximizer
+                                _pm = get_profit_maximizer()
+                                _df5 = self.fetcher.get_today_candles(bs.symbol)
+                                if _df5 is not None and not _df5.empty:
+                                    _pm_r = _pm.enhance(bs.symbol, bs.direction, _df5)
+                                    if _pm_r and _pm_r.total_bonus > 0:
+                                        burst_ts.signal_score = min(100.0, burst_ts.signal_score + _pm_r.total_bonus)
+                            except Exception:
+                                pass
                             signals.append(burst_ts)
                             logger.info(
                                 f"[{format_ist_timestamp()}] {bs.summary()}"

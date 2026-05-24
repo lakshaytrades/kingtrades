@@ -1676,7 +1676,9 @@ class SignalGenerator:
             target_2  = round_to_tick_size(entry - ATR_TP_MULTIPLIER * (stop_loss - entry))
 
         sl_distance = abs(entry - stop_loss)
-        risk_reward = abs(target_1 - entry) / sl_distance if sl_distance > 0 else 2.0
+        # Use target_2 for R:R — measures institutional target (2.5x), not just scalp T1 (1.5x).
+        # target_1-based R:R was always exactly 1.5 = MIN_RISK_REWARD, so the gate never rejected.
+        risk_reward = abs(target_2 - entry) / sl_distance if sl_distance > 0 else 2.5
 
         # Rationale text
         mtf_str      = f"5m:{alignment.get('5m','?')} / 15m:{alignment.get('15m','?')} / 1h:{alignment.get('1h','?')}"
