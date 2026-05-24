@@ -170,7 +170,7 @@ DEFAULT_WATCHLIST = [
     # Leveraged ETFs — 2-3x the index move (best for momentum breakouts)
     "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL",
     # Fintech / high-growth finance
-    "SOFI", "HOOD", "XYZ",
+    "SOFI", "HOOD", "COIN",
     # Big finance
     "JPM", "GS", "MS",
     # Energy
@@ -375,6 +375,11 @@ def validate_config() -> list:
         issues.append("TELEGRAM_BOT_TOKEN not set — alerts disabled")
     if not TELEGRAM_CHAT_ID:
         issues.append("TELEGRAM_CHAT_ID not set — alerts disabled")
+    if LIVE_TRADING_ENABLED and "paper-api" in ALPACA_BASE_URL:
+        issues.append(
+            "CRITICAL: LIVE_TRADING_ENABLED=True but ALPACA_BASE_URL points to paper endpoint. "
+            "Set ALPACA_BASE_URL=https://api.alpaca.markets for real trading."
+        )
     return issues
 
 

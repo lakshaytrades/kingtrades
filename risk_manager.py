@@ -218,7 +218,10 @@ class RiskManager:
         # Cap at max_daily_capital only if it's set (> 0); otherwise use full balance
         capped = min(balance, self.max_daily_capital) if self.max_daily_capital > 0 else balance
         self.state.available_capital = capped
-        self.state.daily_capital     = capped
+        # daily_capital is set once at session open (initialize_day) and must NOT be
+        # updated mid-session — it's the fixed denominator for daily loss-% calculations.
+        # Overwriting it would shrink the denominator after losses, making loss-% appear
+        # smaller than reality and causing the circuit breaker to fire too late.
 
     def set_institutional_multiplier(
         self, fii_mult: float = 1.0, oc_mult: float = 1.0
@@ -270,7 +273,7 @@ class RiskManager:
             elif 630 <= total_min < 690:  # 10:30-11:30 Morning session — trend continuation
                 return 1.5, "MORNING"
             elif 690 <= total_min < 810:  # 11:30-13:30 Midday chop — reduced size per config
-                _midday_mult = config.SESSION_SIZE_MULTIPLIERS.get("MIDDAY_CHOP", 0.5)
+                _midday_mult = _config.SESSION_SIZE_MULTIPLIERS.get("MIDDAY_CHOP", 0.5)
                 return _midday_mult, "MIDDAY_CHOP"
             elif 810 <= total_min < 930:  # 13:30-15:30 Afternoon trend — institutional flow
                 return 1.5, "AFTERNOON"
@@ -365,8 +368,8 @@ class RiskManager:
         # Biotech / Healthcare
         "MRNA": "BIOTECH", "BNTX": "BIOTECH", "ARKG": "BIOTECH",
         "JNJ": "HEALTHCARE", "PFE": "HEALTHCARE", "UNH": "HEALTHCARE",
-        # Consumer Discretionary
-        "AMZN": "CONSUMER", "TGT": "CONSUMER", "WMT": "CONSUMER",
+        # Consumer Discretionary (AMZN is TECH above — no duplicate)
+        "TGT": "CONSUMER", "WMT": "CONSUMER",
         # Crypto / Fintech
         "COIN": "CRYPTO_FINTECH", "MSTR": "CRYPTO_FINTECH",
         "SOFI": "FINTECH", "AFRM": "FINTECH", "UPST": "FINTECH",
@@ -1135,9 +1138,10 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Real loss protection: pause 15 min on losses ≥$10 to prevent revenge trades.
-            # Trivial slippage (<$10) doesn't pause — keep hunting good setups.
-            if abs(pnl) >= 10.0:
+            # Pause after a meaningful loss (≥1.5% of daily capital) to prevent revenge trades.
+            # On a $1K account this is $15; on $10K it's $150. Never pauses on tiny slippage.
+            _pause_floor = self.state.daily_capital * 0.015
+            if abs(pnl) >= max(_pause_floor, 15.0):
                 self._pause_trading(
                     f"loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
                     minutes=15

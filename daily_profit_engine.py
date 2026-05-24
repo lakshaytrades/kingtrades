@@ -152,8 +152,12 @@ class IntradayState:
 
     @property
     def target_pct(self) -> float:
-        """How far towards daily target (0–1+)."""
-        return self.realised_pnl / 5000.0  # Base reference
+        """How far towards daily target (0.0 = nothing, 1.0 = target hit, 2.0 = 2× target)."""
+        ref = getattr(self, "_daily_target_ref", 0.0)
+        return self.realised_pnl / max(ref, 1.0)
+
+    def set_daily_target_ref(self, target: float) -> None:
+        self._daily_target_ref = target
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -200,6 +204,7 @@ class DailyProfitEngine:
 
         self._daily_target = daily_target
         self.cfg.daily_target          = daily_target
+        self.state.set_daily_target_ref(daily_target)
         self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
         self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
 

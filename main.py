@@ -276,6 +276,17 @@ class TradingBot:
             self.adaptive_brain.warm_up_from_history()
         except Exception as _e:
             logger.debug(f"[suppressed] AdaptiveBrain warm_up_from_history: {_e}")
+        # Apply yesterday's real trade outcome insights (pattern weights, score, blacklist)
+        try:
+            self.adaptive_brain.warm_up_from_post_market()
+            # Merge post-market symbol blacklist into self-learner so scan loop skips them
+            _pm_bl = getattr(getattr(self.adaptive_brain, "_state", None), "blacklisted_symbols", set())
+            if _pm_bl and self.signal_gen and hasattr(self.signal_gen, "_learner") and self.signal_gen._learner:
+                for _sym in _pm_bl:
+                    if _sym not in self.signal_gen._learner.config.symbol_blacklist:
+                        self.signal_gen._learner.config.symbol_blacklist.append(_sym)
+        except Exception as _e:
+            logger.debug(f"[suppressed] AdaptiveBrain warm_up_from_post_market: {_e}")
         logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain ready — {self.adaptive_brain.get_status()}")
 
         # System health checker
@@ -311,7 +322,7 @@ class TradingBot:
                 opt_max_pos = int(opt_cfg.get("max_positions", config.MAX_POSITIONS))
                 self.risk_manager.max_positions = opt_max_pos
                 opt_risk = opt_cfg.get("risk_per_trade_pct", config.MAX_RISK_PER_TRADE_PCT)
-                self.risk_manager.max_risk_pct = opt_risk / 100.0
+                self.risk_manager.max_risk_pct = float(opt_risk)  # already in percent (e.g. 1.5)
             logger.info(f"[{format_ist_timestamp()}] Autonomous optimizer params applied")
         except Exception as _oe:
             logger.debug(f"[suppressed] Optimizer config: {_oe}")
@@ -1030,7 +1041,7 @@ class TradingBot:
                             self.signal_gen.ha_filter.min_score = _new_min
                     if self.risk_manager:
                         self.risk_manager.max_positions = int(_opt.get("max_positions", self.risk_manager.max_positions))
-                        self.risk_manager.max_risk_pct = _opt.get("risk_per_trade_pct", self.risk_manager.max_risk_pct * 100) / 100.0
+                        self.risk_manager.max_risk_pct = float(_opt.get("risk_per_trade_pct", self.risk_manager.max_risk_pct))
                     logger.debug(f"[{format_ist_timestamp()}] Optimizer params reloaded")
                 except Exception as _oe:
                     logger.debug(f"Optimizer reload skipped: {_oe}")
@@ -2007,32 +2018,34 @@ class TradingBot:
             pct = data.get("weekly_pct", 0.0)
             # Add today's unrealised P&L
             if self.risk_manager:
-                today_pnl  = self.risk_manager.state.daily_pnl
-                total_pct  = pct + (today_pnl / max(config.MAX_DAILY_CAPITAL, 1) * 100)
+                today_pnl   = self.risk_manager.state.daily_pnl
+                _daily_cap  = self.risk_manager.state.daily_capital or self._available_balance or 1.0
+                total_pct   = pct + (today_pnl / _daily_cap * 100)
             else:
                 total_pct = pct
 
-            if total_pct >= config.WEEKLY_PROFIT_TARGET_PCT:
+            # WEEKLY_PROFIT_LOCK_PCT (15%) > WEEKLY_PROFIT_TARGET_PCT (8%)
+            # Check the higher threshold first so PROTECT doesn't get skipped.
+            if total_pct >= config.WEEKLY_PROFIT_LOCK_PCT:
                 if self._weekly_mode != "LOCKED":
                     self._weekly_mode = "LOCKED"
                     logger.info(
-                        f"[{format_ist_timestamp()}] 🔒 Weekly profit target "
-                        f"{config.WEEKLY_PROFIT_TARGET_PCT}% reached "
-                        f"({total_pct:.2f}%) — LOCKED (no new entries)"
+                        f"[{format_ist_timestamp()}] 🔒 Weekly LOCK triggered "
+                        f"({total_pct:.2f}% ≥ {config.WEEKLY_PROFIT_LOCK_PCT}%) — no new entries"
                     )
                     if self.alerter:
                         self.alerter.send_text(
-                            f"🎯 <b>Weekly Profit Target Hit!</b>\n"
-                            f"Week P&L: {total_pct:.2f}% ≥ {config.WEEKLY_PROFIT_TARGET_PCT}%\n"
+                            f"🎯 <b>Weekly Lock!</b>\n"
+                            f"Week P&L: {total_pct:.2f}% ≥ {config.WEEKLY_PROFIT_LOCK_PCT}%\n"
                             f"Mode: LOCKED — protecting gains, no new entries.\n"
                             f"Existing positions monitored until 3:20 PM."
                         )
-            elif total_pct >= config.WEEKLY_PROFIT_LOCK_PCT:
+            elif total_pct >= config.WEEKLY_PROFIT_TARGET_PCT:
                 if self._weekly_mode not in ("PROTECT", "LOCKED"):
                     self._weekly_mode = "PROTECT"
                     logger.info(
-                        f"[{format_ist_timestamp()}] 🛡 Weekly profit at "
-                        f"{total_pct:.2f}% — PROTECT mode (A/A+ only)"
+                        f"[{format_ist_timestamp()}] 🛡 Weekly target hit "
+                        f"({total_pct:.2f}% ≥ {config.WEEKLY_PROFIT_TARGET_PCT}%) — PROTECT (A/A+ only)"
                     )
                     if self.alerter:
                         self.alerter.send_text(

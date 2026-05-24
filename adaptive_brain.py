@@ -260,6 +260,68 @@ class AdaptiveBrain:
             logger.debug(f"AdaptiveBrain warm-up failed: {e}")
             return False
 
+    def warm_up_from_post_market(self) -> bool:
+        """
+        Apply yesterday's PostMarketBrain insights at session start.
+        This is how pattern knowledge persists across days — the brain
+        reset at open is seeded with real outcome data from the prior session.
+        """
+        try:
+            from pathlib import Path
+            import json
+            insights_path = Path("data/post_market_insights.json")
+            if not insights_path.exists():
+                return False
+
+            with open(insights_path) as f:
+                insights = json.load(f)
+
+            # Skip if stale (> 4 days old)
+            from datetime import datetime, timedelta
+            ins_date_str = insights.get("date", "")
+            if ins_date_str:
+                ins_date = datetime.strptime(ins_date_str, "%Y-%m-%d").date()
+                if (datetime.now().date() - ins_date).days > 4:
+                    logger.debug("PostMarket insights are stale (>4 days) — skipping")
+                    return False
+
+            count = 0
+            # Apply pattern weights from real trade outcomes
+            for pat, pi in insights.get("pattern_insights", {}).items():
+                weight = pi.get("weight", 1.0)
+                trades = pi.get("trades", 0)
+                if trades < 3:
+                    continue
+                if weight <= 0.3:
+                    self._state.disabled_patterns.add(pat)
+                    count += 1
+                elif weight >= 1.2:
+                    self._state.pattern_boosts[pat] = weight
+                    count += 1
+
+            # Apply score recommendation
+            rec_score = insights.get("recommended_min_score", MIN_SCORE_FLOOR)
+            if MIN_SCORE_FLOOR <= rec_score <= MIN_SCORE_CEIL:
+                self._state.current_min_score = rec_score
+                count += 1
+
+            # Pre-blacklist serial losers from yesterday
+            for sym in insights.get("blacklist_symbols", []):
+                if not hasattr(self._state, "blacklisted_symbols"):
+                    self._state.blacklisted_symbols = set()
+                self._state.blacklisted_symbols.add(sym)
+
+            logger.info(
+                f"[{format_ist_timestamp()}] AdaptiveBrain post-market warm-up: "
+                f"applied {count} updates from {ins_date_str} | "
+                f"score={self._state.current_min_score:.0f} | "
+                f"disabled={len(self._state.disabled_patterns)} patterns"
+            )
+            return True
+        except Exception as e:
+            logger.debug(f"AdaptiveBrain post-market warm-up failed: {e}")
+            return False
+
     # ── ADAPTATION LOGIC ─────────────────────────────────────────────────────
 
     def _adapt(self, outcome: TradeOutcome) -> str:

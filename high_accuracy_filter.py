@@ -589,7 +589,7 @@ class HighAccuracyFilter:
         Lowered from 20 → 17 to allow early-trend entries (ADX lags price action).
         """
         if adx == 0:
-            return True, ""   # Data unavailable — fail open
+            return True, "ADX_MISSING"   # Data unavailable — log but allow; don't block on missing data
         if adx >= 17:
             return True, ""
         return False, (

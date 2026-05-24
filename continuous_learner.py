@@ -183,6 +183,15 @@ class ContinuousLearner:
             weekdays=[0,1,2,3,4]
         ))
 
+        # Post-Market Brain — real trade outcome analysis (Mon-Fri at 4:05 PM)
+        # Reads actual trade_journal.db outcomes (not synthetic re-simulation).
+        # Calibrates pattern weights, grade attribution, ATR multipliers, score.
+        self.tasks.append(ScheduledTask(
+            "Post-Market Brain", 16, 5,
+            self._task_post_market_brain,
+            weekdays=[0,1,2,3,4]
+        ))
+
         # AI EOD trade review (Mon-Fri)
         self.tasks.append(ScheduledTask(
             "AI EOD Trade Review", 16, 30,
@@ -394,6 +403,50 @@ class ContinuousLearner:
             )
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] EOD Self-Training failed: {e}")
+
+    def _task_post_market_brain(self):
+        """
+        Run PostMarketBrain at 4:05 PM ET — analyses REAL trade outcomes.
+
+        Fills the gap the existing learners leave:
+        - EODSelfTrainer re-simulates from OHLCV (synthetic, ignores real fills)
+        - self_learning uses real trades but doesn't do grade/regime cross-analysis
+        - PostMarketBrain reads trade_journal.db and produces calibrated weights
+          for patterns, regimes, grades, ATR multipliers and score threshold.
+        """
+        try:
+            from post_market_brain import run_post_market_analysis
+            insights = run_post_market_analysis(lookback_days=30)
+            logger.info(
+                f"[{format_ist_timestamp()}] PostMarketBrain complete — "
+                f"WR={insights.get('overall_win_rate', 0):.1f}% "
+                f"Score→{insights.get('recommended_min_score', 72):.0f} "
+                f"Boosts={len(insights.get('boost_patterns', []))} "
+                f"Kills={len(insights.get('kill_patterns', []))}"
+            )
+            alerter = self._modules.get("alerter")
+            if alerter:
+                notes = insights.get("notes", [])[:3]
+                boost = ", ".join(insights.get("boost_patterns", [])[:4]) or "—"
+                kill  = ", ".join(insights.get("kill_patterns",  [])[:4]) or "—"
+                bl    = ", ".join(insights.get("blacklist_symbols", [])) or "—"
+                msg = (
+                    f"🧠 <b>Post-Market Brain</b>\n"
+                    f"Trades: {insights.get('total_trades',0)} | "
+                    f"WR: {insights.get('overall_win_rate',0):.1f}% | "
+                    f"Avg RR: {insights.get('overall_avg_rr',0):.2f}\n"
+                    f"Score → {insights.get('recommended_min_score',72):.0f}\n"
+                    f"Boost patterns: {boost}\n"
+                    f"Kill patterns: {kill}\n"
+                    f"Blacklist: {bl}\n"
+                    + ("\n".join(f"• {n}" for n in notes) if notes else "")
+                )
+                try:
+                    alerter.send_text(msg)
+                except Exception:
+                    pass
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] PostMarketBrain failed: {e}")
 
     def _task_weekly_review(self):
         """Full weekly strategy review using AI (Sundays)."""
