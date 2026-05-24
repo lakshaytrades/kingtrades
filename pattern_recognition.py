@@ -580,8 +580,33 @@ class TechnicalIndicators:
             vwap_lower_2=float(row.get("_vwap_l2", 0) or 0),
         )
 
-        # Pivot points (use second-to-last bar as prior session proxy)
-        if len(df) > 1:
+        # Pivot points — use yesterday's daily OHLC for accurate institutional levels.
+        # Class-level cache (TTL=4h) so each symbol's daily bar is fetched once per session.
+        _daily_ph = _daily_pl = _daily_pc = 0.0
+        try:
+            from datetime import datetime as _dtnow
+            _sym = df.attrs.get("symbol", "") if hasattr(df, "attrs") else ""
+            if _sym:
+                _now_ts = _dtnow.now().timestamp()
+                _cache_key = f"daily_{_sym}"
+                _cached = PatternRecognizer._daily_ohlc_cache.get(_cache_key, {})
+                if _cached and (_now_ts - _cached.get("ts", 0)) < 14400:  # 4h TTL
+                    _daily_ph, _daily_pl, _daily_pc = _cached["h"], _cached["l"], _cached["c"]
+                else:
+                    from data_fetch_alpaca import get_data_fetcher as _gdf
+                    _hday = _gdf().get_ohlcv(_sym, interval="day", lookback_days=5)
+                    if _hday is not None and len(_hday) >= 2:
+                        _daily_ph = float(_hday["high"].iloc[-2])
+                        _daily_pl = float(_hday["low"].iloc[-2])
+                        _daily_pc = float(_hday["close"].iloc[-2])
+                        PatternRecognizer._daily_ohlc_cache[_cache_key] = {
+                            "h": _daily_ph, "l": _daily_pl, "c": _daily_pc, "ts": _now_ts
+                        }
+        except Exception:
+            pass
+        if _daily_ph > 0 and _daily_pl > 0 and _daily_pc > 0:
+            ph, pl, pc = _daily_ph, _daily_pl, _daily_pc
+        elif len(df) > 1:
             ph = float(df["high"].iloc[-2])
             pl = float(df["low"].iloc[-2])
             pc = float(df["close"].iloc[-2])
@@ -754,6 +779,8 @@ class PatternRecognizer:
     Detects 20+ candlestick and chart patterns.
     Each detector returns a PatternResult with confidence 0–100.
     """
+
+    _daily_ohlc_cache: dict = {}  # class-level cache; keyed by f"daily_{symbol}", TTL=4h
 
     def __init__(self):
         self.indicators = TechnicalIndicators()

@@ -343,6 +343,8 @@ class SignalGenerator:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: only {bar_count} bars — proceeding with limited history")
 
             # 2. Pattern analysis on each timeframe
+            # Set df.attrs["symbol"] so pattern_recognizer can fetch daily OHLC for pivot levels
+            df_5m.attrs["symbol"] = symbol
             analysis_5m  = self.recognizer.analyze(df_5m)
             analysis_15m = self.recognizer.analyze(df_15m) if df_15m is not None else {}
             analysis_1h  = self.recognizer.analyze(df_1h)  if df_1h is not None else {}
