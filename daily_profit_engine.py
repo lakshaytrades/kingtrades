@@ -562,7 +562,7 @@ class DailyProfitEngine:
             TradingMode.NORMAL:      1.00,
             TradingMode.CAUTION:     0.80,
             TradingMode.PROTECTION:  1.10,   # target hit — keep pressing, slight bonus
-            TradingMode.LOCK:        1.00,   # 2× target — full size, A-grade filter
+            TradingMode.LOCK:        0.60,   # 2× target — protect gains, 60% size, A-grade filter
             TradingMode.DEFENSIVE:   0.60,
             TradingMode.STOP:        0.00,
         }.get(self.state.mode, 1.00)

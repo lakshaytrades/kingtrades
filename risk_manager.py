@@ -1138,12 +1138,13 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Pause after a meaningful loss (≥1.5% of daily capital) to prevent revenge trades.
-            # On a $1K account this is $15; on $10K it's $150. Never pauses on tiny slippage.
-            _pause_floor = self.state.daily_capital * 0.015
-            if abs(pnl) >= max(_pause_floor, 15.0):
+            # Pause only after a large single loss (≥3% of daily capital), not every normal SL hit.
+            # At 1.5% risk per trade, a 1× stop-out = 1.5% loss — do NOT pause on that.
+            # Only pause if the loss is >= 2× the per-trade risk (i.e. slippage or bad fill).
+            _pause_floor = self.state.daily_capital * 0.03
+            if abs(pnl) >= max(_pause_floor, 25.0):
                 self._pause_trading(
-                    f"loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
+                    f"large loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
                     minutes=15
                 )
             # Hard consecutive loss limit still applies

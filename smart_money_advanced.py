@@ -180,29 +180,33 @@ def detect_breaker_block(df: pd.DataFrame) -> Optional[PatternResult]:
                 f"failed bullish order block → now resistance retest"
             )
 
-    # Bullish Breaker: last bullish candle before decline → breaker
+    # Bullish Breaker: prior BULLISH candle that got swept through (price broke below it),
+    # then price rallied back ABOVE the breaker block — it now acts as support on retest.
     for i in range(-20, -10):
         if closes[i] <= opens[i]:
-            continue   # must be bullish
+            continue   # must be a bullish candle (the original block)
 
         block_high = highs[i]
         block_low  = lows[i]
 
-        post_low  = min(lows[i+1:-2]) if len(lows[i+1:-2]) > 0 else 0
+        # Price must have broken DOWN below the block after the bullish candle
+        post_low = min(lows[i+1:i+6]) if len(lows[i+1:i+6]) > 0 else block_low
         if post_low >= block_low:
-            continue
+            continue  # price never broke below the block — not a breaker
 
-        post_high2 = max(highs[i+1:-2]) if len(highs[i+1:-2]) > 0 else 0
-        if post_high2 <= block_high:
-            continue
+        # Then price must have rallied BACK ABOVE the block high (the "break" that makes it a breaker)
+        post_high_recovery = max(highs[i+1:-2]) if len(highs[i+1:-2]) > 0 else 0
+        if post_high_recovery <= block_high:
+            continue  # price never recovered above block high
 
+        # Current price returning to retest the breaker zone as support
         curr = closes[-1]
         if block_low <= curr <= block_high:
             confidence = 70
             return PatternResult(
                 "Bullish Breaker Block", "LONG", confidence,
                 f"Breaker Block ${block_low:.2f}-${block_high:.2f}: "
-                f"failed bearish order block → now support retest"
+                f"bullish candle swept then recovered → retesting as support"
             )
     return None
 

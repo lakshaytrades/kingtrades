@@ -874,6 +874,13 @@ class PatternRecognizer:
             self.detect_gap_fill,
             # ── SMT Divergence (Smart Money Technique) ────────────────────
             self.detect_smt_divergence,
+            # ── New high-accuracy patterns ────────────────────────────────
+            self.detect_supply_demand_zone,
+            self.detect_quasimodo_bullish,
+            self.detect_volume_climax_reversal,
+            self.detect_broadening_formation,
+            self.detect_mitigation_block,
+            self.detect_rounding_bottom,
         ]
 
         for detector in detectors:
@@ -2871,15 +2878,14 @@ class PatternRecognizer:
             return None
         try:
             from utils import get_current_ist_time
-            from zoneinfo import ZoneInfo
-            ist_now = get_current_ist_time()
-            et_offset = -5  # ET is UTC-5 (EST) or UTC-4 (EDT); approximate
-            et_hour = (ist_now.hour - 5) % 24  # IST to ET: subtract 10:30, approx
-            et_minute = ist_now.minute
+            et_now = get_current_ist_time()  # aliased to ET
+            et_hour = et_now.hour
+            et_minute = et_now.minute
             # NY Open Kill Zone: 9:30–10:00 ET
-            ny_open_kz = (et_hour == 9 and 30 <= et_minute <= 59) or (et_hour == 10 and et_minute == 0)
+            ny_open_kz = (et_hour == 9 and 30 <= et_minute <= 59) or (et_hour == 10 and et_minute <= 30)
             # London Close Kill Zone: 11:00–12:00 ET
-            london_close_kz = et_hour == 11 or (et_hour == 12 and et_minute == 0)
+            london_close_kz = (et_hour == 11) or (et_hour == 12 and et_minute == 0)
+            # London Open Kill Zone: 2:00–5:00 AM ET (pre-market, skip for intraday)
             if not (ny_open_kz or london_close_kz):
                 return None
             zone_name = "NY Open" if ny_open_kz else "London Close"
@@ -2888,7 +2894,9 @@ class PatternRecognizer:
             confidence = 78
             if ind.volume_ratio >= 1.5:
                 confidence = min(confidence + 8, 88)
-            return PatternResult(f"ICT Kill Zone ({zone_name})", direction, confidence,
+            # Name matches ICT_PATTERNS scoring set
+            pattern_name = f"Kill Zone {direction.title()}"  # "Kill Zone Bullish" or "Kill Zone Bearish"
+            return PatternResult(pattern_name, direction, confidence,
                                  f"ICT {zone_name} kill zone — high-probability institutional move window")
         except Exception:
             return None
@@ -2908,8 +2916,9 @@ class PatternRecognizer:
         if early_range <= 0:
             return None
         atr = ind.atr if ind.atr > 0 else 1
-        # Bullish Judas: early spike DOWN below range, then recovery above early high
-        early_spike_low = early["low"].min()
+        # Bullish Judas: spike into the first 2 bars' low (the false sweep), then recovery above early high
+        # early_spike_low = extreme of the first 2 bars (the false breakdown candle)
+        early_spike_low = early.iloc[:2]["low"].min()
         later_close = df.iloc[-1]["close"]
         if early_spike_low < early_low * 0.998 and later_close > early_high:
             if (later_close - early_spike_low) > atr:
@@ -2919,8 +2928,8 @@ class PatternRecognizer:
                 return PatternResult("Judas Swing Bullish", "LONG", confidence,
                                      f"Judas Swing: early false breakdown below ${early_spike_low:.2f}, "
                                      f"now reversed above ${early_high:.2f}")
-        # Bearish Judas: early spike UP above range, then rejection below early low
-        early_spike_high = early["high"].max()
+        # Bearish Judas: spike into the first 2 bars' high (the false breakout), then rejection
+        early_spike_high = early.iloc[:2]["high"].max()
         if early_spike_high > early_high * 1.002 and later_close < early_low:
             if (early_spike_high - later_close) > atr:
                 confidence = 80
@@ -3058,27 +3067,44 @@ class PatternRecognizer:
         if ind.keltner_upper == 0 or ind.bb_upper == 0:
             return None
         curr_close = df.iloc[-1]["close"]
-        # Squeeze: BB inside Keltner
-        bb_in_keltner = ind.bb_upper <= ind.keltner_upper and ind.bb_lower >= ind.keltner_lower
-        # Was it squeezed recently? Check prior bars
-        if not bb_in_keltner:
-            return None
-        # BB expanding beyond Keltner = breakout from squeeze
+        # Squeeze released: prior bar had BB inside KC, current bar BB expands beyond KC
+        curr_bb_in_kc = ind.bb_upper <= ind.keltner_upper and ind.bb_lower >= ind.keltner_lower
+        # Check if squeeze was active in prior bars (last 1-5 bars had BB inside KC)
+        squeeze_was_active = False
         if "bb_upper" in df.columns and "_kc_upper" in df.columns:
-            prior = df.iloc[-3]
-            prior_bb_in = (float(prior.get("bb_upper", ind.keltner_upper)) <= float(prior.get("_kc_upper", ind.keltner_upper)) and
-                           float(prior.get("bb_lower", ind.keltner_lower)) >= float(prior.get("_kc_lower", ind.keltner_lower)))
-            if not prior_bb_in:
-                return None  # Not coming out of squeeze
-        # Determine direction of breakout
-        if curr_close > ind.bb_upper:
+            for lookback_i in range(1, 6):
+                if lookback_i >= len(df):
+                    break
+                prior = df.iloc[-lookback_i - 1]
+                p_bb_upper = float(prior.get("bb_upper", ind.bb_upper + 1))
+                p_kc_upper = float(prior.get("_kc_upper", ind.keltner_upper))
+                p_bb_lower = float(prior.get("bb_lower", ind.bb_lower - 1))
+                p_kc_lower = float(prior.get("_kc_lower", ind.keltner_lower))
+                if p_bb_upper <= p_kc_upper and p_bb_lower >= p_kc_lower:
+                    squeeze_was_active = True
+                    break
+        else:
+            # Without column data, assume squeeze was active if current bands are tight
+            band_width = ind.bb_upper - ind.bb_lower
+            kc_width = ind.keltner_upper - ind.keltner_lower
+            squeeze_was_active = band_width < kc_width * 1.1
+        if not squeeze_was_active:
+            return None
+        # Now current bar should be breaking OUT of the squeeze (BB expanding beyond KC)
+        breaking_up   = (not curr_bb_in_kc) and curr_close > ind.keltner_upper
+        breaking_down = (not curr_bb_in_kc) and curr_close < ind.keltner_lower
+        # Also fire if price closes beyond BB bands while squeeze was just released
+        if not (breaking_up or breaking_down):
+            breaking_up   = curr_close > ind.bb_upper and not curr_bb_in_kc
+            breaking_down = curr_close < ind.bb_lower and not curr_bb_in_kc
+        if breaking_up:
             confidence = 80 + min(ind.rvol * 3, 10)
             return PatternResult("Keltner Squeeze Breakout Long", "LONG", min(confidence, 90),
-                                 f"Keltner squeeze breakout LONG: BB inside KC, now breaking up")
-        elif curr_close < ind.bb_lower:
+                                 f"Keltner squeeze breakout LONG: squeeze released, BB expanding above KC")
+        elif breaking_down:
             confidence = 80 + min(ind.rvol * 3, 10)
             return PatternResult("Keltner Squeeze Breakout Short", "SHORT", min(confidence, 90),
-                                 f"Keltner squeeze breakout SHORT: BB inside KC, now breaking down")
+                                 f"Keltner squeeze breakout SHORT: squeeze released, BB expanding below KC")
         return None
 
     def detect_donchian_breakout(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -3432,6 +3458,8 @@ class PatternRecognizer:
             "Kill Zone Bullish", "Kill Zone Bearish",
             "Gap & Go Long", "Gap & Go Short",
             "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
+            "Demand Zone (Long Bias)", "Supply Zone (Short Bias)",
+            "Mitigation Block Bullish", "Mitigation Block Bearish",
         }
 
         # ── Chart / Technical patterns (20 pts max) ───────────────────────
@@ -3442,7 +3470,10 @@ class PatternRecognizer:
             "Cup and Handle",
             "Ascending Triangle", "Descending Triangle", "Symmetrical Triangle",
             "Bull Flag", "Bear Flag",
-            "Rectangle Pattern", "Rounding Bottom",
+            "Rectangle Breakout", "Rectangle Breakdown", "Rounding Bottom",
+            "Quasimodo Bullish",
+            "Volume Climax Reversal Long", "Volume Climax Reversal Short",
+            "Broadening Formation Long", "Broadening Formation Short",
             "Bullish Engulfing", "Bearish Engulfing",
             "Doji Reversal", "Hammer", "Shooting Star",
             "Inverted Hammer", "Hanging Man",
@@ -3665,3 +3696,354 @@ class PatternRecognizer:
             "direction": direction,
             "dominant": max(long_norm, short_norm),
         }
+
+    # ─────────────────────────────────────────────────────────────────────
+    # SUPPLY AND DEMAND ZONES
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_supply_demand_zone(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Supply/Demand Zones: origin candle identification.
+        - Demand Zone: base candle (small body, low volume) immediately before
+          a strong bullish impulse leg. Price returning to that base = buy zone.
+        - Supply Zone: base candle before a strong bearish impulse. Return = sell zone.
+        """
+        if len(df) < 20:
+            return None
+        try:
+            closes = df["close"].values
+            opens  = df["open"].values
+            highs  = df["high"].values
+            lows   = df["low"].values
+            vols   = df["volume"].values
+            atr = ind.atr if ind.atr > 0 else (closes[-1] * 0.005)
+            curr_close = closes[-1]
+
+            for i in range(-20, -4):
+                body   = abs(closes[i] - opens[i])
+                move   = abs(closes[i+1] - opens[i+1])
+                # Impulse candle: body > 2× current ATR and > 2× base candle body
+                if move < 2 * atr or move < 2 * max(body, 0.001):
+                    continue
+
+                zone_high = highs[i]
+                zone_low  = lows[i]
+                zone_mid  = (zone_high + zone_low) / 2
+
+                # Demand Zone: impulse is bullish (up move), price returning from above
+                if closes[i+1] > opens[i+1] and curr_close <= zone_high and curr_close >= zone_low:
+                    # Price is retesting the demand zone
+                    zone_width = zone_high - zone_low
+                    confidence = min(72 + (move / atr) * 4, 86)
+                    if ind.rsi < 50:
+                        confidence = min(confidence + 5, 88)
+                    return PatternResult(
+                        "Demand Zone (Long Bias)", "LONG", confidence,
+                        f"Demand Zone ${zone_low:.2f}–${zone_high:.2f}: "
+                        f"base before {move/atr:.1f}× ATR impulse — retest buy"
+                    )
+
+                # Supply Zone: impulse is bearish (down move), price returning from below
+                if closes[i+1] < opens[i+1] and curr_close >= zone_low and curr_close <= zone_high:
+                    confidence = min(72 + (move / atr) * 4, 86)
+                    if ind.rsi > 50:
+                        confidence = min(confidence + 5, 88)
+                    return PatternResult(
+                        "Supply Zone (Short Bias)", "SHORT", confidence,
+                        f"Supply Zone ${zone_low:.2f}–${zone_high:.2f}: "
+                        f"base before {move/atr:.1f}× ATR impulse — retest sell"
+                    )
+        except Exception:
+            pass
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # QUASIMODO BULLISH (inverse of the bearish already implemented)
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_quasimodo_bullish(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Bullish Quasimodo (Left Shoulder > Right Shoulder > Head lowest).
+        - Head: lowest low in the range
+        - Left Shoulder: higher low before head
+        - Right Shoulder: higher low after head (higher than head, lower than left shoulder)
+        - Entry: when price breaks back above the neckline (local resistance between shoulders)
+        """
+        if len(df) < 25:
+            return None
+        try:
+            lows  = df["low"].values
+            highs = df["high"].values
+            closes = df["close"].values
+            n = len(lows)
+
+            head_idx = int(np.argmin(lows[-20:]))  # deepest low in last 20 bars
+            head_idx = n - 20 + head_idx
+
+            if head_idx < 5 or head_idx > n - 4:
+                return None
+
+            left_shoulder_low  = lows[head_idx-5:head_idx].min()
+            right_shoulder_low = lows[head_idx+1:].min()
+
+            # Right shoulder must be higher than head but lower than left shoulder
+            head_low = lows[head_idx]
+            if not (head_low < right_shoulder_low < left_shoulder_low):
+                return None
+
+            # Neckline = local high between head and right shoulder (resistance to break)
+            neckline = highs[head_idx:].max()
+            # Price must break ABOVE neckline to confirm
+            if closes[-1] < neckline * 0.998:
+                return None
+
+            confidence = 72
+            if ind.rsi < 45:
+                confidence += 5
+            return PatternResult(
+                "Quasimodo Bullish", "LONG", min(confidence, 82),
+                f"Bullish QM: head=${head_low:.2f}, neckline=${neckline:.2f} broken above"
+            )
+        except Exception:
+            pass
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # VOLUME CLIMAX REVERSAL
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_volume_climax_reversal(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Volume Climax: extreme volume (≥4× avg) on a bar with a small body.
+        Signals professional absorption — expect reversal or strong base.
+        """
+        if len(df) < 20:
+            return None
+        try:
+            vols   = df["volume"].values
+            closes = df["close"].values
+            opens  = df["open"].values
+            highs  = df["high"].values
+            lows   = df["low"].values
+
+            avg_vol = np.mean(vols[-20:-1])
+            if avg_vol <= 0:
+                return None
+
+            curr_vol   = vols[-1]
+            curr_body  = abs(closes[-1] - opens[-1])
+            curr_range = highs[-1] - lows[-1]
+
+            if curr_vol < 4 * avg_vol:
+                return None  # not a climax volume bar
+
+            # Small body relative to range = absorption (professionals absorbing)
+            if curr_range <= 0 or curr_body / curr_range > 0.4:
+                return None  # body too large — momentum bar, not absorption
+
+            # Direction of climax: if prior trend was up, this is topping climax
+            prior_trend_up = closes[-5] < closes[-2]
+            confidence = min(72 + (curr_vol / avg_vol) * 2, 85)
+
+            if prior_trend_up:
+                return PatternResult(
+                    "Volume Climax Reversal Short", "SHORT", confidence,
+                    f"Climax volume {curr_vol/avg_vol:.1f}× avg + small body — exhaustion top"
+                )
+            else:
+                return PatternResult(
+                    "Volume Climax Reversal Long", "LONG", confidence,
+                    f"Climax volume {curr_vol/avg_vol:.1f}× avg + small body — exhaustion bottom"
+                )
+        except Exception:
+            pass
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BROADENING FORMATION (MEGAPHONE) — Distribution / Expanding Volatility
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_broadening_formation(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Broadening Formation (Megaphone): successive higher highs AND lower lows.
+        Each swing is wider than the last → institutional distribution / indecision.
+        5th touch of the upper/lower trendline is the highest-probability trade.
+        """
+        if len(df) < 20:
+            return None
+        try:
+            highs  = df["high"].values[-20:]
+            lows   = df["low"].values[-20:]
+            closes = df["close"].values
+
+            # Find swing highs/lows using pure numpy (order=2 neighbor comparison)
+            hi_idx = [i for i in range(2, len(highs)-2)
+                      if highs[i] >= highs[i-1] and highs[i] >= highs[i-2]
+                      and highs[i] >= highs[i+1] and highs[i] >= highs[i+2]]
+            lo_idx = [i for i in range(2, len(lows)-2)
+                      if lows[i] <= lows[i-1] and lows[i] <= lows[i-2]
+                      and lows[i] <= lows[i+1] and lows[i] <= lows[i+2]]
+
+            if len(hi_idx) < 2 or len(lo_idx) < 2:
+                return None
+
+            # Expanding highs: each successive high is higher
+            sw_highs = np.array([highs[i] for i in hi_idx])
+            sw_lows  = np.array([lows[i]  for i in lo_idx])
+            highs_expanding = all(sw_highs[i] < sw_highs[i+1] for i in range(len(sw_highs)-1))
+            lows_expanding  = all(sw_lows[i]  > sw_lows[i+1]  for i in range(len(sw_lows)-1))
+
+            if not (highs_expanding and lows_expanding):
+                return None
+
+            curr_close = closes[-1]
+            last_sw_high = sw_highs[-1]
+            last_sw_low  = sw_lows[-1]
+
+            # 5th touch trade: at top of pattern → short; at bottom → long
+            if abs(curr_close - last_sw_high) / last_sw_high < 0.005:
+                confidence = 74
+                if ind.rsi > 60:
+                    confidence += 5
+                return PatternResult(
+                    "Broadening Formation Short", "SHORT", min(confidence, 82),
+                    f"Megaphone: 5th touch upper bound ${last_sw_high:.2f} — short reversal"
+                )
+            if abs(curr_close - last_sw_low) / last_sw_low < 0.005:
+                confidence = 74
+                if ind.rsi < 40:
+                    confidence += 5
+                return PatternResult(
+                    "Broadening Formation Long", "LONG", min(confidence, 82),
+                    f"Megaphone: 5th touch lower bound ${last_sw_low:.2f} — long reversal"
+                )
+        except Exception:
+            pass
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # MITIGATION BLOCK — Partially-tested Order Block acting as magnet
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_mitigation_block(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Mitigation Block: an Order Block that was partially tested (price entered
+        the zone but did NOT fully breach it) and then left. Price returning for
+        a second test to "mitigate" remaining orders → high-probability continuation.
+        """
+        if len(df) < 25:
+            return None
+        try:
+            closes = df["close"].values
+            opens  = df["open"].values
+            highs  = df["high"].values
+            lows   = df["low"].values
+            atr    = ind.atr if ind.atr > 0 else closes[-1] * 0.005
+            curr   = closes[-1]
+
+            for i in range(-25, -8):
+                # Bullish OB: bearish candle before big up move
+                if closes[i] < opens[i]:
+                    ob_high = highs[i]
+                    ob_low  = lows[i]
+                    # Subsequent impulse: at least 1.5× ATR up
+                    subsequent = closes[i+1:i+5]
+                    if len(subsequent) < 2 or max(subsequent) - ob_high < 1.5 * atr:
+                        continue
+                    # Was the OB partially tested (price dipped into zone but didn't close below)?
+                    later = df.iloc[i+3:]
+                    if len(later) < 3:
+                        continue
+                    partial_test = any(
+                        (row["low"] <= ob_high and row["close"] > ob_low)
+                        for _, row in later.iloc[:-3].iterrows()
+                    )
+                    if not partial_test:
+                        continue
+                    # Current price returning to the OB zone
+                    if ob_low <= curr <= ob_high:
+                        confidence = min(75 + ind.volume_ratio * 3, 86)
+                        return PatternResult(
+                            "Mitigation Block Bullish", "LONG", confidence,
+                            f"Mitigation Block ${ob_low:.2f}–${ob_high:.2f}: "
+                            f"partial OB test, returning for mitigation — long"
+                        )
+
+                # Bearish OB: bullish candle before big down move
+                if closes[i] > opens[i]:
+                    ob_high = highs[i]
+                    ob_low  = lows[i]
+                    subsequent = closes[i+1:i+5]
+                    if len(subsequent) < 2 or ob_low - min(subsequent) < 1.5 * atr:
+                        continue
+                    later = df.iloc[i+3:]
+                    if len(later) < 3:
+                        continue
+                    partial_test = any(
+                        (row["high"] >= ob_low and row["close"] < ob_high)
+                        for _, row in later.iloc[:-3].iterrows()
+                    )
+                    if not partial_test:
+                        continue
+                    if ob_low <= curr <= ob_high:
+                        confidence = min(75 + ind.volume_ratio * 3, 86)
+                        return PatternResult(
+                            "Mitigation Block Bearish", "SHORT", confidence,
+                            f"Mitigation Block ${ob_low:.2f}–${ob_high:.2f}: "
+                            f"partial OB test, returning for mitigation — short"
+                        )
+        except Exception:
+            pass
+        return None
+
+    # ─────────────────────────────────────────────────────────────────────
+    # ROUNDING BOTTOM — Gradual accumulation leading to breakout
+    # ─────────────────────────────────────────────────────────────────────
+    def detect_rounding_bottom(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Rounding Bottom (Saucer): gradual U-shaped base.
+        Left side declining, base, right side recovering with increasing volume.
+        """
+        if len(df) < 30:
+            return None
+        try:
+            closes = df["close"].values[-30:]
+            vols   = df["volume"].values[-30:]
+            n = len(closes)
+
+            # Divide into 3 thirds
+            third = n // 3
+            left   = closes[:third]
+            bottom = closes[third:2*third]
+            right  = closes[2*third:]
+
+            left_mean   = np.mean(left)
+            bottom_mean = np.mean(bottom)
+            right_mean  = np.mean(right)
+
+            # U-shape: left > bottom, right > bottom, right approaching left
+            if not (left_mean > bottom_mean and right_mean > bottom_mean):
+                return None
+            if right_mean < left_mean * 0.90:
+                return None  # right side not recovering enough
+
+            # Volume should increase in right portion (accumulation complete)
+            left_vol   = np.mean(vols[:third])
+            right_vol  = np.mean(vols[2*third:])
+            if right_vol < left_vol * 0.8:
+                return None  # volume not expanding on right
+
+            # Price should be above the midpoint of the base
+            curr_close = closes[-1]
+            base_level = bottom_mean
+            if curr_close < base_level:
+                return None
+
+            confidence = 72
+            if right_vol > left_vol * 1.2:
+                confidence += 5
+            if ind.rsi > 45 and ind.rsi < 65:
+                confidence += 3
+
+            return PatternResult(
+                "Rounding Bottom", "LONG", min(confidence, 82),
+                f"Rounding Bottom: U-shape base ${base_level:.2f}, right volume expanding — accumulation breakout"
+            )
+        except Exception:
+            pass
+        return None

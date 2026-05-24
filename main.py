@@ -2019,7 +2019,7 @@ class TradingBot:
             # Add today's unrealised P&L
             if self.risk_manager:
                 today_pnl   = self.risk_manager.state.daily_pnl
-                _daily_cap  = self.risk_manager.state.daily_capital or self._available_balance or 1.0
+                _daily_cap  = self.risk_manager.state.daily_capital or self.risk_manager._available_balance or 1.0
                 total_pct   = pct + (today_pnl / _daily_cap * 100)
             else:
                 total_pct = pct
@@ -3174,7 +3174,7 @@ class TradingBot:
                         atr=avg * 0.01,
                         entry_time=format_ist_timestamp(),
                     )
-                self.risk_manager.add_position(pos)
+                    self.risk_manager.add_position(pos)
                 synced += 1
             if synced:
                 logger.info(f"[{format_ist_timestamp()}] Synced {synced} open position(s) from Alpaca")

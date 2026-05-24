@@ -439,14 +439,21 @@ class MeanReversionEngine:
             logger.debug(f"[MR] {symbol}: volume_ratio={curr_vol_ratio:.1f} > {VOLUME_BREAKOUT_RATIO} — breakout, skip")
             return False
 
-        # Gap filter: compare today's open to previous bar close
-        if len(df) >= 2:
-            prev_close = float(df["close"].iloc[-2])
-            curr_open  = float(df["open"].iloc[-1])
-            if prev_close > 0:
-                gap_pct = abs((curr_open - prev_close) / prev_close) * 100.0
+        # Gap filter: compare first bar's open to prior session's last close (daily gap)
+        if len(df) >= 10:
+            first_open  = float(df["open"].iloc[0])
+            prior_close = float(df["close"].iloc[0])  # fallback: use first bar close
+            # Try to get yesterday's close from the earliest bar in the series
+            if "prev_close" in df.columns:
+                prior_close = float(df["prev_close"].iloc[0])
+            elif len(df) >= 2:
+                # Approximate: first bar open vs second bar open shift
+                prior_close = float(df["open"].iloc[0])
+                first_open  = float(df["open"].iloc[1])
+            if prior_close > 0:
+                gap_pct = abs((first_open - prior_close) / prior_close) * 100.0
                 if gap_pct > MAX_GAP_PCT:
-                    logger.debug(f"[MR] {symbol}: gap={gap_pct:.1f}% > {MAX_GAP_PCT}% — skip")
+                    logger.debug(f"[MR] {symbol}: daily gap={gap_pct:.1f}% > {MAX_GAP_PCT}% — skip")
                     return False
 
         # Earnings filter (best-effort; failure is non-fatal)

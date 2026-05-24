@@ -334,12 +334,12 @@ class ScalpingEngine:
 
     def _filter_today(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         try:
-            today_ist = get_current_ist_time().date()
+            today_et = get_current_ist_time().date()
             if isinstance(df.index, pd.DatetimeIndex):
                 if df.index.tz is None:
                     df.index = df.index.tz_localize("UTC")
-                df.index = df.index.tz_convert(IST)
-                filtered = df[df.index.date == today_ist]
+                df.index = df.index.tz_convert(ET)
+                filtered = df[df.index.date == today_et]
                 return filtered if not filtered.empty else None
             return df
         except Exception as e:

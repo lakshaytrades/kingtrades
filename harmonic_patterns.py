@@ -165,7 +165,7 @@ class HarmonicPatternDetector:
             # Bullish ABCD: A(high) B(low) C(high) D(low)
             if a_p > b_p and c_p > b_p and d_p < c_p:
                 if (fib_ok(bc_ab, 0.618) or fib_ok(bc_ab, 0.786)) and \
-                   (fib_ok(cd_bc, 1.272) or fib_ok(cd_bc, 1.618) or fib_ok(cd_bc / ab, 1.0)):
+                   (fib_ok(cd_bc, 1.272) or fib_ok(cd_bc, 1.618) or fib_ok(cd / ab, 1.0)):
                     score = 70 - abs(bc_ab - 0.618) * 100 - abs(cd_bc - 1.272) * 50
                     if score > best_score:
                         best_score = score
@@ -247,7 +247,7 @@ class HarmonicPatternDetector:
                     best_conf = score
                     conf = min(60 + score * 0.3, 88)
                     prz  = d_p
-                    sl   = x_p + xa * 0.05   # just below X
+                    sl   = d_p - xa * 0.05   # just below D (entry point)
                     t1   = d_p + xa * 0.382
                     t2   = d_p + xa * 0.618
                     best = HarmonicResult(
@@ -269,7 +269,7 @@ class HarmonicPatternDetector:
                     best_conf = score
                     conf = min(60 + score * 0.3, 88)
                     prz  = d_p
-                    sl   = x_p - xa * 0.05
+                    sl   = d_p + xa * 0.05   # just above D (entry point)
                     t1   = d_p - xa * 0.382
                     t2   = d_p - xa * 0.618
                     best = HarmonicResult(
@@ -401,7 +401,7 @@ class HarmonicPatternDetector:
                     best_conf = score
                     conf = min(65 + score * 0.28, 91)
                     prz  = d_p
-                    sl   = x_p + xa * 0.05
+                    sl   = d_p - xa * 0.05   # just below D (entry point)
                     t1   = d_p + xa * 0.382
                     t2   = d_p + xa * 0.618
                     best = HarmonicResult(
@@ -423,7 +423,7 @@ class HarmonicPatternDetector:
                     best_conf = score
                     conf = min(65 + score * 0.28, 91)
                     prz  = d_p
-                    sl   = x_p - xa * 0.05
+                    sl   = d_p + xa * 0.05   # just above D (entry point)
                     t1   = d_p - xa * 0.382
                     t2   = d_p - xa * 0.618
                     best = HarmonicResult(

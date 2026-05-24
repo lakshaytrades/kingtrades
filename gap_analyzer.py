@@ -163,13 +163,13 @@ class GapAnalyzer:
         if gap_info is None:
             return True, ""   # No gap data → assume safe (no false positives)
 
-        # Calculate minutes since market open (9:15 AM IST)
-        now_ist = get_current_ist_time()
+        # Calculate minutes since US market open (9:30 AM ET)
+        now_ist = get_current_ist_time()  # aliased to ET
         from datetime import datetime, time as dtime
         from zoneinfo import ZoneInfo
-        IST = ZoneInfo("Asia/Kolkata")
+        ET = ZoneInfo("America/New_York")
         today = now_ist.date()
-        market_open_dt = datetime(today.year, today.month, today.day, 9, 15, 0, tzinfo=IST)
+        market_open_dt = datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
         minutes_since_open = max(0.0, (now_ist - market_open_dt).total_seconds() / 60)
 
         return gap_info.is_safe(minutes_since_open)

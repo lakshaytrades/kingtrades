@@ -999,6 +999,29 @@ class ProfitMaximizer:
 
         current_price = float(df_5m["close"].iloc[-1]) if df_5m is not None and len(df_5m) > 0 else 0
 
+        # Pre-compute RSI and MACD columns if missing so divergence detectors can run
+        if df_5m is not None and len(df_5m) >= 14 and "rsi" not in df_5m.columns:
+            try:
+                closes = df_5m["close"]
+                delta = closes.diff()
+                gain = delta.clip(lower=0).ewm(com=13, adjust=False).mean()
+                loss = (-delta.clip(upper=0)).ewm(com=13, adjust=False).mean()
+                rs = gain / loss.replace(0, np.nan)
+                df_5m = df_5m.copy()
+                df_5m["rsi"] = 100 - (100 / (1 + rs))
+            except Exception:
+                pass
+        if df_5m is not None and len(df_5m) >= 26 and "macd" not in df_5m.columns:
+            try:
+                df_5m = df_5m.copy() if "rsi" in df_5m.columns else df_5m
+                ema12 = df_5m["close"].ewm(span=12, adjust=False).mean()
+                ema26 = df_5m["close"].ewm(span=26, adjust=False).mean()
+                df_5m["macd"] = ema12 - ema26
+                df_5m["macd_signal"] = df_5m["macd"].ewm(span=9, adjust=False).mean()
+                df_5m["macd_hist"] = df_5m["macd"] - df_5m["macd_signal"]
+            except Exception:
+                pass
+
         # 1. NR7
         try:
             nr7_r = self.nr7.detect(df_5m)
