@@ -98,7 +98,7 @@ class TradingMode:
     AGGRESSIVE  = "AGGRESSIVE"   # Morning, winning, below target
     NORMAL      = "NORMAL"       # Standard mode
     CAUTION     = "CAUTION"      # -$25 loss — A grade minimum
-    PROTECTION  = "PROTECTION"   # Target hit $200 — A+ only
+    PROTECTION  = "PROTECTION"   # Target hit $200 — A-grade minimum (keep pressing)
     LOCK        = "LOCK"         # $300 hit — 60% size, A+ only
     DEFENSIVE   = "DEFENSIVE"    # -$50 loss — A+ only, 60% size
     STOP        = "STOP"         # $500 hit OR -$100 loss — no new entries
@@ -107,7 +107,7 @@ class TradingMode:
         AGGRESSIVE: "🚀 AGGRESSIVE — Full size, hot streak",
         NORMAL:     "✅ NORMAL — Standard risk",
         CAUTION:    "⚠️ CAUTION — A-grade minimum (down $25)",
-        PROTECTION: "🛡️ PROTECTION — Target hit! A+ only, banking profits",
+        PROTECTION: "🛡️ PROTECTION — Target hit! A-grade minimum, keep pressing",
         LOCK:       "🔒 LOCK — $300 secured, 60% size only",
         DEFENSIVE:  "🔴 DEFENSIVE — A+ only, down $50",
         STOP:       "🛑 STOP — Daily limit reached. No new trades.",

@@ -180,7 +180,11 @@ class MomentumBurstDetector:
 
     def _evaluate(self, symbol: str, fetcher) -> Optional[BurstSetup]:
         """Evaluate one symbol for burst conditions."""
-        df = fetcher.get_today_candles(symbol)
+        # Prefer get_today_candles; fall back to get_ohlcv for interface compatibility
+        if hasattr(fetcher, "get_today_candles"):
+            df = fetcher.get_today_candles(symbol)
+        else:
+            df = fetcher.get_ohlcv(symbol, interval="5minute", lookback_days=1)
         if df is None or len(df) < 15:
             return None
 

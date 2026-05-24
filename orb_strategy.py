@@ -137,9 +137,18 @@ class ORBStrategy:
         if "prev_close" in df.columns and float(df.iloc[0].get("prev_close", 0)) > 0:
             prev_close = float(df.iloc[0]["prev_close"])
             gap_pct = abs(first_open - prev_close) / prev_close * 100
+        elif len(df) > len(df[df.index.date == df.index[0].date()]):
+            # Use the last bar before today's session as previous session close
+            today_mask = df.index.date == df.index[-1].date()
+            prev_rows  = df[~today_mask]
+            if not prev_rows.empty:
+                _pc = float(prev_rows["close"].iloc[-1])
+                gap_pct = abs(first_open - _pc) / _pc * 100 if _pc > 0 else 0.0
+            else:
+                gap_pct = 0.0   # no prior data — skip gap filter
         else:
-            # Fallback: use OR width as a proxy; gap is already penalised via OR width check.
-            gap_pct = abs(first_open - first_close) / first_close * 100 if first_close > 0 else 0.0
+            # No prior session data: don't falsely reject via intra-candle body proxy
+            gap_pct = 0.0
 
         if gap_pct > self.MAX_GAP_PCT:
             return _invalid_setup(f"gap {gap_pct:.2f}% > {self.MAX_GAP_PCT}% (gap traders dominate)")
