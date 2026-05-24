@@ -386,6 +386,30 @@ class EconomicCalendar:
         except Exception:
             return "Unknown", 999
 
+    def is_blackout_now(self) -> Tuple[bool, str]:
+        """Returns (blackout_active, reason). Used by main.py trading cycle."""
+        _, note, trading_ok = self.get_calendar_score_adjustment()
+        if not trading_ok:
+            return True, note or "High-impact event window — no new entries"
+        return False, ""
+
+    def is_fno_expiry_today(self) -> bool:
+        """US bot stub — no F&O expiry concept in US markets."""
+        return False
+
+    def is_holiday_today(self) -> bool:
+        """US bot stub — no holiday calendar hardcoded. Returns False."""
+        return False
+
+    def format_upcoming_events(self) -> str:
+        """Next high-impact events for morning brief."""
+        next_event, next_days = self.days_to_next_event()
+        if next_days == 0:
+            return f"📅 HIGH IMPACT TODAY: {next_event}"
+        if next_days <= 3:
+            return f"📅 Coming up: {next_event} in {next_days} day(s)"
+        return f"📅 Next event: {next_event} in {next_days} day(s)"
+
     def format_telegram_brief(self) -> str:
         """Calendar section for morning Telegram message."""
         try:
@@ -434,3 +458,7 @@ def get_economic_calendar() -> EconomicCalendar:
     if _cal_instance is None:
         _cal_instance = EconomicCalendar()
     return _cal_instance
+
+
+# Alias expected by main.py
+get_calendar = get_economic_calendar

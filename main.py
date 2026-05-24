@@ -244,7 +244,7 @@ class TradingBot:
             events = self.calendar.get_today_events()
             if events:
                 logger.info(f"[{format_ist_timestamp()}] Today's events: "
-                            + ", ".join(e['event'] for e in events))
+                            + ", ".join(getattr(e, 'name', str(e)) for e in events))
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Calendar failed: {e}")
 

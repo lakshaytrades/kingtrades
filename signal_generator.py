@@ -1343,9 +1343,10 @@ class SignalGenerator:
         key = "long" if direction == "LONG" else "short"
         _s15  = score_15m.get(key, 0) if score_15m else 50
         _s1h  = score_1h.get(key, 0)  if score_1h  else 50
+        score += 10.0                        # base: signal exists at all (+10 pts)
         score += score_5m.get(key, 0) * 0.40
         score += _s15 * 0.30
-        score += _s1h * 0.20
+        score += _s1h * 0.20                 # total weight = 10 + 40 + 30 + 20 = 100%
 
         # ── MTF alignment bonus ───────────────────────────
         if alignment.get("full_alignment"):

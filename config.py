@@ -91,7 +91,7 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 0.6          # tight stop — move to breakeven fast, limit downside
+ATR_SL_MULTIPLIER: float = 1.0          # 1× ATR stop — wide enough to survive intraday noise, tight enough for 2:1+ R:R
 ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book target at 1.5:1 R:R (scalping)
 ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't overstay
 ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
