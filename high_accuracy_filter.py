@@ -551,8 +551,13 @@ class HighAccuracyFilter:
         learner=None,
     ) -> Tuple[bool, float, str]:
         """Require minimum 70 base score."""
-        best_score   = max(pat_scores) if pat_scores else signal_score
-        best_pattern = pat_names[pat_scores.index(best_score)] if pat_scores and pat_names else "?"
+        best_score = max(pat_scores) if pat_scores else signal_score
+        if pat_scores and pat_names and len(pat_names) == len(pat_scores):
+            best_pattern = pat_names[pat_scores.index(best_score)]
+        elif pat_names:
+            best_pattern = pat_names[0]
+        else:
+            best_pattern = "?"
 
         effective_score = signal_score
         if learner and best_pattern:

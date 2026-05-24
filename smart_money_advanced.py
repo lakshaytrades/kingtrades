@@ -175,7 +175,7 @@ def detect_breaker_block(df: pd.DataFrame) -> Optional[PatternResult]:
         if block_low <= curr <= block_high:
             confidence = 70
             return PatternResult(
-                "Bearish Breaker Block", "SHORT", confidence,
+                "Breaker Block Bearish", "SHORT", confidence,
                 f"Breaker Block ${block_low:.2f}-${block_high:.2f}: "
                 f"failed bullish order block → now resistance retest"
             )
@@ -204,7 +204,7 @@ def detect_breaker_block(df: pd.DataFrame) -> Optional[PatternResult]:
         if block_low <= curr <= block_high:
             confidence = 70
             return PatternResult(
-                "Bullish Breaker Block", "LONG", confidence,
+                "Breaker Block Bullish", "LONG", confidence,
                 f"Breaker Block ${block_low:.2f}-${block_high:.2f}: "
                 f"bullish candle swept then recovered → retesting as support"
             )

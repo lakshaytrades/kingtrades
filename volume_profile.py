@@ -146,7 +146,7 @@ class VolumeProfileResult:
     def summary(self) -> str:
         return (
             f"VolumeProfile {self.symbol} ({self.session_date}) | "
-            f"VPOC=₹{self.vpoc:.2f} | VAH=₹{self.vah:.2f} | VAL=₹{self.val:.2f} | "
+            f"VPOC=${self.vpoc:.2f} | VAH=${self.vah:.2f} | VAL=${self.val:.2f} | "
             f"VA Width={self.value_area_width_pct:.1f}% | "
             f"HVNs={len(self.hvn_levels)} LVNs={len(self.lvn_levels)}"
         )
@@ -393,55 +393,55 @@ class VolumeProfileAnalyzer:
                 notes.append(f"Price ABOVE value area ({current_price:.2f}>{result.vah:.2f}) — LONG in acceptance zone")
             elif location == "AT_VPOC":
                 adjustment += 5
-                notes.append(f"Price at VPOC ₹{result.vpoc:.2f} — balanced, slight LONG edge")
+                notes.append(f"Price at VPOC ${result.vpoc:.2f} — balanced, slight LONG edge")
             elif location == "NEAR_VAL":
                 adjustment += 10
-                notes.append(f"LONG from VAL ₹{result.val:.2f} — value area support, high R:R")
+                notes.append(f"LONG from VAL ${result.val:.2f} — value area support, high R:R")
             elif location == "BELOW_VALUE_AREA":
                 adjustment -= 10
-                notes.append(f"Price BELOW value area ₹{result.val:.2f} — risk of continuation down, avoid LONG")
+                notes.append(f"Price BELOW value area ${result.val:.2f} — risk of continuation down, avoid LONG")
             elif location == "NEAR_VAH":
                 adjustment -= 5
-                notes.append(f"LONG near VAH ₹{result.vah:.2f} — resistance overhead, tight stop needed")
+                notes.append(f"LONG near VAH ${result.vah:.2f} — resistance overhead, tight stop needed")
 
             if nearby_hvn:
                 dist = abs(current_price - nearby_hvn) / current_price * 100
                 if nearby_hvn > current_price:
                     adjustment += 3
-                    notes.append(f"HVN above at ₹{nearby_hvn:.2f} ({dist:.1f}% away) — possible target")
+                    notes.append(f"HVN above at ${nearby_hvn:.2f} ({dist:.1f}% away) — possible target")
                 else:
                     adjustment += 5
-                    notes.append(f"HVN below at ₹{nearby_hvn:.2f} — strong support under trade")
+                    notes.append(f"HVN below at ${nearby_hvn:.2f} — strong support under trade")
 
             if nearby_lvn and nearby_lvn > current_price:
-                notes.append(f"LVN at ₹{nearby_lvn:.2f} — price may travel fast through this zone")
+                notes.append(f"LVN at ${nearby_lvn:.2f} — price may travel fast through this zone")
                 adjustment += 4
 
         else:  # SHORT
             if location == "BELOW_VALUE_AREA":
                 adjustment += 8
-                notes.append(f"Price BELOW value area ₹{result.val:.2f} — SHORT in distribution")
+                notes.append(f"Price BELOW value area ${result.val:.2f} — SHORT in distribution")
             elif location == "AT_VPOC":
                 adjustment += 5
-                notes.append(f"Price at VPOC ₹{result.vpoc:.2f} — SHORT balanced entry")
+                notes.append(f"Price at VPOC ${result.vpoc:.2f} — SHORT balanced entry")
             elif location == "NEAR_VAH":
                 adjustment += 10
-                notes.append(f"SHORT from VAH ₹{result.vah:.2f} — value area resistance, high R:R")
+                notes.append(f"SHORT from VAH ${result.vah:.2f} — value area resistance, high R:R")
             elif location == "ABOVE_VALUE_AREA":
                 adjustment -= 10
-                notes.append(f"Price ABOVE value area ₹{result.vah:.2f} — breakout risk, avoid SHORT")
+                notes.append(f"Price ABOVE value area ${result.vah:.2f} — breakout risk, avoid SHORT")
             elif location == "NEAR_VAL":
                 adjustment -= 5
-                notes.append(f"SHORT near VAL ₹{result.val:.2f} — support below, tight stop needed")
+                notes.append(f"SHORT near VAL ${result.val:.2f} — support below, tight stop needed")
 
             if nearby_hvn and nearby_hvn < current_price:
                 adjustment += 5
-                notes.append(f"HVN below at ₹{nearby_hvn:.2f} — strong overhead supply for SHORT")
+                notes.append(f"HVN below at ${nearby_hvn:.2f} — strong overhead supply for SHORT")
 
         # VPOC magnet effect
         dist_to_vpoc = abs(current_price - result.vpoc) / result.vpoc * 100
         if dist_to_vpoc > 1.5:
-            notes.append(f"VPOC magnet at ₹{result.vpoc:.2f} ({dist_to_vpoc:.1f}% away) — expect reversion")
+            notes.append(f"VPOC magnet at ${result.vpoc:.2f} ({dist_to_vpoc:.1f}% away) — expect reversion")
 
         return {
             "location":        location,
@@ -495,7 +495,7 @@ class VolumeProfileAnalyzer:
         bias_emj = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(bias, "🟡")
         return (
             f"📊 *Volume Profile*\n"
-            f"VPOC: `₹{result.vpoc:,.2f}` | VAH: `₹{result.vah:,.2f}` | VAL: `₹{result.val:,.2f}`\n"
+            f"VPOC: `${result.vpoc:,.2f}` | VAH: `${result.vah:,.2f}` | VAL: `${result.val:,.2f}`\n"
             f"Width: `{result.value_area_width_pct:.1f}%` | HVNs: `{len(result.hvn_levels)}` | LVNs: `{len(result.lvn_levels)}`\n"
             f"Price Location: `{location}` | {bias_emj} Bias: *{bias}*"
         )
@@ -539,7 +539,7 @@ if __name__ == "__main__":
         print(f"LVN levels: {result.lvn_levels[:5]}")
         current = float(df["close"].iloc[-1])
         ctx = vp.get_signal_context(result, current, "LONG")
-        print(f"\nSignal context for LONG @ ₹{current:.2f}:")
+        print(f"\nSignal context for LONG @ ${current:.2f}:")
         print(f"  Location: {ctx['location']}")
         print(f"  Score adjustment: {ctx['score_adjustment']:+.1f}")
         for note in ctx["notes"]:

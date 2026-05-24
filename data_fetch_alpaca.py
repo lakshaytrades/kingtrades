@@ -122,7 +122,7 @@ class BarCache:
                 "1minute": "1m", "day": "1d",
             }.get(interval, "5m")
 
-            days = min(lookback_days + 2, 59)
+            days = min(lookback_days + 2, 260 if yf_interval == "1d" else 59)
             t0 = _time.monotonic()
             raw = yf.download(
                 symbols, period=f"{days}d", interval=yf_interval,

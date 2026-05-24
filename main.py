@@ -1813,7 +1813,7 @@ class TradingBot:
                             try:
                                 self.profit_engine.record_trade_closed(
                                     pos.symbol, pnl,
-                                    was_partial=pos.t1_done  # avoid double-counting T1
+                                    was_partial=False  # final close: record full runner P&L
                                 )
                             except Exception as _e:
                                 logger.warning(f"profit_engine.record_trade_closed failed ({pos.symbol}): {_e}")
@@ -1902,6 +1902,8 @@ class TradingBot:
                         self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
                         actual_fill = result.fill_price if result.fill_price > 0 else ltp
                         pnl_partial = (actual_fill - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - actual_fill) * exit_qty
+                        # Accumulate partial P&L for correct win/loss determination at final close
+                        pos.realized_pnl += pnl_partial
                         # Include partial P&L in daily tracking so loss limits are enforced
                         self.risk_manager.state.daily_pnl += pnl_partial
                         logger.info(
@@ -1977,7 +1979,8 @@ class TradingBot:
         data["days_traded"]    += 1
         data["profitable_days"] += 1 if today_pnl > 0 else 0
         data["capital"]         = config.MAX_DAILY_CAPITAL
-        data["weekly_pct"]      = round(data["net_pnl"] / config.MAX_DAILY_CAPITAL * 100, 2)
+        _wcap = config.MAX_DAILY_CAPITAL or self.risk_manager.state.daily_capital or 1.0
+        data["weekly_pct"]      = round(data["net_pnl"] / _wcap * 100, 2)
         self._save_weekly_pnl(data)
 
         day_name = ["Mon", "Tue", "Wed", "Thu", "Fri"][now.weekday()]

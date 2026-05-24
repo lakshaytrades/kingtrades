@@ -23,6 +23,8 @@ import logging
 import sqlite3
 from dataclasses import asdict, dataclass, field
 from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
+_ET = ZoneInfo("America/New_York")
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -297,7 +299,7 @@ class PostMarketBrain:
 
     def _analyze_symbols(self, df: pd.DataFrame, ins: PostMarketInsights):
         """Flag symbols with 3+ consecutive losses this week."""
-        cutoff = (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        cutoff = (datetime.now(_ET) - timedelta(days=7)).strftime("%Y-%m-%d")
         week = df[df["date_ist"] >= cutoff] if "date_ist" in df.columns else df
 
         for sym, grp in week.groupby("symbol"):
@@ -366,7 +368,7 @@ class PostMarketBrain:
             logger.warning(f"Trade journal not found at {JOURNAL_DB}")
             return pd.DataFrame()
         try:
-            cutoff = (datetime.now() - timedelta(days=self.lookback_days)).strftime("%Y-%m-%d")
+            cutoff = (datetime.now(_ET) - timedelta(days=self.lookback_days)).strftime("%Y-%m-%d")
             con = sqlite3.connect(JOURNAL_DB)
             df  = pd.read_sql_query(
                 "SELECT * FROM trades WHERE date_ist >= ? AND exit_price > 0",
@@ -379,7 +381,7 @@ class PostMarketBrain:
             if "rr_ratio" not in df.columns or df["rr_ratio"].isna().all():
                 df["sl_dist"]  = abs(df["entry_price"] - df["stop_loss"])
                 df["pnl_per_share"] = (df["exit_price"] - df["entry_price"]) * df["direction"].map(
-                    lambda d: 1 if str(d).upper() == "LONG" else -1
+                    lambda d: 1 if str(d).upper() in ("LONG", "BUY") else -1
                 )
                 df["rr_ratio"] = df.apply(
                     lambda r: r["pnl_per_share"] / r["sl_dist"] if r["sl_dist"] > 0 else 0.0,

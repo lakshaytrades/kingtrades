@@ -60,6 +60,7 @@ class Position:
     breakeven_done: bool = False     # True once SL moved to entry (0.5% profit)
     size_multiplier: float = 1.0     # From HighAccuracyFilter
     price_history: list = field(default_factory=list)  # Rolling 20 bars for swing detection
+    realized_pnl: float = 0.0        # Accumulated P&L from T1/T2 partial exits
 
     def __post_init__(self):
         if not self.entry_time:
@@ -1158,7 +1159,8 @@ class RiskManager:
         self.state.daily_pnl += pnl
         self.state.daily_trades += 1
 
-        if pnl > 0:
+        total_pnl = pnl + pos.realized_pnl  # include T1/T2 partial exit P&L
+        if total_pnl > 0:
             self.state.winning_trades += 1
             self.state.consecutive_losses = 0
         else:

@@ -697,6 +697,153 @@ class HarmonicPatternDetector:
         return None
 
     # ─────────────────────────────────────────────────────────
+    # ─────────────────────────────────────────────────────────
+    # SHARK — 5-0 pattern complement (O,X,A,B,C)
+    # ─────────────────────────────────────────────────────────
+
+    def detect_shark(self, df: pd.DataFrame) -> Optional[HarmonicResult]:
+        """
+        Shark (5-0 complement): OX leg followed by XA, AB, BC.
+        Key ratios:
+          XB/XO = 1.13–1.618 (extreme OB retracement)
+          XC/XA = 1.618–2.24
+          BC/AB = 1.618–2.24
+        Traded at Point C (the PRZ).
+        """
+        candidates = find_xabcd_points(df)
+        best: Optional[HarmonicResult] = None
+        best_conf = 0.0
+
+        for pts in candidates:
+            x_i, x_p = pts[0]
+            a_i, a_p = pts[1]
+            b_i, b_p = pts[2]
+            c_i, c_p = pts[3]
+            d_i, d_p = pts[4]
+
+            xa = abs(a_p - x_p)
+            ab = abs(b_p - a_p)
+            bc = abs(c_p - b_p)
+            xb = abs(b_p - x_p)
+            xc = abs(c_p - x_p)
+            if xa < 0.001:
+                continue
+
+            xb_xa = xb / xa
+            xc_xa = xc / xa
+            bc_ab = bc / ab if ab else 0
+
+            # Bullish Shark: downtrend X>A, B retraces deep, C extends beyond X
+            if x_p > a_p and b_p < x_p and c_p > x_p:
+                b_ok  = 1.13 - TOL <= xb_xa <= 1.618 + TOL
+                xc_ok = 1.618 - TOL <= xc_xa <= 2.24 + TOL
+                bc_ok = 1.618 - TOL <= bc_ab <= 2.24 + TOL
+                score = sum([b_ok * 30, xc_ok * 40, bc_ok * 30])
+                if score >= 60 and score > best_conf:
+                    best_conf = score
+                    conf = min(62 + score * 0.25, 88)
+                    sl   = d_p - xa * 0.05
+                    t1   = d_p + xa * 0.382
+                    t2   = d_p + xa * 0.618
+                    best = HarmonicResult(
+                        "Shark Bullish", "LONG", conf,
+                        d_p * 0.995, d_p * 1.005, sl, t1, t2,
+                        {"XB/XA": round(xb_xa, 3), "XC/XA": round(xc_xa, 3)},
+                        "Shark pattern: 5-0 complement — deep OB retracement → continuation"
+                    )
+
+            # Bearish Shark: uptrend X<A, B retraces deep above X, C extends below X
+            if x_p < a_p and b_p > x_p and c_p < x_p:
+                b_ok  = 1.13 - TOL <= xb_xa <= 1.618 + TOL
+                xc_ok = 1.618 - TOL <= xc_xa <= 2.24 + TOL
+                bc_ok = 1.618 - TOL <= bc_ab <= 2.24 + TOL
+                score = sum([b_ok * 30, xc_ok * 40, bc_ok * 30])
+                if score >= 60 and score > best_conf:
+                    best_conf = score
+                    conf = min(62 + score * 0.25, 88)
+                    sl   = d_p + xa * 0.05
+                    t1   = d_p - xa * 0.382
+                    t2   = d_p - xa * 0.618
+                    best = HarmonicResult(
+                        "Shark Bearish", "SHORT", conf,
+                        d_p * 0.995, d_p * 1.005, sl, t1, t2,
+                        {"XB/XA": round(xb_xa, 3), "XC/XA": round(xc_xa, 3)},
+                        "Bearish Shark: 5-0 complement — deep OS extension → reversal"
+                    )
+        return best
+
+    # ─────────────────────────────────────────────────────────
+    # CYPHER — Alternate harmonic (B=0.382–0.618 of XA, C=1.13–1.414)
+    # ─────────────────────────────────────────────────────────
+
+    def detect_cypher(self, df: pd.DataFrame) -> Optional[HarmonicResult]:
+        """
+        Cypher: B at 38.2–61.8% of XA, C at 113–141.4% of XA (key distinction),
+        D at 78.6% retracement of XC.
+        Discovered by Darren Oglesbee. Medium-frequency, high accuracy.
+        """
+        candidates = find_xabcd_points(df)
+        best: Optional[HarmonicResult] = None
+        best_conf = 0.0
+
+        for pts in candidates:
+            x_i, x_p = pts[0]
+            a_i, a_p = pts[1]
+            b_i, b_p = pts[2]
+            c_i, c_p = pts[3]
+            d_i, d_p = pts[4]
+
+            xa = abs(a_p - x_p)
+            ab = abs(b_p - a_p)
+            bc = abs(c_p - b_p)
+            xc = abs(c_p - x_p)
+            xd = abs(d_p - x_p)
+            if xa < 0.001:
+                continue
+
+            xb_xa = ab / xa
+            xc_xa = xc / xa
+            xd_xc = xd / xc if xc else 0
+
+            # Bullish Cypher: X>A (falling XA), D at 78.6% of XC
+            if x_p > a_p and d_p < c_p:
+                b_ok  = 0.382 - TOL <= xb_xa <= 0.618 + TOL
+                xc_ok = 1.13 - TOL  <= xc_xa <= 1.414 + TOL
+                xd_ok = fib_ok(xd_xc, 0.786, 0.05)
+                score = sum([b_ok * 25, xc_ok * 40, xd_ok * 35])
+                if score >= 60 and score > best_conf:
+                    best_conf = score
+                    conf = min(63 + score * 0.25, 88)
+                    sl   = d_p - xa * 0.05
+                    t1   = d_p + xa * 0.382
+                    t2   = d_p + xa * 0.618
+                    best = HarmonicResult(
+                        "Cypher Bullish", "LONG", conf,
+                        d_p * 0.995, d_p * 1.005, sl, t1, t2,
+                        {"XB/XA": round(xb_xa, 3), "XC/XA": round(xc_xa, 3), "XD/XC": round(xd_xc, 3)},
+                        "Cypher pattern: C beyond XA (1.13–1.414), D at 78.6% of XC"
+                    )
+
+            # Bearish Cypher: X<A (rising XA), D at 78.6% of XC
+            if x_p < a_p and d_p > c_p:
+                b_ok  = 0.382 - TOL <= xb_xa <= 0.618 + TOL
+                xc_ok = 1.13 - TOL  <= xc_xa <= 1.414 + TOL
+                xd_ok = fib_ok(xd_xc, 0.786, 0.05)
+                score = sum([b_ok * 25, xc_ok * 40, xd_ok * 35])
+                if score >= 60 and score > best_conf:
+                    best_conf = score
+                    conf = min(63 + score * 0.25, 88)
+                    sl   = d_p + xa * 0.05
+                    t1   = d_p - xa * 0.382
+                    t2   = d_p - xa * 0.618
+                    best = HarmonicResult(
+                        "Cypher Bearish", "SHORT", conf,
+                        d_p * 0.995, d_p * 1.005, sl, t1, t2,
+                        {"XB/XA": round(xb_xa, 3), "XC/XA": round(xc_xa, 3), "XD/XC": round(xd_xc, 3)},
+                        "Bearish Cypher: C beyond XA → D retraces 78.6% of XC"
+                    )
+        return best
+
     # MAIN SCAN
     # ─────────────────────────────────────────────────────────
 
@@ -709,6 +856,8 @@ class HarmonicPatternDetector:
             self.detect_butterfly,
             self.detect_bat,
             self.detect_crab,
+            self.detect_shark,
+            self.detect_cypher,
             self.detect_ote,
             self.detect_three_drives,
         ]:

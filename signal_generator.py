@@ -1336,11 +1336,11 @@ class SignalGenerator:
                 if ind.bb_upper < ind.keltner_upper and ind.bb_lower > ind.keltner_lower:
                     score += 4  # Classic TTM squeeze — explosive move loading
             # VWAP standard deviation bands (institutional buy zones)
-            if close > 0 and ind.vwap_lower_1 > 0:
-                if close <= ind.vwap_lower_1:
-                    score += 3  # At -1σ VWAP = institutional buy zone
-                elif close <= ind.vwap_lower_2 if ind.vwap_lower_2 > 0 else False:
+            if close > 0:
+                if ind.vwap_lower_2 > 0 and close <= ind.vwap_lower_2:
                     score += 5  # At -2σ VWAP = high-conviction reversal zone
+                elif ind.vwap_lower_1 > 0 and close <= ind.vwap_lower_1:
+                    score += 3  # At -1σ VWAP = institutional buy zone
             # Pivot Point confluence (key institutional levels)
             if close > 0 and ind.pivot_pp > 0:
                 above_pp = close > ind.pivot_pp
@@ -1395,11 +1395,11 @@ class SignalGenerator:
                 if ind.bb_upper < ind.keltner_upper and ind.bb_lower > ind.keltner_lower:
                     score += 4
             # VWAP SD bands (distribution zones)
-            if close > 0 and ind.vwap_upper_1 > 0:
-                if close >= ind.vwap_upper_1:
-                    score += 3  # At +1σ VWAP = institutional sell zone
-                elif close >= ind.vwap_upper_2 if ind.vwap_upper_2 > 0 else False:
+            if close > 0:
+                if ind.vwap_upper_2 > 0 and close >= ind.vwap_upper_2:
                     score += 5  # At +2σ VWAP = high-conviction short zone
+                elif ind.vwap_upper_1 > 0 and close >= ind.vwap_upper_1:
+                    score += 3  # At +1σ VWAP = institutional sell zone
             # Pivot Point confluence
             if close > 0 and ind.pivot_pp > 0:
                 below_pp = close < ind.pivot_pp
@@ -1415,7 +1415,7 @@ class SignalGenerator:
                 score += 2
 
         # ── Time of day filter (US ET market hours) ──────────
-        now_et   = get_current_ist_time()   # IST alias → ET after migration
+        now_et   = datetime.now(ZoneInfo("America/New_York"))
         time_val = now_et.hour + now_et.minute / 60
         if 11.5 <= time_val < 14.5:    # 11:30 AM–2:30 PM ET: midday chop — mild penalty
             score -= 3

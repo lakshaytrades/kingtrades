@@ -12,11 +12,11 @@ from utils import get_current_ist_time, format_ist_timestamp
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
 
-# Session windows (IST)
-_OPENING_DRIVE_START = time(9, 15)
-_OPENING_DRIVE_END   = time(10, 0)
-_AFTERNOON_START     = time(13, 30)
-_AFTERNOON_END       = time(14, 30)
+# Session windows (ET)
+_OPENING_DRIVE_START = time(9, 30)
+_OPENING_DRIVE_END   = time(10, 30)
+_AFTERNOON_START     = time(14, 30)
+_AFTERNOON_END       = time(15, 30)
 
 
 @dataclass
@@ -51,7 +51,8 @@ class ScalpingEngine:
         self._active_scalps: Dict[str, datetime] = {}
 
     def is_scalp_time(self) -> bool:
-        t = get_current_ist_time().time()
+        from datetime import datetime as _dt
+        t = _dt.now(ET).time()
         return (
             _OPENING_DRIVE_START <= t <= _OPENING_DRIVE_END
             or _AFTERNOON_START <= t <= _AFTERNOON_END
@@ -264,11 +265,11 @@ class ScalpingEngine:
         direction: str,
         entry_time: datetime,
     ) -> Tuple[bool, str]:
-        now_ist = get_current_ist_time()
+        now_et = datetime.now(ET)
         if entry_time.tzinfo is None:
             entry_time = entry_time.replace(tzinfo=ET)
 
-        elapsed_minutes = (now_ist - entry_time).total_seconds() / 60
+        elapsed_minutes = (now_et - entry_time).total_seconds() / 60
 
         if direction == "LONG":
             pnl_pct = (current_price - entry_price) / entry_price * 100
@@ -285,7 +286,7 @@ class ScalpingEngine:
         return False, ""
 
     def register_scalp(self, symbol: str, entry_time: Optional[datetime] = None) -> None:
-        t = entry_time or get_current_ist_time()
+        t = entry_time or datetime.now(ET)
         self._active_scalps[symbol] = t
         logger.debug(f"[{format_ist_timestamp()}] Scalp registered: {symbol} at {t}")
 
@@ -298,10 +299,10 @@ class ScalpingEngine:
         return len(self._active_scalps)
 
     def _expire_stale_scalps(self) -> None:
-        now_ist = get_current_ist_time()
+        now_et = datetime.now(ET)
         stale = [
             sym for sym, entry_time in self._active_scalps.items()
-            if (now_ist - (entry_time if entry_time.tzinfo else entry_time.replace(tzinfo=ET))
+            if (now_et - (entry_time if entry_time.tzinfo else entry_time.replace(tzinfo=ET))
                 ).total_seconds() / 60 >= self.MAX_HOLD_MINUTES
         ]
         for sym in stale:

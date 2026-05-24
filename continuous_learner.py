@@ -192,17 +192,16 @@ class ContinuousLearner:
             weekdays=[0,1,2,3,4]
         ))
 
-        # AI EOD trade review (Mon-Fri)
+        # AI EOD trade review (Mon-Fri at 4:30 PM ET)
         self.tasks.append(ScheduledTask(
             "AI EOD Trade Review", 16, 30,
             self._task_ai_eod_review,
             weekdays=[0,1,2,3,4]
         ))
 
-        # EOD Self-Training (Mon-Fri at 4:30 PM IST)
-        # Runs after market close, optimizes tomorrow's params from last 30 days
+        # EOD Self-Training (Mon-Fri at 4:40 PM ET) — staggered to avoid config write race
         self.tasks.append(ScheduledTask(
-            "EOD Self-Training", 16, 30,
+            "EOD Self-Training", 16, 40,
             self._task_eod_self_training,
             weekdays=[0,1,2,3,4]
         ))
@@ -220,9 +219,9 @@ class ContinuousLearner:
             self._task_calendar_refresh
         ))
 
-        # Overnight / EOD analysis — after US market close (4:30 PM ET)
+        # Overnight / EOD analysis — after US market close (4:50 PM ET) — staggered
         self.tasks.append(ScheduledTask(
-            "Overnight Analysis", 16, 30,
+            "Overnight Analysis", 16, 50,
             self._task_overnight_analysis,
             weekdays=[0,1,2,3,4]
         ))
@@ -614,7 +613,7 @@ class ContinuousLearner:
                 if alerter:
                     try:
                         alerter.send_html(
-                            f"🔑 <b>Groww Token Refreshed</b> — {format_ist_timestamp()}\n"
+                            f"🔑 <b>Alpaca Auth Verified</b> — {format_ist_timestamp()}\n"
                             f"Ready for today's trading session."
                         )
                     except Exception as _e:
@@ -636,7 +635,7 @@ class ContinuousLearner:
                     try:
                         alerter.send_html(
                             f"⚠️ <b>Token Refresh Failed</b> — {format_ist_timestamp()}\n"
-                            f"Will retry. Check GROWW_TOTP_SECRET in /opt/kingtrades/.env"
+                            f"Will retry. Check ALPACA_API_KEY / ALPACA_SECRET_KEY in /opt/kingtrades/.env"
                         )
                     except Exception as _e:
                         logger.debug(f"[suppressed] {_e}")

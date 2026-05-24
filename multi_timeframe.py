@@ -196,11 +196,16 @@ class MultiTimeframeAnalyzer:
         prev = df.iloc[-2] if len(df) > 2 else row
         score = 0
 
-        # EMA hierarchy
-        ema9  = float(row.get("ema9",  row.get("close", 0)))
-        ema21 = float(row.get("ema21", row.get("close", 0)))
-        ema50 = float(row.get("ema50", row.get("close", 0)))
+        # EMA hierarchy — compute on-the-fly if columns absent
         close = float(row.get("close", 0))
+        if "ema9" in row.index and row["ema9"] > 0:
+            ema9  = float(row["ema9"])
+            ema21 = float(row.get("ema21", close))
+            ema50 = float(row.get("ema50", close))
+        else:
+            ema9  = float(df["close"].ewm(span=9,  adjust=False).mean().iloc[-1])
+            ema21 = float(df["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+            ema50 = float(df["close"].ewm(span=50, adjust=False).mean().iloc[-1])
 
         if ema9 > ema21 > ema50 and close > ema9:
             score += 30

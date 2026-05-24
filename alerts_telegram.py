@@ -223,7 +223,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax1.axhline(0, color="#555555", linestyle="--", lw=1)
         ax1.set_facecolor("#0D1117")
         ax1.set_title("Equity Curve — Today's Trades", color="white", fontsize=11)
-        ax1.set_ylabel("Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
+        ax1.set_ylabel(f"Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax1.tick_params(colors="#AAAAAA")
         ax1.grid(True, color="#333333", linestyle=":", alpha=0.5)
 
@@ -232,7 +232,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax2.bar(x, pnls, color=bar_colors, width=0.7)
         ax2.axhline(0, color="#555555", linestyle="--", lw=1)
         ax2.set_facecolor("#0D1117")
-        ax2.set_ylabel("Trade P&L ({_CUR})", color="#CCCCCC", fontsize=9)
+        ax2.set_ylabel(f"Trade P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax2.tick_params(colors="#AAAAAA")
         ax2.set_xticks(x)
         ax2.set_xticklabels(labels, rotation=35, color="#AAAAAA", fontsize=7)

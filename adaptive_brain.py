@@ -73,6 +73,7 @@ class BrainState:
     # Pre-calibrated weights from historical backtest warm-up
     pattern_boosts:      Dict[str, float] = field(default_factory=dict)
     disabled_patterns:   set              = field(default_factory=set)
+    blacklisted_symbols: set              = field(default_factory=set)
 
 
 class AdaptiveBrain:
@@ -307,10 +308,9 @@ class AdaptiveBrain:
 
             # Pre-blacklist serial losers from yesterday
             for sym in insights.get("blacklist_symbols", []):
-                if not hasattr(self._state, "blacklisted_symbols"):
-                    self._state.blacklisted_symbols = set()
                 self._state.blacklisted_symbols.add(sym)
 
+            self._push_to_signal_gen()
             logger.info(
                 f"[{format_ist_timestamp()}] AdaptiveBrain post-market warm-up: "
                 f"applied {count} updates from {ins_date_str} | "
@@ -491,7 +491,7 @@ def auto_update_code() -> str:
     try:
         repo_dir = Path(__file__).parent
         result = subprocess.run(
-            ["git", "pull", "--ff-only", "origin", "claude/nse-momentum-groww-bot-hvkv9"],
+            ["git", "pull", "--ff-only", "origin", "claude/nse-momentum-groww-bot-hvkv9"],  # noqa: E501 — branch name matches remote
             cwd=repo_dir,
             capture_output=True,
             text=True,

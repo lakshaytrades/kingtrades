@@ -380,6 +380,7 @@ class TechnicalIndicators:
             lows = df['low'].values
             n = len(closes)
             sar = np.zeros(n)
+            bull_arr = [True] * n
             bull = True
             ep = lows[0]
             sar[0] = highs[0]
@@ -409,8 +410,9 @@ class TechnicalIndicators:
                         if lows[i] < ep:
                             ep = lows[i]
                             af = min(af + af_step, af_max)
+                bull_arr[i] = bull
             df['_psar'] = sar
-            df['_psar_bull'] = bull
+            df['_psar_bull'] = bull_arr
         except Exception:
             df['_psar'] = df['close']
             df['_psar_bull'] = True
@@ -1003,7 +1005,7 @@ class PatternRecognizer:
             return None
         if body / total_range > 0.1:
             return None
-        return PatternResult("Doji", "NEUTRAL", 60,
+        return PatternResult("Doji Reversal", "NEUTRAL", 60,
                              "Doji — market indecision, watch for breakout")
 
     def detect_morning_star(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
@@ -1230,18 +1232,25 @@ class PatternRecognizer:
         rsiv = df["rsi"].iloc[-20:]
         if rsiv.isna().all():
             return None
-        # Find recent swing lows
+        # Find recent swing lows/highs
         price_min_idx = prices.idxmin()
         prev_prices = df["close"].iloc[-40:-20] if len(df) >= 40 else None
         if prev_prices is not None and not prev_prices.empty:
+            prev_rsi_slice = df["rsi"].iloc[-40:-20] if len(df) >= 40 else None
+            # Bullish: price lower low, RSI higher low
             prev_min = prev_prices.min()
             curr_min = prices.min()
-            prev_rsi = df["rsi"].iloc[-40:-20].min() if len(df) >= 40 else 50
-            curr_rsi = rsiv.min()
-            if curr_min < prev_min and curr_rsi > prev_rsi and ind.rsi < 45:
+            prev_rsi_min = prev_rsi_slice.min() if prev_rsi_slice is not None else 50
+            curr_rsi_min = rsiv.min()
+            if curr_min < prev_min and curr_rsi_min > prev_rsi_min and ind.rsi < 45:
                 return PatternResult("Bullish RSI Divergence", "LONG", 75,
                                      f"Bullish divergence: price lower low, RSI higher low ({ind.rsi:.0f})")
-            if curr_min > prev_min and curr_rsi < prev_rsi and ind.rsi > 55:
+            # Bearish: price higher high, RSI lower high
+            prev_max = prev_prices.max()
+            curr_max = prices.max()
+            prev_rsi_max = prev_rsi_slice.max() if prev_rsi_slice is not None else 50
+            curr_rsi_max = rsiv.max()
+            if curr_max > prev_max and curr_rsi_max < prev_rsi_max and ind.rsi > 55:
                 return PatternResult("Bearish RSI Divergence", "SHORT", 75,
                                      f"Bearish divergence: price higher high, RSI lower high ({ind.rsi:.0f})")
         return None
@@ -1549,7 +1558,7 @@ class PatternRecognizer:
 
         # Two bottoms within 0.5% and separated by at least 5 candles
         if abs(low1 - low2) / max(low1, 0.01) > 0.005:
-            pass  # Too far apart
+            return None  # Too far apart
         elif abs(df.index.get_loc(low1_idx) - df.index.get_loc(low2_idx)) >= 5:
             # Find midpoint (the "neckline")
             between = df["high"].iloc[
@@ -2234,14 +2243,14 @@ class PatternRecognizer:
             direction  = "LONG"
             confidence = min(62 + compression * 0.3 + ind.volume_ratio * 5, 85)
             return PatternResult(
-                "Symmetrical Triangle (Bullish Breakout)", direction, confidence,
+                "Symmetrical Triangle", direction, confidence,
                 f"Symmetrical triangle breakout: compression {compression:.1f}%"
             )
         elif curr < lows[-1] * 1.002:
             direction  = "SHORT"
             confidence = min(62 + compression * 0.3 + ind.volume_ratio * 5, 85)
             return PatternResult(
-                "Symmetrical Triangle (Bearish Breakdown)", direction, confidence,
+                "Symmetrical Triangle", direction, confidence,
                 f"Symmetrical triangle breakdown: compression {compression:.1f}%"
             )
         return None
@@ -3460,6 +3469,7 @@ class PatternRecognizer:
             "Gamma Squeeze Setup (Bullish)", "Gamma Squeeze Setup (Bearish)",
             "Demand Zone (Long Bias)", "Supply Zone (Short Bias)",
             "Mitigation Block Bullish", "Mitigation Block Bearish",
+            "Market Maker Cycle — Accumulation Phase", "Market Maker Cycle — Distribution Phase",
         }
 
         # ── Chart / Technical patterns (20 pts max) ───────────────────────
@@ -3489,6 +3499,8 @@ class PatternRecognizer:
             "Gartley Bullish (222)", "Gartley Bearish (222)",
             "Butterfly Bullish", "Butterfly Bearish",
             "Crab Bullish", "Crab Bearish",
+            "Shark Bullish", "Shark Bearish",
+            "Cypher Bullish", "Cypher Bearish",
             "Three Drives Bullish", "Three Drives Bearish",
             "Quasimodo Bullish", "Quasimodo Bearish",
             "Gap Fill Long", "Gap Fill Short",
@@ -3496,6 +3508,7 @@ class PatternRecognizer:
             "Donchian Breakout Long", "Donchian Breakout Short",
             "ADX Trend Long", "ADX Trend Short",
             "Ichimoku Bull", "Ichimoku Bear",
+            "BB Squeeze Breakout Long", "BB Squeeze Breakout Short",
         }
 
         # ADX quality multiplier: choppy → reduce, trending → boost

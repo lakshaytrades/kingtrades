@@ -1051,7 +1051,7 @@ class SmartMoneyEnhancer:
             mom_score = 50
 
         # Combine into total bonus
-        raw_bonus = liq_bonus + wyck_bonus + orb_bonus + rvol_bonus + kz_bonus + level_bonus
+        raw_bonus = liq_bonus + wyck_bonus + orb_bonus + rvol_bonus + kz_bonus + level_bonus + mom_score
         total_score = min(40, max(-25, raw_bonus))  # cap bonus at +40, penalty at -25
 
         return SmartMoneyScore(

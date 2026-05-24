@@ -10,7 +10,7 @@ import pandas as pd
 from utils import get_current_ist_time, format_ist_timestamp
 
 logger = logging.getLogger(__name__)
-IST = ZoneInfo("Asia/Kolkata")
+ET = ZoneInfo("America/New_York")
 
 _ORB_WINDOW_START = time(9, 31)
 _ORB_WINDOW_END   = time(9, 45)
@@ -47,7 +47,8 @@ class ORBStrategy:
         self._cache: Dict[str, Tuple[ORBSetup, date]] = {}
 
     def is_orb_time(self) -> bool:
-        t = get_current_ist_time().time()
+        from datetime import datetime as _dt
+        t = _dt.now(ET).time()
         return _ORB_WINDOW_START <= t <= _ORB_WINDOW_END
 
     def scan_symbols(self, symbols: List[str], data_fetcher) -> List[ORBSetup]:
@@ -74,7 +75,8 @@ class ORBStrategy:
         return results
 
     def analyze_symbol(self, symbol: str, data_fetcher) -> Optional[ORBSetup]:
-        today = get_current_ist_time().date()
+        from datetime import datetime as _dt
+        today = _dt.now(ET).date()
         cached_setup, cached_date = self._cache.get(symbol, (None, None))
         if cached_setup is not None and cached_date == today:
             return cached_setup
@@ -320,12 +322,13 @@ class ORBStrategy:
 
     def _filter_today(self, df: pd.DataFrame) -> Optional[pd.DataFrame]:
         try:
-            today_ist = get_current_ist_time().date()
+            from datetime import datetime as _dt
+            today_et = _dt.now(ET).date()
             if isinstance(df.index, pd.DatetimeIndex):
                 if df.index.tz is None:
                     df.index = df.index.tz_localize("UTC")
-                df.index = df.index.tz_convert(IST)
-                filtered = df[df.index.date == today_ist]
+                df.index = df.index.tz_convert(ET)
+                filtered = df[df.index.date == today_et]
                 return filtered if not filtered.empty else None
             return df
         except Exception as e:
