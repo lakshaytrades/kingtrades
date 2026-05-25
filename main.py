@@ -96,6 +96,7 @@ class TradingBot:
         self.calendar = None
         self.data_store = None
         self.cont_learner = None
+        self.crypto_engine = None   # 24/7 crypto trading engine (BTC/ETH/SOL)
         self.oc_analyzer = None   # Option Chain analyzer
         self.fii_tracker = None   # FII/DII flow tracker
         self.gap_analyzer = None  # Pre-market gap analyzer
@@ -434,6 +435,22 @@ class TradingBot:
             logger.info(f"[{format_ist_timestamp()}] Continuous learner started (background)")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Continuous learner failed: {e}")
+
+        # ── Crypto Engine (BTC/ETH/SOL — 24/7, no PDT, runs alongside stocks) ──
+        try:
+            if getattr(config, "CRYPTO_ENABLED", False):
+                from crypto_engine import get_crypto_engine
+                self.crypto_engine = get_crypto_engine(
+                    alerter      = self.alerter,
+                    live_enabled = config.LIVE_TRADING_ENABLED,
+                )
+                self.crypto_engine.start()
+                logger.info(f"[{format_ist_timestamp()}] Crypto Engine started (24/7 background thread)")
+            else:
+                logger.info(f"[{format_ist_timestamp()}] Crypto Engine disabled (CRYPTO_ENABLED=False)")
+        except Exception as e:
+            self.crypto_engine = None
+            logger.warning(f"[{format_ist_timestamp()}] Crypto Engine failed to start: {e}")
 
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
 
@@ -2959,6 +2976,13 @@ class TradingBot:
                     self.options_scalper.close_all()
                 except Exception as _e:
                     logger.warning(f"options_scalper.close_all() failed during /kill: {_e}")
+            if self.crypto_engine:
+                try:
+                    self.crypto_engine.executor.close_all(reason="KILL_SWITCH")
+                    self.crypto_engine.stop()
+                    logger.info(f"[{format_ist_timestamp()}] Crypto engine killed by /kill command")
+                except Exception as _ce:
+                    logger.warning(f"crypto_engine.close_all() failed during /kill: {_ce}")
 
         async def cmd_status(update, context):
             if not _auth(update):
@@ -2972,6 +2996,24 @@ class TradingBot:
             except Exception as _e:
                 logger.warning(f"cmd_status balance fetch failed: {_e}")
                 self.alerter.send_status(self.risk_manager)
+            # Also send crypto engine status
+            if self.crypto_engine:
+                try:
+                    cs = self.crypto_engine.get_status()
+                    pos_count  = cs["positions"]
+                    daily_pnl  = cs["daily_pnl"]
+                    trades     = cs["daily_trades"]
+                    paused_str = "⏸ PAUSED" if cs["paused"] else "▶ ACTIVE"
+                    self.alerter.send_text(
+                        f"🪙 <b>Crypto Engine Status</b>\n"
+                        f"State: <b>{paused_str}</b>\n"
+                        f"Open positions: <b>{pos_count}</b>\n"
+                        f"Daily P&L: <b>${daily_pnl:+,.2f}</b>\n"
+                        f"Trades today: <b>{trades}</b>\n"
+                        f"Total scans: <b>{cs['scan_count']}</b>"
+                    )
+                except Exception as _ce:
+                    logger.debug(f"crypto status failed: {_ce}")
 
         async def cmd_pause(update, context):
             if not _auth(update):
@@ -3645,6 +3687,14 @@ class TradingBot:
     def _cleanup(self):
         """Graceful shutdown."""
         self.running = False
+        # Stop crypto engine gracefully
+        if self.crypto_engine:
+            try:
+                self.crypto_engine.executor.close_all(reason="BOT_SHUTDOWN")
+                self.crypto_engine.stop()
+                logger.info(f"[{format_ist_timestamp()}] Crypto engine stopped at cleanup")
+            except Exception as e:
+                logger.warning(f"Crypto engine cleanup error: {e}")
         logger.info(f"[{format_ist_timestamp()}] Bot cleanup complete.")
 
 

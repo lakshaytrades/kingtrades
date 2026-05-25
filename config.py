@@ -401,6 +401,17 @@ OPTION_CHAIN_ENABLED: bool = False
 FII_DII_ENABLED: bool = False
 
 # ============================================================
+# CRYPTO TRADING (BTC/ETH/SOL via Alpaca — 24/7, no PDT)
+# ============================================================
+CRYPTO_ENABLED: bool = os.getenv("CRYPTO_ENABLED", "True").lower() in ("true", "1", "yes")
+# Capital split: 30% to crypto pool, 70% stays in stocks.
+# Crypto runs 24/7 as a separate background engine alongside stock trading.
+# No PDT rule, fractional orders, 3x more volatile = accelerates compounding.
+CRYPTO_CAPITAL_PCT_OF_TOTAL: float = float(os.getenv("CRYPTO_CAPITAL_PCT_OF_TOTAL", "30.0"))
+CRYPTO_CAPITAL_USD: float = float(os.getenv("CRYPTO_CAPITAL_USD", "0"))
+CRYPTO_SHORT_ENABLED: bool = os.getenv("CRYPTO_SHORT_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# ============================================================
 # VALIDATION
 # ============================================================
 def validate_config() -> list:
