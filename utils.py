@@ -26,6 +26,63 @@ US_PRE_MARKET_START = time(8, 30)
 
 logger = logging.getLogger(__name__)
 
+# ── NYSE holiday cache (date → bool) — populated lazily via Alpaca calendar API
+_nyse_holiday_cache: dict[date, bool] = {}
+
+
+def _is_nyse_holiday(check_date: Optional[date] = None) -> bool:
+    """
+    Return True if check_date is a NYSE holiday (no trading).
+    Uses Alpaca's get_calendar API with a process-lifetime cache keyed by date.
+    Falls back to a hard-coded 2025–2027 list if Alpaca is unreachable.
+    """
+    if check_date is None:
+        check_date = datetime.now(ET).date()
+    if check_date in _nyse_holiday_cache:
+        return _nyse_holiday_cache[check_date]
+
+    # Hard-coded NYSE holidays 2025–2027 (exchange-confirmed dates)
+    _hardcoded: set[date] = {
+        # 2025
+        date(2025, 1, 1),  date(2025, 1, 20), date(2025, 2, 17),
+        date(2025, 4, 18), date(2025, 5, 26), date(2025, 6, 19),
+        date(2025, 7, 4),  date(2025, 9, 1),  date(2025, 11, 27),
+        date(2025, 12, 25),
+        # 2026
+        date(2026, 1, 1),  date(2026, 1, 19), date(2026, 2, 16),
+        date(2026, 4, 3),  date(2026, 5, 25), date(2026, 6, 19),
+        date(2026, 7, 3),  date(2026, 9, 7),  date(2026, 11, 26),
+        date(2026, 12, 25),
+        # 2027
+        date(2027, 1, 1),  date(2027, 1, 18), date(2027, 2, 15),
+        date(2027, 3, 26), date(2027, 5, 31), date(2027, 6, 18),
+        date(2027, 7, 5),  date(2027, 9, 6),  date(2027, 11, 25),
+        date(2027, 12, 24),
+    }
+
+    try:
+        import os
+        from alpaca.trading.client import TradingClient
+        from alpaca.trading.requests import GetCalendarRequest
+        api_key = os.getenv("ALPACA_API_KEY", "")
+        secret  = os.getenv("ALPACA_SECRET_KEY", "")
+        if api_key and secret:
+            tc = TradingClient(api_key, secret, paper=True)
+            req = GetCalendarRequest(
+                start=check_date.isoformat(),
+                end=check_date.isoformat()
+            )
+            cal = tc.get_calendar(req)
+            is_hol = len(cal) == 0  # no entry for date means it's a holiday
+            _nyse_holiday_cache[check_date] = is_hol
+            return is_hol
+    except Exception:
+        pass
+
+    result = check_date in _hardcoded
+    _nyse_holiday_cache[check_date] = result
+    return result
+
 
 # ============================================================
 # CORE ET TIME FUNCTIONS
@@ -75,18 +132,22 @@ def convert_to_et(dt: Union[datetime, "pd.Timestamp"]) -> datetime:
 def is_market_open_et() -> bool:
     """
     Check if US market (NYSE/NASDAQ) is currently open.
-    Returns True if 9:30 AM – 4:00 PM ET on a weekday.
+    Returns True only on non-holiday weekdays between 9:30 AM – 4:00 PM ET.
     """
     now = get_current_et_time()
     if now.weekday() >= 5:
+        return False
+    if _is_nyse_holiday(now.date()):
         return False
     return US_MARKET_OPEN <= now.time() < US_MARKET_CLOSE
 
 
 def is_pre_market_et() -> bool:
-    """Check if it's US pre-market (8:30–9:30 AM ET)."""
+    """Check if it's US pre-market (8:30–9:30 AM ET) on a trading day."""
     now = get_current_et_time()
     if now.weekday() >= 5:
+        return False
+    if _is_nyse_holiday(now.date()):
         return False
     return US_PRE_MARKET_START <= now.time() < US_MARKET_OPEN
 
@@ -103,15 +164,15 @@ def is_us_squareoff_warn_time() -> bool:
 
 
 def is_market_day_et() -> bool:
-    """Check if today is a US trading weekday."""
-    return get_current_et_time().weekday() < 5
+    """Check if today is a US trading day (weekday and not NYSE holiday)."""
+    now = get_current_et_time()
+    return now.weekday() < 5 and not _is_nyse_holiday(now.date())
 
 
 def minutes_until_market_open() -> float:
-    """Minutes until 9:30 AM ET open. Negative if already open or closed."""
+    """Minutes until next NYSE open (9:30 AM ET on a trading day). Skips holidays."""
     now = get_current_et_time()
-    today = now.date()
-    open_dt = datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
+    open_dt = get_next_market_open_et()
     return (open_dt - now).total_seconds() / 60
 
 
@@ -138,13 +199,13 @@ def get_market_close_datetime_et() -> datetime:
 
 
 def get_next_market_open_et() -> datetime:
-    """Next 9:30 AM ET open (skips weekends)."""
+    """Next 9:30 AM ET open (skips weekends and NYSE holidays)."""
     now = get_current_et_time()
     today = now.date()
-    if now.time() < US_MARKET_OPEN and now.weekday() < 5:
+    if now.time() < US_MARKET_OPEN and now.weekday() < 5 and not _is_nyse_holiday(today):
         return datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET)
     check = today + timedelta(days=1)
-    while check.weekday() >= 5:
+    while check.weekday() >= 5 or _is_nyse_holiday(check):
         check += timedelta(days=1)
     return datetime(check.year, check.month, check.day, 9, 30, 0, tzinfo=ET)
 

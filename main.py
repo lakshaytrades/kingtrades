@@ -1013,7 +1013,19 @@ class TradingBot:
                     self._do_eod_shutdown()
 
                 else:
-                    # Waiting for market
+                    # Waiting for market (handles holidays + weekends automatically)
+                    from utils import _is_nyse_holiday, get_next_market_open_et
+                    _today_et = now_ist.date()
+                    if now_ist.weekday() >= 5 or _is_nyse_holiday(_today_et):
+                        _next_open = get_next_market_open_et()
+                        _mins_hol = (_next_open - now_ist).total_seconds() / 60
+                        logger.info(
+                            f"[{format_ist_timestamp()}] NYSE holiday/weekend — "
+                            f"next open {_next_open.strftime('%a %b %d %H:%M ET')} "
+                            f"({_mins_hol/60:.1f}h away). Sleeping 1h."
+                        )
+                        time.sleep(3600)
+                        continue
                     mins = minutes_until_market_open()
                     if mins > 0:
                         sleep_secs = min(300, max(10, mins * 60))  # up to 5 min when far from open
@@ -1299,7 +1311,7 @@ class TradingBot:
                                     signal_score=mrs.score, quality_grade="B",
                                     size_multiplier=0.7,  # Conservative for reversion
                                     rationale=f"[REVERSION] {getattr(mrs, 'reason', '')}",
-                                    atr=getattr(mrs, "atr", mrs.entry_price * 0.01),
+                                    atr=getattr(mrs, "atr", mrs.entry_price * 0.02),
                                     risk_reward=getattr(mrs, "risk_reward", 2.0),
                                 )
                                 signals.append(ts)
@@ -1401,7 +1413,7 @@ class TradingBot:
                                 signal_score=round(_score, 1),
                                 entry_price=_entry, stop_loss=_sl,
                                 target_1=_t1, target_2=_t2,
-                                risk_reward=_rr, atr=round(_entry * 0.01, 2),
+                                risk_reward=_rr, atr=round(_entry * 0.02, 2),
                                 patterns=["PAIRS_MEAN_REVERSION"],
                                 quality_grade=_grade, size_multiplier=_mult,
                                 rationale=f"Pairs z={ps.zscore:+.2f} | {ps.reason}",
@@ -2309,7 +2321,7 @@ class TradingBot:
                     stop_loss=avg * 0.98,   # 2% fallback SL until ATR calc
                     target_1=avg * 1.02,
                     target_2=avg * 1.04,
-                    atr=avg * 0.01,
+                    atr=avg * 0.02,
                     entry_time=format_ist_timestamp(),
                 )
                 self.risk_manager.add_position(pos)
@@ -3309,7 +3321,7 @@ class TradingBot:
                         stop_loss=avg * 0.98,
                         target_1=avg * 1.02,
                         target_2=avg * 1.04,
-                        atr=avg * 0.01,
+                        atr=avg * 0.02,
                         entry_time=format_ist_timestamp(),
                     )
                     self.risk_manager.add_position(pos)

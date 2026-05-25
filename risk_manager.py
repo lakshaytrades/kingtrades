@@ -202,6 +202,7 @@ class RiskManager:
             daily_capital=cap,
             available_capital=cap,
             nifty_open=nifty_open,
+            circuit_breaker_active=False,  # always reset circuit breaker on new day
         )
         # Use the effective cap so the balance guard (< 1000) doesn't block
         # trades when Groww API returns 0 at initialization

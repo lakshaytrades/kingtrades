@@ -337,7 +337,12 @@ class AlpacaDataFetcher:
             return result
 
         except Exception as e:
-            logger.debug(f"get_quote({symbol}) failed: {e}")
+            _err_str = str(e)
+            if "429" in _err_str or "rate" in _err_str.lower():
+                logger.warning(f"[data_fetch] Rate limit hit for {symbol} — backing off 3s")
+                import time as _t; _t.sleep(3)
+            else:
+                logger.debug(f"get_quote({symbol}) failed: {e}")
             return {
                 "ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0,
                 "daily_volume": 0, "open": 0.0, "high": 0.0, "low": 0.0,
@@ -474,7 +479,12 @@ class AlpacaDataFetcher:
             return df
 
         except Exception as e:
-            logger.debug(f"Alpaca bars {symbol}/{interval}: {e} — using BarCache")
+            _es = str(e)
+            if "429" in _es or "rate" in _es.lower():
+                logger.warning(f"[data_fetch] Rate limit on bars {symbol}/{interval} — backing off 3s")
+                import time as _t; _t.sleep(3)
+            else:
+                logger.debug(f"Alpaca bars {symbol}/{interval}: {e} — using BarCache")
             return get_bar_cache().get(symbol, interval, lookback_days)
 
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:

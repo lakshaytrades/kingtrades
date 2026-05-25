@@ -748,7 +748,8 @@ class AlpacaExecutor:
             status = fetcher.get_order_status(order_id)
             if str(status.get("status", "")).lower() in ("filled", "partially_filled"):
                 price = status.get("filled_avg_price", 0.0)
-                if price > 0:
+                qty   = float(status.get("filled_qty", status.get("qty", 0)) or 0)
+                if price > 0 and qty > 0:
                     return float(price)
             if status.get("status") in ("canceled", "expired", "rejected"):
                 return 0.0
