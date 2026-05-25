@@ -825,6 +825,7 @@ class PatternRecognizer:
             # ── Indicator crossovers ──────────────────────────────────────
             self.detect_vwap_bounce,
             self.detect_vwap_breakdown,
+            self.detect_vwap_mean_reversion,
             self.detect_volume_surge_breakout,
             self.detect_rsi_divergence,
             self.detect_macd_crossover,
@@ -1234,6 +1235,33 @@ class PatternRecognizer:
             confidence = 70 + (ind.volume_ratio - 1) * 10
             return PatternResult("VWAP Breakdown", "SHORT", min(confidence, 85),
                                  f"Price broke below VWAP ${ind.vwap:.2f}")
+        return None
+
+    def detect_vwap_mean_reversion(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:
+        """
+        Price is extended far from VWAP — expects mean reversion back toward VWAP.
+        Best in choppy/range-bound markets. Different from bounce/breakdown:
+        bounce = just crossed VWAP; reversion = price is FAR from VWAP and likely to snap back.
+
+        LONG: price far BELOW VWAP (>1.5 ATR) + RSI oversold (<40) → buy the snap-back
+        SHORT: price far ABOVE VWAP (>1.5 ATR) + RSI overbought (>60) → sell the extension
+        """
+        if ind.vwap == 0 or ind.atr == 0 or len(df) < 5:
+            return None
+        curr = df.iloc[-1]
+        deviation_atr = (curr["close"] - ind.vwap) / ind.atr
+        if deviation_atr < -1.5 and ind.rsi < 40 and ind.volume_ratio >= 1.0:
+            confidence = 65 + min(abs(deviation_atr) * 8, 18)
+            return PatternResult(
+                "VWAP Mean Reversion", "LONG", min(confidence, 83),
+                f"Price {abs(deviation_atr):.1f}× ATR below VWAP — snap-back expected",
+            )
+        if deviation_atr > 1.5 and ind.rsi > 60 and ind.volume_ratio >= 1.0:
+            confidence = 65 + min(deviation_atr * 8, 18)
+            return PatternResult(
+                "VWAP Mean Reversion", "SHORT", min(confidence, 83),
+                f"Price {deviation_atr:.1f}× ATR above VWAP — mean reversion down",
+            )
         return None
 
     def detect_volume_surge_breakout(self, df: pd.DataFrame, ind: IndicatorSet) -> Optional[PatternResult]:

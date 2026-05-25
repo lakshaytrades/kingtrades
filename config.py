@@ -73,7 +73,7 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — covers
 ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
 ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
 
-MAX_POSITIONS: int = 15
+MAX_POSITIONS: int = 20
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 30.0   # 30% = $300 on $1K; risk_mgr still limits by ATR-SL
 
@@ -145,15 +145,15 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 65.0        # lowered from 72 — more qualifying setups, still filtered by 14-gate HAF
+MIN_SIGNAL_SCORE: float = 62.0        # lowered from 65 — more qualifying setups, still filtered by 14-gate HAF
 HIGH_CONFIDENCE_SCORE: float = 78.0   # A+ tier: strong regime + MTF + volume surge
 PREMIUM_SCORE: float = 72.0
 MIN_VOLUME_RATIO: float = 1.6         # slightly relaxed (was 1.8) to catch early breakouts
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 20          # quality over quantity — 20 perfect trades > 40 marginal ones
-MAX_TRADES_PER_STOCK: int = 3         # re-enter only on confirmed continuation setups
+MAX_TRADES_PER_DAY: int = 30          # increased from 20 — more opportunities
+MAX_TRADES_PER_STOCK: int = 4         # up from 3 — allow more re-entries on strong trends
 
 # ============================================================
 # CIRCUIT BREAKERS
@@ -161,6 +161,26 @@ MAX_TRADES_PER_STOCK: int = 3         # re-enter only on confirmed continuation 
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
 CONSECUTIVE_LOSS_LIMIT: int = 4        # pause after 4 losses (was 3) — less interruption in choppy opens
 PAUSE_AFTER_LOSSES_MINUTES: int = 10   # 10 min pause (was 15) — back faster when market is moving
+
+# ── Short selling ──────────────────────────────────────────────────────────
+SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "True").lower() in ("true","1","yes")
+
+# ── VWAP mean-reversion strategy (best in choppy markets) ──────────────────
+VWAP_REVERSION_ENABLED: bool = True
+VWAP_REVERSION_MIN_DEVIATION_ATR: float = 1.5   # price must be 1.5+ ATR from VWAP
+
+# ── AI News sentiment filter ────────────────────────────────────────────────
+GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score news sentiment
+GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
+
+# ── Aggressive sizing on elite setups ───────────────────────────────────────
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 82)
+
+# ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
+ORB_ENABLED: bool = True
+ORB_WINDOW_MINUTES: int = 15         # range established in first 15 min
+ORB_MIN_RANGE_PCT: float = 0.3       # range must be at least 0.3% of price
+ORB_RISK_MULTIPLIER: float = 1.2     # slightly larger size on ORB plays
 
 # ============================================================
 # WATCHLIST — US liquid momentum stocks

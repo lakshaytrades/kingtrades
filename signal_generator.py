@@ -758,8 +758,8 @@ class SignalGenerator:
             except Exception as _vix:
                 logger.debug(f"[suppressed] vix_sizing: {_vix}")
 
-            # ── LLM Reasoning Gate (82+ score — expanded from 95 for top-1%) ─
-            if filter_result.final_score >= 82:
+            # ── LLM Reasoning Gate (70+ score — expanded from 82 for B+ and above) ─
+            if filter_result.final_score >= 70:
                 try:
                     from llm_reasoner import get_llm_reasoner
                     rr = abs(ind.atr * 3.0) / max(abs(ind.atr * 1.4), 0.01)
@@ -794,6 +794,26 @@ class SignalGenerator:
                         logger.info(f"[{format_ist_timestamp()}] {symbol}: LLM REDUCE — {reason}")
                 except Exception as e:
                     logger.debug(f"LLM gate error: {e}")
+
+            # ── Gemini news sentiment adjustment ────────────────────────────
+            try:
+                from gemini_filter import get_gemini_filter
+                if getattr(config, "GEMINI_NEWS_FILTER_ENABLED", True):
+                    _g_delta, _g_reason = get_gemini_filter().score_signal(
+                        symbol, direction, filter_result.final_score
+                    )
+                    if _g_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _g_delta))
+                        if _g_delta < -5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Gemini news penalty {_g_delta:+.0f} → {filter_result.final_score:.0f} | {_g_reason}")
+                        elif _g_delta > 5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Gemini news boost {_g_delta:+.0f} → {filter_result.final_score:.0f} | {_g_reason}")
+                        # Re-check minimum score after adjustment
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Score fell to {filter_result.final_score:.0f} after news penalty — skipping")
+                            return None
+            except Exception as _ge:
+                logger.debug(f"[suppressed] gemini_filter: {_ge}")
 
             signal = self._build_signal(
                 symbol=symbol,

@@ -132,6 +132,7 @@ class TradingBot:
         self._mover_scan_interval = 3600         # refresh top-movers every 60 min
         self._last_optimizer_reload: float = 0.0 # timestamp of last optimizer config reload
         self._optimizer_reload_interval = 3600   # re-apply optimizer params every 60 min
+        self._orb_done_today: bool = False       # ORB scan fired once per day at 9:31-9:45 AM ET
 
     # --------------------------------------------------------
     # STARTUP
@@ -906,8 +907,45 @@ class TradingBot:
             f"  DOW mode: {dow_name} | Size: {dow_mult:.0%} | "
             f"Min score: {dow_min:.0f} | Max trades: {dow_max}"
         )
+        self._orb_done_today = False
         self._day_initialized = True
         self.market_open_today = True
+
+    # --------------------------------------------------------
+    # SIGNAL EXECUTION HELPER
+    # --------------------------------------------------------
+
+    def _execute_signal(self, signal) -> None:
+        """
+        Execute a single pre-validated signal directly (used by ORB and other
+        sub-strategies that bypass the main scan loop).  Applies the short-selling
+        guard and the standard risk gate before forwarding to the executor.
+        """
+        # Short selling guard
+        if signal.direction == "SHORT" and not getattr(config, "SHORT_SELLING_ENABLED", True):
+            logger.debug(f"Short selling disabled — skipping {signal.symbol} SHORT")
+            return
+
+        if not self.risk_manager or not self.executor:
+            logger.debug("_execute_signal: risk_manager or executor not ready")
+            return
+
+        _risk_check = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
+        if not _risk_check["allowed"]:
+            logger.info(
+                f"[{format_ist_timestamp()}] RISK GATE (_execute_signal): "
+                f"{signal.symbol} — {_risk_check['reason']}"
+            )
+            return
+
+        logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+        result = self.executor.place_entry_order(signal)
+        if not result.success:
+            logger.error(
+                f"[{format_ist_timestamp()}] ORDER REJECTED (_execute_signal): "
+                f"{signal.symbol} {signal.direction} score={signal.signal_score:.0f} | "
+                f"Reason: {result.message}"
+            )
 
     # --------------------------------------------------------
     # MAIN TRADING LOOP
@@ -1005,6 +1043,38 @@ class TradingBot:
                                 f"{len(open_pos)} positions open."
                             )
                     else:
+                        # ── Opening Range Breakout (first 15 minutes) ───────────────────
+                        if (getattr(config, "ORB_ENABLED", True)
+                                and not self._orb_done_today
+                                and not self.eod_done):
+                            from utils import get_current_et_time
+                            _et = get_current_et_time()
+                            _mins_open = (_et.hour - 9) * 60 + (_et.minute - 30)
+                            if 1 <= _mins_open <= 15:
+                                # Market open 1-15 minutes — scan for ORB setups
+                                try:
+                                    _orb_signals = self.signal_gen.scan_watchlist(
+                                        BROKER_WATCHLIST[:30], max_signals=5
+                                    )
+                                    _orb_high_conf = [
+                                        s for s in _orb_signals
+                                        if s.signal_score >= 72 and s.quality_grade in ("A+", "A")
+                                    ]
+                                    if _orb_high_conf:
+                                        logger.info(
+                                            f"[{format_ist_timestamp()}] 🔔 ORB: {len(_orb_high_conf)} "
+                                            f"high-confidence setups at open"
+                                        )
+                                        for _orb_sig in _orb_high_conf[:3]:
+                                            _orb_sig.size_multiplier = round(
+                                                _orb_sig.size_multiplier * getattr(config, "ORB_RISK_MULTIPLIER", 1.2), 2
+                                            )
+                                            self._execute_signal(_orb_sig)
+                                except Exception as _orb_e:
+                                    logger.debug(f"ORB scan error: {_orb_e}")
+                                finally:
+                                    self._orb_done_today = True
+
                         # Normal trading cycle
                         self._trading_cycle()
 
@@ -1687,6 +1757,11 @@ class TradingBot:
                     logger.info(
                         f"[{format_ist_timestamp()}] RISK GATE: {signal.symbol} — {_risk_check['reason']}"
                     )
+                    continue
+
+                # Short selling guard
+                if signal.direction == "SHORT" and not getattr(config, "SHORT_SELLING_ENABLED", True):
+                    logger.debug(f"Short selling disabled — skipping {signal.symbol} SHORT")
                     continue
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
