@@ -485,6 +485,7 @@ class RiskManager:
         size_multiplier: float = 1.0,
         signal_rr: float = 2.0,    # Signal's reward:risk — feeds dynamic Kelly
         atr: float = 0.0,          # ATR for volatility targeting
+        quality_grade: str = "B",  # A+/A/B/C — unlocks higher risk cap on elite setups
     ) -> Dict:
         """
         Multi-layer position sizing:
@@ -591,9 +592,12 @@ class RiskManager:
         quantity = max(quantity, 1)
 
         # 7. Hard total-risk guard: ensure final risk never exceeds absolute max_risk_pct of capital
-        # Use the config value directly — don't inflate by multipliers that have already been applied.
-        # This prevents session mult (2.2×) + A+ doubling → 6% risk per trade on small accounts.
+        # A+ and A signals unlock a higher cap via HIGH_CONFIDENCE_RISK_MULTIPLIER (default 1.5×).
+        # Hard ceil at 3.0% regardless — prevents runaway sizing on any single position.
         _hard_risk_pct = getattr(_cfg, "MAX_RISK_PER_TRADE_PCT", self.max_risk_pct)
+        if quality_grade in ("A+", "A"):
+            _conf_mult = getattr(_cfg, "HIGH_CONFIDENCE_RISK_MULTIPLIER", 1.0)
+            _hard_risk_pct = min(_hard_risk_pct * _conf_mult, 3.0)
         max_allowed_risk = capital * (_hard_risk_pct / 100)
         if sl_distance > 0 and quantity * sl_distance > max_allowed_risk:
             quantity = max(1, int(max_allowed_risk / sl_distance))

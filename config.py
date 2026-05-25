@@ -58,11 +58,11 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # 0 = use full Alpaca account balance dynamically (recommended)
 # >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.5"))
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.5"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — covers 1 full loss + buffer
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "3.0"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 4.0)   # hard cap 4% — room for 5 trades before halt
 
 # Intraday leverage multiplier.
 # ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.

@@ -401,9 +401,23 @@ class SignalGenerator:
             inst_ctx["harmonic_score"] = max(-50, min(harm_long - harm_short, 50))  # clip ±50
 
             # 5c. Regime block — skip signal if regime is AVOID
+            # Exception: RANGING/MIDDAY_CHOP regimes allow VWAP Mean Reversion through —
+            # that strategy *works* in chop whereas breakouts fail.
             if inst_ctx.get("regime_block", False):
-                logger.info(f"[{format_ist_timestamp()}] {symbol}: regime_block=True — skipping")
-                return None
+                _regime_name = inst_ctx.get("regime_name", "")
+                _chop_regimes = ("RANGING", "MIDDAY_CHOP", "LOW_VOLATILITY")
+                _vwap_rev_patterns = {"VWAP Mean Reversion", "VWAP Bounce", "VWAP Breakdown"}
+                _analysis_pats = {p.name for p in analysis_5m.get("patterns", [])}
+                if (_regime_name in _chop_regimes
+                        and getattr(config, "VWAP_REVERSION_ENABLED", True)
+                        and _analysis_pats & _vwap_rev_patterns):
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: regime={_regime_name} but "
+                        f"VWAP reversion pattern detected — allowing through"
+                    )
+                else:
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: regime_block=True — skipping")
+                    return None
 
             # 5c-alt. Economic Calendar hard block (FOMC/CPI/NFP before release)
             if inst_ctx.get("calendar_ok") is False:
