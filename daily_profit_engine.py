@@ -83,11 +83,11 @@ class ProfitEngineConfig:
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
 
-    # Min signal scores by mode — calibrated to real market (best setups score 72-75)
-    score_normal:          float = 72.0   # base quality gate — 14-gate HAF filters noise
-    score_caution:         float = 78.0   # caution: raised +6 above normal
-    score_protection:      float = 82.0   # protection: only clean setups +10 above normal
-    score_lock:            float = 86.0   # lock: near A+ territory, almost no trades
+    # Min signal scores by mode — read from config.MIN_SIGNAL_SCORE (default 65)
+    score_normal:          float = 65.0   # base quality gate
+    score_caution:         float = 72.0   # caution: tighter quality
+    score_protection:      float = 76.0   # protection: A-grade only
+    score_lock:            float = 82.0   # lock: A+ only, very few trades
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -208,11 +208,15 @@ class DailyProfitEngine:
         self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
         self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
 
-        # Percentage-based loss thresholds — scaled for 1.5% risk/trade
-        # One full stop-out = 1.5%, so caution at 1.0% gives room before first stop
-        self.cfg.caution_loss   = max(available_balance * 0.010, 5.0)   # 1.0% — switch to A-grade
-        self.cfg.defensive_loss = max(available_balance * 0.015, 8.0)   # 1.5% — one full stop hit
-        self.cfg.daily_loss_limit = max(available_balance * 0.025, 12.0) # 2.5% — hard stop
+        # Percentage-based loss thresholds — read from DAILY_LOSS_LIMIT_PCT env var
+        # For 1.5%/day compounding: caution 0.5%, defensive 1.0%, hard stop 1.5%
+        import os as _os
+        loss_limit_pct  = float(_os.getenv("DAILY_LOSS_LIMIT_PCT", "1.5")) / 100
+        caution_pct     = loss_limit_pct * 0.33   # ~0.5% — first warning
+        defensive_pct   = loss_limit_pct * 0.67   # ~1.0% — step back
+        self.cfg.caution_loss     = max(available_balance * caution_pct,  5.0)
+        self.cfg.defensive_loss   = max(available_balance * defensive_pct, 8.0)
+        self.cfg.daily_loss_limit = max(available_balance * loss_limit_pct, 12.0)
 
         # Load or reset state
         saved = self._load_state()
