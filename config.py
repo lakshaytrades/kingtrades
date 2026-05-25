@@ -61,8 +61,8 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.0"))
 MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "3.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 4.0)   # hard cap 4% — room for 5 trades before halt
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — stop the day and protect capital
 
 # Intraday leverage multiplier.
 # ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.
@@ -104,10 +104,10 @@ ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book at 1.5:1 — lock partia
 ATR_TP_MULTIPLIER: float = 3.5          # T2 at 3.5:1 — was 2.5, wider target = bigger wins
 ATR_TP_RUNNER: float = 6.0             # T3 runner extended from 5.0 — catches full trend moves
 ATR_TRAIL_MULTIPLIER: float = 0.80      # wider trail after T2 (was 0.50) — runners breathe more
-BREAKEVEN_TRIGGER_PCT: float = 0.25     # move stop to breakeven slightly earlier
-PARTIAL_EXIT_T1_PCT: float = 30.0       # 30% at T1 (was 40%) — keep more running for T2/T3
-PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 (was 25%) — keep more in runner
-RUNNER_PCT: float = 50.0                # 50% runner (was 35%) — half the position rides the full trend
+BREAKEVEN_TRIGGER_PCT: float = 0.15     # move stop to breakeven after only 0.15% gain — convert near-losses to free trades
+PARTIAL_EXIT_T1_PCT: float = 40.0       # 40% at T1 (up from 30%) — lock more profit early, less at risk
+PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — keep runner alive
+RUNNER_PCT: float = 40.0                # 40% runner (down from 50%) — slightly more locked in
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
 MIN_RISK_REWARD: float = 2.0       # Minimum R:R measured at T2 target (2.5x SL) — previously
@@ -145,7 +145,7 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 62.0        # lowered from 65 — more qualifying setups, still filtered by 14-gate HAF
+MIN_SIGNAL_SCORE: float = 66.0        # raised for loss reduction — only B+ and above (fewer but higher-quality trades)
 HIGH_CONFIDENCE_SCORE: float = 78.0   # A+ tier: strong regime + MTF + volume surge
 PREMIUM_SCORE: float = 72.0
 MIN_VOLUME_RATIO: float = 1.6         # slightly relaxed (was 1.8) to catch early breakouts
@@ -159,8 +159,13 @@ MAX_TRADES_PER_STOCK: int = 4         # up from 3 — allow more re-entries on s
 # CIRCUIT BREAKERS
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
-CONSECUTIVE_LOSS_LIMIT: int = 4        # pause after 4 losses (was 3) — less interruption in choppy opens
-PAUSE_AFTER_LOSSES_MINUTES: int = 10   # 10 min pause (was 15) — back faster when market is moving
+CONSECUTIVE_LOSS_LIMIT: int = 2        # pause after 2 consecutive losses — catches losing streaks fast
+PAUSE_AFTER_LOSSES_MINUTES: int = 25   # 25 min pause — enough time for market conditions to shift
+LARGE_LOSS_PAUSE_PCT: float = 1.5      # pause if single trade loses ≥1.5% of daily capital (was 3%)
+LARGE_LOSS_PAUSE_MINUTES: int = 25     # pause duration after large single loss
+NO_ENTRY_AFTER_ET_HOUR: int = 15       # no new entries at or after 3:00 PM ET (last 30 min = noisy reversals)
+NO_ENTRY_AFTER_ET_MINUTE: int = 0
+SKIP_VOLATILE_LONGS: bool = True       # in HIGH_VOLATILITY regime, skip LONG entries (only shorts)
 
 # ── Short selling ──────────────────────────────────────────────────────────
 SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "True").lower() in ("true","1","yes")

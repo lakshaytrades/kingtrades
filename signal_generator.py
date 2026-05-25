@@ -427,6 +427,31 @@ class SignalGenerator:
                 )
                 return None
 
+            # 5c-ii. No new entries at or after 3:00 PM ET — last 30 min reversals destroy P&L
+            try:
+                from utils import get_current_et_time
+                _et_now = get_current_et_time()
+                _cutoff_h = getattr(config, "NO_ENTRY_AFTER_ET_HOUR", 15)
+                _cutoff_m = getattr(config, "NO_ENTRY_AFTER_ET_MINUTE", 0)
+                if (_et_now.hour > _cutoff_h
+                        or (_et_now.hour == _cutoff_h and _et_now.minute >= _cutoff_m)):
+                    logger.info(
+                        f"[{format_ist_timestamp()}] {symbol}: after {_cutoff_h}:{_cutoff_m:02d} ET cutoff — no new entries"
+                    )
+                    return None
+            except Exception:
+                pass
+
+            # 5c-iii. HIGH_VOLATILITY regime: skip LONG entries — shorts still allowed
+            if (inst_ctx.get("regime_name", "") == "HIGH_VOLATILITY"
+                    and direction == "LONG"
+                    and getattr(config, "SKIP_VOLATILE_LONGS", True)):
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: HIGH_VOLATILITY regime — "
+                    f"LONG skipped (only SHORTs allowed when VIX is extreme)"
+                )
+                return None
+
             # 5d. Daily HTF bias enforcement (Grok #8):
             # Only take LONG trades when daily structure is bullish
             # (price > 20-day SMA AND recent higher highs/lows).

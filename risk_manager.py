@@ -556,6 +556,23 @@ class RiskManager:
         if mi_mult != 1.0:
             quantity = max(1, int(quantity * mi_mult))
 
+        # 4e. Anti-martingale: scale DOWN after consecutive losses, recover after wins.
+        # This is the single most effective drawdown reducer — halves loss damage in streaks.
+        _streak = self.state.consecutive_losses
+        if _streak >= 3:
+            _anti_mult = 0.35      # 3+ losses: quarter size — just staying alive
+        elif _streak == 2:
+            _anti_mult = 0.55      # 2 losses: half size — cautious
+        elif _streak == 1:
+            _anti_mult = 0.75      # 1 loss: 75% size — slightly cautious
+        else:
+            _anti_mult = 1.0       # no losses today: full size
+        if _anti_mult < 1.0:
+            quantity = max(1, int(quantity * _anti_mult))
+            logger.debug(
+                f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size"
+            )
+
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
         current_heat       = self.state.portfolio_heat
@@ -1244,13 +1261,15 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Pause only after a large LOSS (≥3% of daily capital), not wins.
-            # abs() was previously used which also paused on big profitable trades — wrong.
-            _pause_floor = self.state.daily_capital * 0.03
-            if pnl < 0 and abs(pnl) >= max(_pause_floor, 25.0):
+            # Pause only after a large LOSS (≥LARGE_LOSS_PAUSE_PCT of daily capital), not wins.
+            import config as _rm_cfg
+            _large_loss_pct = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_PCT", 1.5)
+            _large_loss_min = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_MINUTES", 25)
+            _pause_floor = self.state.daily_capital * (_large_loss_pct / 100)
+            if pnl < 0 and abs(pnl) >= max(_pause_floor, 15.0):
                 self._pause_trading(
-                    f"large loss protection: ${pnl:+.2f} on {symbol} — pausing 15 min",
-                    minutes=15
+                    f"large loss protection: ${pnl:+.2f} on {symbol} — pausing {_large_loss_min} min",
+                    minutes=_large_loss_min
                 )
             # Hard consecutive loss limit still applies
             elif self.state.consecutive_losses >= self.consecutive_loss_limit:
