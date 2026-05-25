@@ -67,7 +67,8 @@ def _is_nyse_holiday(check_date: Optional[date] = None) -> bool:
         api_key = os.getenv("ALPACA_API_KEY", "")
         secret  = os.getenv("ALPACA_SECRET_KEY", "")
         if api_key and secret:
-            tc = TradingClient(api_key, secret, paper=True)
+            paper_mode = os.getenv("ALPACA_PAPER", "true").lower() not in ("false", "0", "no")
+            tc = TradingClient(api_key, secret, paper=paper_mode)
             req = GetCalendarRequest(
                 start=check_date.isoformat(),
                 end=check_date.isoformat()

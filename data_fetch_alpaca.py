@@ -347,7 +347,7 @@ class AlpacaDataFetcher:
                 "ltp": 0.0, "bid": 0.0, "ask": 0.0, "volume": 0,
                 "daily_volume": 0, "open": 0.0, "high": 0.0, "low": 0.0,
                 "close": 0.0, "change_pct": 0.0, "symbol": symbol,
-                "vwap": 0.0, "above_vwap": False,
+                "vwap": 0.0, "above_vwap": False, "error": True,
             }
 
     def get_ltp(self, symbol: str) -> float:

@@ -746,10 +746,13 @@ class AlpacaExecutor:
         fetcher  = get_data_fetcher()
         while _time.monotonic() < deadline:
             status = fetcher.get_order_status(order_id)
-            if str(status.get("status", "")).lower() in ("filled", "partially_filled"):
-                price = status.get("filled_avg_price", 0.0)
-                qty   = float(status.get("filled_qty", status.get("qty", 0)) or 0)
-                if price > 0 and qty > 0:
+            _status_str = str(status.get("status", "")).lower()
+            if _status_str in ("filled", "partially_filled"):
+                price    = status.get("filled_avg_price", 0.0)
+                qty_raw  = status.get("filled_qty") or status.get("qty") or 0
+                qty      = float(qty_raw or 0)
+                # Accept fill if price valid AND (qty populated OR status=filled)
+                if price > 0 and (qty > 0 or _status_str == "filled"):
                     return float(price)
             if status.get("status") in ("canceled", "expired", "rejected"):
                 return 0.0

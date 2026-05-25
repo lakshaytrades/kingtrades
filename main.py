@@ -1014,9 +1014,10 @@ class TradingBot:
 
                 else:
                     # Waiting for market (handles holidays + weekends automatically)
-                    from utils import _is_nyse_holiday, get_next_market_open_et
-                    _today_et = now_ist.date()
-                    if now_ist.weekday() >= 5 or _is_nyse_holiday(_today_et):
+                    from utils import _is_nyse_holiday, get_next_market_open_et, get_current_et_date
+                    _today_et = get_current_et_date()  # ET date, not IST date
+                    _now_et   = get_current_et_time()
+                    if _now_et.weekday() >= 5 or _is_nyse_holiday(_today_et):
                         _next_open = get_next_market_open_et()
                         _mins_hol = (_next_open - now_ist).total_seconds() / 60
                         logger.info(
