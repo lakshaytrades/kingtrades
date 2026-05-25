@@ -57,19 +57,20 @@ ET = ZoneInfo("America/New_York")
 # US market: NY Open Kill Zone + Power Hour are the money windows.
 POWER_WINDOWS = [
     (time(9, 30),  time(10, 45)),   # NY Open Kill Zone — strongest momentum
+    (time(13, 30), time(14, 30)),   # Early afternoon institutional reset — reliable setups
     (time(14, 30), time(16, 0)),    # Power Hour — institutional accumulation/distribution
 ]
 
-# Reduced-size window (can trade but 50% size — score still gates quality)
+# Reduced-size window (can trade but 60% size — strict score gate still applies)
+# Midday converted from AVOID → CAUTION: gives bot 2 more hours to find the day's target trade
 CAUTION_WINDOWS = [
     (time(10, 45), time(11, 30)),   # Post-opening fade — reduced size
-    (time(13, 30), time(14, 30)),   # Early afternoon pickup
+    (time(11, 30), time(13, 30)),   # Midday: 60% size, score ≥ min_score required — hunt for target hit
 ]
 
-# NO TRADE windows
+# NO TRADE windows — only hard EOD cutoff
 AVOID_WINDOWS = [
-    (time(11, 30), time(13, 30)),   # Midday dead zone — no trades
-    (time(15, 50), time(16, 0)),    # EOD — no new entries
+    (time(15, 50), time(16, 0)),    # EOD — no new entries (too close to close)
 ]
 
 

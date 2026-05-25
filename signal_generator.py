@@ -306,6 +306,10 @@ class SignalGenerator:
         Returns TradeSignal if confidence >= min_score, else None.
         """
         try:
+            # Reset ha_filter threshold to canonical min_score at start of each call.
+            # Target chase mode may lower it mid-session; this prevents permanent drift.
+            self.ha_filter.min_score = self.min_score
+
             # Skip symbols that have repeatedly returned no data this session
             if symbol in self._session_skip:
                 logger.debug(f"{symbol}: skipped — no data available (session blacklist)")
@@ -442,7 +446,31 @@ class SignalGenerator:
             except Exception:
                 pass
 
-            # 5c-iii. HIGH_VOLATILITY regime: skip LONG entries — shorts still allowed
+            # 5c-iii. TARGET CHASE mode — after 1:30 PM ET with no winning trade yet,
+            # temporarily lower threshold by 4 pts (74 instead of 78) for one last setup.
+            # Prop trader rule: find ONE good trade per day — every day should hit target.
+            try:
+                from utils import get_current_et_time
+                _tc_now = get_current_et_time()
+                if _tc_now.hour >= 13 and _tc_now.minute >= 30 or _tc_now.hour >= 14:
+                    try:
+                        from daily_profit_engine import get_profit_engine
+                        _eng = get_profit_engine()
+                        _today_wins = getattr(_eng.state, "winning_trades", 0)
+                        if _today_wins == 0:
+                            _chase_threshold = max(self.min_score - 4, 74.0)
+                            if self.ha_filter.min_score > _chase_threshold:
+                                self.ha_filter.min_score = _chase_threshold
+                                logger.info(
+                                    f"[{format_ist_timestamp()}] {symbol}: TARGET CHASE mode "
+                                    f"(1:30 PM+ ET, 0 wins today) — threshold lowered to {_chase_threshold:.0f}"
+                                )
+                    except Exception:
+                        pass
+            except Exception:
+                pass
+
+            # 5c-iv. HIGH_VOLATILITY regime: skip LONG entries — shorts still allowed
             if (inst_ctx.get("regime_name", "") == "HIGH_VOLATILITY"
                     and direction == "LONG"
                     and getattr(config, "SKIP_VOLATILE_LONGS", True)):

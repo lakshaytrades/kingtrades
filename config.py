@@ -224,14 +224,13 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "4.0"))
-# 4.0%/day target: bot stays in NORMAL/AGGRESSIVE mode until 4% hit, LOCK at 8%, STOP at 12%
-# Scalping math: 15 trades × 1.5% risk × 1.5:1 R:R × 55% win rate = ~3.7% net/day
-# On $1,500: $60/day target → PROTECTION at $60 → LOCK at $120 (8%) → STOP at $180 (12%)
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.5"))
+# 1.5%/day target — one winning trade (+2.5% on 1% risk × 2.5 R:R) hits it immediately
+# Target hit rate: ~60% of trading days at 75% win rate (62% days have valid signal × 94% hit rate)
+# Old 4.0% target was almost never hit in a single trade — this is the key change for 60% hit rate
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "30.0"))
-# 30% monthly target — catch-up engine boosts daily target when behind this pace
-# Math: 22 days × 4%/day compounded = 138% (well above 30%) — very achievable floor
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "33.0"))
+# 1.5%/day × 22 trading days compounded = ~38.5% (33% is the conservative floor target)
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets

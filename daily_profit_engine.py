@@ -83,11 +83,11 @@ class ProfitEngineConfig:
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
 
-    # Min signal scores by mode — read from config.MIN_SIGNAL_SCORE (default 65)
-    score_normal:          float = 65.0   # base quality gate
-    score_caution:         float = 72.0   # caution: tighter quality
-    score_protection:      float = 76.0   # protection: A-grade only
-    score_lock:            float = 82.0   # lock: A+ only, very few trades
+    # Min signal scores by mode — synced with config.MIN_SIGNAL_SCORE = 78
+    score_normal:          float = 78.0   # base quality gate (A-grade minimum always)
+    score_caution:         float = 80.0   # caution: slightly tighter
+    score_protection:      float = 82.0   # protection: strict A-grade after target hit
+    score_lock:            float = 88.0   # lock: A+ only (score ≥ 88) — very few trades
 
 
 # ─────────────────────────────────────────────────────────────────────────────
@@ -205,8 +205,8 @@ class DailyProfitEngine:
         self._daily_target = daily_target
         self.cfg.daily_target          = daily_target
         self.state.set_daily_target_ref(daily_target)
-        self.cfg.daily_stretch_target  = daily_target * 2.0   # 2× = LOCK mode
-        self.cfg.daily_max_target      = daily_target * 3.0   # 3× = STOP for the day
+        self.cfg.daily_stretch_target  = daily_target * 1.67  # 2.5% = LOCK mode (was 2×)
+        self.cfg.daily_max_target      = daily_target * 2.33  # 3.5% = STOP for the day (was 3×)
 
         # Percentage-based loss thresholds — read from DAILY_LOSS_LIMIT_PCT env var
         # For 1.5%/day compounding: caution 0.5%, defensive 1.0%, hard stop 1.5%
