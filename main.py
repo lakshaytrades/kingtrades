@@ -946,6 +946,43 @@ class TradingBot:
                 f"{signal.symbol} {signal.direction} score={signal.signal_score:.0f} | "
                 f"Reason: {result.message}"
             )
+            return
+
+        # Register position with risk manager — critical for trailing stops, T1/T2 exits,
+        # circuit breakers, and daily loss accounting. Without this, ORB fills are invisible.
+        try:
+            from risk_manager import Position
+            fill_price = result.fill_price if result.fill_price > 0 else signal.entry_price
+            fill_qty   = result.quantity   if result.quantity   > 0 else max(getattr(signal, "quantity", 0), 1)
+            position = Position(
+                symbol            = signal.symbol,
+                direction         = signal.direction,
+                quantity          = fill_qty,
+                entry_price       = fill_price,
+                stop_loss         = signal.stop_loss,
+                target_1          = signal.target_1,
+                target_2          = signal.target_2,
+                atr               = getattr(signal, "atr", fill_price * 0.01),
+                entry_time        = format_ist_timestamp(),
+                quality_grade     = getattr(signal, "quality_grade", "B"),
+                size_multiplier   = getattr(signal, "size_multiplier", 1.0),
+                time_stop_minutes = getattr(signal, "time_stop_minutes", 30),
+            )
+            self.risk_manager.add_position(position)
+        except Exception as _pe:
+            logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
+
+        # Broker-side stop order so SL is enforced even if bot crashes
+        try:
+            sl_id = self.executor.place_stop_order(
+                signal.symbol, fill_qty, signal.stop_loss, signal.direction
+            )
+            if sl_id:
+                pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                if pos_ref:
+                    pos_ref.sl_order_id = sl_id
+        except Exception as _se:
+            logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
     # --------------------------------------------------------
     # MAIN TRADING LOOP
@@ -1070,10 +1107,13 @@ class TradingBot:
                                                 _orb_sig.size_multiplier * getattr(config, "ORB_RISK_MULTIPLIER", 1.2), 2
                                             )
                                             self._execute_signal(_orb_sig)
-                                except Exception as _orb_e:
-                                    logger.debug(f"ORB scan error: {_orb_e}")
-                                finally:
+                                    # Only mark done on successful scan — allow retry if scan threw
                                     self._orb_done_today = True
+                                except Exception as _orb_e:
+                                    logger.warning(f"ORB scan error (will retry next cycle): {_orb_e}")
+                            elif _mins_open > 15:
+                                # ORB window has passed — mark done so we stop checking every cycle
+                                self._orb_done_today = True
 
                         # Normal trading cycle
                         self._trading_cycle()

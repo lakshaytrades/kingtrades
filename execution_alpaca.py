@@ -175,6 +175,7 @@ class AlpacaExecutor:
                 size_multiplier = getattr(signal, "size_multiplier", 1.0),
                 signal_rr       = getattr(signal, "risk_reward", 2.0),
                 quality_grade   = getattr(signal, "quality_grade", "B"),
+                atr             = getattr(signal, "atr", 0.0),
             )
             qty          = sizing.get("quantity", 0)
             notional_amt = sizing.get("notional", 0.0)
@@ -228,6 +229,7 @@ class AlpacaExecutor:
             size_multiplier = getattr(signal, "size_multiplier", 1.0),
             signal_rr       = getattr(signal, "risk_reward", 2.0),
             quality_grade   = getattr(signal, "quality_grade", "B"),
+            atr             = getattr(signal, "atr", 0.0),
         )
         quantity       = sizing.get("quantity", 0)
         notional_order = sizing.get("notional", 0.0)

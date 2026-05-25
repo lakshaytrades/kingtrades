@@ -560,7 +560,7 @@ class RiskManager:
         # This is the single most effective drawdown reducer — halves loss damage in streaks.
         _streak = self.state.consecutive_losses
         if _streak >= 3:
-            _anti_mult = 0.35      # 3+ losses: quarter size — just staying alive
+            _anti_mult = 0.35      # 3+ losses: 35% size — survive the streak, not grow it
         elif _streak == 2:
             _anti_mult = 0.55      # 2 losses: half size — cautious
         elif _streak == 1:
@@ -703,7 +703,7 @@ class RiskManager:
             return sector_check
 
         # 9. Hard time gate — no new entries at or after 3:30 PM ET regardless of session mult
-        _now_et = get_current_ist_time()  # aliased to ET
+        _now_et = get_current_et_time()
         if _now_et.time() >= time(15, 30):
             return {"allowed": False, "reason": "Hard time gate: no new entries after 3:30 PM ET"}
         sess_mult, session = self._get_session_multiplier()
@@ -836,7 +836,7 @@ class RiskManager:
                     "action": "PARTIAL_EXIT_T2",
                     "new_sl": runner_sl,
                     "exit_qty": position.t2_qty,
-                    "reason": f"T2 ${position.target_2:.2f} — exit {position.t2_qty}qty (25%), runner SL=${runner_sl:.2f} (T1 locked)"
+                    "reason": f"T2 ${position.target_2:.2f} — exit {position.t2_qty}qty ({_config.PARTIAL_EXIT_T2_PCT:.0f}%), runner SL=${runner_sl:.2f} (T1 locked)"
                 }
 
             # ── Runner trailing stop (post-T2): wide trail, staircase tightening ─
@@ -1063,19 +1063,19 @@ class RiskManager:
     def _position_age_minutes(self, pos: Position) -> float:
         """Return how many minutes this position has been open."""
         try:
-            now = get_current_ist_time()
-            IST_TZ = ZoneInfo("America/New_York")  # aliased to ET in this bot
+            now = get_current_et_time()
+            ENTRY_TZ = ZoneInfo("America/New_York")
             entry_str = pos.entry_time[:19]   # trim trailing " IST" or zone suffix
             for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%dT%H:%M:%S"):
                 try:
-                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=IST_TZ)
+                    entry_dt = datetime.strptime(entry_str, fmt).replace(tzinfo=ENTRY_TZ)
                     return max(0.0, (now - entry_dt).total_seconds() / 60)
                 except ValueError:
                     continue
             # ISO fallback
             entry_dt = datetime.fromisoformat(pos.entry_time)
             if entry_dt.tzinfo is None:
-                entry_dt = entry_dt.replace(tzinfo=IST_TZ)
+                entry_dt = entry_dt.replace(tzinfo=ENTRY_TZ)
             return max(0.0, (now - entry_dt).total_seconds() / 60)
         except Exception:
             return 0.0
@@ -1246,7 +1246,23 @@ class RiskManager:
             return None
         pos = self.state.positions.pop(symbol)
         pos.current_price = exit_price
-        pnl = pos.pnl
+
+        # Bug fix: use remaining quantity after partial exits, not original full quantity.
+        # t1_qty/t2_qty/runner_qty are the portions SOLD at each target; remaining shrinks as
+        # targets are hit. Summing what was NOT yet sold gives the correct close-leg quantity.
+        if pos.t2_done:
+            _close_qty = pos.runner_qty
+        elif pos.t1_done:
+            _close_qty = pos.t2_qty + pos.runner_qty
+        else:
+            _close_qty = pos.quantity
+        _close_qty = max(_close_qty, 1)
+
+        if pos.direction == "LONG":
+            pnl = (exit_price - pos.entry_price) * _close_qty
+        else:
+            pnl = (pos.entry_price - exit_price) * _close_qty
+
         self.state.daily_pnl += pnl
         self.state.daily_trades += 1
 
@@ -1261,22 +1277,23 @@ class RiskManager:
                 self.state.max_consecutive_losses,
                 self.state.consecutive_losses
             )
-            # Pause only after a large LOSS (≥LARGE_LOSS_PAUSE_PCT of daily capital), not wins.
-            import config as _rm_cfg
-            _large_loss_pct = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_PCT", 1.5)
-            _large_loss_min = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_MINUTES", 25)
-            _pause_floor = self.state.daily_capital * (_large_loss_pct / 100)
-            if pnl < 0 and abs(pnl) >= max(_pause_floor, 15.0):
-                self._pause_trading(
-                    f"large loss protection: ${pnl:+.2f} on {symbol} — pausing {_large_loss_min} min",
-                    minutes=_large_loss_min
-                )
-            # Hard consecutive loss limit still applies
-            elif self.state.consecutive_losses >= self.consecutive_loss_limit:
+            if self.state.consecutive_losses >= self.consecutive_loss_limit:
                 self._pause_trading(
                     f"{self.consecutive_loss_limit} consecutive losses",
                     minutes=self.pause_minutes
                 )
+
+        # Large-loss pause fires regardless of win/loss classification —
+        # a trade that won at T1/T2 but reversed hard on the runner still deserves a pause.
+        import config as _rm_cfg
+        _large_loss_pct = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_PCT", 1.5)
+        _large_loss_min = getattr(_rm_cfg, "LARGE_LOSS_PAUSE_MINUTES", 25)
+        _pause_floor = self.state.daily_capital * (_large_loss_pct / 100)
+        if pnl < 0 and abs(pnl) >= max(_pause_floor, 15.0):
+            self._pause_trading(
+                f"large loss protection: ${pnl:+.2f} on {symbol} — pausing {_large_loss_min} min",
+                minutes=_large_loss_min
+            )
 
         # Update peak and drawdown
         self.state.peak_pnl = max(self.state.peak_pnl, self.state.daily_pnl)
