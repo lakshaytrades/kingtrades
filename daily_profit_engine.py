@@ -506,13 +506,13 @@ class DailyProfitEngine:
     def get_min_signal_score(self) -> float:
         """Minimum signal score to consider based on current mode."""
         score_map = {
-            TradingMode.AGGRESSIVE:  self.cfg.score_normal,        # 80 — no discount, quality always required
-            TradingMode.NORMAL:      self.cfg.score_normal,        # 80
-            TradingMode.CAUTION:     self.cfg.score_caution,      # 84
-            TradingMode.PROTECTION:  self.cfg.score_protection,   # 86
-            TradingMode.LOCK:        self.cfg.score_lock,         # 90
-            TradingMode.DEFENSIVE:   self.cfg.score_protection,   # 86
-            TradingMode.STOP:        999,                         # No trades
+            TradingMode.AGGRESSIVE:  self.cfg.score_normal,        # 68
+            TradingMode.NORMAL:      self.cfg.score_normal,        # 68
+            TradingMode.CAUTION:     self.cfg.score_caution,       # 74
+            TradingMode.PROTECTION:  self.cfg.score_protection,    # 78
+            TradingMode.LOCK:        self.cfg.score_lock,          # 84
+            TradingMode.DEFENSIVE:   self.cfg.score_protection,    # 78
+            TradingMode.STOP:        999,
         }
         return score_map.get(self.state.mode, self.cfg.score_normal)
 
