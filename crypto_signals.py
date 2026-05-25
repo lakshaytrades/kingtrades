@@ -1,24 +1,20 @@
 """
-crypto_signals.py — Top-1% Crypto Signal Generator
+crypto_signals.py — Top-1% Crypto Signal Generator (PROFIT-FIRST after -$4K loss)
 
-Multi-timeframe momentum + mean-reversion for BTC/ETH/SOL/AVAX/LINK/DOGE.
-Uses the same ATR/RSI/MACD/VWAP stack as stocks but tuned for:
-  - 24/7 operation (session-based sizing)
-  - Higher volatility (wider stops, bigger targets)
-  - BTC correlation awareness (alt signals filtered by BTC trend)
-  - Fear & Greed index integration
-  - Whale volume detection
-  - On-chain momentum proxy via RSI divergence
+Multi-timeframe momentum + mean-reversion for BTC/ETH/SOL only.
+Hard gates that MUST pass before any signal is generated:
+  1. Session not in DISABLED_SESSIONS (US_NIGHT = 21:00-00:00 UTC is OFF)
+  2. Volume >= 1.0x average (no thin-market noise)
+  3. 1H EMA must agree with signal direction
+  4. 4H EMA must not be opposing direction
+  5. For ETH/SOL longs: BTC 4H must be in uptrend (EMA 9>21>50)
+  6. Score >= 75 (raised from 68 after loss event)
+  7. R:R >= 2.0
 
-Signal pipeline:
-  1. Fetch 15m, 1h, 4h candles
-  2. Compute all indicators (RSI, MACD, ATR, VWAP, BB, EMA)
-  3. Detect patterns (breakout, engulfing, VWAP reversion, BBand squeeze)
-  4. MTF alignment check (15m + 1h + 4h must agree)
-  5. BTC correlation filter (suppress alts when BTC falling)
-  6. Fear & Greed context
-  7. Score and grade the signal
-  8. Return CryptoSignal with notional sizing
+Signal scoring:
+  base  = 60 + pattern_score * 0.4 (capped at 95)
+  bonus = BTC correlation (±8-15) + F&G (±10) + volume (+5/+10) + MTF (+5/+12)
+  final = base + bonus (max 98)
 """
 
 import logging

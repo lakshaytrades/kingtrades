@@ -1,28 +1,29 @@
 """
-crypto_engine.py — 24/7 Crypto Trading Orchestrator
+crypto_engine.py — 24/7 Crypto Trading Orchestrator (PROFIT-FIRST after -$4K loss event)
 
-Top-1% crypto trading engine running BTC/ETH/SOL on Alpaca.
-Runs in a background thread alongside the stock trading bot.
+CRITICAL RISK RULES:
+  - Only BTC/ETH/SOL — liquid pairs, tight spreads
+  - Max $500 per trade, 0.5% risk per trade
+  - 2% daily loss limit on crypto pool
+  - US_NIGHT session (21:00-00:00 UTC) COMPLETELY DISABLED
+  - 2 consecutive losses → 3-hour pause
+  - BTC/ETH/SOL only — no DOGE/AVAX/LINK
+  - Hard MTF gates: 1H must agree, 4H must not oppose
+  - Min signal score 75 (was 68)
 
 Features:
-  - 24/7 operation (no market hours restriction)
-  - Session-aware sizing (US peak 2x, Asia 0.8x)
-  - BTC correlation filter (suppress alts when BTC falling)
+  - 24/7 operation (session-aware, US_NIGHT off)
+  - BTC correlation filter (suppress alts in BTC downtrend)
   - Fear & Greed index integration
   - Whale volume detection
-  - ATR-based stops + trailing stops + runner system
-  - T1/T2/Runner partial exits (35%/25%/40%)
-  - Anti-martingale sizing (reduce after losses)
-  - 60-minute pause after 3 consecutive losses
-  - Daily loss limit protection (4% of crypto pool)
+  - ATR-based stops + T1/T2/Runner partial exits (40%/30%/30%)
   - UTC midnight reset (24/7 = no EOD, just daily reset)
-  - Telegram alerts for every entry/exit
-  - Hourly heartbeat + P&L reporting
+  - Telegram alerts for every entry/exit/partial
 
 Integration:
   - Started by main.py as daemon thread: crypto_engine.start()
   - Shares same Alpaca API keys
-  - Separate capital pool (30% of account by default)
+  - Separate capital pool (20% of account by default)
   - Independent risk management from stock positions
 """
 
@@ -192,12 +193,11 @@ class CryptoEngine:
 
         closed = self.executor.update_positions()
         for symbol in closed:
-            # Position already removed by executor — just log
             logger.info(f"[{format_ist_timestamp()}] [CRYPTO] Position closed: {symbol}")
-            pnl = self.executor._daily_pnl   # cumulative
+            daily_pnl = self.executor._daily_pnl
             self._send_alert(
-                f"🔔 <b>Crypto Exit</b>: {symbol}\n"
-                f"Daily P&L: <b>${pnl:+,.2f}</b>"
+                f"🔔 <b>Crypto Position Closed</b>: {symbol}\n"
+                f"Daily P&L: <b>${daily_pnl:+,.2f}</b>"
             )
 
     def _daily_reset(self, today: date) -> None:
@@ -231,13 +231,15 @@ class CryptoEngine:
             q   = get_crypto_quote(sym)
             ltp = q.get("ltp", pos.entry_price)
             if pos.entry_price > 0:
-                pnl_pct = (ltp - pos.entry_price) / pos.entry_price * 100
+                remaining = pos.remaining_qty if pos.remaining_qty > 0 else pos.filled_qty
+                unrealised = (ltp - pos.entry_price) * remaining
                 if pos.direction == "SHORT":
-                    pnl_pct = -pnl_pct
-                pnl_usd = pnl_pct / 100 * pos.notional_usd
+                    unrealised = -unrealised
+                total_pnl = round(pos.running_pnl + unrealised, 2)
+                t_flags = ("T1✓" if pos.t1_done else "") + (" T2✓" if pos.t2_done else "")
                 pos_lines.append(
                     f"  {sym} {pos.direction} @ ${pos.entry_price:,.2f} → "
-                    f"${ltp:,.2f} ({pnl_pct:+.1f}% / ${pnl_usd:+.0f})"
+                    f"${ltp:,.2f} | ${total_pnl:+.0f} {t_flags}"
                 )
 
         pos_text = "\n".join(pos_lines) if pos_lines else "  No open positions"

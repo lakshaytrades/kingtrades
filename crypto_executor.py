@@ -48,11 +48,12 @@ class CryptoPosition:
     atr:            float
     quality_grade:  str = "B"
     filled_qty:     float = 0.0
+    remaining_qty:  float = 0.0   # qty left after partial exits
     entry_time:     str = ""
     t1_done:        bool = False
     t2_done:        bool = False
     sl_order_id:    str = ""
-    running_pnl:    float = 0.0
+    running_pnl:    float = 0.0   # locked-in P&L from partial exits
 
 
 class CryptoExecutor:
@@ -208,11 +209,13 @@ class CryptoExecutor:
             if exit_price <= 0:
                 exit_price = pos.entry_price
 
-            pnl = self._compute_pnl(pos, exit_price)
-            self._record_trade_close(symbol, pnl, exit_price, reason)
+            terminal_pnl = self._compute_pnl(pos, exit_price)  # uses remaining_qty
+            total_pnl    = round(pos.running_pnl + terminal_pnl, 2)
+            self._record_trade_close(symbol, total_pnl, exit_price, reason)
             logger.info(
                 f"[{format_ist_timestamp()}] PAPER CRYPTO EXIT: {symbol} "
-                f"@ ${exit_price:,.4f} P&L=${pnl:+.2f} reason={reason}"
+                f"@ ${exit_price:,.4f} terminal=${terminal_pnl:+.2f} "
+                f"locked=${pos.running_pnl:+.2f} total=${total_pnl:+.2f} reason={reason}"
             )
             return CryptoOrderResult(
                 success=True, fill_price=exit_price,
@@ -235,11 +238,13 @@ class CryptoExecutor:
             q = get_crypto_quote(symbol)
             exit_price = q.get("ltp", pos.entry_price)
 
-            pnl = self._compute_pnl(pos, exit_price)
-            self._record_trade_close(symbol, pnl, exit_price, reason)
+            terminal_pnl = self._compute_pnl(pos, exit_price)  # uses remaining_qty
+            total_pnl    = round(pos.running_pnl + terminal_pnl, 2)
+            self._record_trade_close(symbol, total_pnl, exit_price, reason)
             logger.info(
                 f"[{format_ist_timestamp()}] CRYPTO EXIT: {symbol} "
-                f"@ ${exit_price:,.4f} P&L=${pnl:+.2f} reason={reason}"
+                f"@ ${exit_price:,.4f} terminal=${terminal_pnl:+.2f} "
+                f"locked=${pos.running_pnl:+.2f} total=${total_pnl:+.2f} reason={reason}"
             )
             return CryptoOrderResult(success=True, fill_price=exit_price,
                                      filled_qty=pos.filled_qty, message=reason)
@@ -284,7 +289,7 @@ class CryptoExecutor:
                     closed.append(symbol)
                     continue
 
-                # ── T1 exit (35% of position) ─────────────────────────────
+                # ── T1: sell CRYPTO_T1_EXIT_PCT% of position ─────────────
                 if not pos.t1_done:
                     t1_hit = (
                         (pos.direction == "LONG"  and ltp >= pos.target_1) or
@@ -292,21 +297,18 @@ class CryptoExecutor:
                     )
                     if t1_hit:
                         pos.t1_done = True
-                        # Partial exit: move SL to breakeven
-                        pos.stop_loss = pos.entry_price
-                        logger.info(
-                            f"[{format_ist_timestamp()}] CRYPTO T1 HIT: {symbol} "
-                            f"@ ${ltp:,.4f} | SL moved to breakeven ${pos.entry_price:,.4f}"
-                        )
-                        # In live mode, modify broker stop order
+                        t1_frac = ccfg.CRYPTO_T1_EXIT_PCT / 100.0
+                        self._partial_exit(symbol, t1_frac, ltp, "T1")
+                        pos.stop_loss = pos.entry_price   # move to breakeven
                         if self.live_enabled:
                             try:
-                                self._place_stop_order(symbol, pos.filled_qty, pos.entry_price, pos.direction)
+                                self._place_stop_order(symbol, pos.remaining_qty,
+                                                       pos.entry_price, pos.direction)
                             except Exception:
                                 pass
                         continue
 
-                # ── T2 exit (close runner or full close) ──────────────────
+                # ── T2: sell CRYPTO_T2_EXIT_PCT% of position ─────────────
                 if pos.t1_done and not pos.t2_done:
                     t2_hit = (
                         (pos.direction == "LONG"  and ltp >= pos.target_2) or
@@ -314,18 +316,15 @@ class CryptoExecutor:
                     )
                     if t2_hit:
                         pos.t2_done = True
-                        # Update trailing stop for the runner
+                        t2_frac = ccfg.CRYPTO_T2_EXIT_PCT / 100.0
+                        self._partial_exit(symbol, t2_frac, ltp, "T2")
                         if pos.direction == "LONG":
                             pos.stop_loss = round(ltp - ccfg.CRYPTO_TRAIL_MULT * pos.atr, 6)
                         else:
                             pos.stop_loss = round(ltp + ccfg.CRYPTO_TRAIL_MULT * pos.atr, 6)
-                        logger.info(
-                            f"[{format_ist_timestamp()}] CRYPTO T2 HIT: {symbol} "
-                            f"@ ${ltp:,.4f} | Trail SL: ${pos.stop_loss:,.4f}"
-                        )
                         continue
 
-                # ── Trailing stop (after T2) ──────────────────────────────
+                # ── Trailing stop (after T2, on runner portion) ───────────
                 if pos.t2_done:
                     if pos.direction == "LONG":
                         new_sl = round(ltp - ccfg.CRYPTO_TRAIL_MULT * pos.atr, 6)
@@ -336,7 +335,7 @@ class CryptoExecutor:
                         if new_sl < pos.stop_loss:
                             pos.stop_loss = new_sl
 
-                # ── Breakeven move after small gain ───────────────────────
+                # ── Breakeven move before T1 ──────────────────────────────
                 if not pos.t1_done:
                     gain_pct = abs(ltp - pos.entry_price) / max(pos.entry_price, 1) * 100
                     if gain_pct >= ccfg.CRYPTO_BREAKEVEN_PCT:
@@ -345,7 +344,7 @@ class CryptoExecutor:
                         elif pos.direction == "SHORT" and pos.stop_loss > pos.entry_price:
                             pos.stop_loss = pos.entry_price
 
-                # ── Runner target hit ─────────────────────────────────────
+                # ── Runner target: close remaining position ───────────────
                 if pos.t2_done:
                     runner_hit = (
                         (pos.direction == "LONG"  and ltp >= pos.target_runner) or
@@ -395,6 +394,7 @@ class CryptoExecutor:
             atr           = signal.atr,
             quality_grade = signal.quality_grade,
             filled_qty    = result.filled_qty,
+            remaining_qty = result.filled_qty,
             entry_time    = format_ist_timestamp(),
         )
         self.positions[signal.symbol] = pos
@@ -408,18 +408,71 @@ class CryptoExecutor:
             except Exception as e:
                 logger.warning(f"Crypto stop order failed {signal.symbol}: {e}")
 
-    def _compute_pnl(self, pos: CryptoPosition, exit_price: float) -> float:
-        if pos.filled_qty > 0:
+    def _compute_pnl(self, pos: CryptoPosition, exit_price: float,
+                      qty: Optional[float] = None) -> float:
+        """Compute P&L for a given qty (defaults to remaining_qty or filled_qty)."""
+        use_qty = qty if qty is not None else (
+            pos.remaining_qty if pos.remaining_qty > 0 else pos.filled_qty
+        )
+        if use_qty > 0:
             if pos.direction == "LONG":
-                return round((exit_price - pos.entry_price) * pos.filled_qty, 2)
+                return round((exit_price - pos.entry_price) * use_qty, 2)
             else:
-                return round((pos.entry_price - exit_price) * pos.filled_qty, 2)
+                return round((pos.entry_price - exit_price) * use_qty, 2)
         if pos.notional_usd > 0 and pos.entry_price > 0:
             pct = (exit_price - pos.entry_price) / pos.entry_price
             if pos.direction == "SHORT":
                 pct = -pct
             return round(pos.notional_usd * pct, 2)
         return 0.0
+
+    def _partial_exit(self, symbol: str, fraction: float, ltp: float,
+                       reason: str) -> float:
+        """
+        Close `fraction` of filled_qty. Locks in P&L, shrinks remaining_qty.
+        Returns the realised P&L from this partial. Does NOT remove position.
+        """
+        pos = self.positions.get(symbol)
+        if not pos or pos.filled_qty <= 0:
+            return 0.0
+
+        sell_qty = round(pos.filled_qty * fraction, 8)
+        sell_qty = min(sell_qty, pos.remaining_qty)
+        if sell_qty <= 0:
+            return 0.0
+
+        fill_price = ltp  # updated if live fill comes back
+
+        if self.live_enabled:
+            try:
+                from alpaca.trading.requests import MarketOrderRequest
+                from alpaca.trading.enums import OrderSide, TimeInForce
+                client = self._get_trading_client()
+                if client:
+                    side = OrderSide.SELL if pos.direction == "LONG" else OrderSide.BUY
+                    req = MarketOrderRequest(
+                        symbol        = self._alpaca_symbol(symbol),
+                        qty           = sell_qty,
+                        side          = side,
+                        time_in_force = TimeInForce.GTC,
+                    )
+                    order = client.submit_order(req)
+                    fp, _ = self._wait_for_fill(str(order.id), client)
+                    if fp > 0:
+                        fill_price = fp
+            except Exception as e:
+                logger.warning(f"_partial_exit({symbol}, {reason}): {e}")
+
+        pnl = self._compute_pnl(pos, fill_price, qty=sell_qty)
+        pos.remaining_qty = max(0.0, round(pos.remaining_qty - sell_qty, 8))
+        pos.running_pnl   = round(pos.running_pnl + pnl, 2)
+
+        logger.info(
+            f"[{format_ist_timestamp()}] CRYPTO {reason}: {symbol} "
+            f"sold {sell_qty:.6f} @ ${fill_price:,.4f} pnl=${pnl:+.2f} "
+            f"locked=${pos.running_pnl:+.2f} remaining={pos.remaining_qty:.6f}"
+        )
+        return pnl
 
     def _record_trade_close(self, symbol: str, pnl: float,
                              exit_price: float, reason: str) -> None:
