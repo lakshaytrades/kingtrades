@@ -12,8 +12,8 @@ A signal must PASS ALL 14 gates to become a trade.
 THE 14 CONFLUENCE GATES:
   Gate 1:  POWER HOURS ONLY      — Trade only in high-probability ET time windows
   Gate 2:  REGIME ALIGNMENT      — Market regime must be MOMENTUM (not RANGING)
-  Gate 3:  MULTI-TF ALIGNMENT    — All 3 timeframes (5m/15m/1h) must agree — no mixed signals
-  Gate 4:  VOLUME SURGE          — Current volume must be ≥ 2.0x 20-period SMA (institutional surge)
+  Gate 3:  MULTI-TF ALIGNMENT    — At least 2 of 3 timeframes must agree; all-3 earns +10 bonus
+  Gate 4:  VOLUME SURGE          — Minimum 0.5x (early candles undercounted); surge earns bonus
   Gate 5:  PATTERN QUALITY       — Signal score ≥ 80/100 (only A-grade setups)
   Gate 6:  LIQUIDITY             — Min daily volume ≥ 1M shares (US liquid stocks)
   Gate 7:  CIRCUIT BREAKER       — Stock not near 5/10/20% halt bands
@@ -433,6 +433,27 @@ class HighAccuracyFilter:
             matched = [p for p in pattern_names if p in premium_patterns]
             result.bonuses.append(f"PREMIUM({','.join(matched[:2])})")
 
+        # Bonus 8: Triple MTF alignment bonus
+        # _check_mtf encodes aligned_count as: raw_score + aligned_count * 100
+        # Extract it here to reward full 3-TF consensus without blocking 2-TF setups.
+        _raw_mtf_bonus = mtf_alignment.get("_bonus_signal", 0)
+        if _raw_mtf_bonus == 0:
+            # Re-derive from the score we stored in gates_passed
+            for g in result.gates_passed:
+                if g.startswith("MTF(score="):
+                    try:
+                        _raw_mtf_bonus = int(g.split("=")[1].rstrip(")"))
+                    except Exception:
+                        pass
+                    break
+        _aligned_count = _raw_mtf_bonus // 100 if _raw_mtf_bonus >= 100 else 0
+        if _aligned_count == 3:
+            bonus_score += 10
+            result.bonuses.append("MTF_3TF_TRIPLE(+10)")
+        elif _aligned_count == 2:
+            bonus_score += 4
+            result.bonuses.append("MTF_2TF_DUAL(+4)")
+
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 
@@ -453,7 +474,7 @@ class HighAccuracyFilter:
         # rejects anything below min_score.  Grade "B" still exists in the
         # dataclass default so callers don't crash on legacy paths, but we never
         # assign it from this filter — that was the bug that blocked all trades.
-        _ap_thresh = 90.0    # A+ at 90+ — truly elite setups only (raised from 88)
+        _ap_thresh = 84.0    # A+ at 84+: base 68 + HA+5 + VWAP+6 + RSI+5 + ORB+8 + triple MTF+10 = reachable
 
         if result.final_score >= _ap_thresh:
             result.quality_grade   = "A+"
@@ -534,29 +555,32 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 75:   # raised from 55 — require strong 3-TF alignment
+        if alignment_score < 55:   # require at least 2/3 TF agreement (original calibrated threshold)
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
             return False, alignment_score
-        # Require all 3 timeframes pointing same direction (not just 2/3)
+        # Check how many of the 3 TFs are aligned — all-3 earns a bonus in the bonus stage
         d5m  = mtf.get("5m",  "NEUTRAL")
         d15m = mtf.get("15m", "NEUTRAL")
         d1h  = mtf.get("1h",  "NEUTRAL")
-        all_three = all(d == signal_dir for d in [d5m, d15m, d1h] if d != "NEUTRAL")
-        if not all_three:
-            return False, alignment_score
-        return True, alignment_score
+        aligned_count = sum(1 for d in [d5m, d15m, d1h] if d == signal_dir)
+        # Encode aligned_count into returned score so bonus stage can award extra pts
+        bonus_signal = alignment_score + (aligned_count * 100)   # e.g. 80 + 300 = 380 → 3 TFs
+        return True, bonus_signal
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
         """
-        Volume participation gate — 70-80% win rate mode.
-        Require 2.0x surge: institutional traders never break key levels on low volume.
-        Below 1.5x = likely fake breakout, not confirmed by real money.
+        Volume participation gate — calibrated to Alpaca REST polling reality.
+        Alpaca 5-min bars undercounting intraday volume vs daily SMA denominator is a known
+        artifact — requiring 1.5x+ blocked every signal during the first 90 min of day.
+        Gate: 0.5x minimum (dead stocks only blocked). Bonus rewards genuine surges.
         """
-        if volume_ratio < 1.5:
+        if volume_ratio < 0.5:
             return False, 0
-        bonus = min((volume_ratio - 1.5) * 6, 15)  # bonus for 1.5x-4.0x surge
+        if volume_ratio < 1.5:
+            return True, 0                          # passes but no bonus
+        bonus = min((volume_ratio - 1.5) * 8, 15)  # up to +15 for 3x+ surge
         return True, bonus
 
     def _check_pattern_quality(

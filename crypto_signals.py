@@ -513,32 +513,33 @@ def generate_crypto_signal(symbol: str,
     fng = get_fear_greed_index()
     base_score = _apply_fng_adjustment(base_score, fng, direction)
 
-    # Volume confirmation — hard gate for 70-80% win rate mode
-    # Breakouts without volume are fake-outs — require real institutional participation
+    # Volume — bonus-based (low volume reduces score, surge boosts it)
     vr = ind15["volume_ratio"]
-    if vr < ccfg.CRYPTO_VOLUME_SURGE_MULT:
-        logger.debug(f"{symbol}: volume {vr:.1f}x < {ccfg.CRYPTO_VOLUME_SURGE_MULT}x minimum — skipping")
-        return None
     if vr >= ccfg.CRYPTO_VOLUME_HIGH_CONV:
-        base_score += 8.0    # strong conviction
-    else:
-        base_score += 4.0    # meets minimum surge
+        base_score += 8.0    # 4x+ surge: strong institutional conviction
+    elif vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT:
+        base_score += 4.0    # 2.5x surge: decent participation
+    elif vr < 0.5:
+        base_score -= 6.0    # extremely thin volume — reduce confidence
 
-    # Multi-timeframe alignment — hard requirement for 70-80% win rate mode
-    # All 3 timeframes (15m, 1h, 4h) must agree. Mixed signals = skip entirely.
+    # Multi-timeframe alignment — bonus-based (not a hard block)
+    # 3/3 aligned = +10 pts, 2/3 = +5 pts, 0/3 against = -8 pts
     if ind1h and ind4h:
         tf_long  = ind1h.get("ema_trend_up") and ind4h.get("ema_trend_up")
         tf_short = (not ind1h.get("ema_trend_up", True)) and (not ind4h.get("ema_trend_up", True))
-        mtf_aligned = (direction == "LONG" and tf_long) or (direction == "SHORT" and tf_short)
-        if not mtf_aligned:
-            logger.debug(f"{symbol}: MTF not aligned for {direction} — skip")
-            return None
-        base_score += 10.0    # bonus for confirmed 3-TF alignment
-        patterns.append("MTF Triple Aligned")
-    elif not ind1h and not ind4h:
-        # No higher TF data — cannot confirm alignment, skip
-        logger.debug(f"{symbol}: insufficient higher-TF data — skip")
-        return None
+        h1_agrees  = (direction == "LONG" and ind1h.get("ema_trend_up")) or \
+                     (direction == "SHORT" and not ind1h.get("ema_trend_up", True))
+        h4_agrees  = (direction == "LONG" and ind4h.get("ema_trend_up")) or \
+                     (direction == "SHORT" and not ind4h.get("ema_trend_up", True))
+        tfs_agree = sum([h1_agrees, h4_agrees])
+        if tfs_agree == 2:
+            base_score += 10.0
+            patterns.append("MTF Triple Aligned")
+        elif tfs_agree == 1:
+            base_score += 5.0
+            patterns.append("MTF Partial Aligned")
+        else:
+            base_score -= 8.0   # higher TFs against signal — penalise but don't block
 
     # RSI extreme confirmation
     rsi = ind15["rsi"]
@@ -573,8 +574,8 @@ def generate_crypto_signal(symbol: str,
     risk_amt = abs(entry - sl)
     rr       = round(abs(target_2 - entry) / risk_amt, 2) if risk_amt > 0 else 0.0
 
-    if rr < 2.5:    # raised from 2.0 — minimum 2.5:1 R:R for 70-80% win rate mode
-        logger.debug(f"{symbol}: R:R {rr:.1f} < 2.5 — skipping")
+    if rr < 2.0:    # minimum 2:1 R:R required
+        logger.debug(f"{symbol}: R:R {rr:.1f} < 2.0 — skipping")
         return None
 
     # Session multiplier

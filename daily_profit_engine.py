@@ -83,11 +83,12 @@ class ProfitEngineConfig:
     # Leverage (Alpaca paper — no margin leverage by default)
     mis_leverage:          float = 1.0
 
-    # Min signal scores by mode — synced with config.MIN_SIGNAL_SCORE = 78
-    score_normal:          float = 78.0   # base quality gate (A-grade minimum always)
-    score_caution:         float = 80.0   # caution: slightly tighter
-    score_protection:      float = 82.0   # protection: strict A-grade after target hit
-    score_lock:            float = 88.0   # lock: A+ only (score ≥ 88) — very few trades
+    # Min signal scores by mode — synced with config.MIN_SIGNAL_SCORE = 68
+    # Post-bonus scores (after HAF): typical A = 74-83, A+ = 84+
+    score_normal:          float = 68.0   # base gate — bonuses push qualifying setups to 74+
+    score_caution:         float = 74.0   # caution: post-bonus A-grade required
+    score_protection:      float = 78.0   # protection: stricter after target hit
+    score_lock:            float = 84.0   # lock: A+ post-bonus only
 
 
 # ─────────────────────────────────────────────────────────────────────────────

@@ -145,15 +145,17 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 78.0        # 70-80% win rate mode — A-grade only, strict MTF + volume required
-HIGH_CONFIDENCE_SCORE: float = 88.0   # A+ tier: all 3 TFs + volume surge + score 88+ (elite only)
-PREMIUM_SCORE: float = 78.0           # same as MIN_SIGNAL_SCORE — no B-grade trades ever
-MIN_VOLUME_RATIO: float = 2.0         # require genuine volume surge (2x avg) — confirms institutional participation
-REQUIRE_MTF_ALIGNMENT: bool = True    # hard requirement: all 3 timeframes must agree
-REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
+MIN_SIGNAL_SCORE: float = 68.0        # base gate — signals at 68+ enter HAF bonus stage
+                                       # MTF/volume/ORB bonuses then push elite setups to 80–95
+                                       # Old 78 gate killed signals before bonuses could fire → 0 trades
+HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses: 68 base + 14 bonus = 82 (realistic elite)
+PREMIUM_SCORE: float = 74.0           # A grade entry: 68 base + 6 typical bonus
+MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
+REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
+REQUIRE_POWER_HOUR: bool = False
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 8           # quality over quantity — 1-3 elite setups/day, not 10-30 mediocre ones
-MAX_TRADES_PER_STOCK: int = 2         # max 2 entries per stock per day — avoid overtrading one name
+MAX_TRADES_PER_DAY: int = 15          # enough capacity to scan 100 symbols for 2-3 real setups
+MAX_TRADES_PER_STOCK: int = 3         # allow re-entry on strong trends
 
 # ============================================================
 # CIRCUIT BREAKERS
@@ -179,7 +181,7 @@ GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score ne
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
 
 # ── Aggressive sizing on elite setups ───────────────────────────────────────
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 88)
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 82 after bonuses)
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
 ORB_ENABLED: bool = True
