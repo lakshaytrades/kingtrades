@@ -493,6 +493,19 @@ def generate_crypto_signal(symbol: str,
     if not ind15:
         return None
 
+    # ── SESSION GATE — block disabled sessions entirely ────────────────────────
+    session, sess_mult = _get_session_multiplier()
+    if session in ccfg.CRYPTO_DISABLED_SESSIONS or sess_mult == 0.0:
+        logger.debug(f"{symbol}: session {session} disabled — no new entries")
+        return None
+
+    # ── VOLUME HARD GATE — reject below minimum ─────────────────────────────────
+    vr = ind15["volume_ratio"]
+    vol_gate = getattr(ccfg, "CRYPTO_VOLUME_MIN_GATE", 1.0)
+    if vr < vol_gate:
+        logger.debug(f"{symbol}: volume {vr:.1f}x < {vol_gate}x minimum — skipping")
+        return None
+
     # Detect patterns and direction
     patterns, pattern_score, direction = _detect_patterns(ind15, ind1h, ind4h, df15)
 
@@ -513,33 +526,53 @@ def generate_crypto_signal(symbol: str,
     fng = get_fear_greed_index()
     base_score = _apply_fng_adjustment(base_score, fng, direction)
 
-    # Volume — bonus-based (low volume reduces score, surge boosts it)
-    vr = ind15["volume_ratio"]
+    # Volume — bonus scoring (already passed hard gate above)
     if vr >= ccfg.CRYPTO_VOLUME_HIGH_CONV:
-        base_score += 8.0    # 4x+ surge: strong institutional conviction
+        base_score += 10.0   # strong institutional surge
     elif vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT:
-        base_score += 4.0    # 2.5x surge: decent participation
-    elif vr < 0.5:
-        base_score -= 6.0    # extremely thin volume — reduce confidence
+        base_score += 5.0    # decent participation
+    elif vr < 1.5:
+        base_score -= 4.0    # low volume = lower confidence (already above min gate)
 
-    # Multi-timeframe alignment — bonus-based (not a hard block)
-    # 3/3 aligned = +10 pts, 2/3 = +5 pts, 0/3 against = -8 pts
+    # ── MTF ALIGNMENT — hard gates + bonus scoring ─────────────────────────────
     if ind1h and ind4h:
-        tf_long  = ind1h.get("ema_trend_up") and ind4h.get("ema_trend_up")
-        tf_short = (not ind1h.get("ema_trend_up", True)) and (not ind4h.get("ema_trend_up", True))
-        h1_agrees  = (direction == "LONG" and ind1h.get("ema_trend_up")) or \
-                     (direction == "SHORT" and not ind1h.get("ema_trend_up", True))
-        h4_agrees  = (direction == "LONG" and ind4h.get("ema_trend_up")) or \
-                     (direction == "SHORT" and not ind4h.get("ema_trend_up", True))
-        tfs_agree = sum([h1_agrees, h4_agrees])
-        if tfs_agree == 2:
-            base_score += 10.0
+        h1_agrees = (direction == "LONG"  and ind1h.get("ema_trend_up")) or \
+                    (direction == "SHORT" and not ind1h.get("ema_trend_up", True))
+        h4_against = (direction == "LONG"  and not ind4h.get("ema_trend_up", True)) or \
+                     (direction == "SHORT" and ind4h.get("ema_trend_up", False))
+
+        # Hard gate 1: 1H must agree with 15m signal direction
+        if getattr(ccfg, "CRYPTO_REQUIRE_1H_ALIGNMENT", True) and not h1_agrees:
+            logger.debug(f"{symbol}: 1H EMA conflicts with {direction} signal — skip")
+            return None
+
+        # Hard gate 2: 4H must not be directly opposed
+        if getattr(ccfg, "CRYPTO_REQUIRE_4H_NO_CONFLICT", True) and h4_against:
+            logger.debug(f"{symbol}: 4H EMA opposes {direction} signal — skip")
+            return None
+
+        h4_agrees = (direction == "LONG"  and ind4h.get("ema_trend_up")) or \
+                    (direction == "SHORT" and not ind4h.get("ema_trend_up", True))
+        if h1_agrees and h4_agrees:
+            base_score += 12.0
             patterns.append("MTF Triple Aligned")
-        elif tfs_agree == 1:
+        elif h1_agrees:
             base_score += 5.0
-            patterns.append("MTF Partial Aligned")
-        else:
-            base_score -= 8.0   # higher TFs against signal — penalise but don't block
+            patterns.append("MTF 1H Aligned")
+    elif not ind1h:
+        # No 1H data — cannot verify trend, skip
+        logger.debug(f"{symbol}: no 1H data — cannot verify MTF alignment, skip")
+        return None
+
+    # ── BTC UPTREND GATE for altcoins ───────────────────────────────────────────
+    if symbol != "BTC/USD" and direction == "LONG":
+        if getattr(ccfg, "CRYPTO_REQUIRE_BTC_UPTREND_FOR_ALTS", True):
+            btc_bars_4h = get_crypto_bars("BTC/USD", "4Hour", limit=60)
+            if btc_bars_4h is not None and len(btc_bars_4h) >= 50:
+                btc_ind = _compute_indicators(btc_bars_4h)
+                if btc_ind and not btc_ind.get("ema_trend_up", True):
+                    logger.debug(f"{symbol}: BTC 4H downtrend — no alt longs allowed")
+                    return None
 
     # RSI extreme confirmation
     rsi = ind15["rsi"]
@@ -578,8 +611,7 @@ def generate_crypto_signal(symbol: str,
         logger.debug(f"{symbol}: R:R {rr:.1f} < 2.0 — skipping")
         return None
 
-    # Session multiplier
-    session, sess_mult = _get_session_multiplier()
+    # session and sess_mult already set at top of function (from session gate check)
 
     # Grade the signal
     if final_score >= ccfg.CRYPTO_HIGH_CONFIDENCE:
