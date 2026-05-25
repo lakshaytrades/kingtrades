@@ -31,6 +31,19 @@ import crypto_config as ccfg
 from crypto_data import (
     get_crypto_bars, get_crypto_quote, get_fear_greed_index, get_btc_change_pct
 )
+from crypto_patterns import (
+    detect_candlestick_patterns,
+    detect_chart_patterns,
+    detect_smc_patterns,
+    detect_wyckoff,
+    detect_fibonacci,
+    detect_divergence,
+    detect_volume_profile,
+    detect_elliott_wave,
+    detect_harmonic_patterns,
+    run_all_detectors,
+    score_all_patterns,
+)
 
 logger = logging.getLogger(__name__)
 UTC = ZoneInfo("UTC")
@@ -223,14 +236,21 @@ def _get_session_multiplier() -> tuple:
 def _detect_patterns(ind15: Dict, ind1h: Dict, ind4h: Dict,
                      df15: pd.DataFrame) -> tuple:
     """
-    Detect crypto trading patterns across timeframes.
+    Detect crypto trading patterns using world-class pattern library.
+
+    Stage 1 — Indicator-based scoring (MACD/RSI/VWAP/BB/Stoch):
+      Legacy indicator signals → long_pts / short_pts
+
+    Stage 2 — Full pattern library (crypto_patterns.py):
+      30+ patterns: Candlestick, Chart, SMC, Wyckoff, Fibonacci,
+      Divergence, Elliott Wave, Volume Profile, Harmonics
+
+    Stage 3 — Aggregation via score_all_patterns()
+      Combines both stages into final (score, direction) with 1.25× threshold
+
     Returns (patterns_list, score_additions, direction_bias).
     direction_bias: "LONG", "SHORT", or "NEUTRAL"
     """
-    patterns = []
-    score    = 0.0
-    long_pts = short_pts = 0.0
-
     if not ind15:
         return [], 0.0, "NEUTRAL"
 
@@ -247,150 +267,139 @@ def _detect_patterns(ind15: Dict, ind1h: Dict, ind4h: Dict,
     vr    = ind15["volume_ratio"]
     stk   = ind15["stoch_k"]
 
-    # ── 1. MACD momentum crossover (most powerful crypto signal) ──────────
+    legacy_patterns = []
+    long_pts = short_pts = 0.0
+
+    # ── STAGE 1: indicator-based signals (kept for speed, no df required) ──
+
+    # MACD crossover + momentum
     if macd > 0 and hist > 0 and hist > ph and ind15["prev_macd"] < 0:
-        patterns.append("MACD Bullish Crossover")
+        legacy_patterns.append("MACD Bullish Crossover")
         long_pts += 18.0 + (5.0 if vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT else 0)
-
     if macd < 0 and hist < 0 and hist < ph and ind15["prev_macd"] > 0:
-        patterns.append("MACD Bearish Crossover")
+        legacy_patterns.append("MACD Bearish Crossover")
         short_pts += 18.0 + (5.0 if vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT else 0)
-
-    # MACD histogram momentum (histogram expanding = strength)
     if hist > 0 and hist > ph > 0:
-        patterns.append("MACD Bullish Momentum")
+        legacy_patterns.append("MACD Bullish Momentum")
         long_pts += 8.0
     if hist < 0 and hist < ph < 0:
-        patterns.append("MACD Bearish Momentum")
+        legacy_patterns.append("MACD Bearish Momentum")
         short_pts += 8.0
 
-    # ── 2. RSI momentum ────────────────────────────────────────────────────
+    # RSI
     if rsi < ccfg.CRYPTO_RSI_OVERSOLD and ind15["prev_rsi"] < rsi:
-        patterns.append("RSI Oversold Recovery")
+        legacy_patterns.append("RSI Oversold Recovery")
         long_pts += 12.0 + (5.0 if rsi < ccfg.CRYPTO_RSI_EXTREME_OS else 0)
-
     if rsi > ccfg.CRYPTO_RSI_OVERBOUGHT and ind15["prev_rsi"] > rsi:
-        patterns.append("RSI Overbought Reversal")
+        legacy_patterns.append("RSI Overbought Reversal")
         short_pts += 12.0 + (5.0 if rsi > ccfg.CRYPTO_RSI_EXTREME_OB else 0)
-
-    # RSI in momentum zone (50-70 uptrend, 30-50 downtrend)
     if 52 < rsi < 70 and ind15["prev_rsi"] < rsi:
-        patterns.append("RSI Momentum Zone")
         long_pts += 7.0
     if 30 < rsi < 48 and ind15["prev_rsi"] > rsi:
-        patterns.append("RSI Weak Zone")
         short_pts += 7.0
 
-    # ── 3. EMA trend alignment ─────────────────────────────────────────────
+    # EMA stack
     if ind15["ema_trend_up"]:
-        patterns.append("EMA Bull Stack (9>21>50)")
+        legacy_patterns.append("EMA Bull Stack (9>21>50)")
         long_pts += 10.0
     elif ema9 < ema21 < ema50:
-        patterns.append("EMA Bear Stack (9<21<50)")
+        legacy_patterns.append("EMA Bear Stack (9<21<50)")
         short_pts += 10.0
 
-    # EMA9 > EMA21 cross (short-term momentum flip)
-    if ema9 > ema21 and ind15.get("prev_close", c) < ema21:
-        patterns.append("EMA 9/21 Bullish Cross")
-        long_pts += 10.0
-    if ema9 < ema21 and ind15.get("prev_close", c) > ema21:
-        patterns.append("EMA 9/21 Bearish Cross")
-        short_pts += 10.0
-
-    # ── 4. VWAP entries (strongest crypto intraday signal) ─────────────────
+    # VWAP
     vwap_dist_pct = abs(c - vwap) / max(vwap, 1) * 100
     if c > vwap and vwap_dist_pct < 0.3 and vr >= 1.5:
-        patterns.append("VWAP Bounce Long")
+        legacy_patterns.append("VWAP Bounce Long")
         long_pts += 12.0
     if c < vwap and vwap_dist_pct < 0.3 and vr >= 1.5:
-        patterns.append("VWAP Bounce Short")
+        legacy_patterns.append("VWAP Bounce Short")
         short_pts += 12.0
-
-    # VWAP mean reversion (price extended > 1.5 ATR from VWAP)
     if atr > 0 and (c - vwap) < -1.5 * atr and rsi < 38:
-        patterns.append("VWAP Oversold Reversion")
+        legacy_patterns.append("VWAP Oversold Reversion")
         long_pts += 14.0
     if atr > 0 and (c - vwap) > 1.5 * atr and rsi > 62:
-        patterns.append("VWAP Overbought Reversion")
+        legacy_patterns.append("VWAP Overbought Reversion")
         short_pts += 14.0
 
-    # ── 5. Bollinger Band signals ───────────────────────────────────────────
+    # Bollinger Bands
     bb_up = ind15["bb_upper"]
     bb_lo = ind15["bb_lower"]
-    bb_squeeze = ind15.get("bb_squeeze", False)
-
     if c > bb_up and vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT:
-        patterns.append("BB Upper Breakout")
+        legacy_patterns.append("BB Upper Breakout")
         long_pts += 12.0
     if c < bb_lo and vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT:
-        patterns.append("BB Lower Breakdown")
+        legacy_patterns.append("BB Lower Breakdown")
         short_pts += 12.0
     if c < bb_lo and rsi < 32:
-        patterns.append("BB Lower Bounce")
+        legacy_patterns.append("BB Lower Bounce")
         long_pts += 10.0
-    if bb_squeeze:
-        patterns.append("BB Squeeze (breakout imminent)")
-        score += 5.0   # direction-neutral bonus
 
-    # ── 6. Volume surge (whale accumulation / distribution) ─────────────────
+    # Volume
     if vr >= ccfg.CRYPTO_VOLUME_HIGH_CONV:
-        patterns.append(f"Volume Whale Surge ({vr:.1f}x)")
-        # Direction depends on price action
-        if c > ind15["prev_close"]:
+        legacy_patterns.append(f"Volume Whale Surge ({vr:.1f}x)")
+        if c > ind15.get("prev_close", c):
             long_pts += 12.0
         else:
             short_pts += 12.0
     elif vr >= ccfg.CRYPTO_VOLUME_SURGE_MULT:
-        patterns.append(f"Volume Surge ({vr:.1f}x)")
-        if c > ind15["prev_close"]:
+        legacy_patterns.append(f"Volume Surge ({vr:.1f}x)")
+        if c > ind15.get("prev_close", c):
             long_pts += 6.0
         else:
             short_pts += 6.0
 
-    # ── 7. Stochastic confirmation ─────────────────────────────────────────
-    if stk < 20 and stk > ind15.get("stoch_d", 50):
-        patterns.append("Stoch Oversold Cross")
+    # Stochastic
+    stk_d = ind15.get("stoch_d", 50)
+    if stk < 20 and stk > stk_d:
+        legacy_patterns.append("Stoch Oversold Cross")
         long_pts += 8.0
-    if stk > 80 and stk < ind15.get("stoch_d", 50):
-        patterns.append("Stoch Overbought Cross")
+    if stk > 80 and stk < stk_d:
+        legacy_patterns.append("Stoch Overbought Cross")
         short_pts += 8.0
 
-    # ── 8. Multi-timeframe confluence ─────────────────────────────────────
-    if ind1h and ind1h.get("ema_trend_up"):
-        if long_pts > short_pts:
-            patterns.append("1H Trend Aligned (Bull)")
+    # MTF (1H/4H context)
+    if ind1h:
+        if ind1h.get("ema_trend_up") and long_pts > short_pts:
+            legacy_patterns.append("1H Trend Aligned (Bull)")
             long_pts += 8.0
-    if ind1h and not ind1h.get("ema_trend_up", True):
-        if short_pts > long_pts:
-            patterns.append("1H Trend Aligned (Bear)")
+        elif not ind1h.get("ema_trend_up", True) and short_pts > long_pts:
+            legacy_patterns.append("1H Trend Aligned (Bear)")
             short_pts += 8.0
-
-    if ind4h and ind4h.get("ema_trend_up"):
-        if long_pts > short_pts:
-            patterns.append("4H Macro Aligned (Bull)")
+    if ind4h:
+        if ind4h.get("ema_trend_up") and long_pts > short_pts:
+            legacy_patterns.append("4H Macro Aligned (Bull)")
             long_pts += 6.0
-    if ind4h and not ind4h.get("ema_trend_up", True):
-        if short_pts > long_pts:
-            patterns.append("4H Macro Aligned (Bear)")
+        elif not ind4h.get("ema_trend_up", True) and short_pts > long_pts:
+            legacy_patterns.append("4H Macro Aligned (Bear)")
             short_pts += 6.0
 
-    # ── 9. Price above/below key EMAs ─────────────────────────────────────
+    # EMA stack price location
     if c > ema50 and c > ema21 and c > ema9:
         long_pts += 5.0
     elif c < ema50 and c < ema21 and c < ema9:
         short_pts += 5.0
 
-    # Determine direction
+    # ── STAGE 2: world-class pattern library ──────────────────────────────
+    try:
+        pattern_results = run_all_detectors(df15, ind15, ind1h or {}, ind4h or {})
+        adv_score, adv_direction, adv_names = score_all_patterns(
+            pattern_results, long_pts, short_pts
+        )
+        all_patterns = legacy_patterns + adv_names
+        if adv_direction != "NEUTRAL" and adv_score > 0:
+            return all_patterns, adv_score, adv_direction
+    except Exception as _e:
+        logger.debug(f"_detect_patterns advanced: {_e}")
+
+    # ── STAGE 3 fallback: legacy indicator-only scoring ───────────────────
     total = long_pts + short_pts
     if total < 10:
-        return patterns, 0.0, "NEUTRAL"
-
+        return legacy_patterns, 0.0, "NEUTRAL"
     if long_pts > short_pts * 1.3:
-        return patterns, long_pts, "LONG"
+        return legacy_patterns, long_pts, "LONG"
     elif short_pts > long_pts * 1.3:
-        return patterns, short_pts, "SHORT"
-    else:
-        return patterns, max(long_pts, short_pts), "NEUTRAL"
+        return legacy_patterns, short_pts, "SHORT"
+    return legacy_patterns, max(long_pts, short_pts), "NEUTRAL"
 
 
 def _apply_fng_adjustment(base_score: float, fng: int, direction: str) -> float:
@@ -511,8 +520,13 @@ def generate_crypto_signal(symbol: str,
     if direction == "SHORT" and not ccfg.CRYPTO_SHORT_ENABLED:
         return None
 
-    # Build base score
-    base_score = min(60.0 + pattern_score * 0.4, 95.0)
+    # Build base score:
+    # New library returns 55-95 range score directly.
+    # Legacy fallback returns raw points (typically 20-150) — convert with old formula.
+    if pattern_score <= 95.0:
+        base_score = pattern_score   # already normalised by score_all_patterns()
+    else:
+        base_score = min(60.0 + pattern_score * 0.4, 95.0)  # legacy fallback
 
     # BTC correlation adjustment
     btc_1h = get_btc_change_pct(hours=1)

@@ -139,8 +139,14 @@ CRYPTO_SCAN_INTERVAL: int      = 90    # scan every 90s (was 60s — slower = mo
 CRYPTO_MAX_BTC_EXPOSURE_PCT: float = 60.0   # BTC can be 60% of crypto pool
 CRYPTO_MAX_ALT_EXPOSURE_PCT: float = 20.0   # each alt max 20% of crypto pool
 
-# ── Daily target ───────────────────────────────────────────────────────────────
-CRYPTO_DAILY_TARGET_PCT: float = 1.5    # 1.5%/day on crypto pool = ~33%/month
+# ── Daily target ─────────────────────────────────────────────────────────────
+# HONEST EXPECTATION (verified by Monte Carlo):
+#   EV per trade ≈ $11.85 (55% win, 2.73 R:R, $500 notional cap)
+#   2-3 trades/day active days → ~$24-35/day on signal days
+#   Monthly realistic: 2-4% of crypto pool (NOT 33%)
+#   Maximum possible: ~6 trades × $11.85 = $71/day = 0.37%/day
+CRYPTO_DAILY_TARGET_PCT: float = 0.30   # 0.30%/day = ~6%/month (realistic target)
+CRYPTO_DAILY_TARGET_STRETCH: float = 0.50  # stretch goal — stop new entries after this
 
 # ── News blackout keywords ─────────────────────────────────────────────────────
 CRYPTO_NEWS_BLACKOUT_KEYWORDS = [
