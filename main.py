@@ -2794,9 +2794,45 @@ class TradingBot:
         import telegram.error as tg_error
         from telegram.ext import Application, CommandHandler
 
+        # ── Shared auth check — logs the real chat ID so misconfiguration is obvious
+        def _auth(update) -> bool:
+            real_id = str(update.effective_chat.id)
+            cfg_id  = str(config.TELEGRAM_CHAT_ID).strip()
+            # If CHAT_ID is not configured, log the real ID but allow anyone for /start
+            if cfg_id in ("", "YOUR_TELEGRAM_CHAT_ID_HERE", "0"):
+                return False
+            if real_id != cfg_id:
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Telegram: rejected command from "
+                    f"chat_id={real_id} (configured={cfg_id})"
+                )
+                return False
+            return True
+
+        # /start — no auth check; replies with chat ID so user can configure .env
+        async def cmd_start(update, context):
+            real_id = str(update.effective_chat.id)
+            cfg_id  = str(config.TELEGRAM_CHAT_ID).strip()
+            if cfg_id in ("", "YOUR_TELEGRAM_CHAT_ID_HERE", "0") or real_id != cfg_id:
+                await update.message.reply_text(
+                    f"👋 <b>KingTrades bot is running!</b>\n\n"
+                    f"Your Chat ID is: <code>{real_id}</code>\n\n"
+                    f"Add this to your <code>.env</code> file:\n"
+                    f"<pre>TELEGRAM_CHAT_ID={real_id}</pre>\n"
+                    f"Then restart the bot and all commands will work.",
+                    parse_mode="HTML"
+                )
+            else:
+                await update.message.reply_text(
+                    f"✅ <b>KingTrades bot ready</b>\n"
+                    f"Chat ID verified: <code>{real_id}</code>\n"
+                    f"Use /status, /balance, /kill, /pause, /resume",
+                    parse_mode="HTML"
+                )
+
         # ── Command handlers (defined once, reused across retries) ──────
         async def cmd_kill(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             logger.critical(f"[{format_ist_timestamp()}] /kill received!")
             self.risk_manager.emergency_stop()
@@ -2809,7 +2845,7 @@ class TradingBot:
                     logger.warning(f"options_scalper.close_all() failed during /kill: {_e}")
 
         async def cmd_status(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             # Inject live balance into status message
             try:
@@ -2822,30 +2858,30 @@ class TradingBot:
                 self.alerter.send_status(self.risk_manager)
 
         async def cmd_pause(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             self.risk_manager._pause_trading("Manual pause via /pause")
             self.alerter.send_text(f"⏸ Trading paused at {format_ist_timestamp()}")
 
         async def cmd_resume(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             self.risk_manager.manual_resume()
             self.alerter.send_text(f"▶️ Trading resumed at {format_ist_timestamp()}")
 
         async def cmd_watchlist(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             status = self.watchlist_mgr.format_watchlist_message()
             self.alerter.send_text(status)
 
         async def cmd_report(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             self.alerter.send_eod_report(self.risk_manager)
 
         async def cmd_balance(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             try:
                 now_str = format_ist_timestamp()
@@ -2953,7 +2989,7 @@ class TradingBot:
                 self.alerter.send_text(f"Balance fetch error: {e}")
 
         async def cmd_capital(update, context):
-            if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+            if not _auth(update):
                 return
             try:
                 args = context.args  # e.g. /capital 500
@@ -3019,7 +3055,7 @@ class TradingBot:
                 )
 
                 async def cmd_relogin(update, context):
-                    if str(update.effective_chat.id) != str(config.TELEGRAM_CHAT_ID):
+                    if not _auth(update):
                         return
                     await update.message.reply_text(
                         f"🔄 <b>Forcing {MARKET_NAME} re-auth now...</b>",
@@ -3050,6 +3086,7 @@ class TradingBot:
                             parse_mode="HTML"
                         )
 
+                app.add_handler(CommandHandler("start",      cmd_start))
                 app.add_handler(CommandHandler("kill",       cmd_kill))
                 app.add_handler(CommandHandler("status",     cmd_status))
                 app.add_handler(CommandHandler("pause",      cmd_pause))
