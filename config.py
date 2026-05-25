@@ -145,15 +145,15 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 66.0        # raised for loss reduction — only B+ and above (fewer but higher-quality trades)
-HIGH_CONFIDENCE_SCORE: float = 78.0   # A+ tier: strong regime + MTF + volume surge
-PREMIUM_SCORE: float = 72.0
-MIN_VOLUME_RATIO: float = 1.6         # slightly relaxed (was 1.8) to catch early breakouts
-REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
+MIN_SIGNAL_SCORE: float = 78.0        # 70-80% win rate mode — A-grade only, strict MTF + volume required
+HIGH_CONFIDENCE_SCORE: float = 88.0   # A+ tier: all 3 TFs + volume surge + score 88+ (elite only)
+PREMIUM_SCORE: float = 78.0           # same as MIN_SIGNAL_SCORE — no B-grade trades ever
+MIN_VOLUME_RATIO: float = 2.0         # require genuine volume surge (2x avg) — confirms institutional participation
+REQUIRE_MTF_ALIGNMENT: bool = True    # hard requirement: all 3 timeframes must agree
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 30          # increased from 20 — more opportunities
-MAX_TRADES_PER_STOCK: int = 4         # up from 3 — allow more re-entries on strong trends
+MAX_TRADES_PER_DAY: int = 8           # quality over quantity — 1-3 elite setups/day, not 10-30 mediocre ones
+MAX_TRADES_PER_STOCK: int = 2         # max 2 entries per stock per day — avoid overtrading one name
 
 # ============================================================
 # CIRCUIT BREAKERS
@@ -179,7 +179,7 @@ GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score ne
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
 
 # ── Aggressive sizing on elite setups ───────────────────────────────────────
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 82)
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 88)
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
 ORB_ENABLED: bool = True

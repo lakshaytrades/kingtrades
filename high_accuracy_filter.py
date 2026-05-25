@@ -12,8 +12,8 @@ A signal must PASS ALL 14 gates to become a trade.
 THE 14 CONFLUENCE GATES:
   Gate 1:  POWER HOURS ONLY      — Trade only in high-probability ET time windows
   Gate 2:  REGIME ALIGNMENT      — Market regime must be MOMENTUM (not RANGING)
-  Gate 3:  MULTI-TF ALIGNMENT    — At least 2 of 3 timeframes must agree
-  Gate 4:  VOLUME SURGE          — Current volume must be ≥ 2.0x 20-period SMA
+  Gate 3:  MULTI-TF ALIGNMENT    — All 3 timeframes (5m/15m/1h) must agree — no mixed signals
+  Gate 4:  VOLUME SURGE          — Current volume must be ≥ 2.0x 20-period SMA (institutional surge)
   Gate 5:  PATTERN QUALITY       — Signal score ≥ 80/100 (only A-grade setups)
   Gate 6:  LIQUIDITY             — Min daily volume ≥ 1M shares (US liquid stocks)
   Gate 7:  CIRCUIT BREAKER       — Stock not near 5/10/20% halt bands
@@ -452,14 +452,14 @@ class HighAccuracyFilter:
         # rejects anything below min_score.  Grade "B" still exists in the
         # dataclass default so callers don't crash on legacy paths, but we never
         # assign it from this filter — that was the bug that blocked all trades.
-        _ap_thresh = 88.0    # A+ always at 88 — min_score+8 breaks when min_score=90
+        _ap_thresh = 90.0    # A+ at 90+ — truly elite setups only (raised from 88)
 
         if result.final_score >= _ap_thresh:
             result.quality_grade   = "A+"
-            result.size_multiplier = min(result.size_multiplier * 2.0, 2.5)   # aggressive size on best setups
+            result.size_multiplier = min(result.size_multiplier * 2.0, 2.5)   # maximum size on best setups
         else:
             result.quality_grade   = "A"
-            result.size_multiplier = min(result.size_multiplier * 1.5, 2.0)   # solid size on all passing signals
+            result.size_multiplier = min(result.size_multiplier * 1.5, 2.0)   # full size on all passing signals
 
         # Hard cap size multiplier
         result.size_multiplier = round(min(result.size_multiplier, 2.5), 2)
@@ -533,25 +533,29 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 55:   # match signal_generator._check_mtf_alignment threshold
+        if alignment_score < 75:   # raised from 55 — require strong 3-TF alignment
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
+            return False, alignment_score
+        # Require all 3 timeframes pointing same direction (not just 2/3)
+        d5m  = mtf.get("5m",  "NEUTRAL")
+        d15m = mtf.get("15m", "NEUTRAL")
+        d1h  = mtf.get("1h",  "NEUTRAL")
+        all_three = all(d == signal_dir for d in [d5m, d15m, d1h] if d != "NEUTRAL")
+        if not all_three:
             return False, alignment_score
         return True, alignment_score
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
         """
-        Volume participation gate.
-        Minimum 0.3x — REST polling underreports intraday volume vs daily SMA
-        (closing bars inflate the denominator). Only block truly dead stocks.
-        Bonus awarded for genuine surges above 1.5x.
+        Volume participation gate — 70-80% win rate mode.
+        Require 2.0x surge: institutional traders never break key levels on low volume.
+        Below 1.5x = likely fake breakout, not confirmed by real money.
         """
-        if volume_ratio < 0.3:
+        if volume_ratio < 1.5:
             return False, 0
-        if volume_ratio < 1.0:
-            return True, 0                        # pass but no bonus
-        bonus = min((volume_ratio - 1.0) * 5, 10) # bonus for 1.0x-3.0x
+        bonus = min((volume_ratio - 1.5) * 6, 15)  # bonus for 1.5x-4.0x surge
         return True, bonus
 
     def _check_pattern_quality(

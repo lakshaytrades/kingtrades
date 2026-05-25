@@ -41,15 +41,15 @@ CRYPTO_MACRO_TF        = "4Hour"   # 4-hour macro direction
 CRYPTO_BAR_LIMIT       = 100       # candles to fetch per request
 
 # ── Signal thresholds ──────────────────────────────────────────────────────────
-CRYPTO_MIN_SIGNAL_SCORE: float = 68.0   # slightly lower than stocks (24/7 = more setups)
-CRYPTO_HIGH_CONFIDENCE: float  = 80.0
-CRYPTO_PREMIUM_SCORE: float    = 74.0
+CRYPTO_MIN_SIGNAL_SCORE: float = 78.0   # raised from 68 — same A-grade bar as stocks (70-80% win rate)
+CRYPTO_HIGH_CONFIDENCE: float  = 88.0   # A+ elite: all TFs + volume surge + 88+ score
+CRYPTO_PREMIUM_SCORE: float    = 82.0   # A grade: raised from 74 — no B-grade crypto trades
 
 # ── Risk management (per crypto trade) ────────────────────────────────────────
 CRYPTO_MAX_RISK_PCT: float     = 1.5    # 1.5% of crypto capital per trade
 CRYPTO_DAILY_LOSS_PCT: float   = 4.0   # 4% daily loss limit on crypto pool
 CRYPTO_MAX_POSITIONS: int      = 4     # max concurrent crypto positions
-CRYPTO_MAX_TRADES_DAY: int     = 15    # max crypto trades per 24h window
+CRYPTO_MAX_TRADES_DAY: int     = 6     # reduced from 15 — quality over quantity (70-80% WR mode)
 
 # ── ATR parameters (crypto is 3x more volatile than stocks) ───────────────────
 CRYPTO_ATR_PERIOD: int         = 14
