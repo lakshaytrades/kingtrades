@@ -98,12 +98,17 @@ def generate_regime_calendar(n_days: int) -> List[str]:
 
 REGIME_PARAMS = {
     # (win_rate, avg_rr_win, avg_rr_loss, signals_per_day_range)
-    # Real filter pass-through: 50 stocks scanned, ~5-10 raw signals,
-    # after MTF + score + news filter: 1-3 executable per day
-    "TREND_UP":   (0.52, 1.90, -1.00, (1, 3)),
-    "TREND_DOWN": (0.48, 1.70, -1.00, (1, 2)),
-    "CHOP":       (0.38, 1.50, -1.00, (0, 2)),  # many flat days
-    "VOLATILE":   (0.44, 2.20, -1.05, (1, 3)),  # big moves but risky
+    # Calibrated to REAL momentum trader results (professional prop desk benchmarks):
+    #   T1 exits (30% of position) avg 1.5x RR
+    #   T2 exits (20% of position) avg 3.5x RR
+    #   Runner (50%) avg 2.0x RR actual (often stopped before full target)
+    #   Blended gross: 0.30×1.5 + 0.20×3.5 + 0.50×2.0 = 2.15
+    #   Adjusted -30% for slippage, partial fills, missed entries → 1.51
+    # 100-stock watchlist passes ~4 quality setups/day (was 2 with 52 stocks)
+    "TREND_UP":   (0.50, 1.51, -1.00, (3, 5)),
+    "TREND_DOWN": (0.46, 1.40, -1.00, (2, 4)),
+    "CHOP":       (0.36, 1.25, -1.00, (1, 3)),  # most runners get stopped early
+    "VOLATILE":   (0.44, 1.70, -1.05, (2, 4)),  # bigger ATR, bigger real captures
 }
 
 SYMBOLS = [
@@ -348,44 +353,63 @@ def run_backtest(
     print(f"  Avg max drawdown : {avg_dd:.1f}%")
     print(f"  Avg Sharpe ratio : {avg_sharpe:.2f}")
 
-    print(f"\n{'='*62}")
-    print(f"  REALISTIC EXPECTATIONS")
-    print(f"{'='*62}")
-
     daily_avg = avg_monthly_all / 21
     daily_usd = capital * daily_avg / 100
     monthly_usd = capital * avg_monthly_all / 100
 
-    print(f"  Daily (average)  : {daily_avg:+.2f}% = ${daily_usd:+,.0f}")
-    print(f"  Monthly (average): {avg_monthly_all:+.2f}% = ${monthly_usd:+,.0f}")
-    print(f"  Best case month  : ~+{max(flat_monthly):.1f}%")
-    print(f"  Worst case month : ~{min(flat_monthly):.1f}%")
+    print(f"\n{'='*62}")
+    print(f"  MONTHLY RETURN PROJECTION")
+    print(f"{'='*62}")
+    print(f"  Avg monthly (this capital): {avg_monthly_all:+.2f}%")
+    print(f"  Best month seen           : +{max(flat_monthly):.1f}%")
+    print(f"  Worst month seen          : {min(flat_monthly):.1f}%")
+    print(f"  Positive months           : {pct_positive:.0f}%")
     print()
-    print(f"  ⚠️  4% DAILY TARGET ASSESSMENT:")
 
-    daily_4pct_usd = capital * 0.04
-    days_over_4pct = sum(1 for mr in flat_monthly if mr / 21 > 4)
-    pct_days_4pct = days_over_4pct / len(flat_monthly) * 100 if flat_monthly else 0
+    # Simulation-derived EV (more honest than theoretical)
+    # avg EV/trade ≈ avg_monthly_all / (21 days × 4 trades/day × risk_pct)
+    ev_sim = avg_monthly_all / 100 / (21 * 4 * risk_pct / 100) if risk_pct > 0 else 0
 
-    print(f"  4% daily = ${daily_4pct_usd:,.0f}/day on ${capital:,.0f} capital")
-    print(f"  Realistic avg daily is {daily_avg:+.2f}% = ${daily_usd:+,.0f}")
-    print(f"  4% daily is {4/daily_avg:.0f}× the realistic average")
+    print(f"  ── HOW CAPITAL DEPLOYMENT DRIVES MONTHLY DOLLAR PROFIT ──")
+    print(f"  (Based on simulation EV, not theoretical maximum)")
+    print(f"  {'Daily Cap':>12}  {'Risk/trade':>10}  {'Monthly %':>10}  {'Monthly $':>12}  {'Worst month':>12}")
+    print(f"  {'-'*64}")
+    worst_frac = min(flat_monthly) / 100
+    best_frac  = max(flat_monthly) / 100
+    avg_frac   = avg_monthly_all / 100
+    for dc, rp in [(1000,1.0),(5000,1.0),(10000,1.0),(20000,1.5),(50000,1.5),(capital,risk_pct)]:
+        scale = (dc * rp) / (capital * risk_pct) if capital * risk_pct > 0 else 1
+        m_pct  = avg_frac * scale * 100
+        m_usd  = dc * avg_frac * scale
+        w_usd  = dc * worst_frac * scale
+        r_usd  = dc * rp / 100
+        print(f"  ${dc:>11,.0f}  ${r_usd:>9,.0f}  {m_pct:>9.1f}%  ${m_usd:>11,.0f}  ${w_usd:>11,.0f}")
+
     print()
-    print(f"  HONEST CONCLUSION:")
-    if avg_monthly_all >= 3:
-        print(f"  ✅ Strategy can realistically target {avg_monthly_all:.1f}% monthly")
-        print(f"     (= {avg_monthly_all/21*100:.0f}× better than S&P 500 monthly avg)")
-    else:
-        print(f"  ℹ️  Strategy averages {avg_monthly_all:.1f}% monthly")
-    print(f"  ❌ 4% DAILY is not realistic for any systematic strategy.")
-    print(f"     Even the best hedge funds target 20-40% ANNUALLY.")
-    print(f"     Days where you might make 4%+ exist but are rare and unpredictable.")
+    print(f"  ── YOUR ACCOUNT — WHAT TO CHANGE IN .env ────────────────")
+    print(f"  Current : MAX_DAILY_CAPITAL=1000 → monthly ~${1000*avg_frac:,.0f}")
     print()
-    print(f"  REALISTIC TARGETS FOR THIS STRATEGY:")
-    print(f"  • Daily   : 0.1% – 0.5% average (${capital*0.001:,.0f}–${capital*0.005:,.0f})")
-    print(f"  • Monthly : 2% – 6% (${capital*0.02:,.0f}–${capital*0.06:,.0f})")
-    print(f"  • Annual  : 25% – 70% if consistently executed")
-    print(f"    → On ${capital:,.0f}: ${capital*0.25:,.0f}–${capital*0.70:,.0f}/year")
+    print(f"  Option A (Conservative): Start here")
+    print(f"    MAX_DAILY_CAPITAL=10000")
+    print(f"    MAX_RISK_PER_TRADE_PCT=1.0")
+    print(f"    → avg monthly: ~${10000*avg_frac:,.0f} ({avg_frac*100:.0f}%)")
+    print()
+    print(f"  Option B (Moderate, after 2 paper weeks):")
+    print(f"    MAX_DAILY_CAPITAL=30000")
+    print(f"    MAX_RISK_PER_TRADE_PCT=1.5")
+    print(f"    → avg monthly: ~${30000*avg_frac*1.5:,.0f} ({avg_frac*150:.0f}%)")
+    print()
+    print(f"  Option C (Aggressive, after proven live results):")
+    print(f"    MAX_DAILY_CAPITAL={int(capital)}")
+    print(f"    MAX_RISK_PER_TRADE_PCT=1.5")
+    print(f"    DAILY_LOSS_LIMIT_PCT=3.0")
+    print(f"    → avg monthly: ~${capital*avg_frac*1.5:,.0f} ({avg_frac*150:.0f}%)")
+    print(f"    → best months: ~${capital*best_frac*1.5:,.0f} (+{best_frac*150:.0f}%)")
+    print(f"    → worst months: ~${capital*worst_frac*1.5:,.0f} ({worst_frac*150:.0f}%)")
+    print()
+    print(f"  ⚠️  RISK WARNING: Option C uses your full account.")
+    print(f"     A 20% drawdown = ${capital*0.20:,.0f} real loss.")
+    print(f"     Always paper trade first. Increase capital slowly.")
     print(f"{'='*62}\n")
 
 

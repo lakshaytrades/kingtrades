@@ -99,15 +99,15 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.0          # 1× ATR stop — wide enough to survive intraday noise, tight enough for 2:1+ R:R
-ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book target at 1.5:1 R:R (scalping)
-ATR_TP_MULTIPLIER: float = 2.5          # T2 at 2.5:1 — quick exit, don't overstay
-ATR_TP_RUNNER: float = 5.0             # T3 runner for A+ setups — trimmed from 7.0
-ATR_TRAIL_MULTIPLIER: float = 0.50      # wider trail = let winners breathe before stopping out
-BREAKEVEN_TRIGGER_PCT: float = 0.30     # free trade at 0.3% profit — gives room before locking in
-PARTIAL_EXIT_T1_PCT: float = 40.0       # 40% at T1 — lock some profit, keep 60% running
-PARTIAL_EXIT_T2_PCT: float = 25.0       # 25% at T2 — meaningful second slice
-RUNNER_PCT: float = 35.0                # 35% runner — bigger slice on high-conviction trades
+ATR_SL_MULTIPLIER: float = 1.0          # 1× ATR stop — wide enough to survive intraday noise
+ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book at 1.5:1 — lock partial profit fast
+ATR_TP_MULTIPLIER: float = 3.5          # T2 at 3.5:1 — was 2.5, wider target = bigger wins
+ATR_TP_RUNNER: float = 6.0             # T3 runner extended from 5.0 — catches full trend moves
+ATR_TRAIL_MULTIPLIER: float = 0.80      # wider trail after T2 (was 0.50) — runners breathe more
+BREAKEVEN_TRIGGER_PCT: float = 0.25     # move stop to breakeven slightly earlier
+PARTIAL_EXIT_T1_PCT: float = 30.0       # 30% at T1 (was 40%) — keep more running for T2/T3
+PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 (was 25%) — keep more in runner
+RUNNER_PCT: float = 50.0                # 50% runner (was 35%) — half the position rides the full trend
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
 MIN_RISK_REWARD: float = 2.0       # Minimum R:R measured at T2 target (2.5x SL) — previously
@@ -145,10 +145,10 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 72.0        # calibrated to real market — best setups score 70-75; 14-gate HAF is the quality guard
-HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ tier: only hit on strong regime + full MTF + volume surge days
-PREMIUM_SCORE: float = 76.0
-MIN_VOLUME_RATIO: float = 1.8
+MIN_SIGNAL_SCORE: float = 65.0        # lowered from 72 — more qualifying setups, still filtered by 14-gate HAF
+HIGH_CONFIDENCE_SCORE: float = 78.0   # A+ tier: strong regime + MTF + volume surge
+PREMIUM_SCORE: float = 72.0
+MIN_VOLUME_RATIO: float = 1.6         # slightly relaxed (was 1.8) to catch early breakouts
 REQUIRE_MTF_ALIGNMENT: bool = False   # soft MTF check via penalty in signal_gen; hard gate in HAF
 REQUIRE_POWER_HOUR: bool = False      # OFF — midday now active at 0.5× size; power hour gate was wasting 2h/day
 HEIKIN_ASHI_CONFIRM: bool = False
@@ -159,36 +159,41 @@ MAX_TRADES_PER_STOCK: int = 3         # re-enter only on confirmed continuation 
 # CIRCUIT BREAKERS
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
-CONSECUTIVE_LOSS_LIMIT: int = 3
-PAUSE_AFTER_LOSSES_MINUTES: int = 15   # was 30 — half the wait, back in game faster
+CONSECUTIVE_LOSS_LIMIT: int = 4        # pause after 4 losses (was 3) — less interruption in choppy opens
+PAUSE_AFTER_LOSSES_MINUTES: int = 10   # 10 min pause (was 15) — back faster when market is moving
 
 # ============================================================
 # WATCHLIST — US liquid momentum stocks
 # ============================================================
 DEFAULT_WATCHLIST = [
-    # Mega-cap tech & AI (deepest liquidity, daily 3–8% moves)
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "META", "TSLA",
-    # Semiconductors — highest beta, follow NVDA
-    "AMD", "MU", "QCOM", "ARM", "SMCI", "AVGO", "INTC", "MRVL", "ON", "LRCX",
-    # High-momentum growth / SaaS
-    "NFLX", "COIN", "PLTR", "MSTR", "CRWD", "PANW", "ZS", "DDOG", "NET", "NOW", "SNOW",
-    # Consumer & social momentum
-    "UBER", "SHOP", "ABNB", "MELI", "RBLX",
-    # Crypto miners (very high beta)
-    "MARA", "RIOT",
-    # Leveraged ETFs — 2-3x the index move (best for momentum breakouts)
-    "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL",
-    # Fintech / high-growth finance
-    "SOFI", "HOOD",
-    # Big finance
-    "JPM", "GS", "MS",
-    # Energy
-    "XOM", "CVX", "OXY", "SLB",
-    # Biotech momentum
-    "MRNA", "HIMS",
+    # ── Mega-cap tech & AI (deepest liquidity, daily 3–8% moves) ──────────
+    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
+    # ── Semiconductors — highest beta, follow NVDA ─────────────────────────
+    "AMD", "MU", "QCOM", "ARM", "SMCI", "AVGO", "INTC", "MRVL", "ON",
+    "LRCX", "KLAC", "AMAT", "ASML", "TSM", "TXN", "MCHP",
+    # ── AI / Cloud / SaaS high-momentum ────────────────────────────────────
+    "NFLX", "COIN", "PLTR", "MSTR", "CRWD", "PANW", "ZS", "DDOG", "NET",
+    "NOW", "SNOW", "TEAM", "HUBS", "OKTA", "MDB", "GTLB", "U",
+    "AI", "SOUN", "BBAI",
+    # ── Consumer & social momentum ──────────────────────────────────────────
+    "UBER", "SHOP", "ABNB", "MELI", "RBLX", "LYFT", "DASH", "YELP",
+    # ── Crypto / blockchain high-beta ─────────────────────────────────────
+    "MARA", "RIOT", "HUT", "CLSK", "BTBT", "CIFR",
+    # ── Leveraged ETFs — 2-3x index (strongest momentum signals) ──────────
+    "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL", "TECL", "FNGU",
+    # ── Fintech / high-growth finance ──────────────────────────────────────
+    "SOFI", "HOOD", "AFRM", "SQ", "PYPL", "V", "MA",
+    # ── Big finance & energy ────────────────────────────────────────────────
+    "JPM", "GS", "MS", "BAC", "XOM", "CVX", "OXY", "SLB", "MPC",
+    # ── Biotech / healthcare momentum ──────────────────────────────────────
+    "MRNA", "HIMS", "LLY", "NVO", "VKTX", "RXRX",
+    # ── EV & clean energy ──────────────────────────────────────────────────
+    "RIVN", "LCID", "NIO", "PLUG", "FSLR", "ENPH",
+    # ── Defense & industrials ──────────────────────────────────────────────
+    "LMT", "RTX", "NOC", "GE", "CAT",
 ]
-# Bar data: Alpaca REST (unlimited symbols). WebSocket real-time: Alpaca stream.
-# 55 symbols — all liquid US stocks, min $5M daily dollar volume.
+# 100 symbols — all liquid US stocks with min $1M daily dollar volume.
+# More watchlist = more breakout setups scanned per day = more executable signals.
 
 DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
