@@ -783,6 +783,27 @@ class TradingBot:
         except Exception as _gmc_e:
             logger.debug(f"Global market morning brief failed: {_gmc_e}")
 
+        # ── Futures Bias — pre-market ES/NQ direction (top-1% edge) ──────────
+        try:
+            if getattr(config, "FUTURES_BIAS_ENABLED", True):
+                from futures_bias import refresh_bias
+                _fbias = refresh_bias()
+                logger.info(
+                    f"[{format_ist_timestamp()}] Futures bias: {_fbias.bias} | "
+                    f"SPY={_fbias.spy_chg:+.2f}% QQQ={_fbias.qqq_chg:+.2f}% "
+                    f"composite={_fbias.composite_chg:+.2f}% | size_mult={_fbias.size_mult:.2f}x"
+                )
+                if self.alerter:
+                    self.alerter.send_text(_fbias.format_telegram())
+                # Apply futures size multiplier to risk manager opening session size
+                if self.risk_manager and hasattr(self.risk_manager, "set_session_size_mult"):
+                    try:
+                        self.risk_manager.set_session_size_mult(_fbias.size_mult)
+                    except Exception:
+                        pass
+        except Exception as _fbe:
+            logger.debug(f"Futures bias morning failed: {_fbe}")
+
         # ── Economic calendar morning check ──────────────────────────
         try:
             from economic_calendar import get_economic_calendar

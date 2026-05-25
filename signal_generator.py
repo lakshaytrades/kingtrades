@@ -816,7 +816,80 @@ class SignalGenerator:
             except Exception as _ge:
                 logger.debug(f"[suppressed] gemini_filter: {_ge}")
 
-            # ── LLM Reasoning Gate (70+ score) — runs AFTER Gemini so it sees news-adjusted score ─
+            # ── Sector Relative Strength (stock vs its sector ETF) ─────────────────────
+            # Top-1% edge: only trade stocks LEADING their sector, not lagging it
+            try:
+                if getattr(config, "SECTOR_RS_ENABLED", True):
+                    from sector_rs import get_sector_rs_score
+                    _rs_delta, _rs_reason = get_sector_rs_score(symbol, direction)
+                    if _rs_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _rs_delta))
+                        if _rs_delta >= 5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Sector RS boost {_rs_delta:+.0f} → {filter_result.final_score:.0f} | {_rs_reason}")
+                        elif _rs_delta <= -5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Sector RS drag {_rs_delta:+.0f} → {filter_result.final_score:.0f} | {_rs_reason}")
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Fell below min score after sector RS — skipping")
+                            return None
+            except Exception as _rse:
+                logger.debug(f"[suppressed] sector_rs: {_rse}")
+
+            # ── Short Squeeze Detection ────────────────────────────────────────────────
+            # Boost LONG signals on high-short-float stocks (squeeze fuel)
+            # Penalize SHORT signals (entering against a squeeze = dangerous)
+            try:
+                if getattr(config, "SQUEEZE_SCANNER_ENABLED", True):
+                    from squeeze_scanner import get_squeeze_score_delta
+                    _sq_delta, _sq_reason = get_squeeze_score_delta(symbol, direction)
+                    if _sq_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _sq_delta))
+                        if abs(_sq_delta) >= 5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Squeeze {_sq_delta:+.0f} → {filter_result.final_score:.0f} | {_sq_reason}")
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Score fell below min after squeeze penalty — skipping")
+                            return None
+            except Exception as _sqe:
+                logger.debug(f"[suppressed] squeeze_scanner: {_sqe}")
+
+            # ── Post-Earnings Announcement Drift (PEAD) ────────────────────────────────
+            # 80% accuracy: stocks drift in direction of EPS surprise for 3-21 days
+            # Boost LONG on beat, LONG on miss gets penalized, vice versa for SHORT
+            try:
+                if getattr(config, "PEAD_SCORER_ENABLED", True):
+                    from pead_scorer import get_pead_score_delta
+                    _pead_delta, _pead_reason = get_pead_score_delta(symbol, direction)
+                    if _pead_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _pead_delta))
+                        if abs(_pead_delta) >= 3:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: PEAD {_pead_delta:+.0f} → {filter_result.final_score:.0f} | {_pead_reason}")
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Fell below min score after PEAD — skipping")
+                            return None
+            except Exception as _pe2:
+                logger.debug(f"[suppressed] pead_scorer: {_pe2}")
+
+            # ── Futures / Pre-Market Bias ──────────────────────────────────────────────
+            # Pre-market ES/NQ direction → 73% predictive accuracy for first 30 min
+            # Trades AGAINST futures bias get penalized; aligned trades get boosted
+            try:
+                if getattr(config, "FUTURES_BIAS_ENABLED", True):
+                    from futures_bias import get_futures_bias
+                    _fbias = get_futures_bias()
+                    _fb_delta, _fb_reason = _fbias.get_score_adjustment(direction)
+                    if _fb_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _fb_delta))
+                        if abs(_fb_delta) >= 5:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Futures bias {_fb_delta:+.0f} → {filter_result.final_score:.0f} | {_fb_reason}")
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Below min score after futures bias — skipping")
+                            return None
+                        # Apply futures size multiplier on top of existing size
+                        if abs(_fb_delta) >= 5:
+                            combined_size = round(combined_size * _fbias.size_mult, 3)
+            except Exception as _fbe:
+                logger.debug(f"[suppressed] futures_bias: {_fbe}")
+
+            # ── LLM Reasoning Gate (70+ score) — runs AFTER all adjustments ──────────
             if filter_result.final_score >= 70:
                 try:
                     from llm_reasoner import get_llm_reasoner

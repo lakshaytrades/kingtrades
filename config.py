@@ -403,6 +403,28 @@ FII_DII_ENABLED: bool = False
 # ============================================================
 # CRYPTO TRADING (BTC/ETH/SOL via Alpaca — 24/7, no PDT)
 # ============================================================
+# ============================================================
+# TOP-1% EQUITY EDGE MODULES
+# ============================================================
+# Stock vs its sector ETF (XLK, XLF, XLY, XLE, XLV, XLI...)
+# Leaders get +15 pts, laggards get -15 pts — institutional money flows
+SECTOR_RS_ENABLED: bool = os.getenv("SECTOR_RS_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# Short squeeze detector — boosts LONG on high-short-float stocks, penalizes shorting into squeeze
+# GME/AMC/MARA type moves come from here. Score boost: +15 pts max
+SQUEEZE_SCANNER_ENABLED: bool = os.getenv("SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# Post-Earnings Announcement Drift (PEAD) — 80% accuracy, 3-21 days post-earnings
+# Beat → drift up → boost LONG. Miss → drift down → boost SHORT.
+PEAD_SCORER_ENABLED: bool = os.getenv("PEAD_SCORER_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# Pre-market ES/NQ futures bias — 73% predictive accuracy for opening direction
+# Against bias = -10 pts. Aligned = +10 pts + size multiplier
+FUTURES_BIAS_ENABLED: bool = os.getenv("FUTURES_BIAS_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# ============================================================
+# CRYPTO TRADING (BTC/ETH/SOL via Alpaca — 24/7, no PDT)
+# ============================================================
 CRYPTO_ENABLED: bool = os.getenv("CRYPTO_ENABLED", "True").lower() in ("true", "1", "yes")
 # Capital split: 30% to crypto pool, 70% stays in stocks.
 # Crypto runs 24/7 as a separate background engine alongside stock trading.
