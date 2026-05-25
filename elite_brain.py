@@ -328,8 +328,12 @@ class EliteBrain:
             ))
 
         # ── 12. MTF Alignment ────────────────────────────────────────────
-        mtf       = ctx.get("mtf_alignment", {})
-        aligned_c = mtf.get("aligned_count", 0)
+        mtf      = ctx.get("mtf_alignment", {})
+        _mtf_dir = mtf.get("direction", "NEUTRAL")
+        _dir_5m  = mtf.get("5m", "NEUTRAL")
+        _dir_15m = mtf.get("15m", "NEUTRAL")
+        _dir_1h  = mtf.get("1h", "NEUTRAL")
+        aligned_c = sum(1 for d in [_dir_5m, _dir_15m, _dir_1h] if d == _mtf_dir and d != "NEUTRAL")
         if aligned_c > 0:
             mtf_aligned = aligned_c >= 2
             mtf_score   = aligned_c * 25.0   # 3 → 75, 2 → 50, 1 → 25
@@ -338,7 +342,7 @@ class EliteBrain:
                 aligned = mtf_aligned,
                 score   = mtf_score if mtf_aligned else -mtf_score,
                 weight  = self._weights.get("mtf_alignment", 1.8),
-                reason  = f"MTF:{aligned_c}/3 aligned",
+                reason  = f"MTF:{aligned_c}/3 aligned ({_dir_5m}/{_dir_15m}/{_dir_1h})",
             ))
 
         # ── 13. Harmonic Pattern Alignment ───────────────────────────────

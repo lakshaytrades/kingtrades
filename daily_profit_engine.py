@@ -154,7 +154,7 @@ class IntradayState:
     def target_pct(self) -> float:
         """How far towards daily target (0.0 = nothing, 1.0 = target hit, 2.0 = 2× target)."""
         ref = getattr(self, "_daily_target_ref", 0.0)
-        return self.realised_pnl / max(ref, 1.0)
+        return self.realised_pnl / ref if ref > 0 else 0.0
 
     def set_daily_target_ref(self, target: float) -> None:
         self._daily_target_ref = target

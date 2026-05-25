@@ -133,7 +133,7 @@ class OrderResult:
     order_id:   str   = ""
     message:    str   = ""
     fill_price: float = 0.0
-    quantity:   int   = 0
+    quantity:   float = 0.0
     order_type: str   = "MARKET"
 
 
@@ -186,7 +186,7 @@ class AlpacaExecutor:
                     f"[{format_ist_timestamp()}] PAPER FRACTIONAL {direction} {symbol} "
                     f"notional=${notional_amt:.2f} → {frac_qty:.4f} shares @ ${signal.entry_price:.2f}"
                 )
-                return OrderResult(True, fill_price=signal.entry_price, quantity=0, message=f"Paper fractional fill ${notional_amt:.2f}")
+                return OrderResult(True, fill_price=signal.entry_price, quantity=frac_qty, message=f"Paper fractional fill ${notional_amt:.2f}")
             if qty <= 0:
                 logger.info(
                     f"[{format_ist_timestamp()}] PAPER {direction} {symbol} "

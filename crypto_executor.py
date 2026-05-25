@@ -71,6 +71,11 @@ class CryptoExecutor:
         self._daily_trades: int = 0
         self._consecutive_losses: int = 0
         self._paused_until: Optional[float] = None
+        self._daily_capital: float = 1000.0   # updated by engine at start of each day
+
+    def set_daily_capital(self, capital: float) -> None:
+        """Called by CryptoEngine at daily reset with actual account capital."""
+        self._daily_capital = max(capital, 50.0)
 
     def _get_trading_client(self):
         try:
@@ -101,7 +106,8 @@ class CryptoExecutor:
             secs_left = int(self._paused_until - _time.monotonic())
             return False, f"Paused after losses ({secs_left}s remaining)"
 
-        if self._daily_pnl <= -(ccfg.CRYPTO_DAILY_LOSS_PCT / 100):
+        daily_loss_limit = self._daily_capital * ccfg.CRYPTO_DAILY_LOSS_PCT / 100
+        if self._daily_pnl <= -daily_loss_limit:
             return False, f"Daily loss limit hit ({ccfg.CRYPTO_DAILY_LOSS_PCT}%)"
 
         if len(self.positions) >= ccfg.CRYPTO_MAX_POSITIONS:

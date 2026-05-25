@@ -893,7 +893,9 @@ class SignalGenerator:
             if filter_result.final_score >= 70:
                 try:
                     from llm_reasoner import get_llm_reasoner
-                    rr = abs(ind.atr * 3.0) / max(abs(ind.atr * 1.4), 0.01)
+                    _sl_dist = config.ATR_SL_MULTIPLIER * ind.atr
+                    _t2_dist = config.ATR_TP_MULTIPLIER * ind.atr
+                    rr = round(_t2_dist / max(_sl_dist, 0.01), 2)
                     summary = {
                         "symbol":       symbol,
                         "direction":    direction,

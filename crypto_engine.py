@@ -69,6 +69,8 @@ class CryptoEngine:
             return
 
         self._running = True
+        self._daily_start_capital = self._get_crypto_capital()
+        self.executor.set_daily_capital(self._daily_start_capital)
         self._thread  = threading.Thread(
             target=self._run_loop, name="CryptoEngine", daemon=True
         )
@@ -204,6 +206,7 @@ class CryptoEngine:
         prev_pnl = self.executor._daily_pnl
         self.executor.reset_daily()
         self._daily_start_capital = self._get_crypto_capital()
+        self.executor.set_daily_capital(self._daily_start_capital)
 
         logger.info(
             f"[{format_ist_timestamp()}] Crypto daily reset | "
