@@ -521,7 +521,12 @@ class RiskManager:
         kelly_qty   = int((capital * kelly_frac) / entry_price)
 
         # More conservative of the two
-        quantity = min(risk_qty, kelly_qty) if kelly_qty > 0 else risk_qty
+        if kelly_qty == 0:
+            # Kelly fraction is zero or negative — no statistical edge right now
+            logger.debug("Kelly=0: no edge detected, using 50% of risk-based size")
+            quantity = max(1, risk_qty // 2)
+        else:
+            quantity = min(risk_qty, kelly_qty)
 
         # 2b. Volatility targeting — scale down in high-vol, scale up in low-vol
         # Target: 1% daily vol per position. If stock is more volatile, reduce size.
@@ -576,6 +581,14 @@ class RiskManager:
             logger.debug(
                 f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size"
             )
+
+        # ── HARD MULTIPLIER CAP: prevent stacked multipliers from exceeding 2× base ──
+        # Base quantity is what risk-based sizing alone gives (before session/DOW/inst multipliers).
+        # With 5 stacked multipliers, position can theoretically reach 5.4× — cap at 2×.
+        _base_risk_qty = int(risk_amount / sl_distance) if sl_distance > 0 else 1
+        if _base_risk_qty > 0 and quantity > _base_risk_qty * 2:
+            quantity = _base_risk_qty * 2
+            logger.debug(f"Multiplier cap: clamped qty to 2× base ({_base_risk_qty * 2})")
 
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
@@ -674,7 +687,7 @@ class RiskManager:
             return {"allowed": False, "reason": "Circuit breaker active — no new entries"}
 
         # 3. Daily loss limit?
-        if self.state.daily_loss_pct >= self.daily_loss_limit_pct:
+        if self.state.daily_loss_pct >= self.daily_loss_limit_pct * 0.95:  # trigger at 95% of limit, not 100%
             self._trigger_circuit_breaker(f"Daily loss limit {self.daily_loss_limit_pct}% hit")
             return {"allowed": False, "reason": f"Daily loss limit {self.daily_loss_limit_pct}% reached"}
 

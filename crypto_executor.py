@@ -113,6 +113,7 @@ class CryptoExecutor:
         self._daily_trades: int = 0
         self._consecutive_losses: int = 0
         self._paused_until: Optional[float] = None
+        self._pause_until_utc: Optional[float] = None  # wall-clock for restart survival
         self._daily_capital: float = 1000.0   # updated by engine at start of each day
         self._win_tracker   = WinRateTracker()
 
@@ -136,9 +137,15 @@ class CryptoExecutor:
         return symbol.replace("/", "")
 
     def is_paused(self) -> bool:
+        import time as _t
+        # Runtime pause (resets on restart — normal operation)
         if self._paused_until and _time.monotonic() < self._paused_until:
             return True
         self._paused_until = None
+        # Wall-clock pause (survives restart — set after consecutive losses)
+        if self._pause_until_utc and _t.time() < self._pause_until_utc:
+            return True
+        self._pause_until_utc = None
         return False
 
     def can_trade(self, symbol: str) -> tuple:
@@ -162,6 +169,15 @@ class CryptoExecutor:
         if symbol in self.positions:
             return False, f"Already have position in {symbol}"
 
+        # Session gate — double-check even if signal was generated in wrong session
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+        import crypto_config as ccfg
+        UTC = ZoneInfo("UTC")
+        hour = datetime.now(UTC).hour
+        if 21 <= hour or hour < 7:  # US_NIGHT (21-24) + ASIA (0-7)
+            return False, f"Session blocked: hour {hour} UTC is outside EU_MORNING/US_PEAK"
+
         return True, "ok"
 
     def place_entry(self, signal) -> CryptoOrderResult:
@@ -180,13 +196,15 @@ class CryptoExecutor:
         # HARD NOTIONAL CAP — belt-and-suspenders: reject oversized orders even if
         # _calculate_notional() had a bug. This catches any code path that bypasses
         # the config cap and is the last line of defence before an order hits the broker.
-        hard_cap = ccfg.CRYPTO_MAX_NOTIONAL_USD * 2   # allow 2× for rounding, but nothing more
+        hard_cap = ccfg.CRYPTO_MAX_NOTIONAL_USD * 1.1  # allow 10% rounding only, never 2×
         if notional > hard_cap:
             logger.error(
                 f"[CRYPTO] HARD BLOCK: {signal.symbol} notional=${notional:.0f} > "
                 f"hard cap ${hard_cap:.0f} — order rejected to prevent oversized loss"
             )
             return CryptoOrderResult(False, message=f"Notional ${notional:.0f} exceeds hard cap")
+
+        notional = min(notional, ccfg.CRYPTO_MAX_NOTIONAL_USD)  # enforce exact cap
 
         if not self.live_enabled:
             # Paper: simulate fill at current price
@@ -503,6 +521,32 @@ class CryptoExecutor:
                 t2     = round(entry_price - 4.0 * atr, 6)
                 runner = round(entry_price - 7.0 * atr, 6)
 
+            # If current price is already past the stop-loss, close immediately
+            try:
+                from crypto_data import get_crypto_quote
+                q = get_crypto_quote(sym)
+                current_price = q.get("ltp", 0.0)
+                if current_price > 0:
+                    already_stopped = (
+                        (direction == "LONG"  and current_price <= sl) or
+                        (direction == "SHORT" and current_price >= sl)
+                    )
+                    if already_stopped:
+                        logger.warning(
+                            f"reconcile: {sym} already past SL (price=${current_price:.2f} SL=${sl:.2f}) — closing"
+                        )
+                        try:
+                            alpaca_sym = self._alpaca_symbol(sym)
+                            client = self._get_trading_client()
+                            if client:
+                                client.close_position(alpaca_sym)
+                            closed += 1
+                        except Exception as e:
+                            logger.error(f"reconcile close_at_sl({sym}): {e}")
+                        continue
+            except Exception:
+                pass
+
             pos = CryptoPosition(
                 symbol        = sym,
                 direction     = direction,
@@ -687,6 +731,8 @@ class CryptoExecutor:
             if self._consecutive_losses >= ccfg.CRYPTO_CONSEC_LOSS_LIMIT:
                 pause_secs = ccfg.CRYPTO_PAUSE_AFTER_LOSSES_MIN * 60
                 self._paused_until = _time.monotonic() + pause_secs
+                import time as _t
+                self._pause_until_utc = _t.time() + pause_secs  # survives restart
                 logger.warning(
                     f"[{format_ist_timestamp()}] CRYPTO: {self._consecutive_losses} consecutive losses "
                     f"— pausing {ccfg.CRYPTO_PAUSE_AFTER_LOSSES_MIN} min"

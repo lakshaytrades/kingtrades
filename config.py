@@ -184,7 +184,7 @@ GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score ne
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
 
 # ── Aggressive sizing on elite setups ───────────────────────────────────────
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.5     # 1.5× risk on A+ signals (score >= 82 after bonuses)
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.2  # was 1.5 — A+ signals get 20% more, not 50%
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
 ORB_ENABLED: bool = True

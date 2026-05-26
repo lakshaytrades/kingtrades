@@ -718,6 +718,15 @@ def generate_crypto_signal(symbol: str,
         logger.debug(f"{symbol}: R:R {rr:.1f} < 2.0 — skipping")
         return None
 
+    # Minimum expected value gate: EV = win_rate × win - loss_rate × risk
+    # At 55% win, R:R must be > 1.8 minimum to have positive EV
+    # This prevents entering low R:R trades that look OK on score but lose money
+    assumed_win_rate = 0.55
+    ev = assumed_win_rate * (rr * abs(entry - sl)) - (1 - assumed_win_rate) * abs(entry - sl)
+    if ev <= 0:
+        logger.debug(f"{symbol}: EV={ev:.2f} non-positive at R:R={rr:.1f} — skipping")
+        return None
+
     # session and sess_mult already set at top of function (from session gate check)
 
     # Grade the signal

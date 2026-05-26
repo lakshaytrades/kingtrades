@@ -117,9 +117,8 @@ CRYPTO_PAUSE_AFTER_LOSSES_MIN: int = 180    # 3-hour pause (was 60 min — too s
 
 # ── Capital pool ────────────────────────────────────────────────────────────────
 CRYPTO_CAPITAL_USD: float          = float(os.getenv("CRYPTO_CAPITAL_USD", "0"))
-CRYPTO_CAPITAL_PCT_OF_TOTAL: float = float(os.getenv("CRYPTO_CAPITAL_PCT_OF_TOTAL", "20.0"))
-# Reduced from 30% → 20% after loss event. With $96K: $19.2K crypto pool.
-# Max trade: $500. Max daily loss: 2% × $19.2K = $384. That's manageable.
+CRYPTO_CAPITAL_PCT_OF_TOTAL: float = float(os.getenv("CRYPTO_CAPITAL_PCT_OF_TOTAL", "15.0"))
+# With $96K account: $14.4K crypto pool. Max trade: $500. Daily stop: 1.5% = $216.
 
 # ── RSI thresholds ─────────────────────────────────────────────────────────────
 CRYPTO_RSI_OVERSOLD: float     = 32.0   # slightly stricter (was 30)
@@ -155,3 +154,9 @@ CRYPTO_NEWS_BLACKOUT_KEYWORDS = [
     "SEC", "CFTC", "hack", "exploit", "rug pull", "exchange halt",
     "regulatory", "ban", "shutdown", "insolvency",
 ]
+
+# ── Account equity watermark ───────────────────────────────────────────────────
+# If account equity drops below this % of the starting value, disable crypto entirely.
+# Prevents the bot from continuing to trade after a catastrophic drawdown.
+# Set via env var: CRYPTO_MIN_EQUITY_PCT (default 85% = stop if account loses >15%)
+CRYPTO_MIN_EQUITY_PCT: float = float(os.getenv("CRYPTO_MIN_EQUITY_PCT", "85.0"))

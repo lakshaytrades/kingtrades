@@ -179,6 +179,16 @@ class CryptoEngine:
                     time.sleep(ccfg.CRYPTO_SCAN_INTERVAL)
                     continue
 
+                # Hard stop: if 3+ crypto losses today, halt new entries for the rest of the day
+                daily_loss_pct = abs(status["daily_pnl"]) / max(self._daily_start_capital, 1) * 100
+                if daily_loss_pct >= ccfg.CRYPTO_DAILY_LOSS_PCT:
+                    logger.warning(
+                        f"[CRYPTO] Daily loss {daily_loss_pct:.1f}% >= limit {ccfg.CRYPTO_DAILY_LOSS_PCT}% "
+                        f"— halting all new entries for today"
+                    )
+                    time.sleep(ccfg.CRYPTO_SCAN_INTERVAL)
+                    continue
+
                 # Scan for signals
                 signals = scan_crypto_watchlist(
                     symbols=ccfg.CRYPTO_SYMBOLS,
@@ -369,6 +379,17 @@ class CryptoEngine:
             acct = get_crypto_account_info()
             equity = acct.get("equity", 0.0)
             if equity > 0:
+                # Equity watermark check — disable if account has lost too much overall
+                if not hasattr(self, '_equity_watermark'):
+                    self._equity_watermark = equity  # set on first call
+                min_equity = self._equity_watermark * ccfg.CRYPTO_MIN_EQUITY_PCT / 100
+                if equity < min_equity:
+                    logger.error(
+                        f"[CRYPTO] EQUITY WATERMARK BREACHED: ${equity:.0f} < "
+                        f"${min_equity:.0f} (85% of ${self._equity_watermark:.0f}) — "
+                        f"disabling crypto trading"
+                    )
+                    return 0.0  # returning 0 makes the capital-too-low check block all trades
                 return equity * ccfg.CRYPTO_CAPITAL_PCT_OF_TOTAL / 100
         except Exception as e:
             logger.debug(f"get_crypto_capital: {e}")
