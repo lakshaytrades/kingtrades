@@ -45,11 +45,11 @@ CRYPTO_MIN_SIGNAL_SCORE: float = 75.0   # raised from 68 — only trade quality 
 CRYPTO_HIGH_CONFIDENCE: float  = 88.0   # A+: all confluence present
 CRYPTO_PREMIUM_SCORE: float    = 80.0   # A grade: solid setup
 
-# ── Risk management — TIGHTENED after loss event ───────────────────────────────
-CRYPTO_MAX_RISK_PCT: float     = 0.5    # 0.5% of crypto pool per trade (was 1.5% — 3x too big)
-CRYPTO_DAILY_LOSS_PCT: float   = 2.0    # 2% daily stop on crypto pool (was 4%)
-CRYPTO_MAX_POSITIONS: int      = 2      # max 2 concurrent positions (was 4)
-CRYPTO_MAX_TRADES_DAY: int     = 6      # max 6 trades/day (was 12)
+# ── Risk management — LOCKED DOWN after repeated -$4k+ loss events ────────────
+CRYPTO_MAX_RISK_PCT: float     = 0.5    # 0.5% of crypto pool per trade
+CRYPTO_DAILY_LOSS_PCT: float   = 1.5    # 1.5% daily stop — tighter than 2%, stops at $288 on $19.2k pool
+CRYPTO_MAX_POSITIONS: int      = 2      # max 2 concurrent positions
+CRYPTO_MAX_TRADES_DAY: int     = 4      # max 4 trades/day — quality over quantity
 
 # ── ATR stop/target parameters ─────────────────────────────────────────────────
 CRYPTO_ATR_PERIOD: int         = 14
@@ -71,17 +71,18 @@ CRYPTO_T2_EXIT_PCT: float  = 30.0   # exit 30% at T2
 CRYPTO_RUNNER_PCT: float   = 30.0   # run 30% — reduced from 40% (take profits)
 
 # ── Session sizing multipliers ─────────────────────────────────────────────────
-# US_NIGHT completely disabled — thin liquidity = noise = losses
-# ASIA reduced to 0.4× after repeated -$4k+ Asia-session losses
+# ASIA + US_NIGHT: both DISABLED after 3 consecutive days of -$4k-$6k losses
+# during 00:00-07:00 UTC (1AM-8AM BST). Whale manipulation + thin liquidity.
+# The bot now ONLY trades during EU_MORNING and US_PEAK sessions.
 CRYPTO_SESSION_MULTIPLIERS = {
-    "US_PEAK":     1.2,   # 13:00-21:00 UTC (9AM-5PM ET) — full size, capped at $500
+    "US_PEAK":     1.0,   # 13:00-21:00 UTC (9AM-5PM ET) — full size, capped at $500
     "EU_MORNING":  1.0,   # 07:00-13:00 UTC — standard size
-    "ASIA":        0.4,   # 00:00-07:00 UTC — 40% size, BTC-only, highest caution
+    "ASIA":        0.0,   # 00:00-07:00 UTC — DISABLED after 3× -$4k+ overnight losses
     "US_NIGHT":    0.0,   # 21:00-00:00 UTC — DISABLED: thin market, stop-hunts
 }
 
 # ── Session trading hours — which sessions are allowed ────────────────────────
-CRYPTO_DISABLED_SESSIONS = {"US_NIGHT"}   # no new entries in these sessions
+CRYPTO_DISABLED_SESSIONS = {"US_NIGHT", "ASIA"}   # no entries 21:00–13:00 UTC
 
 # ── BTC macro trend requirement ────────────────────────────────────────────────
 # For altcoin LONG signals: BTC must be above 50-EMA on 4H

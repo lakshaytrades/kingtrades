@@ -177,6 +177,17 @@ class CryptoExecutor:
         alpaca_sym = self._alpaca_symbol(signal.symbol)
         notional   = signal.notional_usd
 
+        # HARD NOTIONAL CAP — belt-and-suspenders: reject oversized orders even if
+        # _calculate_notional() had a bug. This catches any code path that bypasses
+        # the config cap and is the last line of defence before an order hits the broker.
+        hard_cap = ccfg.CRYPTO_MAX_NOTIONAL_USD * 2   # allow 2× for rounding, but nothing more
+        if notional > hard_cap:
+            logger.error(
+                f"[CRYPTO] HARD BLOCK: {signal.symbol} notional=${notional:.0f} > "
+                f"hard cap ${hard_cap:.0f} — order rejected to prevent oversized loss"
+            )
+            return CryptoOrderResult(False, message=f"Notional ${notional:.0f} exceeds hard cap")
+
         if not self.live_enabled:
             # Paper: simulate fill at current price
             fill_qty = round(notional / signal.entry_price, 8) if signal.entry_price > 0 else 0.0

@@ -192,11 +192,15 @@ class RiskManager:
     def initialize_day(self, available_balance: float, nifty_open: float = 0):
         """Call this at market open (9:15 AM IST) each day."""
         now_ist = get_current_ist_time()
-        # If max_daily_capital is 0 → use full account balance (no cap)
         if self.max_daily_capital > 0:
             cap = min(available_balance, self.max_daily_capital) if available_balance > 0 else self.max_daily_capital
+        elif available_balance > 0:
+            # Safety net: when MAX_DAILY_CAPITAL=0 don't use the full account balance.
+            # Cap at 10% of account equity (max $10,000). This prevents a $90k account
+            # from being treated as $90k capital with 2% risk = $1,800 per trade.
+            cap = min(available_balance * 0.10, 10_000.0)
         else:
-            cap = available_balance if available_balance > 0 else 0
+            cap = 0
         self.state = RiskState(
             date=now_ist.strftime("%Y-%m-%d"),
             daily_capital=cap,

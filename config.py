@@ -53,16 +53,19 @@ GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 # ============================================================
 LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "False").lower() in ("true", "1", "yes")
 
-# Capital (USD) — paper account ~$99K; deploy 25% for 13%/month maths
+# Capital (USD) — hard cap what the bot uses as its "bankroll" each day
+# IMPORTANT: 0 means "use full account balance" — DANGEROUS on a $90k account.
+# Set this to the actual USD amount you want to risk, e.g. 5000 for a $5k sub-account.
 MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
-# 0 = use full Alpaca account balance dynamically (recommended)
-# >0 = hard cap in USD (e.g. 25000 caps at $25K regardless of balance)
+# Safety net: when MAX_DAILY_CAPITAL=0 we cap internally at 10% of account equity
+# via the risk_manager so a $90k account can never accidentally use $90k as capital.
+# Set MAX_DAILY_CAPITAL explicitly in .env to override, e.g. MAX_DAILY_CAPITAL=5000
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.0"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 3.0)   # hard cap 3% — beyond that is gambling
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.5"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.0)   # hard cap 1% — 2% was blowing accounts
 
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — stop the day and protect capital
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop the day early
 
 # Intraday leverage multiplier.
 # ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.
@@ -73,9 +76,9 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # hard cap 3% — stop t
 ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
 ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
 
-MAX_POSITIONS: int = 20
+MAX_POSITIONS: int = 5       # was 20 — too many concurrent losers compound the damage
 MIN_POSITIONS: int = 1
-MAX_CAPITAL_PER_TRADE_PCT: float = 30.0   # 30% = $300 on $1K; risk_mgr still limits by ATR-SL
+MAX_CAPITAL_PER_TRADE_PCT: float = 10.0   # was 30% — 30% of $90k = $27k per trade, catastrophic
 
 # Fractional shares: Alpaca supports fractional/notional orders on most symbols.
 # When enabled, stocks too expensive for 1 whole share use a notional ($ amount) order.
