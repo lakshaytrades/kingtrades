@@ -18,6 +18,8 @@ import time as _time
 from dataclasses import dataclass, field
 from typing import Dict, List, Optional
 
+import numpy as np
+
 from utils import format_ist_timestamp
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,45 @@ class CryptoPosition:
     running_pnl:    float = 0.0   # locked-in P&L from partial exits
 
 
+class WinRateTracker:
+    """Tracks recent trade outcomes for Kelly Criterion dynamic position sizing."""
+
+    def __init__(self, window: int = 20):
+        self._window   = window
+        self._outcomes: list = []  # True=win, False=loss
+        self._pnls:     list = []
+
+    def record(self, pnl: float) -> None:
+        self._outcomes.append(pnl > 0)
+        self._pnls.append(pnl)
+        if len(self._outcomes) > self._window:
+            self._outcomes.pop(0)
+            self._pnls.pop(0)
+
+    def kelly_fraction(self) -> float:
+        """Half-Kelly multiplier clamped to [0.4, 1.5]. Returns 1.0 with < 5 trades."""
+        n = len(self._outcomes)
+        if n < 5:
+            return 1.0
+        wins   = [p for p in self._pnls if p > 0]
+        losses = [abs(p) for p in self._pnls if p < 0]
+        if not wins or not losses:
+            return 1.0 if not wins else 1.3
+        win_rate = sum(self._outcomes) / n
+        b        = np.mean(wins) / np.mean(losses)
+        q        = 1.0 - win_rate
+        kelly    = (b * win_rate - q) / b
+        return max(0.4, min(1.5, kelly / 2))  # half-Kelly, clamped
+
+    def win_rate(self) -> float:
+        if not self._outcomes:
+            return 0.55  # default assumption
+        return sum(self._outcomes) / len(self._outcomes)
+
+    def trade_count(self) -> int:
+        return len(self._outcomes)
+
+
 class CryptoExecutor:
     """
     Executes crypto orders on Alpaca. Notional-based (buy $X of BTC).
@@ -73,6 +114,7 @@ class CryptoExecutor:
         self._consecutive_losses: int = 0
         self._paused_until: Optional[float] = None
         self._daily_capital: float = 1000.0   # updated by engine at start of each day
+        self._win_tracker   = WinRateTracker()
 
     def set_daily_capital(self, capital: float) -> None:
         """Called by CryptoEngine at daily reset with actual account capital."""
@@ -474,6 +516,36 @@ class CryptoExecutor:
         )
         return pnl
 
+    def get_kelly_multiplier(self) -> float:
+        """Return Kelly Criterion half-Kelly size multiplier based on recent win rate."""
+        return self._win_tracker.kelly_fraction()
+
+    def check_correlation_limit(self, direction: str) -> tuple:
+        """
+        Check if opening another position in the given direction would breach
+        the correlation limit (max 2 concurrent LONG positions).
+
+        Returns (allowed: bool, reason: str)
+        """
+        if direction == "LONG":
+            long_positions = [
+                sym for sym, pos in self.positions.items()
+                if pos.direction == "LONG"
+            ]
+            if len(long_positions) >= 2:
+                return False, f"Correlation limit: already {len(long_positions)} LONG positions"
+        return True, "ok"
+
+    def can_trade_direction(self, symbol: str, direction: str) -> tuple:
+        """
+        Combines can_trade() + check_correlation_limit().
+        Returns (allowed: bool, reason: str).
+        """
+        allowed, reason = self.can_trade(symbol)
+        if not allowed:
+            return allowed, reason
+        return self.check_correlation_limit(direction)
+
     def _record_trade_close(self, symbol: str, pnl: float,
                              exit_price: float, reason: str) -> None:
         """Update counters after closing a position."""
@@ -492,6 +564,8 @@ class CryptoExecutor:
                 )
         else:
             self._consecutive_losses = 0
+
+        self._win_tracker.record(pnl)
 
     def _wait_for_fill(self, order_id: str, client) -> tuple:
         """Poll until filled. Returns (fill_price, fill_qty)."""

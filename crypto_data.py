@@ -251,6 +251,53 @@ def get_btc_change_pct(hours: int = 1) -> float:
         return 0.0
 
 
+_FUNDING_CACHE: Dict[str, dict] = {}
+_FUNDING_CACHE_TTL = 1800  # 30 minutes (funding settles every 8h)
+
+
+def get_funding_rate(symbol: str) -> Dict:
+    """
+    Fetch perpetual futures funding rate from Binance public API.
+    High positive = longs paying shorts = bearish pressure
+    High negative = shorts paying longs = potential short squeeze (bullish)
+
+    symbol: "BTC/USD", "ETH/USD", "SOL/USD"
+    Returns: {"rate": float, "annualized": float, "sentiment": "LONG_HEAVY"|"SHORT_HEAVY"|"NEUTRAL"}
+    """
+    # Map to Binance symbol format
+    sym_map = {"BTC/USD": "BTCUSDT", "ETH/USD": "ETHUSDT", "SOL/USD": "SOLUSDT"}
+    binance_sym = sym_map.get(symbol)
+    if not binance_sym:
+        return {"rate": 0.0, "annualized": 0.0, "sentiment": "NEUTRAL"}
+
+    now_ts = time.monotonic()
+    cached = _FUNDING_CACHE.get(symbol)
+    if cached and (now_ts - cached.get("_ts", 0)) < _FUNDING_CACHE_TTL:
+        return cached
+
+    try:
+        import urllib.request
+        import json
+        url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_sym}"
+        req = urllib.request.Request(url, headers={"User-Agent": "KingTrades/1.0"})
+        with urllib.request.urlopen(req, timeout=5) as resp:
+            data = json.loads(resp.read())
+        rate = float(data.get("lastFundingRate", 0))
+        annualized = rate * 3 * 365 * 100  # 3 settlements/day * 365 * 100%
+        sentiment = (
+            "LONG_HEAVY"  if rate >  0.0005   # > 0.05% = longs overextended
+            else "SHORT_HEAVY" if rate < -0.0003  # < -0.03% = shorts overextended
+            else "NEUTRAL"
+        )
+        result = {"rate": rate, "annualized": annualized, "sentiment": sentiment, "_ts": now_ts}
+        _FUNDING_CACHE[symbol] = result
+        logger.debug(f"Funding rate {symbol}: {rate*100:.4f}% ({sentiment})")
+        return result
+    except Exception as e:
+        logger.debug(f"get_funding_rate({symbol}): {e}")
+        return {"rate": 0.0, "annualized": 0.0, "sentiment": "NEUTRAL", "_ts": now_ts}
+
+
 def get_crypto_account_info() -> Dict:
     """Get Alpaca account balance and crypto buying power."""
     try:

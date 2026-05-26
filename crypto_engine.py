@@ -137,6 +137,12 @@ class CryptoEngine:
                     self._last_heartbeat_hour = now_utc.hour
                     self._send_heartbeat()
 
+                # Emergency regime check — close longs in violent bear market
+                try:
+                    self._check_regime_emergency()
+                except Exception as _e:
+                    logger.debug(f"regime emergency check: {_e}")
+
                 # Update open positions (SL hits, T1/T2, trailing stop)
                 self._update_positions()
 
@@ -220,10 +226,59 @@ class CryptoEngine:
             f"Strategy continues 24/7"
         )
 
+    def _check_regime_emergency(self) -> None:
+        """Close all LONG positions if BTC enters VOLATILE_BEAR regime."""
+        if not self.executor.positions:
+            return
+        from crypto_data import get_crypto_bars
+        from crypto_signals import _compute_indicators
+        from crypto_regime import detect_regime, Regime
+
+        btc_df = get_crypto_bars("BTC/USD", "15Min", limit=80)
+        if btc_df is None or len(btc_df) < 30:
+            return
+        btc_ind = _compute_indicators(btc_df)
+        if not btc_ind:
+            return
+
+        regime = detect_regime(btc_df, btc_ind)
+        if regime == Regime.VOLATILE_BEAR:
+            long_syms = [
+                sym for sym, pos in self.executor.positions.items()
+                if pos.direction == "LONG"
+            ]
+            if long_syms:
+                logger.warning(
+                    f"[CRYPTO] VOLATILE_BEAR regime detected — emergency closing "
+                    f"{len(long_syms)} LONG position(s)"
+                )
+                self._send_alert(
+                    f"🚨 <b>VOLATILE BEAR EMERGENCY</b>\n"
+                    f"BTC regime = VOLATILE_BEAR\n"
+                    f"Closing {len(long_syms)} LONG position(s): {', '.join(long_syms)}\n"
+                    f"Capital preservation priority"
+                )
+                for sym in long_syms:
+                    self.executor.place_exit(sym, reason="VOLATILE_BEAR_EMERGENCY")
+
     def _send_heartbeat(self) -> None:
         """Hourly status update."""
         status = self.get_status()
         now_str = datetime.now(ET).strftime("%H:%M ET")
+
+        # Compute current BTC regime for heartbeat
+        try:
+            from crypto_data import get_crypto_bars
+            from crypto_signals import _compute_indicators
+            from crypto_regime import detect_regime
+            btc_df = get_crypto_bars("BTC/USD", "15Min", limit=80)
+            if btc_df is not None:
+                btc_ind = _compute_indicators(btc_df)
+                regime_str = detect_regime(btc_df, btc_ind).value if btc_ind else "UNKNOWN"
+            else:
+                regime_str = "UNKNOWN"
+        except Exception:
+            regime_str = "UNKNOWN"
 
         pos_lines = []
         for sym, pos in self.executor.positions.items():
@@ -249,6 +304,7 @@ class CryptoEngine:
             f"Daily P&L: <b>${status['daily_pnl']:+,.2f}</b>\n"
             f"Trades today: <b>{status['daily_trades']}</b>\n"
             f"Open positions: <b>{status['positions']}</b>\n"
+            f"Regime: <b>{regime_str}</b>\n"
             f"{'⏸ PAUSED' if status['paused'] else '▶ ACTIVE'}\n\n"
             f"<b>Positions:</b>\n{pos_text}"
         )

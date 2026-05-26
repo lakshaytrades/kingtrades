@@ -72,6 +72,7 @@ class CryptoSignal:
     btc_change_1h:  float = 0.0
     session:        str = "US_PEAK"
     is_high_confidence: bool = False
+    regime:         str = "UNKNOWN"
 
     def summary(self) -> str:
         return (
@@ -447,6 +448,29 @@ def _apply_btc_correlation(score: float, symbol: str, direction: str,
     return score
 
 
+def _count_pattern_categories(patterns: list) -> int:
+    """Count distinct pattern category types present."""
+    categories = {
+        "TREND":   {"MACD", "EMA Bull", "EMA Bear", "MTF"},
+        "OSC":     {"RSI", "Stoch", "Divergence"},
+        "STRUCT":  {"VWAP", "BB", "Bollinger"},
+        "SMC":     {"FVG", "Order Block", "Liquidity", "BOS", "CHoCH", "Premium", "Discount"},
+        "WYCKOFF": {"Spring", "Upthrust", "Accumulation", "Distribution", "Wyckoff"},
+        "FIBS":    {"Fibonacci", "61.8", "Golden", "78.6%", "Extension"},
+        "CANDLE":  {"Hammer", "Engulfing", "Doji", "Star", "Harami", "Pinbar", "Tweezer"},
+        "CHART":   {"Double", "Head", "Flag", "Triangle", "Wedge", "Cup", "Channel"},
+        "ELLIOTT": {"Elliott", "Wave 3", "Wave 5"},
+        "VOLUME":  {"Volume", "POC", "VAH", "VAL", "Whale"},
+    }
+    found = set()
+    for pat in patterns:
+        for cat, keywords in categories.items():
+            if any(kw.lower() in pat.lower() for kw in keywords):
+                found.add(cat)
+                break
+    return len(found)
+
+
 def _calculate_notional(symbol: str, entry_price: float, stop_loss: float,
                          direction: str, total_crypto_capital: float,
                          size_multiplier: float = 1.0) -> float:
@@ -536,6 +560,25 @@ def generate_crypto_signal(symbol: str,
     fng = get_fear_greed_index()
     base_score = _apply_fng_adjustment(base_score, fng, direction)
 
+    # Funding rate adjustment
+    try:
+        from crypto_data import get_funding_rate
+        funding = get_funding_rate(symbol)
+        if direction == "LONG":
+            if funding["sentiment"] == "LONG_HEAVY":
+                base_score -= 8.0   # longs overextended in perps = risk of liquidation cascade
+                patterns.append("⚠️ Funding Long Heavy")
+            elif funding["sentiment"] == "SHORT_HEAVY":
+                base_score += 6.0   # short squeeze potential = supports longs
+                patterns.append("🚀 Funding Short Squeeze Risk")
+        elif direction == "SHORT":
+            if funding["sentiment"] == "SHORT_HEAVY":
+                base_score -= 8.0   # shorts overextended = risk of squeeze
+            elif funding["sentiment"] == "LONG_HEAVY":
+                base_score += 6.0   # longs will get liquidated = supports shorts
+    except Exception:
+        pass
+
     # Volume — bonus scoring (already passed hard gate above)
     if vr >= ccfg.CRYPTO_VOLUME_HIGH_CONV:
         base_score += 10.0   # strong institutional surge
@@ -591,10 +634,52 @@ def generate_crypto_signal(symbol: str,
     if direction == "SHORT" and rsi > ccfg.CRYPTO_RSI_OVERBOUGHT:
         base_score += 5.0
 
+    # ── REGIME-BASED ADJUSTMENT ────────────────────────────────────────────────
+    adjusted_min_score = ccfg.CRYPTO_MIN_SIGNAL_SCORE
+    regime_size_mult   = 1.0
+    regime_str         = "UNKNOWN"
+    try:
+        from crypto_regime import detect_regime, get_regime_adjustments
+        regime_obj = detect_regime(df15, ind15)
+        regime_adj = get_regime_adjustments(regime_obj)
+        regime_str = regime_obj.value
+
+        # Block longs in VOLATILE_BEAR and TRENDING_BEAR
+        if direction == "LONG" and regime_str in ("VOLATILE_BEAR", "TRENDING_BEAR"):
+            logger.debug(f"{symbol}: regime {regime_str} blocks LONG signals")
+            return None
+
+        # Adjust score floor
+        adjusted_min_score = ccfg.CRYPTO_MIN_SIGNAL_SCORE + regime_adj["score_floor_adj"]
+
+        # Adjust size multiplier
+        regime_size_mult = regime_adj["size_mult"]
+
+        patterns.append(f"Regime:{regime_str}")
+    except Exception as _re:
+        logger.debug(f"regime detection: {_re}")
+
+    # ── MULTI-CATEGORY PATTERN GATE ────────────────────────────────────────────
+    n_cats = _count_pattern_categories(patterns)
+    try:
+        min_cats = regime_adj["min_pattern_cats"]
+    except Exception:
+        min_cats = 1
+
     final_score = min(round(base_score, 1), 98.0)
 
-    if final_score < ccfg.CRYPTO_MIN_SIGNAL_SCORE:
-        logger.debug(f"{symbol}: score {final_score:.0f} < min {ccfg.CRYPTO_MIN_SIGNAL_SCORE}")
+    if n_cats < min_cats and final_score < 88.0:
+        logger.debug(
+            f"{symbol}: only {n_cats} pattern category, need {min_cats} "
+            f"— score {final_score:.0f} insufficient"
+        )
+        return None
+
+    if final_score < adjusted_min_score:
+        logger.debug(
+            f"{symbol}: score {final_score:.0f} < adjusted min {adjusted_min_score} "
+            f"(regime={regime_str})"
+        )
         return None
 
     # Compute entry, SL, targets
@@ -626,15 +711,15 @@ def generate_crypto_signal(symbol: str,
     # Grade the signal
     if final_score >= ccfg.CRYPTO_HIGH_CONFIDENCE:
         grade = "A+"
-        size_mult = 1.5 * sess_mult
+        size_mult = 1.5 * sess_mult * regime_size_mult
         is_hc = True
     elif final_score >= ccfg.CRYPTO_PREMIUM_SCORE:
         grade = "A"
-        size_mult = 1.2 * sess_mult
+        size_mult = 1.2 * sess_mult * regime_size_mult
         is_hc = False
     else:
         grade = "B"
-        size_mult = 1.0 * sess_mult
+        size_mult = 1.0 * sess_mult * regime_size_mult
         is_hc = False
 
     # Notional sizing
@@ -674,6 +759,7 @@ def generate_crypto_signal(symbol: str,
         btc_change_1h   = btc_1h,
         session         = session,
         is_high_confidence = is_hc,
+        regime          = regime_str,
     )
 
     logger.info(f"[CRYPTO SIGNAL] {signal.summary()}")
