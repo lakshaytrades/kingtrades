@@ -402,6 +402,124 @@ class CryptoExecutor:
 
         return closed
 
+    def reconcile_broker_positions(self) -> int:
+        """
+        Sync in-memory positions with actual Alpaca broker state.
+        Called at engine startup and after each daily reset to recover from restarts.
+
+        - Oversized positions (> 5× notional cap) are closed immediately
+        - Unknown positions get loaded with ATR-based stops so they're managed
+        - Returns count of actions taken (loaded + closed)
+        """
+        import crypto_config as ccfg
+        from crypto_data import get_crypto_positions
+
+        try:
+            broker_positions = get_crypto_positions()
+        except Exception as e:
+            logger.error(f"reconcile: cannot fetch broker positions: {e}")
+            return 0
+
+        if not broker_positions:
+            return 0
+
+        loaded  = 0
+        closed  = 0
+        cap     = ccfg.CRYPTO_MAX_NOTIONAL_USD  # $500
+
+        for bp in broker_positions:
+            raw_sym    = bp.get("symbol", "")
+            # Convert BTCUSD → BTC/USD  (Alpaca stores without slash)
+            if "/" not in raw_sym and len(raw_sym) >= 6:
+                sym = raw_sym[:3] + "/" + raw_sym[3:]
+            else:
+                sym = raw_sym
+
+            market_val  = abs(bp.get("market_value", 0.0))
+            entry_price = bp.get("entry", 0.0)
+            qty         = abs(bp.get("qty", 0.0))
+            side        = bp.get("side", "long").lower()
+            direction   = "LONG" if side == "long" else "SHORT"
+
+            # ── Close positions that are way above our cap (pre-fix leftovers) ──
+            if market_val > cap * 5:  # > $2,500 = definitely from old code
+                logger.warning(
+                    f"[CRYPTO] reconcile: OVERSIZED {sym} MV=${market_val:.0f} "
+                    f"(cap=${cap:.0f}) — closing immediately"
+                )
+                try:
+                    alpaca_sym = self._alpaca_symbol(sym)
+                    client = self._get_trading_client()
+                    if client:
+                        client.close_position(alpaca_sym)
+                        # Remove from in-memory tracking if present
+                        self.positions.pop(sym, None)
+                    closed += 1
+                    logger.info(f"[CRYPTO] reconcile: closed oversized {sym}")
+                except Exception as e:
+                    logger.error(f"reconcile close_oversized({sym}): {e}")
+                continue
+
+            # ── Skip already tracked positions ─────────────────────────────────
+            if sym in self.positions:
+                continue
+
+            # ── Skip if data is insufficient ───────────────────────────────────
+            if entry_price <= 0 or qty <= 0:
+                continue
+
+            # ── Compute ATR-based stops for untracked position ─────────────────
+            atr = entry_price * 0.015  # fallback: 1.5% of price
+            try:
+                from crypto_data import get_crypto_bars
+                from crypto_signals import _compute_indicators
+                df = get_crypto_bars(sym, "15Min", limit=50)
+                if df is not None and len(df) >= 20:
+                    ind = _compute_indicators(df)
+                    if ind and ind.get("atr", 0) > 0:
+                        atr = ind["atr"]
+            except Exception:
+                pass
+
+            if direction == "LONG":
+                sl     = round(entry_price - 1.5 * atr, 6)
+                t1     = round(entry_price + 2.0 * atr, 6)
+                t2     = round(entry_price + 4.0 * atr, 6)
+                runner = round(entry_price + 7.0 * atr, 6)
+            else:
+                sl     = round(entry_price + 1.5 * atr, 6)
+                t1     = round(entry_price - 2.0 * atr, 6)
+                t2     = round(entry_price - 4.0 * atr, 6)
+                runner = round(entry_price - 7.0 * atr, 6)
+
+            pos = CryptoPosition(
+                symbol        = sym,
+                direction     = direction,
+                notional_usd  = market_val,
+                entry_price   = entry_price,
+                stop_loss     = sl,
+                target_1      = t1,
+                target_2      = t2,
+                target_runner = runner,
+                atr           = atr,
+                quality_grade = "B",
+                filled_qty    = qty,
+                remaining_qty = qty,
+                entry_time    = "RECOVERED",
+            )
+            self.positions[sym] = pos
+            loaded += 1
+            logger.info(
+                f"[CRYPTO] reconcile: loaded {sym} {direction} @ ${entry_price:.2f} "
+                f"qty={qty:.6f} MV=${market_val:.0f} SL=${sl:.2f}"
+            )
+
+        if loaded or closed:
+            logger.info(
+                f"[CRYPTO] reconcile done: {loaded} loaded, {closed} oversized closed"
+            )
+        return loaded + closed
+
     def reset_daily(self) -> None:
         """Reset daily counters (called at UTC midnight for 24/7 crypto)."""
         self._daily_pnl    = 0.0

@@ -528,6 +528,14 @@ def generate_crypto_signal(symbol: str,
         logger.debug(f"{symbol}: session {session} disabled — no new entries")
         return None
 
+    # ── ASIA SESSION: BTC-only + higher score floor ─────────────────────────────
+    # Asia (00:00-07:00 UTC) has thin liquidity and whale manipulation.
+    # Only allow BTC signals during Asia; require higher score for any entry.
+    if session == "ASIA":
+        if symbol != "BTC/USD":
+            logger.debug(f"{symbol}: ASIA session — BTC-only, skipping {symbol}")
+            return None
+
     # ── VOLUME HARD GATE — reject below minimum ─────────────────────────────────
     vr = ind15["volume_ratio"]
     vol_gate = getattr(ccfg, "CRYPTO_VOLUME_MIN_GATE", 1.0)
@@ -675,10 +683,14 @@ def generate_crypto_signal(symbol: str,
         )
         return None
 
+    # Asia session requires higher quality — raise floor by 8 points
+    if session == "ASIA":
+        adjusted_min_score = max(adjusted_min_score, ccfg.CRYPTO_MIN_SIGNAL_SCORE + 8)
+
     if final_score < adjusted_min_score:
         logger.debug(
             f"{symbol}: score {final_score:.0f} < adjusted min {adjusted_min_score} "
-            f"(regime={regime_str})"
+            f"(regime={regime_str}, session={session})"
         )
         return None
 

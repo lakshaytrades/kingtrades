@@ -72,6 +72,22 @@ class CryptoEngine:
         self._running = True
         self._daily_start_capital = self._get_crypto_capital()
         self.executor.set_daily_capital(self._daily_start_capital)
+
+        # Reconcile any existing broker positions before starting the loop.
+        # This closes oversized pre-fix positions and reloads untracked ones
+        # so their stop-losses are monitored from the first scan cycle.
+        try:
+            actions = self.executor.reconcile_broker_positions()
+            if actions:
+                logger.info(f"[CRYPTO] Startup reconcile: {actions} position(s) handled")
+                self._send_alert(
+                    f"🔄 <b>Startup Position Audit</b>\n"
+                    f"Reconciled {actions} broker position(s).\n"
+                    f"Oversized pre-fix positions closed. All remaining positions now monitored."
+                )
+        except Exception as e:
+            logger.warning(f"Startup reconcile failed: {e}")
+
         self._thread  = threading.Thread(
             target=self._run_loop, name="CryptoEngine", daemon=True
         )
@@ -213,6 +229,13 @@ class CryptoEngine:
         self.executor.reset_daily()
         self._daily_start_capital = self._get_crypto_capital()
         self.executor.set_daily_capital(self._daily_start_capital)
+
+        # Re-reconcile at each day boundary to catch any positions opened
+        # since the last reconcile (e.g. by a parallel process or manual trade)
+        try:
+            self.executor.reconcile_broker_positions()
+        except Exception as e:
+            logger.debug(f"daily_reset reconcile: {e}")
 
         logger.info(
             f"[{format_ist_timestamp()}] Crypto daily reset | "

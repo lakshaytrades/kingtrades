@@ -72,11 +72,12 @@ CRYPTO_RUNNER_PCT: float   = 30.0   # run 30% — reduced from 40% (take profits
 
 # ── Session sizing multipliers ─────────────────────────────────────────────────
 # US_NIGHT completely disabled — thin liquidity = noise = losses
+# ASIA reduced to 0.4× after repeated -$4k+ Asia-session losses
 CRYPTO_SESSION_MULTIPLIERS = {
-    "US_PEAK":     1.2,   # 13:00-21:00 UTC (9AM-5PM ET) — full size but capped at $500
+    "US_PEAK":     1.2,   # 13:00-21:00 UTC (9AM-5PM ET) — full size, capped at $500
     "EU_MORNING":  1.0,   # 07:00-13:00 UTC — standard size
-    "ASIA":        0.7,   # 00:00-07:00 UTC — reduced size, BTC-only setups
-    "US_NIGHT":    0.0,   # 21:00-00:00 UTC — DISABLED: thin market, stop-hunt territory
+    "ASIA":        0.4,   # 00:00-07:00 UTC — 40% size, BTC-only, highest caution
+    "US_NIGHT":    0.0,   # 21:00-00:00 UTC — DISABLED: thin market, stop-hunts
 }
 
 # ── Session trading hours — which sessions are allowed ────────────────────────
