@@ -1122,7 +1122,6 @@ class TradingBot:
                         if (getattr(config, "ORB_ENABLED", True)
                                 and not self._orb_done_today
                                 and not self.eod_done):
-                            from utils import get_current_et_time
                             _et = get_current_et_time()
                             _mins_open = (_et.hour - 9) * 60 + (_et.minute - 30)
                             if 1 <= _mins_open <= 15:
@@ -1328,7 +1327,6 @@ class TradingBot:
                 _pe_mode  = self.profit_engine.state.mode if self.profit_engine else "STOP"
                 if _n_trades == 0 and _pe_mode not in ("STOP", "DEFENSIVE"):
                     try:
-                        from utils import get_current_et_time
                         _et = get_current_et_time()
                     except Exception:
                         _et = now_ist

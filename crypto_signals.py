@@ -123,7 +123,8 @@ def _compute_indicators(df: pd.DataFrame) -> Dict:
         for i in range(period + 1, n):
             avg_gain[i] = (avg_gain[i-1] * (period-1) + gain[i-1]) / period
             avg_loss[i] = (avg_loss[i-1] * (period-1) + loss[i-1]) / period
-    rs  = np.where(avg_loss > 0, avg_gain / avg_loss, 100.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        rs  = np.where(avg_loss > 0, avg_gain / avg_loss, 100.0)
     rsi = 100.0 - (100.0 / (1 + rs))
 
     # MACD
