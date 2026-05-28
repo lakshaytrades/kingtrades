@@ -454,6 +454,109 @@ class HighAccuracyFilter:
             bonus_score += 4
             result.bonuses.append("MTF_2TF_DUAL(+4)")
 
+        # ── Bonus 9: EMA Stack — institutional trend confirmation ────────────
+        # 9-EMA > 21-EMA > 50-EMA on last bar = institutions are positioned long.
+        # Linda Bradford Raschke rule: "Only buy in an uptrend, defined as EMAs stacked."
+        if df_5m is not None and len(df_5m) >= 55:
+            try:
+                import pandas as _pd
+                _close = df_5m["close"]
+                _e9  = float(_close.ewm(span=9,  adjust=False).mean().iloc[-1])
+                _e21 = float(_close.ewm(span=21, adjust=False).mean().iloc[-1])
+                _e50 = float(_close.ewm(span=50, adjust=False).mean().iloc[-1])
+                if direction == "BUY" and _e9 > _e21 > _e50:
+                    bonus_score += 8
+                    result.bonuses.append("EMA_STACK_BULL(+8)")
+                elif direction == "SELL" and _e9 < _e21 < _e50:
+                    bonus_score += 8
+                    result.bonuses.append("EMA_STACK_BEAR(+8)")
+                elif direction == "BUY" and _e9 < _e21:
+                    bonus_score -= 4
+                    result.bonuses.append("EMA_AGAINST_BULL(-4)")
+                elif direction == "SELL" and _e9 > _e21:
+                    bonus_score -= 4
+                    result.bonuses.append("EMA_AGAINST_BEAR(-4)")
+            except Exception:
+                pass
+
+        # ── Bonus 10: VWAP Reclaim — #1 institutional intraday signal ───────
+        # Price crosses FROM below VWAP TO above VWAP with volume = institutions net-buying.
+        # Every prop desk, hedge fund, and Bloomberg terminal watches this level.
+        # Prior bar below VWAP + current bar above VWAP + volume surge = HIGH PROBABILITY LONG.
+        if df_5m is not None and len(df_5m) >= 3 and "vwap" in df_5m.columns:
+            try:
+                _vwap_now  = float(df_5m["vwap"].iloc[-1])
+                _vwap_prev = float(df_5m["vwap"].iloc[-2]) if "vwap" in df_5m.columns else _vwap_now
+                _close_now  = float(df_5m["close"].iloc[-1])
+                _close_prev = float(df_5m["close"].iloc[-2])
+                if (_vwap_now > 0 and direction == "BUY"
+                        and _close_now > _vwap_now and _close_prev < _vwap_prev):
+                    bonus_score += 12
+                    result.bonuses.append("VWAP_RECLAIM(+12)")
+                elif (_vwap_now > 0 and direction == "SELL"
+                        and _close_now < _vwap_now and _close_prev > _vwap_prev):
+                    bonus_score += 12
+                    result.bonuses.append("VWAP_BREAKDOWN(+12)")
+            except Exception:
+                pass
+        elif above_vwap is True and direction == "BUY":
+            # Fallback: if we don't have VWAP series, use flag + partial bonus
+            bonus_score += 4
+            result.bonuses.append("ABOVE_VWAP_CONF(+4)")
+        elif above_vwap is False and direction == "SELL":
+            bonus_score += 4
+            result.bonuses.append("BELOW_VWAP_CONF(+4)")
+
+        # ── Bonus 11: Consecutive candle confirmation — 2+ bullish bars ──────
+        # Mark Minervini rule: "Require the stock to prove its direction before entering."
+        # Two consecutive closes in the direction = real move, not noise.
+        if df_5m is not None and len(df_5m) >= 4:
+            try:
+                _c = df_5m["close"].values
+                _o = df_5m["open"].values
+                if direction == "BUY":
+                    _bull1 = _c[-2] > _o[-2]   # prev candle bullish
+                    _bull2 = _c[-1] > _o[-1]   # last candle bullish
+                    _bull3 = len(_c) > 3 and _c[-3] > _o[-3]
+                    if _bull1 and _bull2 and _bull3:
+                        bonus_score += 8
+                        result.bonuses.append("3_BULL_CANDLES(+8)")
+                    elif _bull1 and _bull2:
+                        bonus_score += 5
+                        result.bonuses.append("2_BULL_CANDLES(+5)")
+                elif direction == "SELL":
+                    _bear1 = _c[-2] < _o[-2]
+                    _bear2 = _c[-1] < _o[-1]
+                    _bear3 = len(_c) > 3 and _c[-3] < _o[-3]
+                    if _bear1 and _bear2 and _bear3:
+                        bonus_score += 8
+                        result.bonuses.append("3_BEAR_CANDLES(+8)")
+                    elif _bear1 and _bear2:
+                        bonus_score += 5
+                        result.bonuses.append("2_BEAR_CANDLES(+5)")
+            except Exception:
+                pass
+
+        # ── Bonus 12: Higher-high / higher-low structure (BUY) ──────────────
+        # William O'Neil: "Only buy stocks making new highs from sound bases."
+        # Price making a higher-high relative to 10 bars ago = valid uptrend structure.
+        if df_5m is not None and len(df_5m) >= 12:
+            try:
+                _highs = df_5m["high"].values
+                _lows  = df_5m["low"].values
+                _recent_high = max(_highs[-3:])
+                _recent_low  = min(_lows[-3:])
+                _prior_high  = max(_highs[-12:-3])
+                _prior_low   = min(_lows[-12:-3])
+                if direction == "BUY" and _recent_high > _prior_high and _recent_low > _prior_low:
+                    bonus_score += 6
+                    result.bonuses.append("HH_HL_STRUCTURE(+6)")
+                elif direction == "SELL" and _recent_high < _prior_high and _recent_low < _prior_low:
+                    bonus_score += 6
+                    result.bonuses.append("LH_LL_STRUCTURE(+6)")
+            except Exception:
+                pass
+
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
 

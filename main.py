@@ -1238,7 +1238,10 @@ class TradingBot:
             # 1b. Reconcile positions every 10 min (detect server-side SL hits)
             self._reconcile_positions()
 
-            # 1c. Update weekly P&L mode (4-day profit optimizer)
+            # 1c. 1% target hit → tighten all open stops to lock in the gain
+            self._check_profit_lock()
+
+            # 1d. Update weekly P&L mode (4-day profit optimizer)
             self._update_weekly_mode()
             if self._weekly_mode == "LOCKED":
                 logger.debug(f"[{format_ist_timestamp()}] Weekly target hit — locked to A+ only")
@@ -2311,6 +2314,52 @@ class TradingBot:
                 )
             except Exception as _e:
                 logger.debug(f"[suppressed] {_e}")
+
+    def _check_profit_lock(self) -> None:
+        """
+        When daily profit engine enters LOCK mode (1% target hit):
+        - Tighten ALL open position stops to entry + 0.3×ATR (partial profit locked)
+        - Only runs once per LOCK activation per day
+        """
+        try:
+            if not self.profit_engine:
+                return
+            from daily_profit_engine import TradingMode
+            if self.profit_engine.state.mode != TradingMode.LOCK:
+                self._profit_lock_tightened = False  # reset flag when not locked
+                return
+            # Only tighten once per LOCK activation
+            if getattr(self, "_profit_lock_tightened", False):
+                return
+            positions = self.risk_manager.state.positions
+            if not positions:
+                self._profit_lock_tightened = True
+                return
+            tightened = []
+            for sym, pos in list(positions.items()):
+                try:
+                    new_sl = pos.entry_price + 0.3 * pos.atr if pos.direction == "LONG" else pos.entry_price - 0.3 * pos.atr
+                    if pos.direction == "LONG" and new_sl > pos.active_sl:
+                        pos.stop_loss = new_sl
+                        pos.trailing_active = False  # use stop_loss directly
+                        tightened.append(f"{sym} SL→${new_sl:.2f}")
+                    elif pos.direction == "SHORT" and new_sl < pos.active_sl:
+                        pos.stop_loss = new_sl
+                        tightened.append(f"{sym} SL→${new_sl:.2f}")
+                except Exception:
+                    pass
+            self._profit_lock_tightened = True
+            if tightened:
+                logger.info(f"[{format_ist_timestamp()}] 🔒 PROFIT LOCK: tightened stops — {', '.join(tightened)}")
+                try:
+                    self.alerter.send_text(
+                        f"🔒 <b>Stops tightened — daily 1% target protected</b>\n"
+                        + "\n".join(f"• {t}" for t in tightened)
+                    )
+                except Exception:
+                    pass
+        except Exception as _e:
+            logger.debug(f"[suppressed] _check_profit_lock: {_e}")
 
     def _update_weekly_mode(self) -> None:
         """

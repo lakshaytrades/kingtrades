@@ -61,8 +61,14 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # via the risk_manager so a $90k account can never accidentally use $90k as capital.
 # Set MAX_DAILY_CAPITAL explicitly in .env to override, e.g. MAX_DAILY_CAPITAL=5000
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.5"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 1.0)   # hard cap 1% — 2% was blowing accounts
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.8"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 2.0)   # raised cap: A+ signals need room to size
+
+# Grade-based risk unlocking — institutional practice: size your best setups bigger
+# A+ Grand Slam (7+ confluence): 1.5× base risk — these are 70%+ win rate setups
+# A  grade       (5+ confluence): 1.0× base risk — standard full size
+# B  grade       (borderline)   : 0.6× base risk — conservative
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = float(os.getenv("HIGH_CONFIDENCE_RISK_MULTIPLIER", "1.5"))
 
 DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
 DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop the day early
@@ -182,8 +188,7 @@ VWAP_REVERSION_MIN_DEVIATION_ATR: float = 1.5   # price must be 1.5+ ATR from VW
 GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score news sentiment
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
 
-# ── Aggressive sizing on elite setups ───────────────────────────────────────
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = 1.2  # was 1.5 — A+ signals get 20% more, not 50%
+# ── Aggressive sizing on elite setups — defined earlier from env var, not duplicated here ──
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
 ORB_ENABLED: bool = True

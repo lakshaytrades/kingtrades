@@ -550,6 +550,15 @@ class DailyProfitEngine:
                 f"| P&L: ${pnl:+,.2f} | "
                 + TradingMode.DESCRIPTIONS.get(self.state.mode, "")
             )
+            # Log prominently when 1% daily target is first hit
+            if self.state.mode == TradingMode.LOCK and prev_mode not in (
+                TradingMode.LOCK, TradingMode.STOP
+            ):
+                _pct = (pnl / self._daily_target * 100) if self._daily_target else 0
+                logger.info(
+                    f"[{format_ist_timestamp()}] 🎯 DAILY TARGET HIT — {_pct:.0f}% of goal "
+                    f"(${pnl:+,.2f}) | LOCK MODE: A+ only, 60% size, stops tightening"
+                )
 
     def _get_min_grade_for_mode(self) -> str:
         # PROTECTION: keep trading with A-grade — bot earned the right to hunt more

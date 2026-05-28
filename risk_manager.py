@@ -512,8 +512,12 @@ class RiskManager:
         LEVERAGE = getattr(_cfg, "ALPACA_LEVERAGE", 1.0)
         buying_power = capital * LEVERAGE  # effective capital for position sizing
 
-        # 1. Risk-based sizing (risk on actual capital, not leveraged)
-        risk_amount = capital * (self.max_risk_pct / 100)
+        # 1. Risk-based sizing — grade-based base risk (institutional practice: size best setups bigger)
+        # A+ Grand Slam (7+ confluence): 1.5× risk — these are statistically the highest win-rate setups
+        # A  grade (5+ confluence)     : 1.0× risk — standard
+        # B  grade (borderline)        : 0.6× risk — conservative entry, prove itself first
+        _grade_base = {"A+": 1.5, "A": 1.0, "B": 0.6, "C": 0.4}.get(quality_grade, 1.0)
+        risk_amount = capital * (self.max_risk_pct / 100) * _grade_base
         risk_qty    = int(risk_amount / sl_distance)
 
         # 2. Dynamic Half-Kelly (on actual capital, not leveraged — prevents Kelly bypass on margin)
@@ -625,13 +629,18 @@ class RiskManager:
             }
         quantity = max(quantity, 1)
 
-        # 7. Hard total-risk guard: ensure final risk never exceeds absolute max_risk_pct of capital
-        # A+ and A signals unlock a higher cap via HIGH_CONFIDENCE_RISK_MULTIPLIER (default 1.5×).
-        # Hard ceil at 3.0% regardless — prevents runaway sizing on any single position.
+        # 7. Hard total-risk guard — grade-aware cap prevents runaway sizing
+        # A+: base × 1.5 (matches _grade_base above, hard ceil at 2.5%)
+        # A:  base × 1.0 (standard, hard ceil at 2.0%)
+        # B/C: base × 0.6/0.4 (conservative, hard ceil at 1.5%)
         _hard_risk_pct = getattr(_cfg, "MAX_RISK_PER_TRADE_PCT", self.max_risk_pct)
-        if quality_grade in ("A+", "A"):
-            _conf_mult = getattr(_cfg, "HIGH_CONFIDENCE_RISK_MULTIPLIER", 1.0)
-            _hard_risk_pct = min(_hard_risk_pct * _conf_mult, 3.0)
+        _conf_mult     = getattr(_cfg, "HIGH_CONFIDENCE_RISK_MULTIPLIER", 1.5)
+        if quality_grade == "A+":
+            _hard_risk_pct = min(_hard_risk_pct * _conf_mult, 2.5)   # A+: up to 2.5% hard max
+        elif quality_grade == "A":
+            _hard_risk_pct = min(_hard_risk_pct * 1.0, 2.0)          # A:  up to 2.0% hard max
+        else:
+            _hard_risk_pct = min(_hard_risk_pct * 0.6, 1.5)          # B/C: conservative cap
         max_allowed_risk = capital * (_hard_risk_pct / 100)
         if sl_distance > 0 and quantity * sl_distance > max_allowed_risk:
             quantity = max(1, int(max_allowed_risk / sl_distance))
