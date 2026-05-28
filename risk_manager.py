@@ -784,7 +784,9 @@ class RiskManager:
             trail_dist       *= 0.50
             runner_trail_dist *= 0.50
 
-        be_trigger = getattr(_config, "BREAKEVEN_TRIGGER_PCT", 0.5) / 100.0
+        # ATR-based thresholds — more adaptive than fixed % triggers
+        be_atr_mult   = 0.5   # move SL to entry when price is 0.5× ATR above entry
+        t1_lock_mult  = 0.8   # move SL to entry + 0.8× ATR when T1 is hit
 
         if position.direction == "LONG":
             position.max_price = max(position.max_price, current_price)
@@ -799,36 +801,41 @@ class RiskManager:
                     "reason": f"{'Trailing' if position.trailing_active else 'Original'} SL hit ${current_price:.2f}"
                 }
 
-            # ── Breakeven SL: move to entry when 0.5% in profit ─
+            # ── Breakeven SL: move to entry when 0.5× ATR in profit ─────────
+            be_price = position.entry_price + be_atr_mult * atr
             if (not position.breakeven_done and not position.t1_done
-                    and current_price >= position.entry_price * (1 + be_trigger)
+                    and current_price >= be_price
                     and position.stop_loss < position.entry_price):
                 position.stop_loss = position.entry_price
                 position.breakeven_done = True
                 logger.info(
-                    f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"🛡 Breakeven SL — price up {be_trigger*100:.1f}%, "
-                    f"SL moved to entry ${position.entry_price:.2f} (zero risk)"
+                    f"[TRAILING STOP] {position.symbol}: "
+                    f"🛡 Breakeven — price reached entry+{be_atr_mult}×ATR (${be_price:.2f}), "
+                    f"SL moved to entry ${position.entry_price:.2f} (zero-risk trade)"
                 )
                 return {
                     "action": "UPDATE_SL",
                     "new_sl": position.entry_price,
                     "exit_qty": 0,
-                    "reason": f"Breakeven: price +{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
+                    "reason": f"[TRAILING STOP] Breakeven: +{be_atr_mult}×ATR → SL=entry ${position.entry_price:.2f}"
                 }
 
-            # ── T1: 40% exit | SL → entry + 30% of T1 gain (partial profit locked) ─
+            # ── T1: 40% exit | SL → entry + 0.8× ATR (partial profit locked) ────
             if not position.t1_done and current_price >= position.target_1:
                 position.t1_done = True
                 position.partial_exit_done = True
-                t1_gain = position.target_1 - position.entry_price
-                locked_sl = position.entry_price + t1_gain * 0.30  # lock 30% of T1 profit
-                position.stop_loss = max(position.stop_loss, locked_sl)
+                locked_sl = position.entry_price + t1_lock_mult * atr
+                locked_sl = max(position.stop_loss, locked_sl)
+                position.stop_loss = locked_sl
+                logger.info(
+                    f"[TRAILING STOP] {position.symbol}: "
+                    f"T1 hit ${position.target_1:.2f} — SL locked to entry+{t1_lock_mult}×ATR=${locked_sl:.2f}"
+                )
                 return {
                     "action": "PARTIAL_EXIT_T1",
                     "new_sl": locked_sl,
                     "exit_qty": position.t1_qty,
-                    "reason": f"T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (T1 gain 30% locked)"
+                    "reason": f"[TRAILING STOP] T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (+{t1_lock_mult}×ATR locked)"
                 }
 
             # ── T2: 30% exit at Target 2 ──────────────────────
@@ -928,36 +935,41 @@ class RiskManager:
                     "reason": f"Short {'trailing' if position.trailing_active else 'original'} SL hit ${current_price:.2f}"
                 }
 
-            # ── Breakeven SL: move to entry when 0.5% in profit ─
+            # ── Breakeven SL (SHORT): move to entry when 0.5× ATR in profit ──
+            be_price_short = position.entry_price - be_atr_mult * atr
             if (not position.breakeven_done and not position.t1_done
-                    and current_price <= position.entry_price * (1 - be_trigger)
+                    and current_price <= be_price_short
                     and position.stop_loss > position.entry_price):
                 position.stop_loss = position.entry_price
                 position.breakeven_done = True
                 logger.info(
-                    f"[{format_ist_timestamp()}] {position.symbol}: "
-                    f"🛡 Breakeven SL (SHORT) — price down {be_trigger*100:.1f}%, "
-                    f"SL moved to entry ${position.entry_price:.2f} (zero risk)"
+                    f"[TRAILING STOP] {position.symbol} SHORT: "
+                    f"🛡 Breakeven — price reached entry-{be_atr_mult}×ATR (${be_price_short:.2f}), "
+                    f"SL moved to entry ${position.entry_price:.2f} (zero-risk trade)"
                 )
                 return {
                     "action": "UPDATE_SL",
                     "new_sl": position.entry_price,
                     "exit_qty": 0,
-                    "reason": f"Short breakeven: price -{be_trigger*100:.1f}% → SL=entry ${position.entry_price:.2f}"
+                    "reason": f"[TRAILING STOP] Short breakeven: -{be_atr_mult}×ATR → SL=entry ${position.entry_price:.2f}"
                 }
 
-            # T1: 40% exit | SL → entry - 30% of T1 gain (partial profit locked)
+            # T1: 40% exit | SL → entry - 0.8× ATR (partial profit locked)
             if not position.t1_done and current_price <= position.target_1:
                 position.t1_done = True
                 position.partial_exit_done = True
-                t1_gain = position.entry_price - position.target_1
-                locked_sl = position.entry_price - t1_gain * 0.30
-                position.stop_loss = min(position.stop_loss, locked_sl)
+                locked_sl = position.entry_price - t1_lock_mult * atr
+                locked_sl = min(position.stop_loss, locked_sl)
+                position.stop_loss = locked_sl
+                logger.info(
+                    f"[TRAILING STOP] {position.symbol} SHORT: "
+                    f"T1 hit ${position.target_1:.2f} — SL locked to entry-{t1_lock_mult}×ATR=${locked_sl:.2f}"
+                )
                 return {
                     "action": "PARTIAL_EXIT_T1",
                     "new_sl": locked_sl,
                     "exit_qty": position.t1_qty,
-                    "reason": f"Short T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (T1 gain 30% locked)"
+                    "reason": f"[TRAILING STOP] Short T1 ${position.target_1:.2f} — exit {position.t1_qty}qty (40%), SL→${locked_sl:.2f} (-{t1_lock_mult}×ATR locked)"
                 }
 
             # T2: 30%

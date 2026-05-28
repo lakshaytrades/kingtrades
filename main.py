@@ -436,21 +436,9 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Continuous learner failed: {e}")
 
-        # ── Crypto Engine (BTC/ETH/SOL — 24/7, no PDT, runs alongside stocks) ──
-        try:
-            if getattr(config, "CRYPTO_ENABLED", False):
-                from crypto_engine import get_crypto_engine
-                self.crypto_engine = get_crypto_engine(
-                    alerter      = self.alerter,
-                    live_enabled = config.LIVE_TRADING_ENABLED,
-                )
-                self.crypto_engine.start()
-                logger.info(f"[{format_ist_timestamp()}] Crypto Engine started (24/7 background thread)")
-            else:
-                logger.info(f"[{format_ist_timestamp()}] Crypto Engine disabled (CRYPTO_ENABLED=False)")
-        except Exception as e:
-            self.crypto_engine = None
-            logger.warning(f"[{format_ist_timestamp()}] Crypto Engine failed to start: {e}")
+        # ── Crypto Engine — DISABLED (repeated overnight losses, equity focus only) ──
+        self.crypto_engine = None
+        logger.info(f"[{format_ist_timestamp()}] Crypto Engine disabled — equity-only mode")
 
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
 
@@ -2922,6 +2910,11 @@ class TradingBot:
             return
 
         def listener_thread():
+            # Spin-wait until run() sets self.running=True — the thread starts during
+            # __init__ when self.running is still False, so the loop would exit
+            # immediately without this guard.
+            while not self.running:
+                time.sleep(0.2)
             backoff = 5
             while self.running:
                 try:

@@ -571,16 +571,17 @@ class HighAccuracyFilter:
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
         """
-        Volume participation gate — calibrated to Alpaca REST polling reality.
-        Alpaca 5-min bars undercounting intraday volume vs daily SMA denominator is a known
-        artifact — requiring 1.5x+ blocked every signal during the first 90 min of day.
-        Gate: 0.5x minimum (dead stocks only blocked). Bonus rewards genuine surges.
+        Volume participation gate — institutional standard.
+        Rule: never trade below-average volume — institutions don't.
+        1.0× = minimum (at-average), 1.5×+ = bonus territory.
+        Note: Alpaca 5-min bars undercount vs daily SMA in the first 90 min
+        of the day, so 1.0× is achievable from open; 1.5× is genuinely strong.
         """
-        if volume_ratio < 0.5:
-            return False, 0
+        if volume_ratio < 1.0:
+            return False, 0                         # below-average volume — skip
         if volume_ratio < 1.5:
-            return True, 0                          # passes but no bonus
-        bonus = min((volume_ratio - 1.5) * 8, 15)  # up to +15 for 3x+ surge
+            return True, 0                          # passes, no bonus
+        bonus = min((volume_ratio - 1.5) * 8, 15)  # up to +15 for 3×+ surge
         return True, bonus
 
     def _check_pattern_quality(
