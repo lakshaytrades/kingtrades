@@ -546,7 +546,15 @@ class RiskManager:
             logger.debug(f"[suppressed] {_e}")
 
         # 3. Session multiplier (reduce during midday, closing)
+        # A+ setups: floor at 0.8× — never kill our best signals in midday
+        # The opportunity cost of missing ONE A+ setup exceeds the midday risk
         sess_mult, session = self._get_session_multiplier()
+        if quality_grade == "A+" and 0 < sess_mult < 0.8:
+            logger.debug(
+                f"A+ sess_mult floor: {sess_mult:.2f}→0.80 ({session}) "
+                "— protecting elite setup sizing"
+            )
+            sess_mult = 0.8
         quantity = max(1, int(quantity * sess_mult))
 
         # 4a. Day-of-week multiplier (4-day profit optimizer)
@@ -786,12 +794,15 @@ class RiskManager:
         # ── Time-decay tightening (EOD — protect gains before close) ──────
         now_et = get_current_et_time()
         et_min = now_et.hour * 60 + now_et.minute
-        if et_min >= 915:       # After 3:15 PM ET: 70% tighter
-            trail_dist       *= 0.30
-            runner_trail_dist *= 0.30
-        elif et_min >= 870:     # After 2:30 PM ET: 50% tighter
+        if et_min >= 945:       # After 3:45 PM ET: hard close — 80% tighter
+            trail_dist       *= 0.20
+            runner_trail_dist *= 0.20
+        elif et_min >= 915:     # After 3:15 PM ET: moderate tighten — 50% of normal
             trail_dist       *= 0.50
-            runner_trail_dist *= 0.50
+            runner_trail_dist *= 0.55   # runners breathe wider — EOD institutional flow
+        elif et_min >= 870:     # After 2:30 PM ET: light tighten — 75% of normal
+            trail_dist       *= 0.75
+            runner_trail_dist *= 0.80
 
         # ATR-based thresholds — more adaptive than fixed % triggers
         be_atr_mult   = 0.5   # move SL to entry when price is 0.5× ATR above entry

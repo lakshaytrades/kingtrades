@@ -729,8 +729,13 @@ class TelegramAlerter:
         best_str  = f"{best.get('symbol','?')} `+{_CUR}{best.get('pnl',0):,.0f}`"   if best  else "—"
         worst_str = f"{worst.get('symbol','?')} `-{_CUR}{abs(worst.get('pnl',0)):,.0f}`" if worst else "—"
 
-        # Daily target slice = 5% monthly ÷ ~22 trading days
-        target_hit = (daily_pnl >= capital * 0.05 / 22) if capital > 0 else False
+        # Daily 1% target — the KingTrades daily goal
+        try:
+            import config as _cfg
+            _daily_tgt_pct = getattr(_cfg, "DAILY_PROFIT_TARGET_PCT", 1.0)
+        except Exception:
+            _daily_tgt_pct = 1.0
+        target_hit = (daily_pnl >= capital * _daily_tgt_pct / 100) if capital > 0 else False
 
         text = (
             f"{pnl_emoji} *END-OF-DAY REPORT — {format_ist_timestamp()}*\n"
@@ -742,12 +747,42 @@ class TelegramAlerter:
             f"{E['fire']} Best Trade:  {best_str}\n"
             f"{E['loss']} Worst Trade: {worst_str}\n"
             f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{'Daily target achieved!' if target_hit else 'Below daily target slice (5%/mo)'}\n"
+            f"{'🎯 DAILY 1% TARGET HIT! ✅' if target_hit else f'⚠️ Below {_daily_tgt_pct:.1f}% daily target'}\n"
             f"{E['clock']} `{format_ist_timestamp()}`"
         )
 
         chart = _build_equity_curve(all_trades, capital) if all_trades else None
         return self._send(text, chart)
+
+    def send_target_achieved(
+        self,
+        daily_pnl: float,
+        capital: float,
+        trades: int,
+        wins: int,
+        losses: int,
+    ) -> bool:
+        """
+        Big celebration when daily 1% target is achieved.
+        Called by main.py _check_profit_lock() on first activation.
+        Professional trading rule: 'Know your number. Hit your number. STOP.'
+        """
+        pct   = (daily_pnl / capital * 100) if capital > 0 else 0.0
+        wr    = (wins / trades * 100) if trades > 0 else 0.0
+        text  = (
+            f"🎯 *DAILY 1% TARGET ACHIEVED!*\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"💰 P&L: *+{_CUR}{daily_pnl:,.0f}* (`+{pct:.2f}%`)\n"
+            f"📊 Trades: `{trades}` | W/L: `{wins}/{losses}` | WR: `{wr:.0f}%`\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🔒 All stops tightened to protect profits\n"
+            f"⚡ New entries: A+ only at 60% size\n"
+            f"💡 Type /pause to stop new entries for today\n"
+            f"━━━━━━━━━━━━━━━━━━━━\n"
+            f"🏆 *Professional rule: hit your number, protect it.*\n"
+            f"{E['clock']} `{format_ist_timestamp()}`"
+        )
+        return self._send(text)
 
     # --------------------------------------------------------
     # TOKEN REFRESH

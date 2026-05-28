@@ -2352,10 +2352,22 @@ class TradingBot:
             if tightened:
                 logger.info(f"[{format_ist_timestamp()}] 🔒 PROFIT LOCK: tightened stops — {', '.join(tightened)}")
                 try:
-                    self.alerter.send_text(
-                        f"🔒 <b>Stops tightened — daily 1% target protected</b>\n"
-                        + "\n".join(f"• {t}" for t in tightened)
-                    )
+                    # Big celebration — 1% daily target achieved
+                    rm    = self.risk_manager
+                    state = getattr(rm, "state", None)
+                    _pnl     = state.daily_pnl      if state else 0.0
+                    _cap     = state.daily_capital   if state else 0.0
+                    _trades  = state.daily_trades    if state else 0
+                    _wins    = state.winning_trades  if state else 0
+                    _losses  = state.losing_trades   if state else 0
+                    if hasattr(self.alerter, "send_target_achieved"):
+                        self.alerter.send_target_achieved(_pnl, _cap, _trades, _wins, _losses)
+                    else:
+                        self.alerter.send_text(
+                            f"🎯 <b>1% DAILY TARGET HIT!</b>\n"
+                            f"🔒 Stops tightened — profits protected\n"
+                            + "\n".join(f"• {t}" for t in tightened)
+                        )
                 except Exception:
                     pass
         except Exception as _e:

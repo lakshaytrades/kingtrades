@@ -243,7 +243,7 @@ MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "20.0"))
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets
 # ============================================================
-OPTIONS_ENABLED:         bool  = os.getenv("OPTIONS_ENABLED", "True").lower() in ("true", "1", "yes")
+OPTIONS_ENABLED:         bool  = os.getenv("OPTIONS_ENABLED", "False").lower() in ("true", "1", "yes")
 OPTIONS_MIN_STOCK_SCORE: float = float(os.getenv("OPTIONS_MIN_STOCK_SCORE", "70"))
 OPTIONS_MAX_POSITIONS:   int   = int(os.getenv("OPTIONS_MAX_POSITIONS", "3"))
 OPTIONS_MAX_PREMIUM_PCT: float = float(os.getenv("OPTIONS_MAX_PREMIUM_PCT", "5.0"))
@@ -439,6 +439,23 @@ CRYPTO_ENABLED: bool = os.getenv("CRYPTO_ENABLED", "True").lower() in ("true", "
 CRYPTO_CAPITAL_PCT_OF_TOTAL: float = float(os.getenv("CRYPTO_CAPITAL_PCT_OF_TOTAL", "30.0"))
 CRYPTO_CAPITAL_USD: float = float(os.getenv("CRYPTO_CAPITAL_USD", "0"))
 CRYPTO_SHORT_ENABLED: bool = os.getenv("CRYPTO_SHORT_ENABLED", "True").lower() in ("true", "1", "yes")
+
+# ============================================================
+# 1% DAILY TARGET DISCIPLINE (Professional Trading Rules)
+# ============================================================
+# When 1% daily target is hit:
+#   True  = stop all new entries, protect the profit (recommended)
+#   False = continue trading A+ signals at 60% size
+STOP_NEW_ENTRIES_AFTER_TARGET: bool = os.getenv("STOP_NEW_ENTRIES_AFTER_TARGET", "False").lower() in ("true","1","yes")
+
+# Post-target mode: min score required for new entries after 1% is hit
+# 84.0 = A+ only (very selective — only the best of the best)
+POST_TARGET_MIN_SCORE: float = float(os.getenv("POST_TARGET_MIN_SCORE", "84.0"))
+
+# Time-based cutoff: never enter new trades after this ET hour
+# (Even when target not yet hit — avoids noisy last-30-min reversals)
+EOD_NO_ENTRY_ET_HOUR: int = 15   # 3:00 PM ET — existing NO_ENTRY_AFTER_ET_HOUR
+EOD_NO_ENTRY_ET_MINUTE: int = 0
 
 # ============================================================
 # VALIDATION

@@ -30,7 +30,7 @@ from typing import Optional, Dict, List
 from zoneinfo import ZoneInfo
 
 from utils import (
-    format_ist_timestamp, get_current_ist_time,
+    format_ist_timestamp, get_current_ist_time, get_current_et_time,
     is_market_open_ist, round_to_tick_size
 )
 from pattern_recognition import PatternRecognizer, IndicatorSet
@@ -433,7 +433,6 @@ class SignalGenerator:
 
             # 5c-ii. No new entries at or after 3:00 PM ET — last 30 min reversals destroy P&L
             try:
-                from utils import get_current_et_time
                 _et_now = get_current_et_time()
                 _cutoff_h = getattr(config, "NO_ENTRY_AFTER_ET_HOUR", 15)
                 _cutoff_m = getattr(config, "NO_ENTRY_AFTER_ET_MINUTE", 0)
@@ -450,7 +449,6 @@ class SignalGenerator:
             # temporarily lower threshold by 4 pts (74 instead of 78) for one last setup.
             # Prop trader rule: find ONE good trade per day — every day should hit target.
             try:
-                from utils import get_current_et_time
                 _tc_now = get_current_et_time()
                 if _tc_now.hour >= 13 and _tc_now.minute >= 30 or _tc_now.hour >= 14:
                     try:
