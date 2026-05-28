@@ -204,10 +204,10 @@ class DailyProfitEngine:
         daily_target = self._apply_monthly_catchup(daily_target, available_balance, today)
 
         self._daily_target = daily_target
-        self.cfg.daily_target          = daily_target
+        self.cfg.daily_target          = daily_target          # 1.0% → PROTECTION
         self.state.set_daily_target_ref(daily_target)
-        self.cfg.daily_stretch_target  = daily_target * 1.67  # 2.5% = LOCK mode (was 2×)
-        self.cfg.daily_max_target      = daily_target * 2.33  # 3.5% = STOP for the day (was 3×)
+        self.cfg.daily_stretch_target  = daily_target * 1.5   # 1.5% → LOCK (A+ only, 60% size)
+        self.cfg.daily_max_target      = daily_target * 2.0   # 2.0% → STOP for the day
 
         # Percentage-based loss thresholds — read from DAILY_LOSS_LIMIT_PCT env var
         # For 1.5%/day compounding: caution 0.5%, defensive 1.0%, hard stop 1.5%
@@ -526,11 +526,11 @@ class DailyProfitEngine:
         prev_mode = self.state.mode
 
         if pnl >= self.cfg.daily_max_target:
-            self.state.mode = TradingMode.STOP
+            self.state.mode = TradingMode.STOP       # 2.0% hit → done for the day
         elif pnl >= self.cfg.daily_stretch_target:
-            self.state.mode = TradingMode.LOCK
+            self.state.mode = TradingMode.LOCK       # 1.5% → A+ only, 60% size, protect gains
         elif pnl >= self.cfg.daily_target:
-            self.state.mode = TradingMode.PROTECTION
+            self.state.mode = TradingMode.LOCK       # 1.0% → lock it in (was PROTECTION — too aggressive)
         elif pnl <= -self.cfg.daily_loss_limit:
             self.state.mode = TradingMode.STOP
         elif pnl <= -self.cfg.defensive_loss:

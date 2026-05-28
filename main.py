@@ -461,6 +461,13 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
 
+        # Link risk manager to alerter so exit/entry messages show live win-rate stats
+        try:
+            if self.alerter and self.risk_manager:
+                self.alerter.set_risk_manager(self.risk_manager)
+        except Exception:
+            pass
+
         return True
 
     # --------------------------------------------------------
@@ -1883,12 +1890,26 @@ class TradingBot:
                     except Exception as _se:
                         logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
-                    # Send Telegram alert with chart
+                    # Send Telegram alert with chart + trade fill notification
                     try:
                         df_5m = self.fetcher.get_today_candles(signal.symbol)
                         self.alerter.send_entry_alert(signal, df_5m)
                     except Exception as e:
                         logger.warning(f"Alert failed: {e}")
+                    try:
+                        self.alerter.send_trade_fill(
+                            symbol       = signal.symbol,
+                            direction    = signal.direction,
+                            qty          = fill_qty,
+                            price        = fill_price,
+                            stop_loss    = signal.stop_loss,
+                            target_1     = signal.target_1,
+                            target_2     = signal.target_2,
+                            signal_score = getattr(signal, "signal_score", 0.0),
+                            quality_grade= getattr(signal, "quality_grade", ""),
+                        )
+                    except Exception as e:
+                        logger.warning(f"send_trade_fill failed: {e}")
 
                     # ── Options scalping piggyback on strong stock signals ──
                     if self.options_scalper and result.success:

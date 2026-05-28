@@ -264,11 +264,38 @@ class TelegramAlerter:
     """
 
     def __init__(self, bot_token: str, chat_id: str):
-        self.bot_token = bot_token
-        self.chat_id   = str(chat_id)
-        self._bot      = None
-        self._ready    = False
+        self.bot_token    = bot_token
+        self.chat_id      = str(chat_id)
+        self._bot         = None
+        self._ready       = False
+        self._risk_manager = None   # set via set_risk_manager() after bot init
         self._init_bot()
+
+    def set_risk_manager(self, rm) -> None:
+        """Link risk manager so exit/entry alerts can include live win-rate stats."""
+        self._risk_manager = rm
+
+    def _live_stats_line(self) -> str:
+        """Returns a one-line stats string pulled from the live risk manager state."""
+        try:
+            rm = self._risk_manager
+            if rm is None:
+                return ""
+            state  = getattr(rm, "state", None)
+            if state is None:
+                return ""
+            n      = state.daily_trades
+            wins   = state.winning_trades
+            losses = state.losing_trades
+            wr     = (wins / n * 100) if n > 0 else 0.0
+            pnl    = state.daily_pnl
+            pnl_s  = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
+            return (
+                f"📊 Today: *{n}* trades | W/L: `{wins}/{losses}` | "
+                f"WR: `{wr:.0f}%` | P&L: *{pnl_s}*"
+            )
+        except Exception:
+            return ""
 
     # --------------------------------------------------------
     # INIT
@@ -402,13 +429,25 @@ class TelegramAlerter:
     # --------------------------------------------------------
 
     def send_trade_fill(self, symbol: str, direction: str, qty: int,
-                        price: float, order_id: str = "") -> bool:
+                        price: float, order_id: str = "",
+                        stop_loss: float = 0.0, target_1: float = 0.0,
+                        target_2: float = 0.0, signal_score: float = 0.0,
+                        quality_grade: str = "") -> bool:
         emoji = E["long"] if direction == "LONG" else E["short"]
+        stats = self._live_stats_line()
+        sl_line = f"SL: `{_CUR}{stop_loss:.2f}`" if stop_loss > 0 else ""
+        t1_line = f"T1: `{_CUR}{target_1:.2f}`"  if target_1  > 0 else ""
+        t2_line = f"T2: `{_CUR}{target_2:.2f}`"  if target_2  > 0 else ""
+        levels  = " | ".join(x for x in [sl_line, t1_line, t2_line] if x)
+        grade_s = f" | Grade: `{quality_grade}`" if quality_grade else ""
+        score_s = f" | Score: `{signal_score:.0f}`" if signal_score > 0 else ""
         text = (
-            f"{emoji} *ORDER FILLED — {symbol}*\n"
-            f"Direction: `{direction}` | Qty: `{qty}` | Price: `{_CUR}{price:.2f}`\n"
-            f"Order ID: `{order_id}`\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{emoji} *TRADE ENTERED — {symbol}*\n"
+            f"Direction: `{direction}` | Qty: `{qty}` | Entry: `{_CUR}{price:.2f}`"
+            f"{grade_s}{score_s}\n"
+            + (f"{levels}\n" if levels else "")
+            + (f"━━━━━━━━━━━━\n{stats}\n" if stats else "")
+            + f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -422,13 +461,15 @@ class TelegramAlerter:
         pnl_emoji = E["profit"] if pnl >= 0 else E["loss"]
         pnl_str   = f"+{_CUR}{pnl:,.0f}" if pnl >= 0 else f"-{_CUR}{abs(pnl):,.0f}"
         pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
+        stats = self._live_stats_line()
         text = (
             f"{pnl_emoji} *EXIT — {symbol}*\n"
             f"Direction: `{direction}` | Qty: `{qty}`\n"
             f"Entry: `{_CUR}{entry:.2f}` → Exit: `{_CUR}{exit_price:.2f}` (`{pct:+.2f}%`)\n"
             f"P&L: *{pnl_str}*\n"
             f"Reason: `{reason}`\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            + (f"━━━━━━━━━━━━\n{stats}\n" if stats else "")
+            + f"{E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 

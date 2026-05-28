@@ -148,11 +148,10 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 68.0        # base gate — signals at 68+ enter HAF bonus stage
-                                       # MTF/volume/ORB bonuses then push elite setups to 80–95
-                                       # Old 78 gate killed signals before bonuses could fire → 0 trades
-HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses: 68 base + 14 bonus = 82 (realistic elite)
-PREMIUM_SCORE: float = 74.0           # A grade entry: 68 base + 6 typical bonus
+MIN_SIGNAL_SCORE: float = 72.0        # raised from 68 — quality over quantity; fewer but better trades
+                                       # MTF/volume/ORB bonuses push elite setups to 84–95
+HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses: 72 base + 12 bonus = 84
+PREMIUM_SCORE: float = 76.0           # A grade entry: 72 base + 4 typical bonus
 MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False
@@ -229,13 +228,12 @@ DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
 # 0 = compute from DAILY_PROFIT_TARGET_PCT × live balance (recommended — auto-compounds)
 # >0 = fixed dollar target (overrides percentage calculation)
 
-DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.5"))
-# 1.5%/day target — one winning trade (+2.5% on 1% risk × 2.5 R:R) hits it immediately
-# Target hit rate: ~60% of trading days at 75% win rate (62% days have valid signal × 94% hit rate)
-# Old 4.0% target was almost never hit in a single trade — this is the key change for 60% hit rate
+DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.0"))
+# 1.0%/day — realistic achievable target: one clean A+ trade hits it
+# At 1%: switch to PROTECTION (A-grade only), at 1.5%: LOCK (A+ only, 60% size), at 2%: STOP
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "33.0"))
-# 1.5%/day × 22 trading days compounded = ~38.5% (33% is the conservative floor target)
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "20.0"))
+# 1.0%/day × 22 trading days = ~22% monthly (realistic top-decile retail)
 
 # ============================================================
 # OPTIONS SCALPING — Alpaca Markets
