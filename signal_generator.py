@@ -223,6 +223,7 @@ class SignalGenerator:
         # Pattern performance analytics (lazy-loaded)
         self._pattern_analytics = None
         self._session_skip: set = set()
+        self._overnight_bias: int = 0   # set by main.py after overnight_analyzer.run_analysis()
 
         # Concurrent scanning config
         self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
@@ -839,6 +840,7 @@ class SignalGenerator:
                     pm_score      = pm_score,
                     nifty_trend   = "bullish" if inst_ctx.get("spy_trend", 0) > 0 else
                                     "bearish" if inst_ctx.get("spy_trend", 0) < 0 else "neutral",
+                    overnight_bias=getattr(self, '_overnight_bias', 0),
                 )
                 if not elite_decision.approved:
                     logger.info(
@@ -1235,6 +1237,9 @@ class SignalGenerator:
             # Higher-timeframe AVWAP levels
             "weekly_vwap":                 0.0,
             "monthly_vwap":               0.0,
+            # Multi-day momentum (3d and 5d price returns from daily candles)
+            "3d_mom":                      0.0,
+            "5d_mom":                      0.0,
         }
 
         # ── Option Chain ─────────────────────────────────
@@ -1344,6 +1349,21 @@ class SignalGenerator:
                     ctx["monthly_vwap"] = float(_m_num / _m_den)
         except Exception as _wv_e:
             logger.debug(f"[suppressed] weekly/monthly vwap: {_wv_e}")
+
+        # ── Multi-day momentum from daily candles (3d and 5d returns) ────────
+        try:
+            _dd = getattr(self, '_daily_candles_cache', {}).get(symbol)
+            if _dd is not None and len(_dd) >= 7 and 'close' in _dd.columns:
+                import numpy as _np_md
+                _c = _dd['close'].values.astype(float)
+                ctx['3d_mom'] = round((_c[-1] - _c[-4]) / max(_c[-4], 0.01) * 100, 2) if len(_c) >= 4 else 0.0
+                ctx['5d_mom'] = round((_c[-1] - _c[-6]) / max(_c[-6], 0.01) * 100, 2) if len(_c) >= 6 else 0.0
+            else:
+                ctx['3d_mom'] = 0.0
+                ctx['5d_mom'] = 0.0
+        except Exception:
+            ctx['3d_mom'] = 0.0
+            ctx['5d_mom'] = 0.0
 
         # ── Gap % — from pre-loaded GapAnalyzer (called at market open) ──────
         try:
@@ -1744,6 +1764,32 @@ class SignalGenerator:
         elif ind.volume_ratio >= 1.5:
             score += 4
 
+        # RVOL Percentile rank (institutional conviction signal)
+        try:
+            import config as _cfgRVP
+            if getattr(_cfgRVP, 'RVOL_PERCENTILE_ENABLED', True) and df_5m is not None and len(df_5m) >= 25:
+                import numpy as _np_rvp
+                _vols = df_5m['volume'].values.astype(float)
+                _roll_mean = _np_rvp.array([
+                    _vols[max(0, i-20):i].mean() if i >= 5 else _np_rvp.nan
+                    for i in range(len(_vols))
+                ])
+                _rvol_series = _np_rvp.where(_roll_mean > 0, _vols / _roll_mean, _np_rvp.nan)
+                _valid = _rvol_series[~_np_rvp.isnan(_rvol_series)]
+                if len(_valid) >= 5:
+                    _cur_rvol = float(ind.volume_ratio or 1.0)
+                    _pct = float(_np_rvp.mean(_valid <= _cur_rvol) * 100)
+                    if _pct >= 95:
+                        score += 12; logger.debug(f"{symbol}: RVOL_P{_pct:.0f}(+12)")
+                    elif _pct >= 85:
+                        score += 6;  logger.debug(f"{symbol}: RVOL_P{_pct:.0f}(+6)")
+                    elif _pct >= 75:
+                        score += 3
+                    elif _pct < 40:
+                        score -= 3;  logger.debug(f"{symbol}: RVOL_LOW_P{_pct:.0f}(-3)")
+        except Exception:
+            pass
+
         # ── Multi-indicator confluence bonus ─────────────────────────────────
         # 4+ indicators simultaneously aligned = institutional-grade confirmation;
         # this fires independently of pattern detection so strong-indicator / no-pattern
@@ -1984,6 +2030,33 @@ class SignalGenerator:
         except Exception:
             pass
 
+        # Multi-day momentum confirmation (3d + 5d price trend from daily candles)
+        try:
+            import config as _cfgMDM
+            if getattr(_cfgMDM, 'MULTIDAY_MOMENTUM_ENABLED', True):
+                _mom3 = float(ctx.get('3d_mom', 0.0))
+                _mom5 = float(ctx.get('5d_mom', 0.0))
+                if direction in ('LONG', 'BUY'):
+                    if _mom3 > 3.0 and _mom5 > 5.0:
+                        score += 8;  logger.debug(f"{symbol}: MDM_BULL 3d={_mom3:.1f}% 5d={_mom5:.1f}% +8")
+                    elif _mom3 > 1.5:
+                        score += 3
+                    elif _mom3 > 7.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT 3d={_mom3:.1f}% -5")
+                    elif _mom3 < -3.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_BEAR 3d={_mom3:.1f}% -5")
+                else:  # SHORT
+                    if _mom3 < -3.0 and _mom5 < -5.0:
+                        score += 8;  logger.debug(f"{symbol}: MDM_BEAR 3d={_mom3:.1f}% 5d={_mom5:.1f}% +8")
+                    elif _mom3 < -1.5:
+                        score += 3
+                    elif _mom3 < -7.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT_SHORT 3d={_mom3:.1f}% -5")
+                    elif _mom3 > 3.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_BULL_FIGHTS_SHORT 3d={_mom3:.1f}% -5")
+        except Exception:
+            pass
+
         # ── Anchored VWAP from session open (more reliable than daily VWAP reset) ──
         # Price bouncing off AVWAP = institutional support confirmed
         try:
@@ -2104,6 +2177,28 @@ class SignalGenerator:
         if sector_adj != 0.0:
             score += max(-10, min(sector_adj, 10))
             logger.debug(f"Sector adj={sector_adj:+.1f} ({ctx.get('sector_name', '?')})")
+
+        # TICK proxy from market breadth (NYSE TICK equivalent)
+        try:
+            import config as _cfgTP
+            if getattr(_cfgTP, 'TICK_PROXY_ENABLED', True):
+                _breadth = float(getattr(ind, 'breadth_score', 50) or 50)
+                if direction in ('LONG', 'BUY'):
+                    if _breadth >= 80:
+                        score += 4;  logger.debug(f"{symbol}: TICK_PROXY breadth={_breadth:.0f} +4")
+                    elif _breadth >= 70:
+                        score += 2
+                    elif _breadth <= 35:
+                        score -= 3;  logger.debug(f"{symbol}: TICK_PROXY breadth={_breadth:.0f} -3 (bears control)")
+                else:  # SHORT
+                    if _breadth <= 35:
+                        score += 4;  logger.debug(f"{symbol}: TICK_PROXY breadth={_breadth:.0f} +4 (sellers in control)")
+                    elif _breadth <= 45:
+                        score += 2
+                    elif _breadth >= 75:
+                        score -= 3
+        except Exception:
+            pass
 
         return min(round(score, 1), 100)
 

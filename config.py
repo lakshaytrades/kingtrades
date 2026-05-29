@@ -485,6 +485,22 @@ POST_TARGET_MIN_SCORE: float = float(os.getenv("POST_TARGET_MIN_SCORE", "84.0"))
 EOD_NO_ENTRY_ET_HOUR: int = 15   # 3:00 PM ET — existing NO_ENTRY_AFTER_ET_HOUR
 EOD_NO_ENTRY_ET_MINUTE: int = 0
 
+# ── WIRING COMPLETENESS FLAGS ─────────────────────────────────────────────
+SMART_MONEY_ADV_ENABLED: bool = os.getenv("SMART_MONEY_ADV_ENABLED", "True").lower() in ("true","1","yes")
+OVERNIGHT_BIAS_ENABLED: bool = os.getenv("OVERNIGHT_BIAS_ENABLED", "True").lower() in ("true","1","yes")
+ADAPTIVE_BRAIN_THRESHOLD_SYNC: bool = os.getenv("ADAPTIVE_BRAIN_THRESHOLD_SYNC", "True").lower() in ("true","1","yes")
+BURST_SCANNER_ENABLED: bool = os.getenv("BURST_SCANNER_ENABLED", "True").lower() in ("true","1","yes")
+MORNING_INTEL_SIZING: bool = os.getenv("MORNING_INTEL_SIZING", "True").lower() in ("true","1","yes")
+RL_HARD_GATE_ENABLED: bool = os.getenv("RL_HARD_GATE_ENABLED", "False").lower() in ("true","1","yes")
+SELF_LEARNING_APPLY_THRESHOLD: bool = os.getenv("SELF_LEARNING_APPLY_THRESHOLD", "True").lower() in ("true","1","yes")
+
+# ── NEW ALPHA FEATURES v8.0 ───────────────────────────────────────────────
+INST_ACCUM_GATE: bool = os.getenv("INST_ACCUM_GATE", "True").lower() in ("true","1","yes")
+TICK_PROXY_ENABLED: bool = os.getenv("TICK_PROXY_ENABLED", "True").lower() in ("true","1","yes")
+MULTIDAY_MOMENTUM_ENABLED: bool = os.getenv("MULTIDAY_MOMENTUM_ENABLED", "True").lower() in ("true","1","yes")
+STOP_HUNT_GATE: bool = os.getenv("STOP_HUNT_GATE", "True").lower() in ("true","1","yes")
+RVOL_PERCENTILE_ENABLED: bool = os.getenv("RVOL_PERCENTILE_ENABLED", "True").lower() in ("true","1","yes")
+
 # ============================================================
 # VALIDATION
 # ============================================================

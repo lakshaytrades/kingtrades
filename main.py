@@ -240,6 +240,16 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Overnight analyzer failed: {e}")
 
+        # Sync overnight bias to signal generator
+        try:
+            _ob = getattr(self, 'overnight', None)
+            if _ob:
+                _overnight_result = _ob.run_analysis() if hasattr(_ob, 'run_analysis') else {}
+                if hasattr(self, 'signal_gen') and self.signal_gen:
+                    self.signal_gen._overnight_bias = int(_overnight_result.get('bias_score', 0))
+        except Exception as _obe:
+            logger.debug(f"[suppressed] overnight_bias sync: {_obe}")
+
         # Initialize economic calendar
         try:
             from economic_calendar import get_calendar
@@ -269,6 +279,18 @@ class TradingBot:
         # Apply adaptive thresholds to signal generator (from self-learning)
         if self.signal_gen:
             self.signal_gen.min_score = adaptive_cfg.min_signal_score
+
+        # Apply self-learning threshold to HighAccuracyFilter
+        try:
+            if getattr(config, 'SELF_LEARNING_APPLY_THRESHOLD', True):
+                from self_learning import get_learner as _get_sl
+                _sl_config = _get_sl().config
+                _sl_min = getattr(_sl_config, 'min_signal_score', 0)
+                if _sl_min >= 65 and hasattr(self, 'signal_gen') and self.signal_gen:
+                    self.signal_gen.ha_filter.min_score = _sl_min
+                    logger.info(f"[{format_ist_timestamp()}] Self-learning threshold applied: min_score={_sl_min}")
+        except Exception as _sle:
+            logger.debug(f"[suppressed] self_learning threshold apply: {_sle}")
 
         # Intraday Adaptive Brain — real-time learning engine
         from adaptive_brain import get_adaptive_brain
@@ -881,9 +903,24 @@ class TradingBot:
                     )
                 except Exception as e:
                     logger.warning(f"Morning intelligence failed: {e}")
-                    # Fallback to basic morning brief
-                    self.alerter.send_morning_brief(watchlist, available, spy_open,
-                                                    oc_summary=oc_summary, fii_summary=fii_summary)
+
+                # Apply morning intelligence sizing factor
+                try:
+                    if getattr(config, 'MORNING_INTEL_SIZING', True):
+                        from utils import get_current_ist_time as _get_et
+                        _now_h = _get_et().hour + _get_et().minute / 60
+                        _thesis = getattr(self.morning_intel, '_last_thesis', None) or getattr(self.morning_intel, 'thesis', None)
+                        if _thesis and _now_h < 10.5:   # only apply before 10:30 AM ET
+                            _day_size = float(getattr(_thesis, 'position_size_factor', 1.0) or 1.0)
+                            _day_bias = int(getattr(_thesis, 'bias_score', 0) or 0)
+                            self._day_size_factor = max(0.5, min(1.5, _day_size))
+                            self._day_bias_score  = _day_bias
+                            logger.info(f"[{format_ist_timestamp()}] Morning intel: size_factor={self._day_size_factor:.2f} bias={_day_bias}")
+                        else:
+                            self._day_size_factor = 1.0
+                            self._day_bias_score  = 0
+                except Exception as _mie:
+                    logger.debug(f"[suppressed] morning_intel sizing: {_mie}")
             else:
                 self.alerter.send_morning_brief(
                     watchlist, available, spy_open,
@@ -1293,6 +1330,16 @@ class TradingBot:
             if now_ist.minute < 2 and now_ist.hour != self._last_heartbeat_min:
                 self._send_heartbeat()
                 self._last_heartbeat_min = now_ist.hour
+
+            # Sync adaptive brain threshold once per cycle
+            try:
+                if getattr(config, 'ADAPTIVE_BRAIN_THRESHOLD_SYNC', True) and hasattr(self, 'adaptive_brain') and self.adaptive_brain:
+                    _ab_score = self.adaptive_brain.get_min_score() if hasattr(self.adaptive_brain, 'get_min_score') else None
+                    if _ab_score and isinstance(_ab_score, (int, float)) and 65 <= _ab_score <= 90:
+                        if hasattr(self, 'signal_gen') and self.signal_gen and hasattr(self.signal_gen, 'ha_filter'):
+                            self.signal_gen.ha_filter.min_score = _ab_score
+            except Exception:
+                pass
 
             # 4. Scan watchlist (15-min cached)
             watchlist = self._get_watchlist_cached()

@@ -470,6 +470,25 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append("OFI_SKIP")
 
+        # ── GATE 22: STOP-HUNT DETECTION (ICT Wyckoff Spring/Upthrust) ────
+        try:
+            import config as _cfg22
+            if getattr(_cfg22, 'STOP_HUNT_GATE', True) and df_5m is not None and len(df_5m) >= 15:
+                _sh_pass, _sh_reason, _sh_bonus = self._gate_stop_hunt(
+                    df_5m, signal_price or 0.0, direction
+                )
+                if not _sh_pass:
+                    result.gates_failed.append('STOP_HUNT_TRAP')
+                    result.rejection_reason = f'[GATE-22 STOP_HUNT] {symbol} — {_sh_reason}'
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append('SH_OK')
+                if _sh_bonus > 0:
+                    result.bonus_score = getattr(result, 'bonus_score', 0) + _sh_bonus
+                    logger.info(f'[{format_ist_timestamp()}] {symbol}: STOP_HUNT_SETUP bonus +{_sh_bonus}pts')
+        except Exception:
+            result.gates_passed.append('SH_SKIP')
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
@@ -741,6 +760,52 @@ class HighAccuracyFilter:
                         result.bonuses.append("MOMENTUM_WEAK_BEAR(-5)")
             except Exception:
                 pass
+
+        # BONUS 15: INSTITUTIONAL ACCUMULATION (Wyckoff markup preparation)
+        try:
+            import config as _cfgIA
+            if getattr(_cfgIA, 'INST_ACCUM_GATE', True) and df_5m is not None and len(df_5m) >= 5:
+                import numpy as _np_ia
+                _high = df_5m['high'].values.astype(float)[-5:]
+                _low  = df_5m['low'].values.astype(float)[-5:]
+                _close = df_5m['close'].values.astype(float)[-5:]
+                _open  = df_5m['open'].values.astype(float)[-5:]
+                _vol   = df_5m['volume'].values.astype(float)[-5:]
+                _avg_vol = float(df_5m['volume'].mean()) if len(df_5m) >= 3 else 1.0
+                _rng = _high - _low + 1e-6
+
+                if direction in ('LONG', 'BUY'):
+                    # Quiet accumulation: last 3 bars close in top 30% of range AND vol rising
+                    _close_pct = [(_close[i] - _low[i]) / _rng[i] for i in range(-3, 0)]
+                    _top30 = all(p >= 0.70 for p in _close_pct)
+                    _vol_rising = _vol[-1] > _vol[-2] > _vol[-3] and _vol[-1] > _avg_vol * 1.2
+                    if _top30 and _vol_rising:
+                        bonus_score += 10
+                        result.bonuses.append('INST_ACCUM(+10)')
+                    elif any(p >= 0.70 for p in _close_pct) and _vol[-1] > _avg_vol * 1.5:
+                        bonus_score += 5
+                        result.bonuses.append('ACCUM_PARTIAL(+5)')
+                    # Wrong-direction: selling on high volume
+                    _down_bars = sum(1 for i in range(-3, 0) if _close[i] < _open[i])
+                    if _down_bars >= 2 and _vol[-1] > _avg_vol * 1.8:
+                        bonus_score -= 5
+                        result.bonuses.append('DIST_PRESSURE(-5)')
+                else:  # SHORT: distribution pattern
+                    _close_pct_s = [(_high[i] - _close[i]) / _rng[i] for i in range(-3, 0)]
+                    _top30_s = all(p >= 0.70 for p in _close_pct_s)
+                    _vol_rising = _vol[-1] > _vol[-2] > _vol[-3] and _vol[-1] > _avg_vol * 1.2
+                    if _top30_s and _vol_rising:
+                        bonus_score += 10
+                        result.bonuses.append('INST_DIST(+10)')
+                    elif any(p >= 0.70 for p in _close_pct_s) and _vol[-1] > _avg_vol * 1.5:
+                        bonus_score += 5
+                        result.bonuses.append('DIST_PARTIAL(+5)')
+                    _up_bars = sum(1 for i in range(-3, 0) if _close[i] > _open[i])
+                    if _up_bars >= 2 and _vol[-1] > _avg_vol * 1.8:
+                        bonus_score -= 5
+                        result.bonuses.append('ACCUM_PRESSURE(-5)')
+        except Exception:
+            pass
 
         # ── FINAL SCORE & GRADE ───────────────────────────
         result.final_score = signal_score + bonus_score
@@ -1328,6 +1393,58 @@ class HighAccuracyFilter:
             return True, f"imbalance_ok ratio={ratio:.2f}"
         except Exception:
             return True, ""  # fail open
+
+    def _gate_stop_hunt(
+        self, df: "pd.DataFrame", price: float, direction: str
+    ) -> "Tuple[bool, str, int]":
+        """
+        Detect ICT stop-hunt (Wyckoff Spring/Upthrust).
+        Returns (pass, reason, bonus_pts).
+        - Same-direction hunt (Spring for LONG, Upthrust for SHORT) → pass + 15 bonus pts
+        - Opposite-direction fake-out → reject (entering on the fake move)
+        """
+        try:
+            import pandas as _pd
+            import numpy as _np
+            highs  = df['high'].values.astype(float)
+            lows   = df['low'].values.astype(float)
+            closes = df['close'].values.astype(float)
+            n = len(highs)
+            if n < 15:
+                return True, '', 0
+
+            # ATR (10-bar)
+            tr = [max(highs[i] - lows[i], abs(highs[i] - closes[i-1]), abs(lows[i] - closes[i-1]))
+                  for i in range(1, n)]
+            atr = float(_np.mean(tr[-10:])) if len(tr) >= 3 else (highs[-1] - lows[-1])
+            if atr <= 0:
+                return True, '', 0
+
+            # Swing levels from bars [-20:-3] (avoid last 2 bars = the hunt itself)
+            lookback = max(0, n - 20)
+            swing_lo = float(_np.min(lows[lookback:n-2]))
+            swing_hi = float(_np.max(highs[lookback:n-2]))
+
+            # Hunt detection: bar[-2] wicked beyond swing and closed back inside
+            # Bullish Spring: low[-2] pierced swing_lo by > 0.2×ATR but closed above swing_lo
+            spring = (lows[-2] < swing_lo - 0.2 * atr and closes[-2] > swing_lo)
+            # Bearish Upthrust: high[-2] pierced swing_hi by > 0.2×ATR but closed below swing_hi
+            upthrust = (highs[-2] > swing_hi + 0.2 * atr and closes[-2] < swing_hi)
+
+            if direction in ('LONG', 'BUY'):
+                if spring:
+                    return True, '', 15   # Bullish spring = best LONG entry — bonus
+                if upthrust:
+                    return False, f'bearish upthrust trap — high={highs[-2]:.2f} vs swing={swing_hi:.2f}', 0
+            else:  # SHORT
+                if upthrust:
+                    return True, '', 15   # Bearish upthrust = best SHORT entry — bonus
+                if spring:
+                    return False, f'bullish spring trap — low={lows[-2]:.2f} vs swing={swing_lo:.2f}', 0
+
+            return True, '', 0
+        except Exception:
+            return True, '', 0
 
     def _rsi_bonus(self, rsi: float, direction: str) -> float:
         """Ideal RSI zones for momentum entries."""
