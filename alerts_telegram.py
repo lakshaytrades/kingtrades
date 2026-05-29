@@ -1,19 +1,15 @@
 """
-alerts_telegram.py — NSE Momentum Groww AI Bot
-Rich Telegram Alert Engine with Charts, Gemini AI Analysis, and EOD Reports
-
-⚠️ WARNING: This bot places REAL orders with REAL money on Groww.
-Server runs in UK (UTC) — all timestamps in IST (Asia/Kolkata).
+alerts_telegram.py — KingTrades Bloomberg Terminal Alert Engine
+Professional-grade Telegram alerts modelled on Bloomberg / institutional trading desk output.
 
 Features:
-  • Signal alerts with full rationale, R:R, grade, and projected P&L
-  • Candlestick chart images (mplfinance) with entry arrow + indicators
-  • Gemini AI signal explanation (plain English "why this trade")
-  • Trade fill / exit / SL-hit alerts with P&L in green/red
-  • Circuit breaker / kill-switch alerts
-  • Status report with live positions and daily P&L
-  • EOD performance report with equity curve chart
-  • Morning brief (overnight analysis summary)
+  • Bloomberg-style data-dense message formatting
+  • Candlestick chart images (mplfinance) with entry arrow + SL/TP levels
+  • Gemini AI signal explanation embedded in entry alerts
+  • Full trade lifecycle: signal → fill → exit → SL → EOD report
+  • Circuit breaker / kill-switch alerts with immediate action guidance
+  • Live portfolio status (/status command)
+  • Morning market brief with market context
   • IST timestamps on every message
 
 Usage:
@@ -65,7 +61,45 @@ E = {
     "shield": "🛡",
     "trophy": "🏆",
     "pin":    "📌",
+    "signal": "⚡",
+    "lock":   "🔒",
+    "stop":   "🛑",
 }
+
+# Bloomberg separator line
+_SEP = "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+
+
+# ============================================================
+# BLOOMBERG FORMATTING HELPERS
+# ============================================================
+
+def _sep() -> str:
+    return _SEP
+
+def _score_bar(score: float) -> str:
+    """Return a 10-char filled/empty block bar: ████████░░ for score 80/100."""
+    filled = max(0, min(10, int(round(score / 10))))
+    return "█" * filled + "░" * (10 - filled)
+
+def _dir_arrow(pct: float) -> str:
+    """Return ▲ for positive, ▼ for negative percentage."""
+    return "▲" if pct >= 0 else "▼"
+
+def _signed(val: float, cur: str = "") -> str:
+    """Format a value with explicit +/- sign."""
+    if val >= 0:
+        return f"+{cur}{val:,.2f}"
+    return f"-{cur}{abs(val):,.2f}"
+
+def _pnl_str(pnl: float, capital: float = 0) -> str:
+    """Format P&L with sign, optional percentage."""
+    sign = "+" if pnl >= 0 else "-"
+    s = f"{sign}{_CUR}{abs(pnl):,.0f}"
+    if capital > 0:
+        pct = abs(pnl) / capital * 100
+        s += f"  ({sign}{pct:.2f}%)"
+    return s
 
 
 # ============================================================
@@ -93,12 +127,10 @@ def _build_candle_chart(
         import matplotlib.pyplot as plt
         import matplotlib.patches as mpatches
 
-        # Use last 60 candles for clarity
         df = candles.copy().tail(60)
         df.index = pd.DatetimeIndex(df.index)
         df.columns = [c.capitalize() for c in df.columns]
 
-        # Ensure required columns
         for col in ["Open", "High", "Low", "Close", "Volume"]:
             if col not in df.columns:
                 return None
@@ -147,7 +179,6 @@ def _build_candle_chart(
             returnfig=True,
         )
 
-        # Entry arrow annotation on last candle
         ax = axes[0]
         price_range = float(df["High"].max()) - float(df["Low"].min())
         offset = price_range * 0.05
@@ -170,7 +201,6 @@ def _build_candle_chart(
                 arrowprops=dict(arrowstyle="->", color=color, lw=1.5),
             )
 
-        # Legend
         patches = [
             mpatches.Patch(color="#FFD700", label=f"Entry {_CUR}{signal_price:.2f}"),
             mpatches.Patch(color="#FF4444", label=f"SL {_CUR}{stop_loss:.2f}"),
@@ -215,19 +245,17 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         )
         fig.patch.set_facecolor("#0D1117")
 
-        # Equity curve
         x      = list(range(len(cumulative)))
         color  = "#00C853" if cumulative[-1] >= 0 else "#FF1744"
         ax1.plot(x, cumulative, color=color, linewidth=2.5, zorder=3)
         ax1.fill_between(x, cumulative, alpha=0.15, color=color)
         ax1.axhline(0, color="#555555", linestyle="--", lw=1)
         ax1.set_facecolor("#0D1117")
-        ax1.set_title("Equity Curve — Today's Trades", color="white", fontsize=11)
+        ax1.set_title("KingTrades — Equity Curve", color="white", fontsize=11)
         ax1.set_ylabel(f"Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax1.tick_params(colors="#AAAAAA")
         ax1.grid(True, color="#333333", linestyle=":", alpha=0.5)
 
-        # Per-trade bar
         bar_colors = ["#00C853" if p >= 0 else "#FF1744" for p in pnls]
         ax2.bar(x, pnls, color=bar_colors, width=0.7)
         ax2.axhline(0, color="#555555", linestyle="--", lw=1)
@@ -252,12 +280,12 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
 
 
 # ============================================================
-# TELEGRAM ALERTER
+# BLOOMBERG TERMINAL ALERTER
 # ============================================================
 
 class TelegramAlerter:
     """
-    Rich Telegram alert engine with full IST timestamps.
+    Bloomberg Terminal-grade Telegram alert engine.
 
     All public methods are synchronous — async sending is handled internally.
     Gracefully degrades if telegram or matplotlib are not installed.
@@ -275,27 +303,33 @@ class TelegramAlerter:
         """Link risk manager so exit/entry alerts can include live win-rate stats."""
         self._risk_manager = rm
 
-    def _live_stats_line(self) -> str:
-        """Returns a one-line stats string pulled from the live risk manager state."""
+    def _live_stats(self) -> tuple:
+        """Returns (n_trades, wins, losses, wr_pct, daily_pnl) from risk manager."""
         try:
             rm = self._risk_manager
             if rm is None:
-                return ""
-            state  = getattr(rm, "state", None)
+                return 0, 0, 0, 0.0, 0.0
+            state = getattr(rm, "state", None)
             if state is None:
-                return ""
+                return 0, 0, 0, 0.0, 0.0
             n      = state.daily_trades
             wins   = state.winning_trades
             losses = state.losing_trades
             wr     = (wins / n * 100) if n > 0 else 0.0
             pnl    = state.daily_pnl
-            pnl_s  = f"+${pnl:,.0f}" if pnl >= 0 else f"-${abs(pnl):,.0f}"
-            return (
-                f"📊 Today: *{n}* trades | W/L: `{wins}/{losses}` | "
-                f"WR: `{wr:.0f}%` | P&L: *{pnl_s}*"
-            )
+            return n, wins, losses, wr, pnl
         except Exception:
+            return 0, 0, 0, 0.0, 0.0
+
+    def _live_stats_line(self) -> str:
+        n, wins, losses, wr, pnl = self._live_stats()
+        if n == 0:
             return ""
+        pnl_s = f"+{_CUR}{pnl:,.0f}" if pnl >= 0 else f"-{_CUR}{abs(pnl):,.0f}"
+        return (
+            f"📊 Today: *{n}* trades | W/L: `{wins}/{losses}` | "
+            f"WR: `{wr:.0f}%` | P&L: *{pnl_s}*"
+        )
 
     # --------------------------------------------------------
     # INIT
@@ -305,7 +339,6 @@ class TelegramAlerter:
         if not self.bot_token or not self.chat_id:
             logger.warning("Telegram not configured (missing token/chat_id) — alerts disabled")
             return
-        # Use direct HTTP instead of python-telegram-bot to avoid asyncio event-loop issues
         self._api_base = f"https://api.telegram.org/bot{self.bot_token}"
         self._ready = True
         logger.info(f"[{format_ist_timestamp()}] Telegram alerter ready (direct HTTP)")
@@ -322,10 +355,7 @@ class TelegramAlerter:
 
     def _send(self, text: str, image_buf: Optional[io.BytesIO] = None,
               parse_mode: str = "Markdown") -> bool:
-        """
-        Send message via direct Telegram Bot HTTP API.
-        No asyncio — pure requests, works from any thread/context.
-        """
+        """Send message via direct Telegram Bot HTTP API (synchronous)."""
         if not self._ready:
             logger.debug("Telegram not ready — alert suppressed")
             return False
@@ -361,7 +391,6 @@ class TelegramAlerter:
             return False
 
     def send_text(self, text: str) -> bool:
-        # Default to HTML so messages with <b>, <code>, etc. render correctly
         return self._send(text, parse_mode="HTML")
 
     def send_html(self, text: str) -> bool:
@@ -369,49 +398,56 @@ class TelegramAlerter:
         return self._send(text, parse_mode="HTML")
 
     # --------------------------------------------------------
-    # SIGNAL ALERT  (core alert with chart)
+    # SIGNAL ALERT  (Bloomberg style — with chart)
     # --------------------------------------------------------
 
     def send_signal(self, signal, candles_df: Optional[pd.DataFrame] = None) -> bool:
-        """
-        Send a rich trade signal alert.
-        `signal` is a TradeSignal dataclass from signal_generator.py
-        """
+        """Send a Bloomberg-style trade signal alert with chart."""
         direction_emoji = E["long"] if signal.direction == "LONG" else E["short"]
-        grade_emoji     = getattr(signal, "grade_emoji", E["target"])
         grade           = getattr(signal, "quality_grade", "B")
         size_mult       = getattr(signal, "size_multiplier", 1.0)
         qty             = getattr(signal, "quantity", 0)
+        is_grand_slam   = getattr(signal, "grand_slam", False) or (size_mult >= 1.9)
 
         risk_amount = abs(signal.entry_price - signal.stop_loss) * qty
         proj_t1     = abs(signal.target_1 - signal.entry_price) * qty
         proj_t2     = abs(signal.target_2 - signal.entry_price) * qty
-        patterns_str = ", ".join(signal.patterns[:5]) if signal.patterns else "—"
+        rr          = signal.risk_reward if hasattr(signal, "risk_reward") and signal.risk_reward else 0
+        patterns_str = ", ".join(signal.patterns[:3]) if signal.patterns else "—"
+        score        = getattr(signal, "signal_score", 0)
         mtf          = signal.timeframe_alignment or {}
-        mtf_str      = " | ".join(f"{tf}: {v}" for tf, v in list(mtf.items())[:3]) if mtf else "—"
+        mtf_ok       = all(v in ("BULLISH", "BEARISH", "ALIGNED", True) or (isinstance(v, (int, float)) and v > 50)
+                           for v in list(mtf.values())[:3]) if mtf else False
         rationale    = textwrap.shorten(
-            signal.rationale or "Signal confirmed by multi-timeframe momentum",
-            350, placeholder="...",
+            signal.rationale or "Multi-timeframe momentum confirmed",
+            300, placeholder="...",
         )
+
+        slam_line = "  🏆 *GRAND SLAM* — 2× size\n" if is_grand_slam else ""
+        mtf_icon  = "✅" if mtf_ok else "⚠️"
 
         text = (
             f"{direction_emoji} *{signal.direction} SIGNAL — {signal.symbol}*\n"
-            f"{grade_emoji} Grade: `{grade}` | Score: `{signal.signal_score:.0f}/100` | Size: `{size_mult:.1f}x`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['target']} *Entry:* `{_CUR}{signal.entry_price:.2f}`\n"
-            f"🛑 *Stop Loss:* `{_CUR}{signal.stop_loss:.2f}`\n"
-            f"🎯 *Target 1:* `{_CUR}{signal.target_1:.2f}`\n"
-            f"🎯 *Target 2:* `{_CUR}{signal.target_2:.2f}`\n"
-            f"📐 *R:R:* `{signal.risk_reward:.1f}:1` | Qty: `{qty}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['money']} Risk: `{_CUR}{risk_amount:,.0f}` | T1 P&L: `{_CUR}{proj_t1:,.0f}` | T2: `{_CUR}{proj_t2:,.0f}`\n"
-            f"📈 Patterns: `{patterns_str}`\n"
-            f"⏱ MTF: `{mtf_str}`\n"
-            f"📰 News: `{'Clear' if signal.news_clear else 'BLOCKED — event nearby'}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['brain']} *AI Rationale:*\n_{rationale}_\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['clock']} `{signal.signal_time or format_ist_timestamp()}`"
+            f"{slam_line}"
+            f"{_sep()}\n"
+            f"  *GRADE: {grade}* | Score: `{score:.0f}/100` `{_score_bar(score)}`\n"
+            f"  Pattern: `{patterns_str}`\n"
+            f"{_sep()}\n"
+            f"  ENTRY  `{_CUR}{signal.entry_price:.2f}`\n"
+            f"  SIZE   `{qty} shrs`  ×  `{size_mult:.1f}×`\n"
+            f"  RISK   `{_CUR}{risk_amount:,.0f}`\n"
+            f"{_sep()}\n"
+            f"  SL  →  `{_CUR}{signal.stop_loss:.2f}`   hard stop\n"
+            f"  T1  →  `{_CUR}{signal.target_1:.2f}`   +1.5×ATR  [40%]\n"
+            f"  T2  →  `{_CUR}{signal.target_2:.2f}`   +3.5×ATR  [20%]\n"
+            f"  R:R    `{rr:.1f} : 1`\n"
+            f"{_sep()}\n"
+            f"  MTF    {mtf_icon} 5m · 15m · 1h\n"
+            f"  NEWS   `{'Clear ✅' if signal.news_clear else 'BLOCKED ⚠️'}`\n"
+            f"{_sep()}\n"
+            f"  _{rationale}_\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{signal.signal_time or format_ist_timestamp()}`"
         )
 
         chart = None
@@ -425,7 +461,7 @@ class TelegramAlerter:
         return self._send(text, chart)
 
     # --------------------------------------------------------
-    # TRADE FILL
+    # TRADE FILL  (Bloomberg ORDER EXECUTED)
     # --------------------------------------------------------
 
     def send_trade_fill(self, symbol: str, direction: str, qty: int,
@@ -433,58 +469,165 @@ class TelegramAlerter:
                         stop_loss: float = 0.0, target_1: float = 0.0,
                         target_2: float = 0.0, signal_score: float = 0.0,
                         quality_grade: str = "") -> bool:
-        emoji = E["long"] if direction == "LONG" else E["short"]
-        stats = self._live_stats_line()
-        sl_line = f"SL: `{_CUR}{stop_loss:.2f}`" if stop_loss > 0 else ""
-        t1_line = f"T1: `{_CUR}{target_1:.2f}`"  if target_1  > 0 else ""
-        t2_line = f"T2: `{_CUR}{target_2:.2f}`"  if target_2  > 0 else ""
-        levels  = " | ".join(x for x in [sl_line, t1_line, t2_line] if x)
-        grade_s = f" | Grade: `{quality_grade}`" if quality_grade else ""
-        score_s = f" | Score: `{signal_score:.0f}`" if signal_score > 0 else ""
+        emoji    = E["signal"] if direction == "LONG" else E["short"]
+        dir_word = "LONG ENTRY" if direction == "LONG" else "SHORT ENTRY"
+        notional = price * qty
+        risk_amt = abs(price - stop_loss) * qty if stop_loss > 0 else 0.0
+        risk_pct = 0.0
+        try:
+            import config as _c
+            cap = getattr(_c, "MAX_DAILY_CAPITAL", 0)
+            risk_pct = (risk_amt / cap * 100) if cap > 0 else 0.0
+        except Exception:
+            pass
+
+        grade_line = f"  GRADE  `{quality_grade}`" if quality_grade else ""
+        score_line = f"  SCORE  `{signal_score:.0f}/100`  `{_score_bar(signal_score)}`" if signal_score > 0 else ""
+        sl_line    = f"  SL  →  `{_CUR}{stop_loss:.2f}`   hard stop" if stop_loss > 0 else ""
+        t1_line    = f"  T1  →  `{_CUR}{target_1:.2f}`   [40% exit]" if target_1 > 0 else ""
+        t2_line    = f"  T2  →  `{_CUR}{target_2:.2f}`   [20% exit]" if target_2 > 0 else ""
+        levels     = "\n".join(x for x in [sl_line, t1_line, t2_line] if x)
+        stats      = self._live_stats_line()
+
         text = (
-            f"{emoji} *TRADE ENTERED — {symbol}*\n"
-            f"Direction: `{direction}` | Qty: `{qty}` | Entry: `{_CUR}{price:.2f}`"
-            f"{grade_s}{score_s}\n"
-            + (f"{levels}\n" if levels else "")
-            + (f"━━━━━━━━━━━━\n{stats}\n" if stats else "")
-            + f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{emoji} *ORDER EXECUTED — {dir_word}*\n"
+            f"{_sep()}\n"
+            f"  *{symbol}*  |  `{direction}`\n"
+            f"{_sep()}\n"
+            f"  ENTRY    `{_CUR}{price:.2f}`     {format_ist_timestamp()}\n"
+            f"  SIZE     `{qty} shrs`    `{_CUR}{notional:,.0f}` notional\n"
+            + (f"  RISK     `{_CUR}{risk_amt:,.0f}`     `{risk_pct:.2f}%` capital\n" if risk_amt > 0 else "")
+            + (f"{_sep()}\n{grade_line}\n{score_line}\n" if (grade_line or score_line) else "")
+            + (f"{_sep()}\n{levels}\n" if levels else "")
+            + (f"{_sep()}\n{stats}\n" if stats else "")
+            + f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     # --------------------------------------------------------
-    # EXIT ALERT (Profit / Loss)
+    # EXIT ALERT  (Bloomberg POSITION CLOSED)
     # --------------------------------------------------------
 
     def send_exit(self, symbol: str, direction: str, qty: int,
                   entry: float, exit_price: float, pnl: float,
                   reason: str = "Target", order_id: str = "") -> bool:
         pnl_emoji = E["profit"] if pnl >= 0 else E["loss"]
-        pnl_str   = f"+{_CUR}{pnl:,.0f}" if pnl >= 0 else f"-{_CUR}{abs(pnl):,.0f}"
         pct = ((exit_price - entry) / entry * 100) if direction == "LONG" else ((entry - exit_price) / entry * 100)
-        stats = self._live_stats_line()
+        n, wins, losses, wr, day_pnl = self._live_stats()
+        day_pnl_str = _pnl_str(day_pnl)
+        target_hit = False
+        target_pct = 1.0
+        capital    = 0.0
+        try:
+            import config as _c
+            capital    = getattr(_c, "MAX_DAILY_CAPITAL", 0)
+            target_pct = getattr(_c, "DAILY_PROFIT_TARGET_PCT", 1.0)
+            target_hit = day_pnl >= capital * target_pct / 100 if capital > 0 else False
+        except Exception:
+            pass
+
+        target_line = f"\n  {E['target']} *DAILY {target_pct:.1f}% TARGET: ACHIEVED* ✅" if target_hit else ""
+        reason_clean = reason.replace("_", " ").upper()
+
         text = (
-            f"{pnl_emoji} *EXIT — {symbol}*\n"
-            f"Direction: `{direction}` | Qty: `{qty}`\n"
-            f"Entry: `{_CUR}{entry:.2f}` → Exit: `{_CUR}{exit_price:.2f}` (`{pct:+.2f}%`)\n"
-            f"P&L: *{pnl_str}*\n"
-            f"Reason: `{reason}`\n"
-            + (f"━━━━━━━━━━━━\n{stats}\n" if stats else "")
-            + f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{pnl_emoji} *POSITION CLOSED — {reason_clean}*\n"
+            f"{_sep()}\n"
+            f"  *{symbol}*  |  `{direction}`  |  `{reason_clean}`\n"
+            f"{_sep()}\n"
+            f"  ENTRY    `{_CUR}{entry:.2f}`\n"
+            f"  EXIT     `{_CUR}{exit_price:.2f}`   `{pct:+.2f}%`\n"
+            f"  QTY      `{qty} shrs`\n"
+            f"{_sep()}\n"
+            f"  NET P&L  *{_pnl_str(pnl)}*\n"
+            f"{_sep()}\n"
+            f"  DAY P&L  `{day_pnl_str}`\n"
+            f"  TRADES   `{n}` today   `{wins}W / {losses}L`\n"
+            f"  WIN RATE `{wr:.1f}%`"
+            f"{target_line}\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     # --------------------------------------------------------
-    # STOP-LOSS HIT
+    # STOP-LOSS HIT  (Bloomberg STOP TRIGGERED)
     # --------------------------------------------------------
 
     def send_sl_hit(self, symbol: str, direction: str, entry: float,
                     sl_price: float, loss: float) -> bool:
+        n, wins, losses, wr, day_pnl = self._live_stats()
+        consec = 0
+        try:
+            import config as _c
+            cap   = getattr(_c, "MAX_DAILY_CAPITAL", 8000)
+            limit = getattr(_c, "CONSECUTIVE_LOSS_LIMIT", 3)
+            rm    = self._risk_manager
+            if rm:
+                state  = getattr(rm, "state", None)
+                consec = getattr(state, "consecutive_losses", 0) if state else 0
+        except Exception:
+            cap, limit, consec = 8000, 3, 0
+
+        loss_pct  = abs(loss) / cap * 100 if cap > 0 else 0
+        size_next = "35% — anti-martingale" if consec >= 2 else "100% — normal"
+        day_pnl_str = _pnl_str(day_pnl)
+
         text = (
-            f"{E['loss']} *STOP-LOSS HIT — {symbol}*\n"
-            f"Direction: `{direction}` | Entry: `{_CUR}{entry:.2f}` | SL: `{_CUR}{sl_price:.2f}`\n"
-            f"Loss: `{_CUR}{abs(loss):,.0f}`\n"
-            f"{E['warn']} Reviewing consecutive losses...\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{E['stop']} *STOP LOSS HIT*\n"
+            f"{_sep()}\n"
+            f"  *{symbol}*  |  `{direction}`  |  SL TRIGGERED\n"
+            f"{_sep()}\n"
+            f"  ENTRY    `{_CUR}{entry:.2f}`\n"
+            f"  SL HIT   `{_CUR}{sl_price:.2f}`\n"
+            f"{_sep()}\n"
+            f"  LOSS     `{_CUR}{abs(loss):,.0f}`   `{loss_pct:.2f}%` capital\n"
+            f"{_sep()}\n"
+            f"  DAY P&L  `{day_pnl_str}`\n"
+            f"  CONSEC   `{consec} / {limit}` loss limit\n"
+            f"  NEXT SZ  `{size_next}`\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
+        )
+        return self._send(text)
+
+    # --------------------------------------------------------
+    # TRAILING STOP UPDATE  (Bloomberg TRAIL MOVE)
+    # --------------------------------------------------------
+
+    def send_trailing_stop_update(
+        self,
+        symbol: str,
+        old_sl: float,
+        new_sl: float,
+        current_price: float,
+        stage: str = "BREAKEVEN",
+        risk_before: float = 0.0,
+        risk_after: float = 0.0,
+    ) -> bool:
+        """Bloomberg-style trailing stop / breakeven lock alert."""
+        if stage == "BREAKEVEN":
+            title = "BREAKEVEN LOCK ACTIVATED"
+            note  = "Risk on trade: FREE TRADE ✅"
+        elif stage == "T1_LOCK":
+            title = "T1 PROFIT LOCK ACTIVATED"
+            note  = f"Locking in partial profit — SL above entry"
+        else:
+            title = f"TRAIL STOP MOVED — {stage}"
+            note  = ""
+
+        text = (
+            f"{E['lock']} *TRAILING STOP — {symbol}*\n"
+            f"{_sep()}\n"
+            f"  *{title}*\n"
+            f"{_sep()}\n"
+            f"  PRICE    `{_CUR}{current_price:.2f}`\n"
+            f"  SL OLD   `{_CUR}{old_sl:.2f}`\n"
+            f"  SL NEW   `{_CUR}{new_sl:.2f}`  ✅\n"
+            + (f"  RISK     `{_CUR}{risk_before:,.0f}` → `{_CUR}{risk_after:,.0f}`\n" if risk_before > 0 else "")
+            + f"{_sep()}\n"
+            f"  {note}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -495,31 +638,42 @@ class TelegramAlerter:
     def send_circuit_breaker(self, reason: str) -> bool:
         text = (
             f"{E['kill']} *CIRCUIT BREAKER TRIGGERED*\n"
-            f"Reason: `{reason}`\n"
-            f"All new entries PAUSED. Existing positions being monitored.\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{_sep()}\n"
+            f"  Reason: `{reason}`\n"
+            f"{_sep()}\n"
+            f"  All new entries PAUSED.\n"
+            f"  Existing positions being monitored.\n"
+            f"  Send /resume to override.\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     def send_kill_alert(self) -> bool:
         text = (
             f"{E['kill']} *KILL SWITCH ACTIVATED*\n"
-            f"Emergency stop received. ALL positions being squared off.\n"
-            f"New trading HALTED for the day.\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{_sep()}\n"
+            f"  Emergency stop received.\n"
+            f"  ALL positions being squared off.\n"
+            f"  New trading HALTED for the day.\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     # --------------------------------------------------------
-    # STATUS REPORT
+    # STATUS REPORT  (Bloomberg LIVE PORTFOLIO)
     # --------------------------------------------------------
 
     def send_status(self, risk_manager=None, balance_available: float = None,
                     margin_used: float = None) -> bool:
         if risk_manager is None:
             return self._send(
-                f"{E['chart']} *Bot Status*\n"
-                f"`{format_ist_timestamp()}`\nNo risk data available."
+                f"{E['chart']} *PORTFOLIO STATUS*\n"
+                f"{_sep()}\n"
+                f"  {format_ist_timestamp()}\n"
+                f"  No risk data available.\n"
+                f"{_sep()}"
             )
 
         state     = getattr(risk_manager, "state", None)
@@ -527,44 +681,70 @@ class TelegramAlerter:
         capital   = state.daily_capital if state else 0
         n_trades  = state.daily_trades  if state else 0
         wins      = state.winning_trades if state else 0
+        losses    = state.losing_trades  if state else 0
         wr_pct    = (wins / n_trades * 100) if n_trades > 0 else 0.0
         paused    = state.trading_paused if state else False
 
-        # Use broker equity change as truth when live balance is available.
-        # Avoids discrepancy between trade-level P&L (can drift due to slippage)
-        # and the actual account equity change shown in Alpaca/broker UI.
         if balance_available and capital > 0:
             daily_pnl = balance_available - capital
         else:
             daily_pnl = state.daily_pnl if state else 0
 
-        pnl_emoji = E["profit"] if daily_pnl >= 0 else E["loss"]
-        pnl_str   = f"+{_CUR}{daily_pnl:,.0f}" if daily_pnl >= 0 else f"-{_CUR}{abs(daily_pnl):,.0f}"
+        pnl_str  = _pnl_str(daily_pnl, capital)
+        status   = "PAUSED ⏸" if paused else "ACTIVE ✅"
+
+        target_pct = 1.0
+        try:
+            import config as _c
+            target_pct = getattr(_c, "DAILY_PROFIT_TARGET_PCT", 1.0)
+        except Exception:
+            pass
+        target_amt = capital * target_pct / 100 if capital > 0 else 0
+        target_hit = daily_pnl >= target_amt if target_amt > 0 else False
+        target_progress = (daily_pnl / target_amt * 100) if target_amt > 0 else 0
+        target_bar  = _score_bar(min(100, target_progress))
 
         lines = [
-            f"{E['chart']} *Bot Status — {format_ist_timestamp()}*",
+            f"{E['chart']} *LIVE PORTFOLIO — {format_ist_timestamp()}*",
+            f"{_sep()}",
+            f"  STATUS   `{status}`",
+            f"  CAPITAL  `{_CUR}{capital:,.0f}`",
         ]
         if balance_available is not None:
-            bal_line = f"💰 Balance: `{_CUR}{balance_available:,.2f}`"
+            bal_str = f"  BALANCE  `{_CUR}{balance_available:,.2f}`"
             if margin_used:
-                bal_line += f" | Margin Used: `{_CUR}{margin_used:,.2f}`"
-            lines.append(bal_line)
+                bal_str += f"   MARGIN `{_CUR}{margin_used:,.2f}`"
+            lines.append(bal_str)
         lines += [
-            f"Daily P&L: {pnl_emoji} *{pnl_str}*",
-            f"Capital: `{_CUR}{capital:,.0f}` | Trades: `{n_trades}` | Win Rate: `{wr_pct:.1f}%`",
-            f"Open Positions: `{len(positions)}` | State: `{'PAUSED' if paused else 'ACTIVE'}`",
+            f"  DAY P&L  *{pnl_str}*",
+            f"  TARGET   `{_CUR}{target_pct:.1f}%` = `{_CUR}{target_amt:,.0f}`  `{target_bar}` `{target_progress:.0f}%`",
+            f"{_sep()}",
         ]
+
         if positions:
-            lines.append("━━━━━━━━━━━━━━━━━━━━")
+            lines.append(f"  OPEN POSITIONS ({len(positions)})")
+            lines.append(f"  {'SYMBOL':<8}{'DIR':<7}{'ENTRY':>8}{'NOW':>8}{'P&L':>9}")
+            lines.append(f"  {'──────':<8}{'─────':<7}{'──────':>8}{'──────':>8}{'─────':>9}")
             for sym, pos in list(positions.items())[:8]:
-                p_pnl  = getattr(pos, "pnl", 0)
-                p_emj  = "🟢" if p_pnl >= 0 else "🔴"
-                cur    = getattr(pos, "current_price", pos.entry_price)
+                p_pnl = getattr(pos, "pnl", 0)
+                cur   = getattr(pos, "current_price", pos.entry_price)
+                arrow = "↗" if p_pnl >= 0 else "↘"
                 lines.append(
-                    f"{p_emj} `{sym}` {pos.direction} "
-                    f"{_CUR}{pos.entry_price:.2f}→{_CUR}{cur:.2f} | "
-                    f"P&L: `{'+' if p_pnl>=0 else ''}{p_pnl:,.0f}`"
+                    f"  {sym:<8}{pos.direction:<7}"
+                    f"`{_CUR}{pos.entry_price:.2f}`"
+                    f"`{_CUR}{cur:.2f}`"
+                    f"  `{'+' if p_pnl>=0 else ''}{p_pnl:,.0f}` {arrow}"
                 )
+            lines.append(_sep())
+        else:
+            lines.append(f"  No open positions")
+            lines.append(_sep())
+
+        lines += [
+            f"  TRADES   `{n_trades}` today   `{wins}W / {losses}L`   WR: `{wr_pct:.1f}%`",
+            f"  {'🎯 1% TARGET HIT ✅' if target_hit else f'⏳ In progress — need {_CUR}{max(0, target_amt - daily_pnl):,.0f} more'}",
+            f"{_sep()}",
+        ]
 
         return self._send("\n".join(lines))
 
@@ -574,16 +754,22 @@ class TelegramAlerter:
 
     def send_pause(self, reason: str = "") -> bool:
         text = (
-            f"{E['pause']} *Trading PAUSED*\n"
-            f"{'Reason: ' + reason if reason else 'Manual pause.'}\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{E['pause']} *TRADING PAUSED*\n"
+            f"{_sep()}\n"
+            f"  {'Reason: ' + reason if reason else 'Manual pause.'}\n"
+            f"  Send /resume to restart entries.\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     def send_resume(self) -> bool:
         return self._send(
-            f"{E['resume']} *Trading RESUMED*\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{E['resume']} *TRADING RESUMED*\n"
+            f"{_sep()}\n"
+            f"  Scanning for A+ setups...\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
 
     # --------------------------------------------------------
@@ -594,13 +780,16 @@ class TelegramAlerter:
         n = len(positions) if hasattr(positions, "__len__") else 0
         text = (
             f"{E['warn']} *SQUARE-OFF WARNING — 3:50 PM ET*\n"
-            f"`{n}` open position(s) will be force-closed at market price.\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{_sep()}\n"
+            f"  `{n}` open position(s) will be force-closed.\n"
+            f"  Closing at market price — EOD mandatory.\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
     # --------------------------------------------------------
-    # MORNING BRIEF
+    # MORNING BRIEF  (Bloomberg MARKET BRIEF)
     # --------------------------------------------------------
 
     def send_morning_brief(
@@ -612,13 +801,12 @@ class TelegramAlerter:
         fii_summary: str = "",
     ) -> bool:
         """
-        Backward-compatible morning brief.
+        Bloomberg-style morning market brief.
 
-        Can be called two ways:
+        Accepts two calling styles:
           1. send_morning_brief(brief_dict)             — new style (dict from overnight_analyzer)
           2. send_morning_brief(watchlist, avail, nifty) — legacy style from main.py
         """
-        # Detect calling style
         if isinstance(brief_or_watchlist, dict):
             brief      = brief_or_watchlist
             bias       = brief.get("day_bias", "NEUTRAL")
@@ -627,42 +815,80 @@ class TelegramAlerter:
             vix        = vix_data.get("vix", 0) if isinstance(vix_data, dict) else 0
             spy_data   = brief.get("spy_gap", {})
             gap_pct    = spy_data.get("gap_pct", 0) if isinstance(spy_data, dict) else 0
+            spy_price  = spy_data.get("price", 0)   if isinstance(spy_data, dict) else 0
             risks      = brief.get("key_risks", [])
             ai_thesis  = brief.get("ai_thesis", "")
             watchlist  = brief.get("top_watchlist", [])
             avail_cap  = available or brief.get("available_capital", 0)
             nifty_ltp  = nifty_open or brief.get("spy_open", 0)
         else:
-            # Legacy: send_morning_brief(watchlist_list, available_float, nifty_open_float)
             watchlist  = brief_or_watchlist or []
             avail_cap  = available
             nifty_ltp  = nifty_open
+            spy_price  = nifty_ltp
             bias, bias_score, vix, gap_pct = "NEUTRAL", 0, 15.0, 0.0
             risks, ai_thesis = [], ""
 
-        bias_emoji = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(bias, "🟡")
-        wl_str     = ", ".join(f"`{s}`" for s in watchlist[:10]) if watchlist else "—"
-        risks_str  = "\n".join(f"  • {r}" for r in risks[:4]) if risks else "  No high-impact events"
-        thesis     = textwrap.shorten(ai_thesis or "Scanning for momentum setups...", 350, placeholder="...")
+        bias_emoji   = {"BULLISH": "🟢", "BEARISH": "🔴", "NEUTRAL": "🟡"}.get(bias, "🟡")
+        gap_arrow    = _dir_arrow(gap_pct)
+        vix_regime   = "HIGH ⚠️" if vix > 25 else ("ELEVATED" if vix > 18 else "NORMAL ✅")
+        risks_str    = "\n".join(f"  • {r}" for r in risks[:4]) if risks else "  No high-impact events today"
+        thesis       = textwrap.shorten(ai_thesis or "Scanning for momentum setups...", 250, placeholder="...")
+        wl_str       = "  " + ", ".join(f"`{s}`" for s in watchlist[:12]) if watchlist else "  Loading..."
+
+        target_pct, target_amt, risk_budget = 1.0, 0.0, 0.0
+        try:
+            import config as _c
+            target_pct  = getattr(_c, "DAILY_PROFIT_TARGET_PCT", 1.0)
+            cap         = avail_cap or getattr(_c, "MAX_DAILY_CAPITAL", 0)
+            target_amt  = cap * target_pct / 100
+            risk_budget = cap * getattr(_c, "DAILY_LOSS_LIMIT_PCT", 2.0) / 100
+        except Exception:
+            pass
+
+        now_str   = format_ist_timestamp()
+        date_str  = get_current_ist_time().strftime("%Y-%m-%d")
+        sess_time = get_current_ist_time()
+        # session label based on ET hour
+        et_hour = (sess_time.hour - 5) % 24  # rough ET from IST
+        if et_hour < 10:
+            session = "OPENING DRIVE (2.2× size)"
+        elif et_hour < 12:
+            session = "MID-MORNING (1.0× size)"
+        else:
+            session = "MIDDAY (0.8× size)"
 
         text = (
-            f"{E['rocket']} *MORNING BRIEF — {format_ist_timestamp()}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{bias_emoji} Day Bias: *{bias}* (score: `{bias_score:+d}`)\n"
-            f"VIX: `{vix:.1f}` | SPY Gap: `{gap_pct:+.2f}%` | "
-            f"SPY: `{_CUR}{nifty_ltp:,.2f}` | Capital: `{_CUR}{avail_cap:,.0f}`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"*Key Risks:*\n{risks_str}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"*Watchlist ({len(watchlist)} stocks):* {wl_str}\n"
+            f"{E['rocket']} *MARKET BRIEF — {date_str}*\n"
+            f"{_sep()}\n"
+            f"  SPY      `{_CUR}{spy_price:,.2f}`    {gap_arrow} `{gap_pct:+.2f}%`\n"
+            f"  VIX      `{vix:.1f}`         {vix_regime}\n"
+            f"{_sep()}\n"
+            f"  REGIME   {bias_emoji} *{bias}*   score: `{bias_score:+d}`\n"
+            f"  SESSION  `{session}`\n"
+            f"{_sep()}\n"
+            f"  CAPITAL  `{_CUR}{avail_cap:,.0f}`\n"
+            f"  TARGET   `{_CUR}{target_amt:,.0f}`  ({target_pct:.1f}% of cap)\n"
+            f"  RISK MAX `{_CUR}{risk_budget:,.0f}`  (daily loss limit)\n"
+            f"{_sep()}\n"
+            f"  WATCHLIST ({len(watchlist)} stocks)\n"
+            f"{wl_str}\n"
+            f"{_sep()}\n"
+            f"  CALENDAR\n{risks_str}\n"
+        )
+        if ai_thesis:
+            text += f"{_sep()}\n  {E['brain']} _{thesis}_\n"
+        text += (
+            f"{_sep()}\n"
+            f"  🤖 KingTrades v3.0 — ARMED & READY\n"
+            f"  {E['clock']} `{now_str}`"
         )
         if oc_summary:
-            text += f"━━━━━━━━━━━━━━━━━━━━\n{oc_summary}\n"
+            text += f"\n{_sep()}\n{oc_summary}"
         if fii_summary:
-            text += f"━━━━━━━━━━━━━━━━━━━━\n{fii_summary}\n"
-        if ai_thesis:
-            text += f"━━━━━━━━━━━━━━━━━━━━\n{E['brain']} *AI Thesis:* _{thesis}_"
-        return self._send(text)
+            text += f"\n{_sep()}\n{fii_summary}"
+
+        return self._send(text[:4096])
 
     # --------------------------------------------------------
     # ENTRY ALERT (alias for send_signal — used by main.py)
@@ -687,11 +913,7 @@ class TelegramAlerter:
         reason: str = "Target",
         order_id: str = "",
     ) -> bool:
-        """
-        Exit alert called by main.py after a position is closed.
-        Signature: (symbol, direction, entry_price, exit_price, qty, pnl, reason)
-        Delegates to send_exit() which has qty before entry in its signature.
-        """
+        """Exit alert called by main.py after a position is closed."""
         return self.send_exit(
             symbol=symbol,
             direction=direction,
@@ -704,7 +926,7 @@ class TelegramAlerter:
         )
 
     # --------------------------------------------------------
-    # EOD PERFORMANCE REPORT
+    # EOD PERFORMANCE REPORT  (Bloomberg EOD REPORT)
     # --------------------------------------------------------
 
     def send_eod_report(self, risk_manager=None,
@@ -719,40 +941,61 @@ class TelegramAlerter:
         wr_pct     = (wins / n_trades * 100) if n_trades > 0 else 0.0
         pnl_pct    = (daily_pnl / capital * 100) if capital > 0 else 0.0
 
-        pnl_emoji  = E["trophy"] if daily_pnl > 0 else (E["loss"] if daily_pnl < 0 else E["chart"])
-        pnl_str    = (f"+{_CUR}{daily_pnl:,.0f} (+{pnl_pct:.2f}%)"
-                      if daily_pnl >= 0
-                      else f"-{_CUR}{abs(daily_pnl):,.0f} ({pnl_pct:.2f}%)")
+        wins_pnl   = [t.get("pnl", 0) for t in all_trades if t.get("pnl", 0) > 0]
+        losses_pnl = [t.get("pnl", 0) for t in all_trades if t.get("pnl", 0) < 0]
+        avg_win    = sum(wins_pnl)  / len(wins_pnl)   if wins_pnl  else 0.0
+        avg_loss   = sum(losses_pnl)/ len(losses_pnl) if losses_pnl else 0.0
+        ev_trade   = (wr_pct/100 * avg_win) + ((1 - wr_pct/100) * avg_loss) if n_trades > 0 else 0.0
 
         best  = max(all_trades, key=lambda t: t.get("pnl", 0), default=None)
         worst = min(all_trades, key=lambda t: t.get("pnl", 0), default=None)
-        best_str  = f"{best.get('symbol','?')} `+{_CUR}{best.get('pnl',0):,.0f}`"   if best  else "—"
-        worst_str = f"{worst.get('symbol','?')} `-{_CUR}{abs(worst.get('pnl',0)):,.0f}`" if worst else "—"
+        best_str  = f"{best.get('symbol','?')}  `+{_CUR}{best.get('pnl',0):,.0f}`"  if best  else "—"
+        worst_str = f"{worst.get('symbol','?')}  `{_CUR}{worst.get('pnl',0):,.0f}`" if worst else "—"
 
-        # Daily 1% target — the KingTrades daily goal
         try:
             import config as _cfg
             _daily_tgt_pct = getattr(_cfg, "DAILY_PROFIT_TARGET_PCT", 1.0)
         except Exception:
             _daily_tgt_pct = 1.0
-        target_hit = (daily_pnl >= capital * _daily_tgt_pct / 100) if capital > 0 else False
+        target_hit  = (daily_pnl >= capital * _daily_tgt_pct / 100) if capital > 0 else False
+        new_capital = capital + daily_pnl
+
+        sign   = "+" if daily_pnl >= 0 else "-"
+        border = "=" * 34
+        pnl_box = (
+            f"  {border}\n"
+            f"  |  NET P&L:  {sign}{_CUR}{abs(daily_pnl):,.0f}  ({sign}{abs(pnl_pct):.2f}%)  |\n"
+            f"  {border}"
+        )
 
         text = (
-            f"{pnl_emoji} *END-OF-DAY REPORT — {format_ist_timestamp()}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"Net P&L: *{pnl_str}*\n"
-            f"Trades: `{n_trades}` | Wins: `{wins}` | Losses: `{losses}`\n"
-            f"Win Rate: `{wr_pct:.1f}%`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{E['fire']} Best Trade:  {best_str}\n"
-            f"{E['loss']} Worst Trade: {worst_str}\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"{'🎯 DAILY 1% TARGET HIT! ✅' if target_hit else f'⚠️ Below {_daily_tgt_pct:.1f}% daily target'}\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"📋 *EOD PERFORMANCE REPORT — {format_ist_timestamp()}*\n"
+            f"{_sep()}\n"
+            f"{pnl_box}\n"
+            f"{_sep()}\n"
+            f"  TRADES      `{n_trades}`     signals fired\n"
+            f"  WINNERS     `{wins}`     `{wr_pct:.1f}%` win rate\n"
+            f"  LOSERS      `{losses}`     avg `{_CUR}{abs(avg_loss):,.0f}` per loss\n"
+            f"  AVG WIN     `+{_CUR}{avg_win:,.0f}`\n"
+            f"  BEST        {best_str}\n"
+            f"  WORST       {worst_str}\n"
+            f"{_sep()}\n"
+            f"  GROSS P&L   `{_pnl_str(daily_pnl)}`\n"
+            f"  CAPITAL     `{_CUR}{capital:,.0f}` → `{_CUR}{new_capital:,.0f}`\n"
+            f"{_sep()}\n"
+            f"  EV/TRADE    `{'+' if ev_trade>=0 else ''}{_CUR}{ev_trade:,.0f}`\n"
+            f"  DAILY TGT   `{'✅ ACHIEVED' if target_hit else f'❌ MISSED ({_daily_tgt_pct:.1f}%)'}`\n"
+            f"{_sep()}\n"
+            f"  🤖 KingTrades v3.0  |  Next session: 09:30 ET\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
 
         chart = _build_equity_curve(all_trades, capital) if all_trades else None
         return self._send(text, chart)
+
+    # --------------------------------------------------------
+    # 1% TARGET ACHIEVED  (Bloomberg 1% CELEBRATION)
+    # --------------------------------------------------------
 
     def send_target_achieved(
         self,
@@ -763,24 +1006,27 @@ class TelegramAlerter:
         losses: int,
     ) -> bool:
         """
-        Big celebration when daily 1% target is achieved.
-        Called by main.py _check_profit_lock() on first activation.
-        Professional trading rule: 'Know your number. Hit your number. STOP.'
+        Bloomberg-grade 1% daily target celebration.
+        Called by main.py _check_profit_lock() on first LOCK activation.
         """
-        pct   = (daily_pnl / capital * 100) if capital > 0 else 0.0
-        wr    = (wins / trades * 100) if trades > 0 else 0.0
-        text  = (
-            f"🎯 *DAILY 1% TARGET ACHIEVED!*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"💰 P&L: *+{_CUR}{daily_pnl:,.0f}* (`+{pct:.2f}%`)\n"
-            f"📊 Trades: `{trades}` | W/L: `{wins}/{losses}` | WR: `{wr:.0f}%`\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🔒 All stops tightened to protect profits\n"
-            f"⚡ New entries: A+ only at 60% size\n"
-            f"💡 Type /pause to stop new entries for today\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"🏆 *Professional rule: hit your number, protect it.*\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+        pct = (daily_pnl / capital * 100) if capital > 0 else 0.0
+        wr  = (wins / trades * 100) if trades > 0 else 0.0
+        border = "=" * 36
+        text = (
+            f"🎯 *DAILY 1% TARGET ACHIEVED*\n"
+            f"{_sep()}\n"
+            f"  {border}\n"
+            f"  |  P&L: +{_CUR}{daily_pnl:,.0f}  (+{pct:.2f}%)    |\n"
+            f"  {border}\n"
+            f"{_sep()}\n"
+            f"  TRADES   `{trades}`   W/L: `{wins}/{losses}`   WR: `{wr:.0f}%`\n"
+            f"{_sep()}\n"
+            f"  {E['lock']} All stops tightened → entry+0.3×ATR\n"
+            f"  ⚡ New entries: A+ only at 60% size\n"
+            f"  💡 Type /pause to stop all new entries\n"
+            f"{_sep()}\n"
+            f"  🏆 *Know your number. Hit it. Protect it.*\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -790,11 +1036,14 @@ class TelegramAlerter:
 
     def send_token_refresh(self, success: bool, method: str = "TOTP") -> bool:
         emoji  = E["profit"] if success else E["loss"]
-        status = "succeeded" if success else "FAILED — using previous token"
+        status = "SUCCEEDED" if success else "FAILED — using previous token"
         text = (
-            f"{emoji} *Alpaca Auth {status.split()[0].capitalize()}*\n"
-            f"Status: `{status}`\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{emoji} *Auth Token Refresh*\n"
+            f"{_sep()}\n"
+            f"  Status: `{status}`\n"
+            f"  Method: `{method}`\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -803,11 +1052,13 @@ class TelegramAlerter:
     # --------------------------------------------------------
 
     def send_watchlist(self, symbols: List[str]) -> bool:
-        wl = ", ".join(f"`{s}`" for s in symbols[:20])
+        wl = "  " + ", ".join(f"`{s}`" for s in symbols[:20])
         text = (
-            f"{E['pin']} *Watchlist Updated*\n"
-            f"Scanning `{len(symbols)}` stocks:\n{wl}\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{E['pin']} *WATCHLIST — {len(symbols)} symbols*\n"
+            f"{_sep()}\n"
+            f"{wl}\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -818,17 +1069,17 @@ class TelegramAlerter:
     def send_ai_insight(self, symbol: str, insight: str,
                         trade_review: str = "") -> bool:
         text = (
-            f"{E['brain']} *AI Insight — {symbol}*\n"
-            f"━━━━━━━━━━━━━━━━━━━━\n"
-            f"_{textwrap.shorten(insight, 600, placeholder='...')}_\n"
+            f"{E['brain']} *AI INSIGHT — {symbol}*\n"
+            f"{_sep()}\n"
+            f"  _{textwrap.shorten(insight, 500, placeholder='...')}_\n"
         )
         if trade_review:
             text += (
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"*Trade Review:*\n"
-                f"_{textwrap.shorten(trade_review, 400, placeholder='...')}_\n"
+                f"{_sep()}\n"
+                f"  *Trade Review:*\n"
+                f"  _{textwrap.shorten(trade_review, 350, placeholder='...')}_\n"
             )
-        text += f"{E['clock']} `{format_ist_timestamp()}`"
+        text += f"{_sep()}\n  {E['clock']} `{format_ist_timestamp()}`"
         return self._send(text)
 
     # --------------------------------------------------------
@@ -844,8 +1095,10 @@ class TelegramAlerter:
         }.get(level, "ℹ️")
         text = (
             f"{level_emoji} *{title}*\n"
-            f"{body}\n"
-            f"{E['clock']} `{format_ist_timestamp()}`"
+            f"{_sep()}\n"
+            f"  {body}\n"
+            f"{_sep()}\n"
+            f"  {E['clock']} `{format_ist_timestamp()}`"
         )
         return self._send(text)
 
@@ -859,18 +1112,19 @@ class TelegramAlerter:
             direction_emoji = "📈" if "CALL" in pos.direction else "📉"
             text = (
                 f"{direction_emoji} *OPTIONS ENTRY*\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Underlying: `{pos.underlying}`\n"
-                f"Contract:   `{pos.opt_symbol}`\n"
-                f"Type:       `{pos.direction}`\n"
-                f"Qty:        `{pos.contracts}` contract(s)\n"
-                f"Premium:    `{_CUR}{pos.entry_premium:.2f}` per contract\n"
-                f"Total Cost: `{_CUR}{pos.entry_premium * pos.contracts * 100:.0f}`\n"
-                f"DTE:        `{pos.dte}` day(s)\n"
-                f"Stop:       `{_CUR}{pos.entry_premium * 0.55:.2f}` (−45%)\n"
-                f"Target 1:   `{_CUR}{pos.entry_premium * 1.80:.2f}` (+80%)\n"
-                f"Target 2:   `{_CUR}{pos.entry_premium * 2.50:.2f}` (+150%)\n"
-                f"{E['clock']} `{format_ist_timestamp()}`"
+                f"{_sep()}\n"
+                f"  Underlying: `{pos.underlying}`\n"
+                f"  Contract:   `{pos.opt_symbol}`\n"
+                f"  Type:       `{pos.direction}`\n"
+                f"  Qty:        `{pos.contracts}` contract(s)\n"
+                f"  Premium:    `{_CUR}{pos.entry_premium:.2f}` per contract\n"
+                f"  Total Cost: `{_CUR}{pos.entry_premium * pos.contracts * 100:.0f}`\n"
+                f"  DTE:        `{pos.dte}` day(s)\n"
+                f"  Stop:       `{_CUR}{pos.entry_premium * 0.55:.2f}` (−45%)\n"
+                f"  Target 1:   `{_CUR}{pos.entry_premium * 1.80:.2f}` (+80%)\n"
+                f"  Target 2:   `{_CUR}{pos.entry_premium * 2.50:.2f}` (+150%)\n"
+                f"{_sep()}\n"
+                f"  {E['clock']} `{format_ist_timestamp()}`"
             )
             return self._send(text)
         except Exception as e:
@@ -888,13 +1142,14 @@ class TelegramAlerter:
             emoji = E["profit"] if pnl_usd >= 0 else E["loss"]
             text = (
                 f"{emoji} *OPTIONS EXIT — {reason}*\n"
-                f"━━━━━━━━━━━━━━━━━━━━\n"
-                f"Contract:  `{pos.opt_symbol}`\n"
-                f"Entry:     `{_CUR}{pos.entry_premium:.2f}`\n"
-                f"Exit:      `{_CUR}{exit_premium:.2f}`\n"
-                f"P&L:       `{_CUR}{pnl_usd:+.0f}` ({pnl_pct:+.1f}%)\n"
-                f"Contracts: `{pos.contracts}×100`\n"
-                f"{E['clock']} `{format_ist_timestamp()}`"
+                f"{_sep()}\n"
+                f"  Contract:  `{pos.opt_symbol}`\n"
+                f"  Entry:     `{_CUR}{pos.entry_premium:.2f}`\n"
+                f"  Exit:      `{_CUR}{exit_premium:.2f}`\n"
+                f"  P&L:       `{_CUR}{pnl_usd:+.0f}` ({pnl_pct:+.1f}%)\n"
+                f"  Contracts: `{pos.contracts}×100`\n"
+                f"{_sep()}\n"
+                f"  {E['clock']} `{format_ist_timestamp()}`"
             )
             return self._send(text)
         except Exception as e:
@@ -906,22 +1161,22 @@ class TelegramAlerter:
         if not uoa_list:
             return False
         try:
-            lines = ["🔍 *Unusual Options Activity*\n━━━━━━━━━━━━━━━━━━━━"]
+            lines = [f"🔍 *UNUSUAL OPTIONS ACTIVITY*\n{_sep()}"]
             for u in uoa_list[:5]:
                 lines.append(
-                    f"• `{u['symbol']}` {u['type'].upper()} "
+                    f"  `{u['symbol']}` {u['type'].upper()} "
                     f"strike={_CUR}{u['strike']:.0f} "
                     f"vol/OI={u['vol_oi']:.1f}× "
                     f"dte={u['dte']}d"
                 )
-            lines.append(f"{E['clock']} `{format_ist_timestamp()}`")
+            lines.append(f"{_sep()}\n  {E['clock']} `{format_ist_timestamp()}`")
             return self._send("\n".join(lines))
         except Exception as e:
             logger.debug(f"send_options_uoa_alert: {e}")
             return False
 
     def send_capital_projection(self, capital: float = 500.0) -> bool:
-        """Send $500 (or custom) account P&L projection via capital_calculator."""
+        """Send P&L projection via capital_calculator."""
         try:
             from capital_calculator import get_telegram_summary
             text = get_telegram_summary(capital)

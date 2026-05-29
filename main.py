@@ -134,6 +134,7 @@ class TradingBot:
         self._last_optimizer_reload: float = 0.0 # timestamp of last optimizer config reload
         self._optimizer_reload_interval = 3600   # re-apply optimizer params every 60 min
         self._orb_done_today: bool = False       # ORB scan fired once per day at 9:31-9:45 AM ET
+        self._last_state_write: float = 0.0      # timestamp of last terminal dashboard state write
 
     # --------------------------------------------------------
     # STARTUP
@@ -1149,6 +1150,9 @@ class TradingBot:
 
                         # Normal trading cycle
                         self._trading_cycle()
+
+                    # Write terminal dashboard state every 30s (non-blocking)
+                    self._write_terminal_state()
 
                 elif self.market_open_today and not self.eod_done:
                     # Market just closed
@@ -2372,6 +2376,142 @@ class TradingBot:
                     pass
         except Exception as _e:
             logger.debug(f"[suppressed] _check_profit_lock: {_e}")
+
+    def _write_terminal_state(self) -> None:
+        """Write bot state to /tmp/kingtrades_state.json for terminal_display.py dashboard."""
+        import time as _t
+        if _t.monotonic() - self._last_state_write < 30:
+            return
+        self._last_state_write = _t.monotonic()
+        try:
+            import json
+            from pathlib import Path
+            from zoneinfo import ZoneInfo as _ZI
+
+            _ET = _ZI("America/New_York")
+            state  = getattr(self.risk_manager, "state", None)
+            capital = (state.daily_capital if state else 0) or getattr(self.risk_manager, "_available_balance", 0) or config.MAX_DAILY_CAPITAL
+            n_trades = state.daily_trades   if state else 0
+            wins     = state.winning_trades if state else 0
+            losses   = state.losing_trades  if state else 0
+            wr       = wins / n_trades * 100 if n_trades > 0 else 0.0
+            daily_pnl= state.daily_pnl      if state else 0.0
+            consec_l = getattr(state, "consecutive_losses", 0) if state else 0
+            paused   = state.trading_paused           if state else False
+            cb       = state.circuit_breaker_active   if state else False
+
+            # Position list
+            raw_pos  = state.positions if state else {}
+            pos_list = []
+            unrealized = 0.0
+            for sym, pos in list(raw_pos.items())[:10]:
+                p_pnl    = getattr(pos, "pnl", 0.0)
+                cur      = getattr(pos, "current_price", pos.entry_price)
+                entry    = pos.entry_price
+                pnl_pct  = ((cur - entry) / entry * 100) if entry > 0 and pos.direction == "LONG" else (
+                           ((entry - cur) / entry * 100) if entry > 0 else 0.0)
+                unrealized += p_pnl
+                pos_list.append({
+                    "symbol":    sym,
+                    "direction": pos.direction,
+                    "entry":     round(entry, 2),
+                    "current":   round(cur, 2),
+                    "pnl":       round(p_pnl, 2),
+                    "pnl_pct":   round(pnl_pct, 2),
+                    "stop":      round(getattr(pos, "active_sl", getattr(pos, "stop_loss", 0.0)), 2),
+                    "target1":   round(getattr(pos, "target_1", 0.0), 2),
+                })
+
+            # Avg win/loss/EV
+            wins_pnl   = [t.get("pnl", 0) for t in getattr(self, "_today_trades", []) if t.get("pnl", 0) > 0]
+            losses_pnl = [t.get("pnl", 0) for t in getattr(self, "_today_trades", []) if t.get("pnl", 0) < 0]
+            avg_win    = sum(wins_pnl)   / len(wins_pnl)   if wins_pnl  else 0.0
+            avg_loss   = sum(losses_pnl) / len(losses_pnl) if losses_pnl else 0.0
+            ev         = (wr / 100 * avg_win) + ((1 - wr / 100) * avg_loss) if n_trades > 0 else 0.0
+            best_trade = max(getattr(self, "_today_trades", [{"pnl": 0}]), key=lambda t: t.get("pnl", 0), default={"pnl": 0, "symbol": "—"})
+
+            # Session
+            try:
+                from risk_manager import _get_session_label
+                sess_label = _get_session_label()
+            except Exception:
+                sess_label = "—"
+            try:
+                _sess_mult, _sess_name = self.risk_manager._get_session_multiplier()
+            except Exception:
+                _sess_mult, _sess_name = 1.0, "—"
+
+            # Heat
+            heat = sum(
+                getattr(pos, "current_price", pos.entry_price) * getattr(pos, "quantity", 1)
+                for pos in raw_pos.values()
+            )
+
+            data = {
+                "version":       "3.0",
+                "updated_at":    datetime.now(_ET).strftime("%H:%M:%S ET"),
+                "capital":       round(capital, 2),
+                "realized_pnl":  round(daily_pnl, 2),
+                "unrealized_pnl":round(unrealized, 2),
+                "target_pct":    getattr(config, "DAILY_PROFIT_TARGET_PCT", 1.0),
+                "n_trades":      n_trades,
+                "wins":          wins,
+                "losses":        losses,
+                "win_rate":      round(wr, 1),
+                "avg_win":       round(avg_win, 2),
+                "avg_loss":      round(avg_loss, 2),
+                "ev_trade":      round(ev, 2),
+                "best_symbol":   best_trade.get("symbol", "—"),
+                "best_pnl":      round(best_trade.get("pnl", 0.0), 2),
+                "consecutive_losses": consec_l,
+                "paused":        paused,
+                "circuit_breaker": cb,
+                "n_positions":   len(raw_pos),
+                "max_positions": getattr(config, "MAX_OPEN_POSITIONS", 5),
+                "heat":          round(heat, 2),
+                "risk_used":     round(daily_pnl * -1 if daily_pnl < 0 else 0.0, 2),
+                "risk_max":      round(capital * getattr(config, "DAILY_LOSS_LIMIT_PCT", 2.0) / 100, 2),
+                "session":       _sess_name or sess_label,
+                "session_mult":  round(_sess_mult, 2),
+                "spy_price":     0.0,
+                "spy_pct":       0.0,
+                "qqq_price":     0.0,
+                "qqq_pct":       0.0,
+                "vix":           0.0,
+                "regime":        "UNKNOWN",
+                "next_event":    "—",
+                "eod_time":      "15:35 ET",
+                "positions":     pos_list,
+                "recent_logs":   getattr(self, "_recent_log_lines", [])[-6:],
+            }
+
+            # Market context (best-effort)
+            try:
+                _spy_q = self.fetcher.get_quote("SPY") or {}
+                data["spy_price"] = round(float(_spy_q.get("ltp", 0) or 0), 2)
+                data["spy_pct"]   = round(float(_spy_q.get("change_pct", 0) or 0), 2)
+            except Exception:
+                pass
+            try:
+                _qqq_q = self.fetcher.get_quote("QQQ") or {}
+                data["qqq_price"] = round(float(_qqq_q.get("ltp", 0) or 0), 2)
+                data["qqq_pct"]   = round(float(_qqq_q.get("change_pct", 0) or 0), 2)
+            except Exception:
+                pass
+            try:
+                from market_regime import get_vix
+                data["vix"] = round(float(get_vix() or 0), 1)
+            except Exception:
+                pass
+            try:
+                from market_regime import get_regime_label
+                data["regime"] = get_regime_label()
+            except Exception:
+                pass
+
+            Path("/tmp/kingtrades_state.json").write_text(json.dumps(data, indent=2))
+        except Exception as _se:
+            logger.debug(f"[suppressed] state write: {_se}")
 
     def _update_weekly_mode(self) -> None:
         """
@@ -3821,13 +3961,21 @@ def main():
     except Exception as _e:
         logger.debug(f"[suppressed] {_e}")
 
-    logger.info("=" * 60)
-    logger.info("  US MOMENTUM ALPACA AI BOT")
-    logger.info("  ⚠️  REAL MONEY — LIVE TRADING BOT")
-    logger.info(f"  Broker: NYSE/NASDAQ | Mode: ALPACA")
-    logger.info(f"  ET Time: {format_ist_timestamp()}")
-    logger.info(f"  Live Trading: {'⚡ ENABLED' if config.LIVE_TRADING_ENABLED else '🔒 DISABLED'}")
-    logger.info("=" * 60)
+    _SEP = "━" * 60
+    logger.info(_SEP)
+    logger.info("  ██╗  ██╗██╗███╗   ██╗ ██████╗ ████████╗██████╗  █████╗ ██████╗ ███████╗███████╗")
+    logger.info("  ██║ ██╔╝██║████╗  ██║██╔════╝ ╚══██╔══╝██╔══██╗██╔══██╗██╔══██╗██╔════╝██╔════╝")
+    logger.info("  █████╔╝ ██║██╔██╗ ██║██║  ███╗   ██║   ██████╔╝███████║██║  ██║█████╗  ███████╗")
+    logger.info("  ██╔═██╗ ██║██║╚██╗██║██║   ██║   ██║   ██╔══██╗██╔══██║██║  ██║██╔══╝  ╚════██║")
+    logger.info("  ██║  ██╗██║██║ ╚████║╚██████╔╝   ██║   ██║  ██║██║  ██║██████╔╝███████╗███████║")
+    logger.info("  ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
+    logger.info(_SEP)
+    logger.info("  [BLOOMBERG TERMINAL] KingTrades v3.0 — Institutional Momentum Engine")
+    logger.info(f"  [BROKER]   NYSE/NASDAQ via Alpaca  |  [MARKET] US Equities")
+    logger.info(f"  [CLOCK]    {format_ist_timestamp()}")
+    logger.info(f"  [MODE]     {'⚡ LIVE TRADING ENABLED — REAL MONEY' if config.LIVE_TRADING_ENABLED else '🔒 PAPER TRADING — safe mode'}")
+    logger.info(f"  [CAPITAL]  ${config.MAX_DAILY_CAPITAL:,.0f}  |  [TARGET] {getattr(config, 'DAILY_PROFIT_TARGET_PCT', 1.0):.1f}%/day")
+    logger.info(_SEP)
 
     bot = TradingBot()
     try:
