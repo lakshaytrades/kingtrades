@@ -2400,6 +2400,13 @@ class TradingBot:
             _ET = _ZI("America/New_York")
             state  = getattr(self.risk_manager, "state", None)
             capital = (state.daily_capital if state else 0) or getattr(self.risk_manager, "_available_balance", 0) or config.MAX_DAILY_CAPITAL
+            # Pre-market: risk manager not yet initialized — fetch live broker balance
+            if capital <= 0 and self.fetcher:
+                try:
+                    _bal = self.fetcher.get_account_balance()
+                    capital = _bal.get("available", 0) or _bal.get("equity", 0) or capital
+                except Exception:
+                    pass
             n_trades = state.daily_trades   if state else 0
             wins     = state.winning_trades if state else 0
             losses   = state.losing_trades  if state else 0
@@ -3630,17 +3637,30 @@ class TradingBot:
         try:
             if self._capital_file.exists():
                 data = json.loads(self._capital_file.read_text())
-                compounded = float(data.get("compounded_capital", base))
-                cap = base * 5
-                compounded = max(base, min(compounded, cap))
-                if compounded != base:
-                    logger.info(
-                        f"[{format_ist_timestamp()}] Auto-compound: "
-                        f"base ${base:,.2f} → today ${compounded:,.2f}"
-                    )
-                return compounded
+                compounded = float(data.get("compounded_capital", base) or base)
+                # If base=0 (MAX_DAILY_CAPITAL not set), allow any positive compounded value
+                if base > 0:
+                    cap = base * 5
+                    compounded = max(base, min(compounded, cap))
+                if compounded > 0:
+                    if compounded != base:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] Auto-compound: "
+                            f"base ${base:,.2f} → today ${compounded:,.2f}"
+                        )
+                    return compounded
         except Exception as e:
             logger.warning(f"Capital load error: {e}")
+        # No capital.json yet or MAX_DAILY_CAPITAL=0 — fetch live broker balance
+        if base <= 0 and self.fetcher:
+            try:
+                _bal = self.fetcher.get_account_balance()
+                live = _bal.get("equity", 0) or _bal.get("available", 0) or 0.0
+                if live > 0:
+                    logger.info(f"[{format_ist_timestamp()}] Capital: using live broker balance ${live:,.2f}")
+                    return live
+            except Exception:
+                pass
         return base
 
     @staticmethod
@@ -3686,15 +3706,28 @@ class TradingBot:
             if not self.risk_manager:
                 return
             today_pnl   = self.risk_manager.state.daily_pnl
-            daily_cap   = self.risk_manager.state.daily_capital  # actual broker equity
+            daily_cap   = self.risk_manager.state.daily_capital  # actual broker equity from risk mgr
             wins        = self.risk_manager.state.winning_trades
             losses      = self.risk_manager.state.losing_trades
             daily_trades= self.risk_manager.state.daily_trades
             cons_losses = self.risk_manager.state.consecutive_losses
-            base        = config.MAX_DAILY_CAPITAL
+
+            # Prefer live broker balance over risk manager's tracked capital
+            # This ensures we always compound from the true account equity
+            live_balance = 0.0
+            try:
+                if self.fetcher:
+                    _bal = self.fetcher.get_account_balance()
+                    live_balance = _bal.get("equity", 0) or _bal.get("available", 0) or 0.0
+            except Exception:
+                pass
+            # Use live balance if available, otherwise fall back to risk manager's daily_capital
+            actual_equity = live_balance if live_balance > 0 else daily_cap
+
+            base        = config.MAX_DAILY_CAPITAL or actual_equity  # 0 → use live equity as base
             existing    = self._safe_read_json(self._capital_file)
-            prev        = float(existing.get("compounded_capital", daily_cap or base))
-            new_capital = max(base * 0.8, prev + today_pnl)
+            # Tomorrow's capital = today's closing equity (live balance, already includes P&L)
+            new_capital = actual_equity if actual_equity > 0 else float(existing.get("compounded_capital", base))
 
             # Monthly P&L accumulator
             month_key = get_current_ist_time().strftime("%Y-%m")
@@ -3704,14 +3737,17 @@ class TradingBot:
                 month_pnl = 0.0   # reset on new month
             month_pnl += today_pnl
 
+            # Track first-day equity as origin for growth % calculation
+            _origin = float(existing.get("base_capital") or existing.get("origin_capital") or base or new_capital)
             self._atomic_write(self._capital_file, {
                 "date":               get_current_ist_time().strftime("%Y-%m-%d"),
-                "base_capital":       base,
-                "daily_capital":      round(daily_cap, 2),   # actual broker equity
-                "total_equity":       round(daily_cap, 2),   # alias used by optimizer
+                "base_capital":       round(_origin, 2),    # first-day equity (static reference)
+                "origin_capital":     round(_origin, 2),    # alias — never changes after first write
+                "daily_capital":      round(actual_equity, 2),  # today's live broker equity
+                "total_equity":       round(actual_equity, 2),  # alias used by optimizer
                 "today_pnl":          round(today_pnl, 2),
                 "compounded_capital": round(new_capital, 2),
-                "total_growth_pct":   round((new_capital - base) / max(base, 1) * 100, 2),
+                "total_growth_pct":   round((new_capital - _origin) / max(_origin, 1) * 100, 2),
                 "wins":               wins,
                 "losses":             losses,
                 "daily_trades":       daily_trades,

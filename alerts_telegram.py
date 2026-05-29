@@ -685,8 +685,14 @@ class TelegramAlerter:
         wr_pct    = (wins / n_trades * 100) if n_trades > 0 else 0.0
         paused    = state.trading_paused if state else False
 
-        if balance_available and capital > 0:
-            daily_pnl = balance_available - capital
+        # Pre-market: risk manager not yet initialized — use live broker balance as capital
+        if capital <= 0 and balance_available and balance_available > 0:
+            capital = balance_available
+
+        if balance_available and balance_available > 0 and capital > 0:
+            # Realized P&L = current balance minus opening capital for the day
+            _rm_pnl = state.daily_pnl if state else 0
+            daily_pnl = _rm_pnl if _rm_pnl != 0 else (balance_available - capital if balance_available != capital else 0)
         else:
             daily_pnl = state.daily_pnl if state else 0
 
