@@ -125,6 +125,8 @@ class HighAccuracyFilter:
         self._pass_count    = 0
         self._reject_count  = 0
         self.min_score      = min_score
+        # Score histogram: buckets of 5 (40–45, 45–50, ... 95–100)
+        self._score_histogram: Dict[str, int] = {}
 
     # ─────────────────────────────────────────────────────────
     # MAIN FILTER — call this before every trade
@@ -864,6 +866,8 @@ class HighAccuracyFilter:
         result.size_multiplier = round(min(result.size_multiplier, 2.5), 2)
 
         self._pass_count += 1
+        _bucket = f"{int(result.final_score // 5) * 5}-{int(result.final_score // 5) * 5 + 4}"
+        self._score_histogram[_bucket] = self._score_histogram.get(_bucket, 0) + 1
         logger.info(
             f"[{format_ist_timestamp()}] FILTER PASSED: "
             f"Grade={result.quality_grade} "
@@ -1490,6 +1494,8 @@ class HighAccuracyFilter:
 
     def _log_rejection(self, result: FilterResult, score: float, direction: str):
         self._reject_count += 1
+        _bucket = f"{int(score // 5) * 5}-{int(score // 5) * 5 + 4}"
+        self._score_histogram[_bucket] = self._score_histogram.get(_bucket, 0) + 1
         self._rejection_log.append({
             "time_et":   format_ist_timestamp(),
             "score":     score,
@@ -1503,12 +1509,23 @@ class HighAccuracyFilter:
 
     def get_stats(self) -> Dict:
         total = self._pass_count + self._reject_count
+        # Score histogram sorted by bucket value
+        hist_sorted = dict(sorted(self._score_histogram.items(), key=lambda x: int(x[0].split("-")[0])))
+        # Near-miss: scores that were rejected but within 8 pts of threshold
+        near_miss = sum(
+            1 for r in self._rejection_log
+            if r.get("score", 0) >= self.min_score - 8
+            and "PATTERN_SCORE" in r.get("reason", "")
+        )
         return {
-            "total_evaluated": total,
-            "passed":    self._pass_count,
-            "rejected":  self._reject_count,
-            "pass_rate": round(self._pass_count / max(total, 1) * 100, 1),
+            "total_evaluated":       total,
+            "passed":                self._pass_count,
+            "rejected":              self._reject_count,
+            "pass_rate":             round(self._pass_count / max(total, 1) * 100, 1),
             "top_rejection_reasons": self._top_rejections(),
+            "score_histogram":       hist_sorted,
+            "near_miss_count":       near_miss,   # rejected but within 8 pts of threshold
+            "min_score":             self.min_score,
         }
 
     def _top_rejections(self) -> List[str]:
@@ -1520,11 +1537,21 @@ class HighAccuracyFilter:
 
     def print_stats(self):
         s = self.get_stats()
+        hist_lines = []
+        threshold = int(s["min_score"])
+        for bucket, count in s["score_histogram"].items():
+            lo = int(bucket.split("-")[0])
+            bar = "█" * min(count, 30)
+            marker = " ← threshold" if lo <= threshold < lo + 5 else ""
+            hist_lines.append(f"    {bucket:>6}: {bar} {count}{marker}")
         print(
             f"\nHigh-Accuracy Filter Stats:\n"
             f"  Evaluated: {s['total_evaluated']} | "
             f"Passed: {s['passed']} ({s['pass_rate']:.0f}%) | "
             f"Rejected: {s['rejected']}\n"
+            f"  Near-misses (within 8 pts of {threshold}): {s['near_miss_count']}\n"
+            f"  Score distribution:\n"
+            + "\n".join(hist_lines) + "\n"
             f"  Top rejections:\n"
             + "\n".join(f"    • {r}" for r in s["top_rejection_reasons"])
         )

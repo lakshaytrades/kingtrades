@@ -4041,12 +4041,32 @@ class TradingBot:
                 status = "🔴 CIRCUIT BREAK"
             pos_symbols = ", ".join(state.positions.keys()) if state.positions else "none"
             bal_line = f"${live_bal:,.2f}" if live_bal > 0 else f"${cap:,.2f} (cached)"
+            # Score histogram from filter — most critical diagnostic for tuning
+            _filter_lines = ""
+            try:
+                if self.signal_gen and hasattr(self.signal_gen, "ha_filter"):
+                    _fs = self.signal_gen.ha_filter.get_stats()
+                    _hist = _fs.get("score_histogram", {})
+                    _thresh = int(_fs.get("min_score", 72))
+                    if _hist:
+                        _hist_str = "  ".join(
+                            f"{k}:{v}{'✅' if int(k.split('-')[0]) >= _thresh else ''}"
+                            for k, v in sorted(_hist.items(), key=lambda x: int(x[0].split("-")[0]))
+                        )
+                        _filter_lines = (
+                            f"\n📊 Scores: {_hist_str}"
+                            f"\n🎯 Passed: {_fs['passed']} | Rejected: {_fs['rejected']}"
+                            f" | Near-miss: {_fs.get('near_miss_count', 0)}"
+                        )
+            except Exception:
+                pass
             self.alerter.send_html(
                 f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
                 f"Status: {status}\n"
                 f"Positions: {n_pos} ({pos_symbols})\n"
                 f"Day P&amp;L: ${pnl:+,.2f}\n"
                 f"Available: {bal_line}"
+                f"{_filter_lines}"
             )
         except Exception as e:
             logger.debug(f"Heartbeat error: {e}")
