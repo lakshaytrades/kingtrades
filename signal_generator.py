@@ -541,6 +541,8 @@ class SignalGenerator:
                 relative_strength=rs,
                 alignment=alignment,
                 institutional_ctx=inst_ctx,
+                df_5m=df_5m,
+                symbol=symbol,
             )
             if ai_score is None:
                 logger.debug(f"{symbol}: time-of-day block — skipping")
@@ -1750,6 +1752,8 @@ class SignalGenerator:
         relative_strength: float,
         alignment: Dict,
         institutional_ctx: Optional[Dict] = None,
+        df_5m=None,
+        symbol: str = "",
     ) -> float:
         """
         AI composite score (0–100) incorporating:

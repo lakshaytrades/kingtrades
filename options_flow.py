@@ -17,10 +17,22 @@ logger = logging.getLogger(__name__)
 _opts_cache: Dict = {}
 _OPTS_TTL = 1800.0
 
+# Circuit breaker: after 5 consecutive yfinance failures, skip for 30 min
+_yf_fail_count: int   = 0
+_yf_skip_until: float = 0.0
+_YF_MAX_FAILS:  int   = 5
+_YF_BACKOFF:    float = 1800.0
+
 
 def get_options_signal(symbol: str, current_price: float, direction: str) -> Tuple[float, str]:
     """Detect unusual options activity. Returns (score_delta, reason). Fail-open."""
+    global _yf_fail_count, _yf_skip_until
     now = _time.monotonic()
+
+    # Circuit breaker: skip if too many consecutive failures
+    if _yf_skip_until > now:
+        return 0.0, ""
+
     cached = _opts_cache.get(symbol)
     if cached and now - cached["ts"] < _OPTS_TTL:
         return _score_options(cached["data"], direction)
@@ -30,6 +42,11 @@ def get_options_signal(symbol: str, current_price: float, direction: str) -> Tup
         tk = yf.Ticker(symbol)
         expiry_dates = tk.options
         if not expiry_dates:
+            _yf_fail_count += 1
+            if _yf_fail_count >= _YF_MAX_FAILS:
+                _yf_skip_until = now + _YF_BACKOFF
+                logger.info(f"options_flow: {_YF_MAX_FAILS} consecutive empty responses — backing off 30 min")
+                _yf_fail_count = 0
             return 0.0, ""
 
         total_call_vol = total_put_vol = 0
@@ -71,9 +88,15 @@ def get_options_signal(symbol: str, current_price: float, direction: str) -> Tup
             "put_vol":       total_put_vol,
         }
         _opts_cache[symbol] = {"data": data, "ts": now}
+        _yf_fail_count = 0  # reset circuit breaker on success
         return _score_options(data, direction)
 
     except Exception as e:
+        _yf_fail_count += 1
+        if _yf_fail_count >= _YF_MAX_FAILS:
+            _yf_skip_until = now + _YF_BACKOFF
+            logger.info(f"options_flow: circuit breaker open — backing off 30 min after {_YF_MAX_FAILS} failures")
+            _yf_fail_count = 0
         logger.debug(f"options_flow({symbol}): {e}")
         return 0.0, ""
 

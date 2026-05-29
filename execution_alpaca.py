@@ -220,6 +220,10 @@ class AlpacaExecutor:
             )
             return OrderResult(False, message=can_trade["reason"])
 
+        # ── PDT hard limit (margin accounts < $25K only) ──────────────────
+        if not self._check_pdt_limit():
+            return OrderResult(False, message="PDT day-trade limit reached — no new margin entries today")
+
         # ── Position sizing ───────────────────────────────────────────────
         sizing = self.risk_manager.calculate_position_size(
             symbol          = symbol,
@@ -689,20 +693,41 @@ class AlpacaExecutor:
     # INTERNAL HELPERS
     # ─────────────────────────────────────────────────────────────────────
 
+    def _check_pdt_limit(self) -> bool:
+        """
+        Returns False (block trade) when PDT limit is reached on a margin account.
+        Cash accounts (ACCOUNT_TYPE=CASH) are exempt — always returns True.
+        """
+        import config as _cfg
+        if not getattr(_cfg, 'PDT_ENFORCE', True):
+            return True
+        if getattr(_cfg, 'ACCOUNT_TYPE', 'CASH').upper() == 'CASH':
+            return True
+        from datetime import date as _date
+        today = str(_date.today())
+        if self._day_trade_date != today:
+            return True  # new day, counter resets on first trade
+        max_dt = getattr(_cfg, 'PDT_MAX_DAY_TRADES', 3)
+        if self._day_trade_count >= max_dt:
+            logger.warning(
+                f"[{format_ist_timestamp()}] PDT HARD BLOCK: {self._day_trade_count}/{max_dt} "
+                "day trades used today — no new entries on margin account. "
+                "Set ACCOUNT_TYPE=CASH or PDT_ENFORCE=False to override."
+            )
+            return False
+        return True
+
     def _record_day_trade(self, symbol: str) -> None:
-        """Track day-trade count and warn when approaching PDT limit (margin accounts only)."""
+        """Track day-trade count. Hard limit enforced by _check_pdt_limit() before order."""
         from datetime import date as _date
         today = str(_date.today())
         if self._day_trade_date != today:
             self._day_trade_count = 0
             self._day_trade_date  = today
         self._day_trade_count += 1
-        if self._day_trade_count >= 3:
-            logger.warning(
-                f"[{format_ist_timestamp()}] ⚠️ PDT ALERT: {self._day_trade_count} day trades today "
-                f"({symbol}). Margin accounts <$25K are limited to 3 day-trades per 5-day window. "
-                "Cash accounts are exempt — no PDT restriction applies."
-            )
+        logger.info(
+            f"[{format_ist_timestamp()}] Day trade #{self._day_trade_count} recorded ({symbol})"
+        )
 
     def _submit_order(
         self,

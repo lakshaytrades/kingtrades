@@ -16,8 +16,8 @@ Session signals:
 Reset at market open each day.
 """
 import logging
-from datetime import datetime
-from typing import Dict, List
+from datetime import datetime, timedelta
+from typing import Dict, List, Optional
 
 from utils import get_current_ist_time
 
@@ -34,6 +34,7 @@ class SessionMomentum:
         self._trades: List[Dict] = []
         self._session_date = ""
         self._streak = 0  # positive = win streak, negative = loss streak
+        self._pause_until: Optional[datetime] = None
 
     def _check_date_reset(self):
         today = get_current_ist_time().strftime("%Y-%m-%d")
@@ -84,14 +85,36 @@ class SessionMomentum:
         return 1.0
 
     def should_pause(self) -> bool:
-        """True if session performance indicates pause needed."""
+        """
+        True during the 30-minute recovery window after 4 consecutive losses.
+        Automatically clears when the window expires — not a permanent block.
+        """
         self._check_date_reset()
+        now = get_current_ist_time()
+
+        # Still within an active pause window?
+        if self._pause_until is not None:
+            if now < self._pause_until:
+                remaining = int((self._pause_until - now).total_seconds() / 60)
+                logger.debug(f"[SessionMomentum] Pause active — {remaining} min remaining")
+                return True
+            else:
+                self._pause_until = None  # window expired, resume
+
         n = len(self._trades)
         if n < 4:
             return False
         recent = self._trades[-4:]
         wins = sum(1 for t in recent if t["win"])
-        return wins == 0  # 4 consecutive losses → pause
+        if wins == 0:
+            # Trigger 30-minute pause — not a session-ending block
+            self._pause_until = now + timedelta(minutes=30)
+            logger.info(
+                f"[SessionMomentum] 4 consecutive losses — 30-min pause until "
+                f"{self._pause_until.strftime('%H:%M')}"
+            )
+            return True
+        return False
 
     def get_status(self) -> Dict:
         self._check_date_reset()

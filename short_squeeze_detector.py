@@ -16,6 +16,12 @@ logger = logging.getLogger(__name__)
 _squeeze_cache: Dict = {}
 _SQ_TTL = 3600.0
 
+# Circuit breaker: skip yfinance.info calls after 5 consecutive failures
+_sq_fail_count: int   = 0
+_sq_skip_until: float = 0.0
+_SQ_MAX_FAILS:  int   = 5
+_SQ_BACKOFF:    float = 3600.0  # 1 hour (short interest data is not time-sensitive)
+
 
 def get_short_squeeze_score(symbol: str, direction: str, volume_ratio: float = 1.0) -> Tuple[float, str]:
     """
@@ -23,14 +29,27 @@ def get_short_squeeze_score(symbol: str, direction: str, volume_ratio: float = 1
     HIGH short float + volume surge + LONG direction = explosive squeeze potential.
     HIGH short float + SHORT direction = dangerous (squeeze risk).
     """
+    global _sq_fail_count, _sq_skip_until
     now = _time.monotonic()
+
+    # Circuit breaker
+    if _sq_skip_until > now:
+        return 0.0, ""
+
     cached = _squeeze_cache.get(symbol)
     if cached and now - cached["ts"] < _SQ_TTL:
         d = cached["data"]
     else:
         d = _fetch(symbol)
         if d:
+            _sq_fail_count = 0
             _squeeze_cache[symbol] = {"data": d, "ts": now}
+        else:
+            _sq_fail_count += 1
+            if _sq_fail_count >= _SQ_MAX_FAILS:
+                _sq_skip_until = now + _SQ_BACKOFF
+                logger.info(f"short_squeeze: circuit breaker open — backing off 1h after {_SQ_MAX_FAILS} failures")
+                _sq_fail_count = 0
 
     if not d:
         return 0.0, ""

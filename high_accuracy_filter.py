@@ -476,7 +476,7 @@ class HighAccuracyFilter:
             import config as _cfg22
             if getattr(_cfg22, 'STOP_HUNT_GATE', True) and df_5m is not None and len(df_5m) >= 15:
                 _sh_pass, _sh_reason, _sh_bonus = self._gate_stop_hunt(
-                    df_5m, signal_price or 0.0, direction
+                    df_5m, ltp or 0.0, direction
                 )
                 if not _sh_pass:
                     result.gates_failed.append('STOP_HUNT_TRAP')
