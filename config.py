@@ -168,6 +168,10 @@ DAILY_HTF_GATE:       bool  = os.getenv("DAILY_HTF_GATE",        "True").lower()
 SPREAD_MAX_PCT:       float = float(os.getenv("SPREAD_MAX_PCT",  "0.15"))  # max bid-ask spread %
 EARNINGS_PROXIMITY_GATE: bool = os.getenv("EARNINGS_PROXIMITY_GATE", "True").lower() in ("true","1","yes")
 EARNINGS_PROXIMITY_DAYS: int  = int(os.getenv("EARNINGS_PROXIMITY_DAYS", "3"))    # skip N days before earnings
+# Gate 19: Minimum indicator confluence — require ≥2 of 4 core indicators aligned
+# Prevents opening-window time bonus from pushing weak-indicator signals over the threshold
+INDICATOR_FLOOR_GATE: bool = os.getenv("INDICATOR_FLOOR_GATE", "True").lower() in ("true","1","yes")
+INDICATOR_FLOOR_MIN:  int  = int(os.getenv("INDICATOR_FLOOR_MIN", "2"))  # minimum indicators that must align
 MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False

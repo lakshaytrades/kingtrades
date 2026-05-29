@@ -413,6 +413,29 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append("SPREAD_SKIP")
 
+        # ── GATE 19: MINIMUM INDICATOR CONFLUENCE ────────
+        # Require ≥2 of 4 core indicators aligned with direction.
+        # Prevents opening-window time-of-day bonus (+12) or regime bonus (+12)
+        # from carrying a fundamentally weak setup over the min_score threshold.
+        try:
+            import config as _cfg19
+            if getattr(_cfg19, "INDICATOR_FLOOR_GATE", True):
+                _ind_floor_min = getattr(_cfg19, "INDICATOR_FLOOR_MIN", 2)
+                _g19_ok, _g19_reason = self._gate_indicator_floor(
+                    rsi=rsi, macd_hist=0.0,  # macd_hist not in evaluate() args — inferred from df_5m
+                    ema9=0.0, ema21=0.0,     # also not direct args — check df_5m columns
+                    volume_ratio=volume_ratio, direction=direction,
+                    df_5m=df_5m, min_count=_ind_floor_min,
+                )
+                if not _g19_ok:
+                    result.gates_failed.append("INDICATOR_FLOOR")
+                    result.rejection_reason = f"[GATE-19 INDICATOR FLOOR] {symbol} — {_g19_reason}"
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append(f"IND_FLOOR_OK({_g19_reason})")
+        except Exception:
+            result.gates_passed.append("IND_FLOOR_SKIP")
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
@@ -1151,6 +1174,48 @@ class HighAccuracyFilter:
         except Exception:
             return True, ""   # fail open
 
+    def _gate_indicator_floor(
+        self,
+        rsi: float, macd_hist: float, ema9: float, ema21: float,
+        volume_ratio: float, direction: str,
+        df_5m: Optional[pd.DataFrame] = None,
+        min_count: int = 2,
+    ) -> Tuple[bool, str]:
+        """
+        Gate 19: Require ≥min_count of 4 core indicators aligned with direction.
+        Extracts indicator values from df_5m columns when direct args are unavailable.
+        Fails open (passes) if df_5m is None — never blocks due to missing data.
+        """
+        try:
+            # Prefer df_5m columns over zero-value direct args (direct args not in evaluate() signature)
+            if df_5m is not None and len(df_5m) >= 2:
+                last = df_5m.iloc[-1]
+                _rsi   = float(last.get("rsi",  rsi)   or rsi   or 50.0)
+                _mh    = float(last.get("macd_hist", macd_hist) or macd_hist or 0.0)
+                _e9    = float(last.get("ema9",  ema9)  or ema9  or 0.0)
+                _e21   = float(last.get("ema21", ema21) or ema21 or 0.0)
+                _vr    = float(last.get("volume_ratio", volume_ratio) or volume_ratio or 1.0)
+            else:
+                # No candle data — fail open (never block due to data gap)
+                return True, "no_data_skip"
+            count = 0
+            reasons = []
+            if direction in ("BUY", "LONG"):
+                if 25 < _rsi < 72:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if _mh > 0:            count += 1; reasons.append("MACD+")
+                if _e9 > _e21 > 0:     count += 1; reasons.append("EMA9>21")
+                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+            else:  # SELL / SHORT
+                if 28 < _rsi < 75:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if _mh < 0:            count += 1; reasons.append("MACD-")
+                if 0 < _e9 < _e21:     count += 1; reasons.append("EMA9<21")
+                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+            if count < min_count:
+                return False, f"only {count}/{min_count} indicators aligned ({','.join(reasons) or 'none'})"
+            return True, f"{count}/4 ({','.join(reasons)})"
+        except Exception:
+            return True, "exception_skip"   # fail open
+
     def _gate_daily_htf(
         self, symbol: str, direction: str,
         daily_candles_df: Optional[pd.DataFrame] = None,
@@ -1165,6 +1230,7 @@ class HighAccuracyFilter:
                 except Exception:
                     pass
             if df is None or len(df) < 22:
+                logger.debug(f"[GATE-17 HTF] {symbol}: daily candles unavailable — fail-open")
                 return True, ""   # insufficient data — fail open
             closes = df["close"].astype(float).values
             sma20  = float(closes[-20:].mean())

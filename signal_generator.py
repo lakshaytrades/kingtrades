@@ -361,7 +361,7 @@ class SignalGenerator:
                 import config as _cfg_ep
                 if getattr(_cfg_ep, "EARNINGS_PROXIMITY_GATE", True):
                     _ep_days = getattr(_cfg_ep, "EARNINGS_PROXIMITY_DAYS", 3)
-                    _ep_cal  = getattr(self, "_calendar", None)
+                    _ep_cal  = getattr(self, "_econ_cal", None)   # was "_calendar" — typo fix
                     if _ep_cal and hasattr(_ep_cal, "days_until_earnings"):
                         _dte = _ep_cal.days_until_earnings(symbol)
                         if _dte is not None and 0 < _dte <= _ep_days:
@@ -632,11 +632,27 @@ class SignalGenerator:
             except Exception:
                 pass
 
-            if ai_score is None or ai_score < self.min_score:
-                logger.info(f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below threshold {self.min_score:.0f}")
+            # Per-symbol adaptive score floor: proven symbols get -5 pts relief,
+            # serial losers get +5 pts harder bar. Falls back to self.min_score.
+            _sym_min = self.min_score
+            try:
+                _sym_stats_check = getattr(self, "_symbol_stats", None)
+                if _sym_stats_check is None:
+                    from symbol_stats import SymbolStats
+                    self._symbol_stats = SymbolStats()
+                    _sym_stats_check = self._symbol_stats
+                _sym_min = _sym_stats_check.min_score_for(symbol, base_min=self.min_score)
+            except Exception:
+                pass
+
+            if ai_score is None or ai_score < _sym_min:
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: score {ai_score:.1f} below "
+                    f"threshold {_sym_min:.0f} (base={self.min_score:.0f})"
+                )
                 try:
                     from decision_log import log_rejected_score
-                    log_rejected_score(symbol, direction, ai_score or 0.0, self.min_score)
+                    log_rejected_score(symbol, direction, ai_score or 0.0, _sym_min)
                 except Exception:
                     pass
                 return None
@@ -1759,6 +1775,7 @@ class SignalGenerator:
         # ── Time of day filter (US ET market hours) ──────────
         now_et   = get_current_ist_time()   # aliased to ET
         time_val = now_et.hour + now_et.minute / 60
+        _is_opening_window = 9.5 <= time_val <= 10.25   # 9:30–10:15 AM: ORB is primary signal type
         # Check EOD penalty FIRST — must never be shadowed by Power Hour branch
         if time_val >= 15.75:           # After 3:45 PM ET: NO new positions
             score -= 12
@@ -1770,6 +1787,16 @@ class SignalGenerator:
             score += 4
         elif 11.5 <= time_val < 14.5:   # 11:30 AM–2:30 PM ET: midday chop
             score -= 3
+
+        # ── ORB precision bonus/penalty (opening window 9:30-10:15 AM) ────────
+        # ORB is the highest-probability opening signal type; non-ORB signals in
+        # the opening window get an 8-pt penalty to prioritise ORB plays.
+        _orb = getattr(self, "_orb_direction", "")
+        if _is_opening_window:
+            if _orb and _orb == ("UP" if direction == "LONG" else "DOWN"):
+                score += 15   # ORB confirms direction — premium opening signal
+            elif not _orb:
+                score -= 8    # No ORB established yet — reduce opening confidence
 
         # ── [NEW] Option Chain direction bias ─────────────
         oc_score = ctx.get("oc_score", 0.0)
