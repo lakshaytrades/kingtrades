@@ -32,43 +32,52 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────────────────────────────────────
 
 NSE_SECTOR_MAP: Dict[str, str] = {
-    # Banking & Finance
-    "HDFCBANK": "BANKING", "ICICIBANK": "BANKING", "KOTAKBANK": "BANKING",
-    "AXISBANK": "BANKING", "SBIN": "BANKING", "BANKBARODA": "BANKING",
-    "INDUSINDBK": "BANKING", "FEDERALBNK": "BANKING", "IDFCFIRSTB": "BANKING",
-    "BANDHANBNK": "BANKING", "PNB": "BANKING", "CANBK": "BANKING",
-    "BAJFINANCE": "NBFC", "BAJAJFINSV": "NBFC", "CHOLAFIN": "NBFC",
-    "MUTHOOTFIN": "NBFC", "LICHSGFIN": "NBFC",
-    # IT
-    "TCS": "IT", "INFY": "IT", "WIPRO": "IT", "HCLTECH": "IT",
-    "TECHM": "IT", "LTIM": "IT", "MPHASIS": "IT", "PERSISTENT": "IT",
-    "COFORGE": "IT",
-    # Auto
-    "MARUTI": "AUTO", "TATAMOTORS": "AUTO", "M&M": "AUTO",
-    "BAJAJ-AUTO": "AUTO", "HEROMOTOCO": "AUTO", "EICHERMOT": "AUTO",
-    "TVSMOTOR": "AUTO",
-    # Energy / Oil
-    "RELIANCE": "ENERGY", "ONGC": "ENERGY", "BPCL": "ENERGY",
-    "IOC": "ENERGY", "NTPC": "ENERGY", "POWERGRID": "ENERGY",
-    "ADANIGREEN": "ENERGY", "TATAPOWER": "ENERGY",
-    # Metals
-    "TATASTEEL": "METALS", "JSWSTEEL": "METALS", "HINDALCO": "METALS",
-    "VEDL": "METALS", "SAIL": "METALS", "NMDC": "METALS",
-    # Pharma
-    "SUNPHARMA": "PHARMA", "DRREDDY": "PHARMA", "CIPLA": "PHARMA",
-    "DIVISLAB": "PHARMA", "BIOCON": "PHARMA", "AUROPHARMA": "PHARMA",
-    # FMCG
-    "HINDUNILVR": "FMCG", "ITC": "FMCG", "NESTLEIND": "FMCG",
-    "BRITANNIA": "FMCG", "DABUR": "FMCG",
-    # Infra / Real Estate
-    "LT": "INFRA", "ADANIPORTS": "INFRA", "DLF": "REALTY",
-    "GODREJPROP": "REALTY",
-    # Consumer / Retail
-    "TITAN": "CONSUMER", "TRENT": "CONSUMER",
-    # Telecom
-    "BHARTIARTL": "TELECOM",
-    # Indices / ETFs (treated as separate sector)
-    "NIFTY": "INDEX", "BANKNIFTY": "INDEX",
+    # ── US Mega-cap Tech / AI ─────────────────────────────────────────────
+    "AAPL": "TECH", "MSFT": "TECH", "GOOGL": "TECH", "GOOG": "TECH",
+    "META": "TECH", "AMZN": "TECH",
+    # ── Semiconductors (high-beta, track NVDA) ────────────────────────────
+    "NVDA": "SEMIS", "AMD": "SEMIS", "MU": "SEMIS", "QCOM": "SEMIS",
+    "ARM": "SEMIS", "SMCI": "SEMIS", "AVGO": "SEMIS", "INTC": "SEMIS",
+    "MRVL": "SEMIS", "ON": "SEMIS", "LRCX": "SEMIS", "KLAC": "SEMIS",
+    "AMAT": "SEMIS", "ASML": "SEMIS", "TSM": "SEMIS", "TXN": "SEMIS",
+    "MCHP": "SEMIS",
+    # ── AI / Cloud / SaaS ─────────────────────────────────────────────────
+    "PLTR": "SOFTWARE", "CRWD": "SOFTWARE", "PANW": "SOFTWARE",
+    "ZS": "SOFTWARE", "DDOG": "SOFTWARE", "NET": "SOFTWARE",
+    "NOW": "SOFTWARE", "SNOW": "SOFTWARE", "TEAM": "SOFTWARE",
+    "HUBS": "SOFTWARE", "OKTA": "SOFTWARE", "MDB": "SOFTWARE",
+    "GTLB": "SOFTWARE", "U": "SOFTWARE", "AI": "SOFTWARE",
+    "SOUN": "SOFTWARE", "BBAI": "SOFTWARE",
+    # ── Streaming / Consumer Tech ─────────────────────────────────────────
+    "NFLX": "CONSUMER_TECH", "TSLA": "CONSUMER_TECH", "UBER": "CONSUMER_TECH",
+    "SHOP": "CONSUMER_TECH", "ABNB": "CONSUMER_TECH", "MELI": "CONSUMER_TECH",
+    "RBLX": "CONSUMER_TECH", "LYFT": "CONSUMER_TECH", "DASH": "CONSUMER_TECH",
+    "YELP": "CONSUMER_TECH",
+    # ── Crypto / Blockchain ───────────────────────────────────────────────
+    "COIN": "CRYPTO", "MSTR": "CRYPTO", "MARA": "CRYPTO", "RIOT": "CRYPTO",
+    "HUT": "CRYPTO", "CLSK": "CRYPTO", "BTBT": "CRYPTO", "CIFR": "CRYPTO",
+    # ── Leveraged ETFs (correlated with their underlying) ─────────────────
+    "TQQQ": "ETF_NASDAQ", "QQQ": "ETF_NASDAQ",
+    "SPXL": "ETF_SP500", "SPY": "ETF_SP500",
+    "IWM": "ETF_RUSSELL", "SOXL": "ETF_SEMIS",
+    "TECL": "ETF_TECH", "FNGU": "ETF_TECH",
+    # ── Fintech ───────────────────────────────────────────────────────────
+    "SOFI": "FINTECH", "HOOD": "FINTECH", "AFRM": "FINTECH",
+    "SQ": "FINTECH", "PYPL": "FINTECH", "V": "FINTECH", "MA": "FINTECH",
+    # ── Big Finance ───────────────────────────────────────────────────────
+    "JPM": "BANKING", "GS": "BANKING", "MS": "BANKING", "BAC": "BANKING",
+    # ── Energy ────────────────────────────────────────────────────────────
+    "XOM": "ENERGY", "CVX": "ENERGY", "OXY": "ENERGY",
+    "SLB": "ENERGY", "MPC": "ENERGY",
+    # ── Biotech / Healthcare ──────────────────────────────────────────────
+    "MRNA": "BIOTECH", "HIMS": "BIOTECH", "LLY": "BIOTECH",
+    "NVO": "BIOTECH", "VKTX": "BIOTECH", "RXRX": "BIOTECH",
+    # ── EV / Clean Energy ─────────────────────────────────────────────────
+    "RIVN": "EV", "LCID": "EV", "NIO": "EV",
+    "PLUG": "EV", "FSLR": "EV", "ENPH": "EV",
+    # ── Defense / Industrials ─────────────────────────────────────────────
+    "LMT": "DEFENSE", "RTX": "DEFENSE", "NOC": "DEFENSE",
+    "GE": "INDUSTRIALS", "CAT": "INDUSTRIALS",
 }
 
 
@@ -98,7 +107,7 @@ class PortfolioHeatGuard:
     Prevents dangerous sector concentration and correlated position buildup.
 
     No hedge fund runs uncapped sector concentration.
-    This is the simplest and most effective risk improvement for NSE intraday.
+    This is the simplest and most effective risk improvement for intraday trading.
     """
 
     MAX_SECTOR_POSITIONS    = 2      # Max open trades in one sector
@@ -106,25 +115,29 @@ class PortfolioHeatGuard:
     CORRELATION_REDUCE_PCT  = 0.40   # Reduce size 40% for correlated pairs
     MAX_PORTFOLIO_HEAT      = 2.5    # Heat > 2.5 → pause new trades
 
-    # Known NSE stock correlations (approximate, high-corr pairs)
+    # US stock high-correlation pairs (r > 0.80 intraday)
     HIGH_CORR_PAIRS = {
-        frozenset({"HDFCBANK", "ICICIBANK"}),
-        frozenset({"HDFCBANK", "KOTAKBANK"}),
-        frozenset({"ICICIBANK", "KOTAKBANK"}),
-        frozenset({"AXISBANK", "ICICIBANK"}),
-        frozenset({"TCS", "INFY"}),
-        frozenset({"TCS", "WIPRO"}),
-        frozenset({"INFY", "WIPRO"}),
-        frozenset({"INFY", "HCLTECH"}),
-        frozenset({"TATASTEEL", "JSWSTEEL"}),
-        frozenset({"TATASTEEL", "HINDALCO"}),
-        frozenset({"BPCL", "IOC"}),
-        frozenset({"ONGC", "BPCL"}),
-        frozenset({"MARUTI", "TATAMOTORS"}),
-        frozenset({"BAJFINANCE", "BAJAJFINSV"}),
-        frozenset({"HDFCBANK", "BAJFINANCE"}),
-        frozenset({"SUNPHARMA", "DRREDDY"}),
-        frozenset({"CIPLA", "SUNPHARMA"}),
+        # Semis move together
+        frozenset({"NVDA", "AMD"}), frozenset({"NVDA", "SMCI"}),
+        frozenset({"AMD", "MU"}),   frozenset({"LRCX", "KLAC"}),
+        frozenset({"LRCX", "AMAT"}), frozenset({"KLAC", "AMAT"}),
+        # Crypto stocks
+        frozenset({"MARA", "RIOT"}), frozenset({"COIN", "MSTR"}),
+        frozenset({"MARA", "CLSK"}), frozenset({"RIOT", "HUT"}),
+        # Leveraged ETF + underlying
+        frozenset({"TQQQ", "QQQ"}), frozenset({"SPXL", "SPY"}),
+        frozenset({"SOXL", "NVDA"}), frozenset({"TECL", "MSFT"}),
+        # Fintech
+        frozenset({"SQ", "PYPL"}), frozenset({"V", "MA"}),
+        # Big banks
+        frozenset({"JPM", "GS"}), frozenset({"GS", "MS"}),
+        # Mag7 tech
+        frozenset({"GOOGL", "MSFT"}), frozenset({"AAPL", "MSFT"}),
+        # Cloud SaaS
+        frozenset({"CRWD", "PANW"}), frozenset({"ZS", "PANW"}),
+        frozenset({"DDOG", "SNOW"}),
+        # EV
+        frozenset({"RIVN", "LCID"}), frozenset({"NIO", "RIVN"}),
     }
 
     def evaluate(

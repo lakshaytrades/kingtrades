@@ -175,6 +175,17 @@ INDICATOR_FLOOR_MIN:  int  = int(os.getenv("INDICATOR_FLOOR_MIN", "2"))  # minim
 # Gate 20: Bid/Ask Volume Imbalance — buyers/sellers must be aggressive side
 BA_IMBALANCE_GATE:      bool  = os.getenv("BA_IMBALANCE_GATE", "True").lower() in ("true","1","yes")
 BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"))
+# Gate 21: Order Flow Imbalance — cumulative delta must not strongly oppose direction
+OFI_GATE_ENABLED:       bool  = os.getenv("OFI_GATE_ENABLED", "True").lower() in ("true","1","yes")
+# Score components: OFI, Dark Pool, Session Momentum
+OFI_SCORE_ENABLED:             bool = os.getenv("OFI_SCORE_ENABLED", "True").lower() in ("true","1","yes")
+DARK_POOL_ENABLED:             bool = os.getenv("DARK_POOL_ENABLED", "True").lower() in ("true","1","yes")
+SESSION_MOMENTUM_ENABLED:      bool = os.getenv("SESSION_MOMENTUM_ENABLED", "True").lower() in ("true","1","yes")
+# Sector RS + Squeeze scanner (already in code, ensure flags exist)
+SECTOR_RS_ENABLED:             bool = os.getenv("SECTOR_RS_ENABLED", "True").lower() in ("true","1","yes")
+SQUEEZE_SCANNER_ENABLED:       bool = os.getenv("SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true","1","yes")
+PEAD_SCORER_ENABLED:           bool = os.getenv("PEAD_SCORER_ENABLED", "True").lower() in ("true","1","yes")
+FUTURES_BIAS_ENABLED:          bool = os.getenv("FUTURES_BIAS_ENABLED", "True").lower() in ("true","1","yes")
 MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False

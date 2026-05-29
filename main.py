@@ -2175,6 +2175,20 @@ class TradingBot:
                         except Exception as _pa_e:
                             logger.debug(f"[suppressed] pattern_analytics.record: {_pa_e}")
 
+                        # AdaptiveKelly: record outcome for dynamic Kelly sizing
+                        try:
+                            from adaptive_kelly import get_adaptive_kelly
+                            _risk_amt = getattr(pos, "risk_amount", abs(pos.entry_price - pos.stop_loss) * pos.quantity)
+                            get_adaptive_kelly().record(pos.symbol, win=pnl > 0, pnl=pnl, risk_amount=_risk_amt)
+                        except Exception as _ake:
+                            logger.debug(f"[suppressed] adaptive_kelly.record: {_ake}")
+                        # SessionMomentum: track intraday performance for adaptive scoring
+                        try:
+                            from session_momentum import get_session_momentum
+                            get_session_momentum().record(pos.symbol, win=pnl > 0, pnl=pnl)
+                        except Exception as _sme:
+                            logger.debug(f"[suppressed] session_momentum.record: {_sme}")
+
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                             try:

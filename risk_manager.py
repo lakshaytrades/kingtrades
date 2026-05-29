@@ -517,7 +517,14 @@ class RiskManager:
         # A  grade (5+ confluence)     : 1.0× risk — standard
         # B  grade (borderline)        : 0.6× risk — conservative entry, prove itself first
         _grade_base = {"A+": 1.5, "A": 1.0, "B": 0.6, "C": 0.4}.get(quality_grade, 1.0)
-        risk_amount = capital * (self.max_risk_pct / 100) * _grade_base
+        # Apply AdaptiveKelly per-symbol risk pct (replaces flat self.max_risk_pct when data available)
+        _effective_risk_pct = self.max_risk_pct
+        try:
+            from adaptive_kelly import get_kelly_size_pct
+            _effective_risk_pct = get_kelly_size_pct(symbol, self.max_risk_pct)
+        except Exception:
+            pass
+        risk_amount = capital * (_effective_risk_pct / 100) * _grade_base
         risk_qty    = int(risk_amount / sl_distance)
 
         # 2. Dynamic Half-Kelly (on actual capital, not leveraged — prevents Kelly bypass on margin)

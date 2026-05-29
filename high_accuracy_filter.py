@@ -453,6 +453,23 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append("BA_SKIP")
 
+        # ── GATE 21: ORDER FLOW DIRECTION CONFIRMATION ────────
+        # Hard gate: if cumulative delta strongly opposes the signal, reject.
+        # Filters out "fake" breakouts where only retail is buying (no institutional backing).
+        try:
+            import config as _cfg21
+            if getattr(_cfg21, "OFI_GATE_ENABLED", True) and df_5m is not None:
+                from order_flow_analyzer import get_ofi_direction_ok
+                _ofi_ok, _ofi_reason = get_ofi_direction_ok(df_5m, direction)
+                if not _ofi_ok:
+                    result.gates_failed.append("OFI_OPPOSE")
+                    result.rejection_reason = f"[GATE-21 OFI] {symbol} — {_ofi_reason}"
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append("OFI_OK")
+        except Exception:
+            result.gates_passed.append("OFI_SKIP")
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────

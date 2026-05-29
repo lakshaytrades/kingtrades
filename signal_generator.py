@@ -980,6 +980,50 @@ class SignalGenerator:
             except Exception as _fbe:
                 logger.debug(f"[suppressed] futures_bias: {_fbe}")
 
+            # ── Order Flow Imbalance (OFI) Score ───────────────────────────────────────
+            # Cumulative delta tells you who is winning the order battle right now
+            try:
+                if getattr(config, "OFI_SCORE_ENABLED", True):
+                    from order_flow_analyzer import get_ofi_score
+                    _ofi_delta, _ofi_reason = get_ofi_score(df_5m, direction)
+                    if _ofi_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _ofi_delta))
+                        if abs(_ofi_delta) >= 4:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: OFI {_ofi_delta:+.0f} → {filter_result.final_score:.0f} | {_ofi_reason}")
+                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: OFI penalty dropped score below min — skipping")
+                            return None
+            except Exception as _ofie:
+                logger.debug(f"[suppressed] order_flow: {_ofie}")
+
+            # ── Dark Pool / Institutional Block Detection ──────────────────────────────
+            try:
+                if getattr(config, "DARK_POOL_ENABLED", True):
+                    from dark_pool_tracker import get_dark_pool_score
+                    _dp_delta, _dp_reason = get_dark_pool_score(df_5m, direction, symbol)
+                    if _dp_delta > 0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _dp_delta)
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: DarkPool +{_dp_delta:.0f} → {filter_result.final_score:.0f} | {_dp_reason}")
+            except Exception as _dpe:
+                logger.debug(f"[suppressed] dark_pool: {_dpe}")
+
+            # ── Session Momentum — adapt to what's working this session ────────────────
+            try:
+                if getattr(config, "SESSION_MOMENTUM_ENABLED", True):
+                    from session_momentum import get_session_momentum
+                    _sm = get_session_momentum()
+                    if _sm.should_pause():
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: Session 0/4 — pausing (session momentum hostile)")
+                        return None
+                    _sm_score_adj = _sm.get_score_adjustment()
+                    _sm_effective_min = config.MIN_SIGNAL_SCORE + _sm_score_adj
+                    if filter_result.final_score < _sm_effective_min:
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: Below session-adjusted min {_sm_effective_min:.0f} — skipping")
+                        return None
+                    combined_size = round(combined_size * _sm.get_size_multiplier(), 2)
+            except Exception as _sme:
+                logger.debug(f"[suppressed] session_momentum: {_sme}")
+
             # ── LLM Reasoning Gate (70+ score) — runs AFTER all adjustments ──────────
             if filter_result.final_score >= 70:
                 try:
@@ -1188,6 +1232,9 @@ class SignalGenerator:
             "premarket_volume_ratio":      0.0,
             "premarket_consecutive_up":    0,
             "gap_pct":                     0.0,
+            # Higher-timeframe AVWAP levels
+            "weekly_vwap":                 0.0,
+            "monthly_vwap":               0.0,
         }
 
         # ── Option Chain ─────────────────────────────────
@@ -1271,6 +1318,32 @@ class SignalGenerator:
                     ctx["regime_block"] = True
             except Exception as e:
                 logger.debug(f"Market regime error for {symbol}: {e}")
+
+        # ── Weekly / Monthly Anchored VWAP from daily candles cache ─────────
+        try:
+            _daily_df = getattr(self, "_daily_candles_cache", {}).get(symbol)
+            if _daily_df is not None and len(_daily_df) >= 5 and \
+               all(c in _daily_df.columns for c in ("close", "volume", "open")):
+                import numpy as _np
+                _c  = _daily_df["close"].values.astype(float)
+                _v  = _daily_df["volume"].values.astype(float)
+                _h  = _daily_df["high"].values.astype(float) if "high" in _daily_df else _c
+                _lo = _daily_df["low"].values.astype(float) if "low" in _daily_df else _c
+                _tp = (_h + _lo + _c) / 3.0  # typical price
+                # Weekly AVWAP: last 5 trading days
+                _wk = min(5, len(_daily_df))
+                _w_num = (_tp[-_wk:] * _v[-_wk:]).sum()
+                _w_den = _v[-_wk:].sum()
+                if _w_den > 0:
+                    ctx["weekly_vwap"] = float(_w_num / _w_den)
+                # Monthly AVWAP: last 22 trading days
+                _mo = min(22, len(_daily_df))
+                _m_num = (_tp[-_mo:] * _v[-_mo:]).sum()
+                _m_den = _v[-_mo:].sum()
+                if _m_den > 0:
+                    ctx["monthly_vwap"] = float(_m_num / _m_den)
+        except Exception as _wv_e:
+            logger.debug(f"[suppressed] weekly/monthly vwap: {_wv_e}")
 
         return ctx
 
@@ -1901,6 +1974,45 @@ class SignalGenerator:
                         score += 12
                     elif _avwap_dist < 0.3 and _ltp <= _avwap:
                         score += 8
+        except Exception:
+            pass
+
+        # ── Weekly / Monthly Anchored VWAP (higher timeframe levels) ──────
+        # Weekly AVWAP = where institutions anchor for the week
+        # Monthly AVWAP = the most important institutional level of all
+        try:
+            _weekly_vwap  = ctx.get("weekly_vwap", 0.0)
+            _monthly_vwap = ctx.get("monthly_vwap", 0.0)
+            _ltp_wv       = ctx.get("ltp", 0.0)
+            if _ltp_wv > 0:
+                if _weekly_vwap > 0:
+                    _w_dist = abs(_ltp_wv - _weekly_vwap) / _weekly_vwap * 100
+                    if direction == "LONG":
+                        if _w_dist < 0.2 and _ltp_wv >= _weekly_vwap:
+                            score += 6   # AT weekly AVWAP = strong support
+                        elif _w_dist < 0.4 and _ltp_wv >= _weekly_vwap:
+                            score += 3
+                        elif _ltp_wv < _weekly_vwap * 0.995:
+                            score -= 4   # price below weekly AVWAP = headwind
+                    else:  # SHORT
+                        if _w_dist < 0.2 and _ltp_wv <= _weekly_vwap:
+                            score += 6
+                        elif _w_dist < 0.4 and _ltp_wv <= _weekly_vwap:
+                            score += 3
+                        elif _ltp_wv > _weekly_vwap * 1.005:
+                            score -= 4
+                if _monthly_vwap > 0:
+                    _m_dist = abs(_ltp_wv - _monthly_vwap) / _monthly_vwap * 100
+                    if direction == "LONG":
+                        if _m_dist < 0.3 and _ltp_wv >= _monthly_vwap:
+                            score += 8   # AT monthly AVWAP = institutional gold zone
+                        elif _ltp_wv < _monthly_vwap * 0.99:
+                            score -= 5   # below monthly AVWAP = structural headwind
+                    else:  # SHORT
+                        if _m_dist < 0.3 and _ltp_wv <= _monthly_vwap:
+                            score += 8
+                        elif _ltp_wv > _monthly_vwap * 1.01:
+                            score -= 5
         except Exception:
             pass
 
