@@ -283,6 +283,7 @@ class SignalGenerator:
             try:
                 self._global_ctx.refresh()
                 vix_regime, vix_mult = self._global_ctx.get_vix_regime()
+                self._last_vix = float(vix_mult)   # size_mult: 0.3=extreme fear, 1.0=normal
                 logger.info(
                     f"[{format_ist_timestamp()}] Global: VIX={vix_regime} "
                     f"size_mult={vix_mult:.2f} | {self._global_ctx.format_one_line()}"
@@ -2355,16 +2356,35 @@ class SignalGenerator:
         ltp = float(curr["close"])
         atr = max(ind.atr, ltp * 0.003)  # Minimum 0.3% ATR
 
+        # VIX-adaptive stop: high VIX = tighter stop (moves are larger, drawdowns faster)
+        # _last_vix is VIX size_multiplier from GlobalMarketContext.get_vix_regime():
+        #   0.30 = EXTREME_FEAR, 0.50 = HIGH_FEAR, 0.70 = ELEVATED, 1.0 = NORMAL
+        _sl_mult = ATR_SL_MULTIPLIER
+        _tp_mult_adj = ATR_TP_MULTIPLIER
+        try:
+            _vix_size_mult = getattr(self, "_last_vix", 1.0) or 1.0
+            if _vix_size_mult <= 0.35:   # EXTREME_FEAR (VIX equiv > 35)
+                _sl_mult     = ATR_SL_MULTIPLIER * 0.60
+                _tp_mult_adj = ATR_TP_MULTIPLIER * 0.70
+            elif _vix_size_mult <= 0.55:  # HIGH_FEAR (VIX equiv 25-35)
+                _sl_mult     = ATR_SL_MULTIPLIER * 0.75
+                _tp_mult_adj = ATR_TP_MULTIPLIER * 0.85
+            elif _vix_size_mult <= 0.75:  # ELEVATED (VIX equiv 18-25)
+                _sl_mult     = ATR_SL_MULTIPLIER * 0.90
+                _tp_mult_adj = ATR_TP_MULTIPLIER * 0.95
+        except Exception:
+            pass
+
         if direction == "LONG":
             entry     = round_to_tick_size(ltp)
-            stop_loss = round_to_tick_size(entry - ATR_SL_MULTIPLIER * atr)
+            stop_loss = round_to_tick_size(entry - _sl_mult * atr)
             target_1  = round_to_tick_size(entry + ATR_T1_MULTIPLIER * (entry - stop_loss))
-            target_2  = round_to_tick_size(entry + ATR_TP_MULTIPLIER * (entry - stop_loss))
+            target_2  = round_to_tick_size(entry + _tp_mult_adj * (entry - stop_loss))
         else:  # SHORT
             entry     = round_to_tick_size(ltp)
-            stop_loss = round_to_tick_size(entry + ATR_SL_MULTIPLIER * atr)
+            stop_loss = round_to_tick_size(entry + _sl_mult * atr)
             target_1  = round_to_tick_size(entry - ATR_T1_MULTIPLIER * (stop_loss - entry))
-            target_2  = round_to_tick_size(entry - ATR_TP_MULTIPLIER * (stop_loss - entry))
+            target_2  = round_to_tick_size(entry - _tp_mult_adj * (stop_loss - entry))
 
         sl_distance = abs(entry - stop_loss)
         # Use target_2 for R:R — measures institutional target (2.5x), not just scalp T1 (1.5x).

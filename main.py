@@ -1360,10 +1360,28 @@ class TradingBot:
             if spy_q and self.signal_gen:
                 self.signal_gen.update_nifty_change(spy_q.get("change_pct", 0.0))
 
-            # 4b. Apply day-of-week minimum score BEFORE scanning
+            # 4b. Apply day-of-week + time-of-day minimum score BEFORE scanning
             dow = now_ist.weekday()
             dow_min = config.DOW_MIN_SCORE.get(dow, config.MIN_SIGNAL_SCORE)
             dow_max_trades = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
+
+            # Time-of-day threshold (ET): open/power-hour = 65, midday chop = 73
+            if getattr(config, "TOD_THRESHOLD_ENABLED", True):
+                try:
+                    _et_now = get_current_et_time()
+                    _et_abs = _et_now.hour * 60 + _et_now.minute
+                    _tod_min = None
+                    for (start, end), _s in getattr(config, "TOD_MIN_SCORES", {}).items():
+                        if start <= _et_abs < end:
+                            _tod_min = _s
+                            break
+                    if _tod_min is not None:
+                        # TOD threshold: use whichever is LOWER of DOW and TOD
+                        # (during open/power hour we WANT more trades, not fewer)
+                        dow_min = min(dow_min, _tod_min)
+                except Exception:
+                    pass
+
             if self.signal_gen:
                 brain_score = (
                     self.adaptive_brain._state.current_min_score
@@ -1479,6 +1497,29 @@ class TradingBot:
 
             # Merge movers into the front of the scan queue (highest priority)
             combined_watchlist = self._mover_watchlist + [s for s in watchlist if s not in self._mover_watchlist]
+
+            # Pre-market priority symbols (gap + volume) go to the very front
+            # Refreshed once per morning; stale after 11 AM ET
+            try:
+                _et_now2 = get_current_et_time()
+                _et_abs2  = _et_now2.hour * 60 + _et_now2.minute
+                if _et_abs2 < 690:   # before 11:30 AM ET — pre-market gaps still relevant
+                    if not hasattr(self, "_premarket_priority") or not self._premarket_priority:
+                        from premarket_scanner import get_premarket_scanner
+                        _pm_sc = get_premarket_scanner()
+                        self._premarket_priority = _pm_sc.get_priority_symbols(combined_watchlist, top_n=8)
+                        if self._premarket_priority:
+                            logger.info(
+                                f"[{format_ist_timestamp()}] Pre-market priority: "
+                                + ", ".join(self._premarket_priority)
+                            )
+                    if getattr(self, "_premarket_priority", None):
+                        _pmp = self._premarket_priority
+                        combined_watchlist = _pmp + [s for s in combined_watchlist if s not in _pmp]
+                else:
+                    self._premarket_priority = []   # reset daily after 11:30 AM
+            except Exception as _pme:
+                logger.debug(f"[suppressed] premarket_priority: {_pme}")
 
             if not self.signal_gen:
                 return

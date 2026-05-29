@@ -514,6 +514,31 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append('OPC_SKIP')
 
+        # ── GATE 24: MOMENTUM BAR CONFIRMATION (institutional tape reading) ──
+        # Require ≥ 3 of last 5 bars closing in signal direction.
+        # Eliminates single-bar spikes and wick traps. Prop desks call this "confirmed momentum."
+        try:
+            import config as _cfg24
+            if getattr(_cfg24, 'MOMENTUM_BAR_GATE', True) and df_5m is not None and len(df_5m) >= 5:
+                _bars = df_5m.tail(5)
+                _opens  = _bars['open'].values  if 'open'  in _bars.columns else _bars['Open'].values
+                _closes = _bars['close'].values if 'close' in _bars.columns else _bars['Close'].values
+                _aligned = sum(
+                    1 for o, c in zip(_opens, _closes)
+                    if (c > o if direction in ('LONG','BUY') else c < o)
+                )
+                if _aligned < 3:
+                    result.gates_failed.append(f'MOMENTUM_BARS({_aligned}/5)')
+                    result.rejection_reason = (
+                        f'[GATE-24 MOMENTUM] {symbol} — only {_aligned}/5 bars confirm {direction} '
+                        f'(need ≥3: institutional momentum not established)'
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append(f'MOM_OK({_aligned}/5)')
+        except Exception:
+            result.gates_passed.append('MOM_SKIP')
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
@@ -530,6 +555,22 @@ class HighAccuracyFilter:
             else:
                 bonus_score -= 3
                 result.bonuses.append(f"HA_WEAK({ha_note})")
+
+        # Bonus 1b: Momentum bar strength — 5/5 aligned = institutional momentum bonus
+        if df_5m is not None and len(df_5m) >= 5:
+            try:
+                _b5 = df_5m.tail(5)
+                _b5_o = _b5['open'].values  if 'open'  in _b5.columns else _b5['Open'].values
+                _b5_c = _b5['close'].values if 'close' in _b5.columns else _b5['Close'].values
+                _b5_aligned = sum(1 for o, c in zip(_b5_o, _b5_c) if (c > o if direction in ('LONG','BUY') else c < o))
+                if _b5_aligned == 5:
+                    bonus_score += 7
+                    result.bonuses.append("MOM_5/5(institutional)")
+                elif _b5_aligned == 4:
+                    bonus_score += 4
+                    result.bonuses.append("MOM_4/5")
+            except Exception:
+                pass
 
         # Bonus 2: VWAP position — use `is True`/`is False` so None (VWAP data unavailable) is neutral
         if above_vwap is True:

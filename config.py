@@ -154,8 +154,9 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "72.0"))
-                                       # 72 = achievable on typical good setups; 18 hard gates do quality filtering
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "68.0"))
+                                       # 68 = profit engine NORMAL base (dynamically raised to 74/78/84 by mode)
+                                       # Was 72 — too high, blocked profit engine from using adaptive thresholds
 HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ after bonuses: 72 base + 8 bonus points = 80
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+ (2× size)
 PREMIUM_SCORE: float = 78.0           # A grade entry: solid signal with good confluence
@@ -177,6 +178,8 @@ BA_IMBALANCE_GATE:      bool  = os.getenv("BA_IMBALANCE_GATE", "True").lower() i
 BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"))
 # Gate 21: Order Flow Imbalance — cumulative delta must not strongly oppose direction
 OFI_GATE_ENABLED:       bool  = os.getenv("OFI_GATE_ENABLED", "True").lower() in ("true","1","yes")
+# Gate 24: Momentum bar confirmation — require ≥3 of last 5 bars closing in signal direction
+MOMENTUM_BAR_GATE:      bool  = os.getenv("MOMENTUM_BAR_GATE", "True").lower() in ("true","1","yes")
 # Score components: OFI, Dark Pool, Session Momentum
 OFI_SCORE_ENABLED:             bool = os.getenv("OFI_SCORE_ENABLED", "True").lower() in ("true","1","yes")
 DARK_POOL_ENABLED:             bool = os.getenv("DARK_POOL_ENABLED", "True").lower() in ("true","1","yes")
@@ -410,12 +413,31 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 72.0,   # Monday
-    1: 72.0,   # Tuesday — best trend day
-    2: 72.0,   # Wednesday — trend continuation
-    3: 72.0,   # Thursday
-    4: 72.0,   # Friday — same as rest of week (size already reduced to 0.8x)
+    0: 68.0,   # Monday
+    1: 68.0,   # Tuesday — best trend day
+    2: 68.0,   # Wednesday — trend continuation
+    3: 68.0,   # Thursday
+    4: 68.0,   # Friday — same as rest of week (size already reduced to 0.8x)
 }
+
+# Time-of-day minimum score (ET, 24h format) — institutional trading windows
+# Open (9:30-10:00): 65 — biggest moves, institutional flow highest
+# Morning (10:00-11:30): 68 — normal momentum
+# Midday (11:30-13:30): 73 — chop zone, only strong setups
+# Afternoon (13:30-15:00): 68 — momentum resumes
+# Power hour (15:00-15:30): 65 — institutional rebalancing, strongest directional moves
+# Last 5 min (15:25-15:30): 80 — very risky, only A+ setups (covered by EOD square-off anyway)
+TOD_MIN_SCORES: dict = {
+    # (start_min_from_midnight, end_min): min_score
+    # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
+    (570, 600): 65.0,   # 9:30–10:00: open drive
+    (600, 690): 68.0,   # 10:00–11:30: morning momentum
+    (690, 810): 73.0,   # 11:30–13:30: midday chop — harder threshold
+    (810, 900): 68.0,   # 13:30–15:00: afternoon momentum
+    (900, 925): 65.0,   # 15:00–15:25: power hour
+    (925, 960): 80.0,   # 15:25–16:00: very late — near square-off
+}
+TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
 
 DOW_MAX_TRADES: dict = {
     0: 25,   # Monday
