@@ -323,9 +323,11 @@ class AlpacaExecutor:
 
             if order_type == "LIMIT":
                 # Poll for fill
-                filled = self._wait_for_fill(result.order_id, wait=self.LIMIT_WAIT_SECONDS)
-                if filled:
-                    result.fill_price = filled
+                _fp, _fq = self._wait_for_fill(result.order_id, wait=self.LIMIT_WAIT_SECONDS)
+                if _fp:
+                    result.fill_price = _fp
+                    if _fq > 0:
+                        result.quantity = _fq   # use actual filled qty (handles partial fills)
                     result.order_type = "LIMIT"
                     break
                 else:
@@ -338,9 +340,11 @@ class AlpacaExecutor:
                     continue
             else:
                 # Market order — poll for fill
-                filled = self._wait_for_fill(result.order_id, wait=10)
-                if filled:
-                    result.fill_price = filled
+                _fp, _fq = self._wait_for_fill(result.order_id, wait=10)
+                if _fp:
+                    result.fill_price = _fp
+                    if _fq > 0:
+                        result.quantity = _fq   # use actual filled qty (handles partial fills)
                 elif result.order_id:
                     # Order submitted but fill not confirmed within 10s.
                     # Order IS live at Alpaca — use signal_price as estimated fill.
@@ -436,8 +440,8 @@ class AlpacaExecutor:
             order_id = str(order.id)
 
             # Wait for fill
-            filled = self._wait_for_fill(order_id, wait=15)
-            fill_p = filled if filled else signal.entry_price
+            _fp, _fq = self._wait_for_fill(order_id, wait=15)
+            fill_p = _fp if _fp else signal.entry_price
 
             logger.info(
                 f"[{format_ist_timestamp()}] ✅ BRACKET FILLED: {symbol} {direction} "
@@ -485,18 +489,22 @@ class AlpacaExecutor:
         if limit_price and not use_market_order:
             result = self._submit_order(symbol, quantity, exit_side, "LIMIT", limit_price)
             if result.success:
-                filled = self._wait_for_fill(result.order_id, wait=10)
-                if filled:
-                    result.fill_price = filled
+                _fp, _fq = self._wait_for_fill(result.order_id, wait=10)
+                if _fp:
+                    result.fill_price = _fp
+                    if _fq > 0:
+                        result.quantity = _fq
                     return result
                 self.cancel_order(result.order_id)
 
         # Market exit (always succeeds on liquid US stocks)
         result = self._submit_order(symbol, quantity, exit_side, "MARKET")
         if result.success:
-            filled = self._wait_for_fill(result.order_id, wait=10)
-            if filled:
-                result.fill_price = filled
+            _fp, _fq = self._wait_for_fill(result.order_id, wait=10)
+            if _fp:
+                result.fill_price = _fp
+                if _fq > 0:
+                    result.quantity = _fq
 
         logger.info(
             f"[{format_ist_timestamp()}] EXIT: {symbol} qty={quantity} "
@@ -786,10 +794,11 @@ class AlpacaExecutor:
             )
             return OrderResult(False, message=msg)
 
-    def _wait_for_fill(self, order_id: str, wait: int = 12) -> float:
+    def _wait_for_fill(self, order_id: str, wait: int = 12) -> tuple:
         """
         Poll order status until filled or timeout.
-        Returns fill price (float) or 0.0 if not filled.
+        Returns (fill_price, filled_qty) or (0.0, 0) if not filled.
+        Handles partial fills by returning the actual filled quantity.
         """
         deadline = _time.monotonic() + wait
         fetcher  = get_data_fetcher()
@@ -797,16 +806,23 @@ class AlpacaExecutor:
             status = fetcher.get_order_status(order_id)
             _status_str = str(status.get("status", "")).lower()
             if _status_str in ("filled", "partially_filled"):
-                price    = status.get("filled_avg_price", 0.0)
-                qty_raw  = status.get("filled_qty") or status.get("qty") or 0
-                qty      = float(qty_raw or 0)
-                # Accept fill if price valid AND (qty populated OR status=filled)
-                if price > 0 and (qty > 0 or _status_str == "filled"):
-                    return float(price)
+                price   = float(status.get("filled_avg_price", 0.0) or 0.0)
+                qty_raw = status.get("filled_qty") or status.get("qty") or 0
+                qty     = int(float(qty_raw or 0))
+                if price > 0 and qty > 0:
+                    if _status_str == "partially_filled":
+                        logger.info(
+                            f"[{format_ist_timestamp()}] Partial fill {order_id}: "
+                            f"qty={qty} @ ${price:.2f}"
+                        )
+                    return (price, qty)
+                if price > 0 and _status_str == "filled":
+                    # filled but qty field missing — treat qty as 0 (caller handles)
+                    return (price, 0)
             if status.get("status") in ("canceled", "expired", "rejected"):
-                return 0.0
+                return (0.0, 0)
             _time.sleep(self.POLL_INTERVAL)
-        return 0.0
+        return (0.0, 0)
 
 
 # ─────────────────────────────────────────────────────────────────────────────

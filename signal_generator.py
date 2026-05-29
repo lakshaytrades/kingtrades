@@ -377,6 +377,13 @@ class SignalGenerator:
             # 2. Pattern analysis on each timeframe
             # Set df.attrs["symbol"] so pattern_recognizer can fetch daily OHLC for pivot levels
             df_5m.attrs["symbol"] = symbol
+            # Record latest bar for Time-of-Day RVOL (institutional strategy 5)
+            try:
+                from institutional_strategies import record_bar_volume as _rbv
+                if hasattr(df_5m.index[-1], 'strftime'):
+                    _rbv(symbol, df_5m.index[-1].strftime("%H:%M"), int(df_5m['volume'].iloc[-1]) if 'volume' in df_5m.columns else int(df_5m['Volume'].iloc[-1]))
+            except Exception:
+                pass
             analysis_5m  = self.recognizer.analyze(df_5m)
             analysis_15m = self.recognizer.analyze(df_15m) if df_15m is not None else {}
             analysis_1h  = self.recognizer.analyze(df_1h)  if df_1h is not None else {}
@@ -1065,6 +1072,66 @@ class SignalGenerator:
                             logger.debug(f"{symbol}: INSIDER {_ins_delta:+.0f} {_ins_reason}")
             except Exception:
                 pass
+
+            # ── INSTITUTIONAL STRATEGIES (v10.0) ──────────────────────────────────
+            try:
+                from institutional_strategies import (
+                    get_cross_sectional_rank,
+                    get_vwap_reclaim_score,
+                    get_power_hour_score,
+                    get_pairs_signal,
+                    get_tod_rvol_score,
+                    get_sortino_size_multiplier,
+                )
+                _watchlist = list(getattr(self, '_open_position_symbols', None) or [])
+
+                # 1. Cross-sectional momentum rank (AQR/Renaissance)
+                if getattr(config, 'CSM_ENABLED', True):
+                    _csm_delta, _csm_reason = get_cross_sectional_rank(symbol, _watchlist or [symbol])
+                    if _csm_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _csm_delta)
+                        logger.debug(f"{symbol}: CSM {_csm_delta:+.0f} {_csm_reason}")
+
+                # 2. VWAP reclaim (prop desk / CME market makers)
+                if getattr(config, 'VWAP_RECLAIM_ENABLED', True) and ind.vwap > 0:
+                    _vr_delta, _vr_reason = get_vwap_reclaim_score(df_5m, ltp_now, direction, ind.vwap)
+                    if _vr_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _vr_delta)
+                        logger.debug(f"{symbol}: VWAP_RECLAIM {_vr_delta:+.0f} {_vr_reason}")
+
+                # 3. Power hour boost (institutional rebalancing 3:00–3:30 PM ET)
+                if getattr(config, 'POWER_HOUR_ENABLED', True):
+                    _ph_delta, _ph_reason = get_power_hour_score(direction, filter_result.final_score)
+                    if _ph_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ph_delta)
+                        logger.debug(f"{symbol}: POWER_HOUR {_ph_delta:+.0f} {_ph_reason}")
+
+                # 4. Statistical pairs convergence (JP Morgan / Goldman stat arb)
+                if getattr(config, 'PAIRS_SIGNAL_ENABLED', True):
+                    _ps_delta, _ps_reason = get_pairs_signal(symbol, direction)
+                    if _ps_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ps_delta)
+                        logger.debug(f"{symbol}: PAIRS {_ps_delta:+.0f} {_ps_reason}")
+
+                # 5. Time-of-Day RVOL (honest same-slot volume comparison)
+                if getattr(config, 'TOD_RVOL_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _bar_time = df_5m.index[-1].strftime("%H:%M") if hasattr(df_5m.index[-1], 'strftime') else ""
+                    _cur_vol  = int(df_5m['volume'].iloc[-1]) if 'volume' in df_5m.columns else int(df_5m['Volume'].iloc[-1])
+                    if _bar_time:
+                        _tr_delta, _tr_reason = get_tod_rvol_score(symbol, _bar_time, _cur_vol, direction)
+                        if _tr_delta:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _tr_delta)
+                            logger.debug(f"{symbol}: TOD_RVOL {_tr_delta:+.0f} {_tr_reason}")
+
+                # 6. Sortino-based dynamic sizing (Bridgewater / Citadel)
+                if getattr(config, 'SORTINO_SIZING_ENABLED', True):
+                    _sort_mult = get_sortino_size_multiplier(symbol)
+                    if _sort_mult != 1.0:
+                        combined_size = round(combined_size * _sort_mult, 2)
+                        logger.debug(f"{symbol}: SORTINO size {_sort_mult:.2f}x")
+
+            except Exception as _inst_e:
+                logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
             # ── Session Momentum — adapt to what's working this session ────────────────
             try:

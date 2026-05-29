@@ -15,7 +15,9 @@ Features:
 - Auto balance check before every trade
 """
 
+import json
 import logging
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time
 from typing import Optional, Dict, List, Tuple
@@ -28,6 +30,37 @@ from utils import format_ist_timestamp, get_current_ist_time, get_current_et_tim
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
+
+_SL_STATE_PATH = os.path.join(os.path.dirname(__file__), "logs", "sl_state.json")
+
+
+def _persist_sl(symbol: str, new_sl: float) -> None:
+    """Append updated SL to logs/sl_state.json for cross-session persistence."""
+    try:
+        os.makedirs(os.path.dirname(_SL_STATE_PATH), exist_ok=True)
+        try:
+            with open(_SL_STATE_PATH) as _f:
+                state = json.load(_f)
+        except (FileNotFoundError, json.JSONDecodeError):
+            state = {}
+        state[symbol] = {"sl": new_sl, "ts": datetime.utcnow().isoformat()}
+        with open(_SL_STATE_PATH, "w") as _f:
+            json.dump(state, _f)
+    except Exception as _e:
+        logger.debug(f"sl_state persist failed ({symbol}): {_e}")
+
+
+def _load_persisted_sl(symbol: str) -> Optional[float]:
+    """Load persisted SL for symbol. Returns None if no state."""
+    try:
+        with open(_SL_STATE_PATH) as _f:
+            state = json.load(_f)
+        entry = state.get(symbol)
+        if entry:
+            return float(entry["sl"])
+    except (FileNotFoundError, json.JSONDecodeError, KeyError, TypeError):
+        pass
+    return None
 
 
 @dataclass
@@ -840,6 +873,7 @@ class RiskManager:
                     f"🛡 Breakeven — price reached entry+{be_atr_mult}×ATR (${be_price:.2f}), "
                     f"SL moved to entry ${position.entry_price:.2f} (zero-risk trade)"
                 )
+                _persist_sl(position.symbol, position.entry_price)
                 return {
                     "action": "UPDATE_SL",
                     "new_sl": position.entry_price,
@@ -858,6 +892,7 @@ class RiskManager:
                     f"[TRAILING STOP] {position.symbol}: "
                     f"T1 hit ${position.target_1:.2f} — SL locked to entry+{t1_lock_mult}×ATR=${locked_sl:.2f}"
                 )
+                _persist_sl(position.symbol, locked_sl)
                 return {
                     "action": "PARTIAL_EXIT_T1",
                     "new_sl": locked_sl,
@@ -919,6 +954,7 @@ class RiskManager:
 
                 if new_trail > position.trailing_stop:
                     position.trailing_stop = new_trail
+                    _persist_sl(position.symbol, new_trail)
                     # Check if price already hit the newly-raised stop on this same bar
                     if current_price <= new_trail:
                         return {

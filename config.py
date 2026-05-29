@@ -509,6 +509,14 @@ INSIDER_FLOW_ENABLED:   bool = os.getenv("INSIDER_FLOW_ENABLED",    "True").lowe
 OPTIONS_GATE_ENABLED:   bool = os.getenv("OPTIONS_GATE_ENABLED",    "True").lower() in ("true","1","yes")
 SMART_LIMIT_ORDERS:     bool = os.getenv("SMART_LIMIT_ORDERS",      "True").lower() in ("true","1","yes")
 
+# Institutional strategies v10.0 (all enabled by default, fail-open)
+CSM_ENABLED:            bool = os.getenv("CSM_ENABLED",             "True").lower() in ("true","1","yes")
+VWAP_RECLAIM_ENABLED:   bool = os.getenv("VWAP_RECLAIM_ENABLED",    "True").lower() in ("true","1","yes")
+POWER_HOUR_ENABLED:     bool = os.getenv("POWER_HOUR_ENABLED",      "True").lower() in ("true","1","yes")
+PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lower() in ("true","1","yes")
+TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
+SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
+
 # PDT enforcement (Pattern Day Trader rule — US margin accounts < $25K)
 # Set ACCOUNT_TYPE=CASH (default) to disable PDT restriction
 # Set ACCOUNT_TYPE=MARGIN + PDT_ENFORCE=True to hard-block after 3 day trades

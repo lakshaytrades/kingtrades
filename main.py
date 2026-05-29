@@ -1043,17 +1043,25 @@ class TradingBot:
         except Exception as _pe:
             logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
 
-        # Broker-side stop order so SL is enforced even if bot crashes
-        try:
-            sl_id = self.executor.place_stop_order(
-                signal.symbol, fill_qty, signal.stop_loss, signal.direction
+        # Broker-side stop order so SL is enforced even if bot crashes.
+        # Guard: only place if fill is confirmed (quantity AND price > 0).
+        # Placing a stop against a phantom position risks an unhedged broker-side order.
+        if result.quantity > 0 and result.fill_price > 0:
+            try:
+                sl_id = self.executor.place_stop_order(
+                    signal.symbol, int(result.quantity), signal.stop_loss, signal.direction
+                )
+                if sl_id:
+                    pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                    if pos_ref:
+                        pos_ref.sl_order_id = sl_id
+            except Exception as _se:
+                logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
+        else:
+            logger.warning(
+                f"place_stop_order SKIPPED for {signal.symbol}: "
+                f"fill not confirmed (qty={result.quantity}, price={result.fill_price})"
             )
-            if sl_id:
-                pos_ref = self.risk_manager.state.positions.get(signal.symbol)
-                if pos_ref:
-                    pos_ref.sl_order_id = sl_id
-        except Exception as _se:
-            logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
     # --------------------------------------------------------
     # MAIN TRADING LOOP
@@ -2242,6 +2250,13 @@ class TradingBot:
                             get_session_momentum().record(pos.symbol, win=pnl > 0, pnl=pnl)
                         except Exception as _sme:
                             logger.debug(f"[suppressed] session_momentum.record: {_sme}")
+                        # Sortino sizing: record trade P&L % for per-symbol Sortino calculation
+                        try:
+                            from institutional_strategies import record_trade_result as _record_tr
+                            _pnl_pct = pnl / max(pos.entry_price * pos.quantity, 1.0)
+                            _record_tr(pos.symbol, _pnl_pct)
+                        except Exception as _tr_e:
+                            logger.debug(f"[suppressed] record_trade_result: {_tr_e}")
 
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
@@ -3868,13 +3883,24 @@ class TradingBot:
                 if not sym or qty == 0:
                     continue
                 if sym not in self.risk_manager.state.positions:
-                    from risk_manager import Position
+                    from risk_manager import Position, _load_persisted_sl
+                    _default_sl = avg * 0.98
+                    _persisted  = _load_persisted_sl(sym)
+                    # Use persisted SL if more protective (higher for LONG, lower for SHORT)
+                    _direction  = "LONG" if qty > 0 else "SHORT"
+                    if _persisted is not None:
+                        if _direction == "LONG" and _persisted > _default_sl:
+                            _default_sl = _persisted
+                            logger.info(f"Restored persisted SL for {sym}: ${_persisted:.2f} (trailed from default)")
+                        elif _direction == "SHORT" and _persisted < _default_sl:
+                            _default_sl = _persisted
+                            logger.info(f"Restored persisted SL for {sym}: ${_persisted:.2f} (trailed from default)")
                     pos = Position(
                         symbol=sym,
-                        direction="LONG" if qty > 0 else "SHORT",
+                        direction=_direction,
                         quantity=abs(qty),
                         entry_price=avg,
-                        stop_loss=avg * 0.98,
+                        stop_loss=_default_sl,
                         target_1=avg * 1.02,
                         target_2=avg * 1.04,
                         atr=avg * 0.02,
