@@ -490,6 +490,28 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append('SH_SKIP')
 
+        # ── GATE 23: OPTIONS EXTREME SENTIMENT FILTER ─────────────────────
+        try:
+            import config as _cfg23
+            if getattr(_cfg23, 'OPTIONS_GATE_ENABLED', True):
+                from options_flow import get_market_pc_ratio
+                _pc = get_market_pc_ratio()
+                # Extreme fear (PC > 2.0) = market in panic, block ALL new longs
+                if direction in ('LONG', 'BUY') and _pc > 2.0:
+                    result.gates_failed.append('OPTIONS_EXTREME_FEAR')
+                    result.rejection_reason = f'[GATE-23 OPTIONS] {symbol} — market PC={_pc:.2f} extreme fear, no new longs'
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                # Extreme greed (PC < 0.35) = everyone is long, risky to short
+                elif direction in ('SHORT', 'SELL') and _pc < 0.35:
+                    result.gates_failed.append('OPTIONS_EXTREME_GREED')
+                    result.rejection_reason = f'[GATE-23 OPTIONS] {symbol} — market PC={_pc:.2f} extreme greed, no new shorts'
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append('OPC_OK')
+        except Exception:
+            result.gates_passed.append('OPC_SKIP')
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────

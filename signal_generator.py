@@ -1009,6 +1009,61 @@ class SignalGenerator:
             except Exception as _dpe:
                 logger.debug(f"[suppressed] dark_pool: {_dpe}")
 
+            # ── FIBONACCI PRECISION LEVELS (institutional entry zones) ────────────
+            try:
+                import config as _cfgFIB
+                if getattr(_cfgFIB, 'FIBONACCI_ENABLED', True):
+                    from fibonacci_levels import get_fibonacci_score
+                    _fib_delta, _fib_reason = get_fibonacci_score(df_5m, ltp_now, direction)
+                    if _fib_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _fib_delta)
+                        logger.debug(f"{symbol}: FIB {_fib_delta:+.0f} {_fib_reason}")
+            except Exception:
+                pass
+
+            # ── SHORT SQUEEZE INTELLIGENCE (high short float + volume surge) ──────
+            try:
+                import config as _cfgSQ
+                if getattr(_cfgSQ, 'SHORT_SQUEEZE_ENABLED', True):
+                    from short_squeeze_detector import get_short_squeeze_score
+                    _sq_delta, _sq_reason = get_short_squeeze_score(
+                        symbol, direction, float(getattr(ind, 'volume_ratio', 1.0) or 1.0)
+                    )
+                    if _sq_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _sq_delta)
+                        if abs(_sq_delta) >= 4:
+                            logger.debug(f"{symbol}: SQUEEZE {_sq_delta:+.0f} {_sq_reason}")
+            except Exception:
+                pass
+
+            # ── OPTIONS FLOW (institutional call/put sweeps) ──────────────────────
+            # Only run for signals that already look strong (score > 55) — options fetch is slow
+            try:
+                import config as _cfgOF
+                if getattr(_cfgOF, 'OPTIONS_FLOW_ENABLED', True) and filter_result.final_score >= 55:
+                    from options_flow import get_options_signal
+                    _of_delta, _of_reason = get_options_signal(symbol, ltp_now, direction)
+                    if _of_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _of_delta)
+                        if abs(_of_delta) >= 4:
+                            logger.debug(f"{symbol}: OPTIONS {_of_delta:+.0f} {_of_reason}")
+            except Exception:
+                pass
+
+            # ── INSIDER TRANSACTION FLOW (SEC Form 4 — 24h cache) ────────────────
+            # Only run for signals scoring > 60 — EDGAR fetch is slow
+            try:
+                import config as _cfgINS
+                if getattr(_cfgINS, 'INSIDER_FLOW_ENABLED', True) and filter_result.final_score >= 60:
+                    from insider_flow import get_insider_score
+                    _ins_delta, _ins_reason = get_insider_score(symbol)
+                    if _ins_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ins_delta)
+                        if abs(_ins_delta) >= 3:
+                            logger.debug(f"{symbol}: INSIDER {_ins_delta:+.0f} {_ins_reason}")
+            except Exception:
+                pass
+
             # ── Session Momentum — adapt to what's working this session ────────────────
             try:
                 if getattr(config, "SESSION_MOMENTUM_ENABLED", True):

@@ -501,6 +501,14 @@ MULTIDAY_MOMENTUM_ENABLED: bool = os.getenv("MULTIDAY_MOMENTUM_ENABLED", "True")
 STOP_HUNT_GATE: bool = os.getenv("STOP_HUNT_GATE", "True").lower() in ("true","1","yes")
 RVOL_PERCENTILE_ENABLED: bool = os.getenv("RVOL_PERCENTILE_ENABLED", "True").lower() in ("true","1","yes")
 
+# New alpha modules (v9.0 — institutional-grade free data)
+FIBONACCI_ENABLED:      bool = os.getenv("FIBONACCI_ENABLED",      "True").lower() in ("true","1","yes")
+SHORT_SQUEEZE_ENABLED:  bool = os.getenv("SHORT_SQUEEZE_ENABLED",   "True").lower() in ("true","1","yes")
+OPTIONS_FLOW_ENABLED:   bool = os.getenv("OPTIONS_FLOW_ENABLED",    "True").lower() in ("true","1","yes")
+INSIDER_FLOW_ENABLED:   bool = os.getenv("INSIDER_FLOW_ENABLED",    "True").lower() in ("true","1","yes")
+OPTIONS_GATE_ENABLED:   bool = os.getenv("OPTIONS_GATE_ENABLED",    "True").lower() in ("true","1","yes")
+SMART_LIMIT_ORDERS:     bool = os.getenv("SMART_LIMIT_ORDERS",      "True").lower() in ("true","1","yes")
+
 # ============================================================
 # VALIDATION
 # ============================================================

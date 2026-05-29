@@ -265,6 +265,23 @@ class AlpacaExecutor:
         _slip = get_slippage_tracker()
         signal_price = signal.entry_price
 
+        # Smart limit: use live bid/ask for a marketable limit that fills instantly
+        # but protects against flash spikes better than a pure market order
+        _smart_limit_base: Optional[float] = None
+        try:
+            import config as _cfgSL
+            if getattr(_cfgSL, 'SMART_LIMIT_ORDERS', True):
+                from data_fetch_alpaca import get_quote as _gq
+                _q = _gq(symbol)
+                _ask = float(_q.get("ask", 0) or 0)
+                _bid = float(_q.get("bid", 0) or 0)
+                if direction in ("LONG", "BUY") and _ask > 0:
+                    _smart_limit_base = round(_ask * 1.001, 2)
+                elif direction in ("SHORT", "SELL") and _bid > 0:
+                    _smart_limit_base = round(_bid * 0.999, 2)
+        except Exception:
+            pass
+
         for attempt in range(3):
             # High-conviction (90+): use market order immediately for speed
             if getattr(signal, 'signal_score', 0) >= 90 and attempt == 0:
@@ -275,7 +292,10 @@ class AlpacaExecutor:
                 limit_price = None
             else:
                 order_type  = "LIMIT"
-                limit_price = _slip.adjust_limit_price(symbol, direction, signal_price, retry=attempt)
+                if _smart_limit_base and attempt == 0:
+                    limit_price = _smart_limit_base
+                else:
+                    limit_price = _slip.adjust_limit_price(symbol, direction, signal_price, retry=attempt)
                 if limit_price == 0.0:
                     order_type  = "MARKET"
                     limit_price = None
