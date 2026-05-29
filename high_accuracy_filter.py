@@ -120,7 +120,7 @@ class HighAccuracyFilter:
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
-    def __init__(self, min_score: float = 72.0):
+    def __init__(self, min_score: float = 72.0):  # default matches config.MIN_SIGNAL_SCORE
         self._rejection_log: List[Dict] = []
         self._pass_count    = 0
         self._reject_count  = 0

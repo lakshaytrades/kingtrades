@@ -480,7 +480,7 @@ class SignalGenerator:
                         _eng = get_profit_engine()
                         _today_wins = getattr(_eng.state, "winning_trades", 0)
                         if _today_wins == 0:
-                            _chase_threshold = max(self.min_score - 4, 74.0)
+                            _chase_threshold = max(self.min_score - 4, 66.0)
                             if self.ha_filter.min_score > _chase_threshold:
                                 self.ha_filter.min_score = _chase_threshold
                                 logger.info(
@@ -1808,17 +1808,17 @@ class SignalGenerator:
         regime_pref_dir  = ctx.get("regime_preferred_dir", "BOTH")
         regime_tradeable = ctx.get("regime_tradeable", True)
         if not regime_tradeable:
-            score -= 8    # Non-tradeable regime — position size already 0 via size_mult
+            score -= 5    # Non-tradeable regime — size_mult handles severity, mild score drag
         elif regime_strategy == "MOMENTUM":
             if regime_pref_dir == direction or regime_pref_dir == "BOTH":
-                score += 12   # Regime confirms direction
+                score += 12   # Regime confirms direction — full bonus
             else:
-                score -= 8    # Regime opposes direction
+                score -= 5    # Regime opposes direction — mild penalty (gates still filter)
         elif regime_strategy == "MEAN_REVERSION":
-            score -= 3    # Slight penalty — size_mult already reduced
+            score -= 2    # Slight penalty — size_mult already reduced
         else:
-            # AVOID/RANGING: position sizing reduced by regime (0.4x), score penalty kept small
-            score -= 8
+            # AVOID/RANGING: position sizing reduced by regime (0.4x); mild score penalty
+            score -= 4
 
         # ── Global Market Context (inter-market: VIX, gold, yields, calendar) ──
         gmc_adj = ctx.get("gmc_score", 0.0)

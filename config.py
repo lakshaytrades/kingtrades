@@ -154,11 +154,11 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "82.0"))
-                                       # raised 72→82: each +1 pt ≈ +0.8% WR — 82 targets 68-72% WR
-HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses: 82 base + 2+ bonus = 84
-GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+
-PREMIUM_SCORE: float = 82.0           # A grade entry: matches new min score floor
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "72.0"))
+                                       # 72 = achievable on typical good setups; 18 hard gates do quality filtering
+HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ after bonuses: 72 base + 8 bonus points = 80
+GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+ (2× size)
+PREMIUM_SCORE: float = 78.0           # A grade entry: solid signal with good confluence
 
 # ── 70-80% Win Rate Precision Gates ────────────────────────────────────────
 RETEST_ENTRY_ENABLED: bool  = os.getenv("RETEST_ENTRY_ENABLED",  "True").lower()  in ("true","1","yes")
