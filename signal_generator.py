@@ -177,9 +177,10 @@ class SignalGenerator:
         self._learner = None          # Set by main.py: generator.set_learner(learner)
         self._orb_direction: str = "" # Set by main.py after ORB is established
         self._nifty_change_pct: float = 0.0
-        self._daily_htf_cache: dict = {}  # instance-level — no cross-instance contamination
+        self._daily_htf_cache: dict = {}        # instance-level — no cross-instance contamination
         self._open_position_symbols: list = []  # updated by main.py before each scan
         self._last_inst_ctx: dict = {}          # last inst_ctx — exposes regime_name to main.py
+        self._daily_candles_cache: dict = {}    # {symbol: daily_df} — refreshed per scan cycle
 
         # ── Institutional intelligence (auto-init) ──────────────
         self._oc: Optional["OptionChainAnalyzer"] = (
@@ -345,6 +346,29 @@ class SignalGenerator:
 
             if bar_count < 30:
                 logger.info(f"[{format_ist_timestamp()}] {symbol}: only {bar_count} bars — proceeding with limited history")
+
+            # 1b. Fetch daily candles for Gates 16/17 (clear-air + HTF bias)
+            # Cache by symbol so we don't re-fetch within the same scan cycle.
+            if symbol not in self._daily_candles_cache:
+                try:
+                    _daily = self.fetcher.get_candles(symbol, "1Day", limit=25)
+                    self._daily_candles_cache[symbol] = _daily
+                except Exception:
+                    self._daily_candles_cache[symbol] = None
+
+            # 1c. Earnings proximity gate — skip 3 days before earnings (too unpredictable)
+            try:
+                import config as _cfg_ep
+                if getattr(_cfg_ep, "EARNINGS_PROXIMITY_GATE", True):
+                    _ep_days = getattr(_cfg_ep, "EARNINGS_PROXIMITY_DAYS", 3)
+                    _ep_cal  = getattr(self, "_calendar", None)
+                    if _ep_cal and hasattr(_ep_cal, "days_until_earnings"):
+                        _dte = _ep_cal.days_until_earnings(symbol)
+                        if _dte is not None and 0 < _dte <= _ep_days:
+                            logger.debug(f"[EARNINGS GATE] {symbol} — earnings in {_dte}d — skipping")
+                            return None
+            except Exception:
+                pass
 
             # 2. Pattern analysis on each timeframe
             # Set df.attrs["symbol"] so pattern_recognizer can fetch daily OHLC for pivot levels
@@ -692,6 +716,11 @@ class SignalGenerator:
                 spy_bullish      = spy_bullish,
                 # Gate 14: pass open position symbols for correlation check
                 open_positions   = list(getattr(self, "_open_position_symbols", [])),
+                # ── Gates 15-18 parameters (70-80% WR upgrade) ────────────────
+                candles_df       = df_5m,
+                atr              = getattr(ind, "atr", 0.0),
+                daily_candles_df = getattr(self, "_daily_candles_cache", {}).get(symbol),
+                fetcher          = self.fetcher,
             )
 
             if not filter_result.passed:
@@ -1017,6 +1046,20 @@ class SignalGenerator:
         """
         # Refresh FII/DII + OC + FII futures once per cycle (not per symbol)
         self.refresh_institutional_context()
+
+        # Clear daily candles cache at start of each scan cycle (30-min staleness tolerance)
+        self._daily_candles_cache = {}
+
+        # Symbol-level adaptive filter: skip symbols with persistent poor WR
+        try:
+            from symbol_stats import SymbolStats
+            _sym_stats = getattr(self, "_symbol_stats", None)
+            if _sym_stats is None:
+                self._symbol_stats = SymbolStats()
+                _sym_stats = self._symbol_stats
+            symbols = [s for s in symbols if not _sym_stats.should_skip(s, min_wr=0.40)]
+        except Exception as _sse:
+            logger.debug(f"[suppressed] symbol_stats: {_sse}")
 
         # Pre-market gap scanner: promote high-conviction gap plays
         try:

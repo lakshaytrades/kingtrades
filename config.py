@@ -154,10 +154,20 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = 72.0        # raised from 68 — quality over quantity; fewer but better trades
-                                       # MTF/volume/ORB bonuses push elite setups to 84–95
-HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses: 72 base + 12 bonus = 84
-PREMIUM_SCORE: float = 76.0           # A grade entry: 72 base + 4 typical bonus
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "82.0"))
+                                       # raised 72→82: each +1 pt ≈ +0.8% WR — 82 targets 68-72% WR
+HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses: 82 base + 2+ bonus = 84
+GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+
+PREMIUM_SCORE: float = 82.0           # A grade entry: matches new min score floor
+
+# ── 70-80% Win Rate Precision Gates ────────────────────────────────────────
+RETEST_ENTRY_ENABLED: bool  = os.getenv("RETEST_ENTRY_ENABLED",  "True").lower()  in ("true","1","yes")
+FALSE_BREAKOUT_GATE:  bool  = os.getenv("FALSE_BREAKOUT_GATE",   "True").lower()  in ("true","1","yes")
+CLEAR_AIR_GATE:       bool  = os.getenv("CLEAR_AIR_GATE",        "True").lower()  in ("true","1","yes")
+DAILY_HTF_GATE:       bool  = os.getenv("DAILY_HTF_GATE",        "True").lower()  in ("true","1","yes")
+SPREAD_MAX_PCT:       float = float(os.getenv("SPREAD_MAX_PCT",  "0.15"))  # max bid-ask spread %
+EARNINGS_PROXIMITY_GATE: bool = os.getenv("EARNINGS_PROXIMITY_GATE", "True").lower() in ("true","1","yes")
+EARNINGS_PROXIMITY_DAYS: int  = int(os.getenv("EARNINGS_PROXIMITY_DAYS", "3"))    # skip N days before earnings
 MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False

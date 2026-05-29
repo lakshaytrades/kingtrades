@@ -2152,6 +2152,15 @@ class TradingBot:
                                 )
                             except Exception as _e:
                                 logger.debug(f"[suppressed] CommissionTracker: {_e}")
+                        # SymbolStats: update per-symbol rolling win rate (70-80% WR gate)
+                        try:
+                            from symbol_stats import SymbolStats
+                            if not hasattr(self, "_symbol_stats"):
+                                self._symbol_stats = SymbolStats()
+                            self._symbol_stats.record(pos.symbol, win=pnl > 0)
+                        except Exception as _ss_e:
+                            logger.debug(f"[suppressed] symbol_stats.record: {_ss_e}")
+
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                             try:
