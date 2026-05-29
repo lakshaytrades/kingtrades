@@ -471,6 +471,7 @@ class HighAccuracyFilter:
             result.gates_passed.append("OFI_SKIP")
 
         # ── GATE 22: STOP-HUNT DETECTION (ICT Wyckoff Spring/Upthrust) ────
+        _sh_pending_bonus = 0   # may be updated inside gate block; consumed at bonus_score init
         try:
             import config as _cfg22
             if getattr(_cfg22, 'STOP_HUNT_GATE', True) and df_5m is not None and len(df_5m) >= 15:
@@ -484,8 +485,8 @@ class HighAccuracyFilter:
                     return result
                 result.gates_passed.append('SH_OK')
                 if _sh_bonus > 0:
-                    result.bonus_score = getattr(result, 'bonus_score', 0) + _sh_bonus
-                    logger.info(f'[{format_ist_timestamp()}] {symbol}: STOP_HUNT_SETUP bonus +{_sh_bonus}pts')
+                    _sh_pending_bonus = _sh_bonus
+                    logger.info(f'[{format_ist_timestamp()}] {symbol}: STOP_HUNT_SETUP bonus +{_sh_bonus}pts pending')
         except Exception:
             result.gates_passed.append('SH_SKIP')
 
@@ -494,6 +495,7 @@ class HighAccuracyFilter:
         # ─────────────────────────────────────────────────
         result.passed   = True
         bonus_score     = 0.0
+        bonus_score    += _sh_pending_bonus  # stop-hunt setup bonus (0 if no hunt)
 
         # Bonus 1: Heikin Ashi confirmation
         if df_5m is not None and len(df_5m) >= 3:

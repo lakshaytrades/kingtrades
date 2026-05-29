@@ -2037,21 +2037,21 @@ class SignalGenerator:
                 _mom3 = float(ctx.get('3d_mom', 0.0))
                 _mom5 = float(ctx.get('5d_mom', 0.0))
                 if direction in ('LONG', 'BUY'):
-                    if _mom3 > 3.0 and _mom5 > 5.0:
+                    if _mom3 > 7.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT 3d={_mom3:.1f}% -5")
+                    elif _mom3 > 3.0 and _mom5 > 5.0:
                         score += 8;  logger.debug(f"{symbol}: MDM_BULL 3d={_mom3:.1f}% 5d={_mom5:.1f}% +8")
                     elif _mom3 > 1.5:
                         score += 3
-                    elif _mom3 > 7.0:
-                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT 3d={_mom3:.1f}% -5")
                     elif _mom3 < -3.0:
                         score -= 5;  logger.debug(f"{symbol}: MDM_BEAR 3d={_mom3:.1f}% -5")
                 else:  # SHORT
-                    if _mom3 < -3.0 and _mom5 < -5.0:
+                    if _mom3 < -7.0:
+                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT_SHORT 3d={_mom3:.1f}% -5")
+                    elif _mom3 < -3.0 and _mom5 < -5.0:
                         score += 8;  logger.debug(f"{symbol}: MDM_BEAR 3d={_mom3:.1f}% 5d={_mom5:.1f}% +8")
                     elif _mom3 < -1.5:
                         score += 3
-                    elif _mom3 < -7.0:
-                        score -= 5;  logger.debug(f"{symbol}: MDM_OVEREXT_SHORT 3d={_mom3:.1f}% -5")
                     elif _mom3 > 3.0:
                         score -= 5;  logger.debug(f"{symbol}: MDM_BULL_FIGHTS_SHORT 3d={_mom3:.1f}% -5")
         except Exception:

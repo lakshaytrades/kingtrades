@@ -911,7 +911,7 @@ class TradingBot:
                         _now_h = _get_et().hour + _get_et().minute / 60
                         _thesis = getattr(self.morning_intel, '_last_thesis', None) or getattr(self.morning_intel, 'thesis', None)
                         if _thesis and _now_h < 10.5:   # only apply before 10:30 AM ET
-                            _day_size = float(getattr(_thesis, 'position_size_factor', 1.0) or 1.0)
+                            _day_size = float(getattr(_thesis, 'size_multiplier', 1.0) or 1.0)
                             _day_bias = int(getattr(_thesis, 'bias_score', 0) or 0)
                             self._day_size_factor = max(0.5, min(1.5, _day_size))
                             self._day_bias_score  = _day_bias
