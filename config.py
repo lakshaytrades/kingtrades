@@ -435,12 +435,13 @@ DOW_MIN_SCORE: dict = {
 TOD_MIN_SCORES: dict = {
     # (start_min_from_midnight, end_min): min_score
     # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
-    (570, 600): 65.0,   # 9:30–10:00: open drive
-    (600, 690): 68.0,   # 10:00–11:30: morning momentum
-    (690, 810): 73.0,   # 11:30–13:30: midday chop — harder threshold
-    (810, 900): 68.0,   # 13:30–15:00: afternoon momentum
-    (900, 925): 65.0,   # 15:00–15:25: power hour
-    (925, 960): 80.0,   # 15:25–16:00: very late — near square-off
+    # ── v13.0: tighter midday + near-close thresholds for 70-80% WR target ──
+    (570, 600): 65.0,   # 9:30–10:00: open drive — best momentum, lower bar OK
+    (600, 690): 70.0,   # 10:00–11:30: morning prime window
+    (690, 810): 78.0,   # 11:30–13:30: midday chop — only A-grade or better
+    (810, 900): 72.0,   # 13:30–15:00: afternoon — moderate selectivity
+    (900, 925): 65.0,   # 15:00–15:25: power hour — institutional rebalancing
+    (925, 960): 85.0,   # 15:25–16:00: near close — extreme selectivity only
 }
 TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
 
@@ -543,6 +544,13 @@ POWER_HOUR_ENABLED:     bool = os.getenv("POWER_HOUR_ENABLED",      "True").lowe
 PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lower() in ("true","1","yes")
 TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
 SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
+
+# ML Gate v13.0 — GradientBoosting win-probability pre-filter
+ML_GATE_ENABLED:          bool  = os.getenv("ML_GATE_ENABLED",  "True").lower() in ("true","1","yes")
+ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60"))
+# 0.60 = entry bar: 60% ML-predicted win probability required
+# Raise to 0.70 for ultra-selective mode (fewer trades, higher WR)
+# Lower to 0.50 to effectively disable the gate (returns neutral prob)
 
 # PDT enforcement (Pattern Day Trader rule — US margin accounts < $25K)
 # Set ACCOUNT_TYPE=CASH (default) to disable PDT restriction

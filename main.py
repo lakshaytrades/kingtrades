@@ -1061,6 +1061,15 @@ class TradingBot:
                 size_multiplier   = getattr(signal, "size_multiplier", 1.0),
                 time_stop_minutes = getattr(signal, "time_stop_minutes", 30),
             )
+            # Store entry hour (ET) for ML outcome recording
+            try:
+                from utils import get_current_ist_time as _gist
+                _et_now_entry = _gist()
+                position._entry_hour_et = (_et_now_entry.hour - 4) % 24
+                position.signal_score   = getattr(signal, "signal_score", 0.0)
+                position.indicators     = getattr(signal, "indicators", None)
+            except Exception:
+                pass
             self.risk_manager.add_position(position)
         except Exception as _pe:
             logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
@@ -2335,6 +2344,29 @@ class TradingBot:
                             )
                         except Exception as _rle:
                             logger.debug(f"[suppressed] RL close: {_rle}")
+                        # ML ranker: record outcome for online learning
+                        try:
+                            from ml_signal_ranker import record_outcome as _ml_rec
+                            _ml_ind = getattr(pos, "indicators", None)
+                            _ml_sc  = getattr(pos, "signal_score", 70.0)
+                            _ml_r2  = getattr(pos, "_r2_quality", 0.5)
+                            _ml_rec(
+                                won=pnl > 0,
+                                rsi=getattr(_ml_ind, "rsi", 55.0) if _ml_ind else 55.0,
+                                macd_hist_norm=0.0,
+                                volume_ratio=getattr(_ml_ind, "volume_ratio", 1.0) if _ml_ind else 1.0,
+                                atr_pct=(getattr(_ml_ind, "atr", 0.5) / max(pos.entry_price, 1.0)) * 100.0 if _ml_ind else 1.0,
+                                signal_score=_ml_sc,
+                                adx=getattr(_ml_ind, "adx", 25.0) if _ml_ind else 25.0,
+                                ema_slope_pct=0.0,
+                                vwap_dist_pct=0.0,
+                                bb_pct=0.5,
+                                hour_et=getattr(pos, "_entry_hour_et", 10),
+                                is_long=1 if pos.direction == "LONG" else 0,
+                                r2_quality=_ml_r2,
+                            )
+                        except Exception as _ml_e:
+                            logger.debug(f"[suppressed] ml_record_outcome: {_ml_e}")
 
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
@@ -4131,10 +4163,22 @@ class TradingBot:
                             f"{k}:{v}{'✅' if int(k.split('-')[0]) >= _thresh else ''}"
                             for k, v in sorted(_hist.items(), key=lambda x: int(x[0].split("-")[0]))
                         )
+                        _ml_line = ""
+                        try:
+                            from ml_signal_ranker import get_model_stats as _gms
+                            _mls = _gms()
+                            _ml_line = (
+                                f"\n🤖 ML: P(win)={_mls.get('win_rate_live','N/A')} | "
+                                f"live_samples={_mls.get('live_samples',0)} | "
+                                f"retrain_at={_mls.get('retrain_at',50)}"
+                            )
+                        except Exception:
+                            pass
                         _filter_lines = (
                             f"\n📊 Scores: {_hist_str}"
                             f"\n🎯 Passed: {_fs['passed']} | Rejected: {_fs['rejected']}"
                             f" | Near-miss: {_fs.get('near_miss_count', 0)}"
+                            f"{_ml_line}"
                         )
             except Exception:
                 pass
