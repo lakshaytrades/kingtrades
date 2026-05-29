@@ -784,7 +784,42 @@ class RiskManager:
         if sess_mult == 0.0:
             return {"allowed": False, "reason": f"Session gate: {session}"}
 
+        # 10. Intraday drawdown recovery mode (peak-to-trough, not from zero)
+        # When session equity gives back a large %, tighten risk before it becomes catastrophic.
+        # This is what every prop desk does: drawdown triggers a step-down in size, not binary stop.
+        import config as _dd_cfg
+        _dd_limit_hard = getattr(_dd_cfg, 'DD_RECOVERY_HARD_PCT', 10.0)   # block at 10% drawdown from session peak
+        _dd_limit_soft = getattr(_dd_cfg, 'DD_RECOVERY_SOFT_PCT', 5.0)    # halve size at 5%
+        if self.state.daily_capital > 0 and self.state.peak_pnl > 0:
+            _session_dd_pct = (self.state.peak_pnl - self.state.daily_pnl) / self.state.daily_capital * 100
+            if _session_dd_pct >= _dd_limit_hard:
+                return {
+                    "allowed": False,
+                    "reason": (
+                        f"DRAWDOWN RECOVERY: session DD {_session_dd_pct:.1f}% ≥ {_dd_limit_hard}% hard limit "
+                        f"(peak ${self.state.peak_pnl:+.2f} → now ${self.state.daily_pnl:+.2f}). "
+                        "No new entries until next day."
+                    ),
+                }
+
         return {"allowed": True, "reason": f"All checks passed | Session={session}"}
+
+    def get_drawdown_size_mult(self) -> float:
+        """
+        Returns size multiplier based on intraday drawdown from peak.
+        Called by position sizing to reduce new trade sizes during recovery.
+        0.5x at 5%+ DD, 0.7x at 3-5%, 1.0x below 3%.
+        """
+        import config as _dd_cfg2
+        _soft = getattr(_dd_cfg2, 'DD_RECOVERY_SOFT_PCT', 5.0)
+        if self.state.daily_capital <= 0 or self.state.peak_pnl <= 0:
+            return 1.0
+        _dd_pct = (self.state.peak_pnl - self.state.daily_pnl) / self.state.daily_capital * 100
+        if _dd_pct >= _soft:
+            return 0.50   # half size during recovery — protect remaining gains
+        if _dd_pct >= _soft * 0.60:
+            return 0.70   # light reduction
+        return 1.0
 
     # --------------------------------------------------------
     # TRAILING STOP MANAGEMENT

@@ -539,6 +539,39 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append('MOM_SKIP')
 
+        # ── GATE 25: R² TREND QUALITY (linear regression linearity) ──────────
+        # Measures price movement linearity over last 20 bars.
+        # R² < 0.45 = choppy/random price action = avoid (coin flip territory).
+        # R² ≥ 0.70 = clean directional trend = +6 score bonus (Goldman/RenTec standard).
+        # This is what quant funds call "trend quality" — not just direction, but consistency.
+        try:
+            import config as _cfg25
+            if getattr(_cfg25, 'TREND_QUALITY_GATE', True) and df_5m is not None and len(df_5m) >= 20:
+                import numpy as _np25
+                _cl25 = df_5m['close'].values[-20:] if 'close' in df_5m.columns else df_5m['Close'].values[-20:]
+                _x25  = _np25.arange(len(_cl25), dtype=float)
+                _xm   = _x25.mean(); _ym = _cl25.mean()
+                _ss_tot = _np25.sum((_cl25 - _ym) ** 2)
+                _slope  = _np25.sum((_x25 - _xm) * (_cl25 - _ym)) / (_np25.sum((_x25 - _xm) ** 2) + 1e-9)
+                _y_pred = _ym + _slope * (_x25 - _xm)
+                _ss_res = _np25.sum((_cl25 - _y_pred) ** 2)
+                _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 0 else 0.0
+                # Direction check: slope must agree with signal direction
+                _slope_ok = (_slope > 0) if direction in ('LONG','BUY') else (_slope < 0)
+                if _r2 < 0.35 or (_r2 < 0.50 and not _slope_ok):
+                    result.gates_failed.append(f'TREND_QUALITY(R²={_r2:.2f})')
+                    result.rejection_reason = (
+                        f'[GATE-25 R²] {symbol} — trend R²={_r2:.2f} too choppy for {direction} '
+                        f'(need ≥0.35 with slope agreement — price action not directional)'
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append(f'R²={_r2:.2f}')
+                # Bonus will be applied in bonus section below (stored for use)
+                result._r2_quality = _r2
+        except Exception:
+            result.gates_passed.append('R²_SKIP')
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
@@ -555,6 +588,19 @@ class HighAccuracyFilter:
             else:
                 bonus_score -= 3
                 result.bonuses.append(f"HA_WEAK({ha_note})")
+
+        # Bonus 1a: R² trend quality bonus — clean trends get larger size too
+        _r2_val = getattr(result, '_r2_quality', 0.0)
+        if _r2_val >= 0.80:
+            bonus_score += 8
+            result.size_multiplier *= 1.15
+            result.bonuses.append(f"TREND_R²={_r2_val:.2f}(+8,+15%size)")
+        elif _r2_val >= 0.70:
+            bonus_score += 6
+            result.bonuses.append(f"TREND_R²={_r2_val:.2f}(+6)")
+        elif _r2_val >= 0.55:
+            bonus_score += 3
+            result.bonuses.append(f"TREND_R²={_r2_val:.2f}(+3)")
 
         # Bonus 1b: Momentum bar strength — 5/5 aligned = institutional momentum bonus
         if df_5m is not None and len(df_5m) >= 5:

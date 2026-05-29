@@ -1010,6 +1010,28 @@ class TradingBot:
             return
 
         logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+
+        # RL agent pre-trade signal validation (learn from every trade)
+        try:
+            from rl_agent import LakshKingRL
+            _rl_mkt = {
+                "rsi": getattr(signal, "rsi", 50.0),
+                "macd_hist": 0.0,
+                "vwap_deviation_pct": 0.0,
+                "volume_ratio": getattr(signal, "volume_ratio", 1.0),
+                "mtf_score": signal.signal_score,
+                "pattern_score": signal.signal_score,
+                "signal_score": signal.signal_score,
+                "nifty_trend": "NEUTRAL",
+                "adx": 20.0,
+            }
+            _rl_decision = LakshKingRL.signal(signal.symbol, signal.direction, _rl_mkt, 250.0)
+            if _rl_decision == "SKIP" and signal.signal_score < 88:
+                logger.info(f"[{format_ist_timestamp()}] RL SKIP: {signal.symbol} score={signal.signal_score:.0f} — RL brain vetoed")
+                return
+        except Exception as _rle:
+            logger.debug(f"[suppressed] RL signal: {_rle}")
+
         result = self.executor.place_entry_order(signal)
         if not result.success:
             logger.error(
@@ -1571,7 +1593,12 @@ class TradingBot:
                 _brain_size_mult = self.adaptive_brain.get_size_multiplier()
             # Apply DOW size multiplier to every signal before filtering
             _dow_mult = config.DOW_SIZE_MULTIPLIERS.get(now_ist.weekday(), 1.0)
-            _combined_mult = round(_dow_mult * _brain_size_mult, 3)
+            _dd_mult = 1.0
+            if hasattr(self, "risk_manager") and self.risk_manager and hasattr(self.risk_manager, "get_drawdown_size_mult"):
+                _dd_mult = self.risk_manager.get_drawdown_size_mult()
+                if _dd_mult < 1.0:
+                    logger.info(f"[{format_ist_timestamp()}] DD recovery sizing: {_dd_mult:.2f}x (session drawdown active)")
+            _combined_mult = round(_dow_mult * _brain_size_mult * _dd_mult, 3)
             if _combined_mult != 1.0:
                 for _s in signals:
                     _s.size_multiplier = round(_s.size_multiplier * _combined_mult, 3)
@@ -2298,6 +2325,16 @@ class TradingBot:
                             _record_tr(pos.symbol, _pnl_pct)
                         except Exception as _tr_e:
                             logger.debug(f"[suppressed] record_trade_result: {_tr_e}")
+                        # RL brain: feed trade outcome so agent learns from this trade
+                        try:
+                            from rl_agent import LakshKingRL
+                            LakshKingRL.close(
+                                symbol=pos.symbol, pnl=pnl,
+                                exit_reason=action.get("reason", "EXIT"),
+                                market_data={"signal_score": getattr(pos, "signal_score", 0.0)},
+                            )
+                        except Exception as _rle:
+                            logger.debug(f"[suppressed] RL close: {_rle}")
 
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:

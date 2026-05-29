@@ -179,7 +179,9 @@ BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"
 # Gate 21: Order Flow Imbalance — cumulative delta must not strongly oppose direction
 OFI_GATE_ENABLED:       bool  = os.getenv("OFI_GATE_ENABLED", "True").lower() in ("true","1","yes")
 # Gate 24: Momentum bar confirmation — require ≥3 of last 5 bars closing in signal direction
-MOMENTUM_BAR_GATE:      bool  = os.getenv("MOMENTUM_BAR_GATE", "True").lower() in ("true","1","yes")
+MOMENTUM_BAR_GATE:      bool  = os.getenv("MOMENTUM_BAR_GATE",    "True").lower() in ("true","1","yes")
+# Gate 25: R² trend quality — reject choppy price action (R² < 0.35 over 20 bars)
+TREND_QUALITY_GATE:     bool  = os.getenv("TREND_QUALITY_GATE",   "True").lower() in ("true","1","yes")
 # Score components: OFI, Dark Pool, Session Momentum
 OFI_SCORE_ENABLED:             bool = os.getenv("OFI_SCORE_ENABLED", "True").lower() in ("true","1","yes")
 DARK_POOL_ENABLED:             bool = os.getenv("DARK_POOL_ENABLED", "True").lower() in ("true","1","yes")
@@ -207,6 +209,9 @@ LARGE_LOSS_PAUSE_MINUTES: int = 25     # pause duration after large single loss
 NO_ENTRY_AFTER_ET_HOUR: int = 15       # no new entries at or after 3:00 PM ET (last 30 min = noisy reversals)
 NO_ENTRY_AFTER_ET_MINUTE: int = 0
 SKIP_VOLATILE_LONGS: bool = True       # in HIGH_VOLATILITY regime, skip LONG entries (only shorts)
+# ── Drawdown recovery sizing (v12.0) ─────────────────────────────────────────
+DD_RECOVERY_HARD_PCT: float = float(os.getenv("DD_RECOVERY_HARD_PCT", "10.0"))  # block all new trades at 10% session DD from peak
+DD_RECOVERY_SOFT_PCT: float = float(os.getenv("DD_RECOVERY_SOFT_PCT", "5.0"))   # halve size at 5% session DD from peak
 
 # ── Short selling ──────────────────────────────────────────────────────────
 SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "True").lower() in ("true","1","yes")
