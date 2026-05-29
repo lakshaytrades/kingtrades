@@ -107,16 +107,84 @@ class HighAccuracyFilter:
 
     # Known correlation pairs (same sector = correlated)
     CORRELATION_PAIRS = {
-        frozenset({"NVDA", "AMD"}):    0.85,
-        frozenset({"AAPL", "MSFT"}):   0.80,
+        # ── Semis (highest intra-sector correlation of any sector) ────────────
+        frozenset({"NVDA", "AMD"}):    0.88,
+        frozenset({"NVDA", "TSM"}):    0.82,
+        frozenset({"NVDA", "SMCI"}):   0.80,
+        frozenset({"NVDA", "AVGO"}):   0.82,
+        frozenset({"NVDA", "ARM"}):    0.83,
+        frozenset({"AMD",  "INTC"}):   0.82,
+        frozenset({"AMD",  "QCOM"}):   0.80,
+        frozenset({"AMD",  "MU"}):     0.80,
+        frozenset({"LRCX", "KLAC"}):   0.88,
+        frozenset({"LRCX", "AMAT"}):   0.87,
+        frozenset({"KLAC", "AMAT"}):   0.87,
+        frozenset({"QCOM", "MRVL"}):   0.80,
+        frozenset({"TXN",  "MCHP"}):   0.82,
+        frozenset({"SMCI", "MU"}):     0.77,
+        # ── Mega-cap tech ─────────────────────────────────────────────────────
+        frozenset({"AAPL", "MSFT"}):   0.82,
+        frozenset({"AAPL", "GOOGL"}):  0.79,
+        frozenset({"AAPL", "AMZN"}):   0.79,
+        frozenset({"MSFT", "GOOGL"}):  0.80,
+        frozenset({"MSFT", "AMZN"}):   0.78,
         frozenset({"META", "GOOGL"}):  0.82,
         frozenset({"META", "SNAP"}):   0.78,
-        frozenset({"JPM", "GS"}):      0.80,
-        frozenset({"XOM", "CVX"}):     0.88,
-        frozenset({"TSLA", "RIVN"}):   0.75,
-        frozenset({"SPY", "QQQ"}):     0.92,
-        frozenset({"NVDA", "TSM"}):    0.80,
-        frozenset({"AMZN", "SHOP"}):   0.72,
+        frozenset({"META", "NFLX"}):   0.77,
+        # ── AI / Cloud SaaS ──────────────────────────────────────────────────
+        frozenset({"CRWD", "PANW"}):   0.85,
+        frozenset({"CRWD", "ZS"}):     0.82,
+        frozenset({"PANW", "ZS"}):     0.83,
+        frozenset({"DDOG", "SNOW"}):   0.80,
+        frozenset({"DDOG", "NET"}):    0.78,
+        frozenset({"NOW",  "CRM"}):    0.79,
+        frozenset({"PLTR", "AI"}):     0.77,
+        frozenset({"PLTR", "BBAI"}):   0.78,
+        # ── Finance ───────────────────────────────────────────────────────────
+        frozenset({"JPM", "GS"}):      0.83,
+        frozenset({"JPM", "MS"}):      0.82,
+        frozenset({"JPM", "BAC"}):     0.83,
+        frozenset({"GS",  "MS"}):      0.86,
+        frozenset({"GS",  "BAC"}):     0.80,
+        # ── Energy ───────────────────────────────────────────────────────────
+        frozenset({"XOM", "CVX"}):     0.90,
+        frozenset({"XOM", "OXY"}):     0.85,
+        frozenset({"CVX", "OXY"}):     0.85,
+        frozenset({"XOM", "SLB"}):     0.82,
+        frozenset({"CVX", "MPC"}):     0.80,
+        # ── EV / Clean Energy ────────────────────────────────────────────────
+        frozenset({"RIVN", "LCID"}):   0.84,
+        frozenset({"RIVN", "NIO"}):    0.82,
+        frozenset({"TSLA", "RIVN"}):   0.78,
+        frozenset({"FSLR", "ENPH"}):   0.82,
+        frozenset({"PLUG", "FSLR"}):   0.77,
+        # ── Crypto / Blockchain ──────────────────────────────────────────────
+        frozenset({"MARA", "RIOT"}):   0.92,
+        frozenset({"MARA", "HUT"}):    0.90,
+        frozenset({"MARA", "CLSK"}):   0.88,
+        frozenset({"RIOT", "HUT"}):    0.91,
+        frozenset({"RIOT", "CLSK"}):   0.88,
+        frozenset({"COIN", "MSTR"}):   0.85,
+        frozenset({"COIN", "MARA"}):   0.84,
+        frozenset({"MSTR", "MARA"}):   0.84,
+        # ── ETFs (index-tracking) ─────────────────────────────────────────────
+        frozenset({"SPY",  "QQQ"}):    0.94,
+        frozenset({"SPY",  "IWM"}):    0.88,
+        frozenset({"QQQ",  "TQQQ"}):   0.97,
+        frozenset({"SPY",  "SPXL"}):   0.97,
+        frozenset({"SOXL", "NVDA"}):   0.87,
+        frozenset({"SOXL", "AMD"}):    0.86,
+        frozenset({"TECL", "AAPL"}):   0.85,
+        # ── Consumer / Social ────────────────────────────────────────────────
+        frozenset({"UBER", "LYFT"}):   0.85,
+        frozenset({"DASH", "UBER"}):   0.79,
+        frozenset({"SHOP", "AMZN"}):   0.77,
+        frozenset({"RBLX", "U"}):      0.78,
+        # ── Fintech ──────────────────────────────────────────────────────────
+        frozenset({"SQ",   "PYPL"}):   0.82,
+        frozenset({"AFRM", "SQ"}):     0.78,
+        frozenset({"SOFI", "HOOD"}):   0.80,
+        frozenset({"V",    "MA"}):     0.88,
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
@@ -610,7 +678,19 @@ class HighAccuracyFilter:
                 _now26   = get_current_ist_time()
                 _hour_et = (_now26.hour - 4) % 24   # rough ET approx for scoring
                 _is_long = 1 if direction in ('LONG', 'BUY') else 0
-                _macd_n  = macd_hist / max(atr, 0.01) if atr > 0 else 0.0
+                # Compute MACD histogram from df_5m (macd_hist not in evaluate() params)
+                _macd_hist_val = 0.0
+                if df_5m is not None and len(df_5m) >= 26:
+                    try:
+                        _cl_m = df_5m['close']
+                        _e12m = _cl_m.ewm(span=12, adjust=False).mean()
+                        _e26m = _cl_m.ewm(span=26, adjust=False).mean()
+                        _macd_line = _e12m - _e26m
+                        _sig_line  = _macd_line.ewm(span=9, adjust=False).mean()
+                        _macd_hist_val = float(_macd_line.iloc[-1] - _sig_line.iloc[-1])
+                    except Exception:
+                        pass
+                _macd_n  = _macd_hist_val / max(atr, 0.01) if atr > 0 else 0.0
                 _win_prob = _ml_prob(
                     rsi=rsi,
                     macd_hist_norm=_macd_n,
@@ -1365,6 +1445,30 @@ class HighAccuracyFilter:
         except Exception:
             return True, ""   # Fail open — don't block on data errors
 
+    # Sector groupings for dynamic correlation estimation
+    _SECTOR_GROUPS = {
+        "semi":    {"NVDA","AMD","TSM","SMCI","AVGO","ARM","INTC","QCOM","MU","LRCX","KLAC","AMAT","MRVL","TXN","MCHP","ON"},
+        "bigtech": {"AAPL","MSFT","GOOGL","GOOG","AMZN","META"},
+        "aicloud": {"CRWD","PANW","ZS","DDOG","NET","NOW","SNOW","TEAM","HUBS","OKTA","MDB","PLTR","AI","SOUN","BBAI","GTLB","U"},
+        "finance": {"JPM","GS","MS","BAC","V","MA","SOFI","HOOD","AFRM","SQ","PYPL"},
+        "energy":  {"XOM","CVX","OXY","SLB","MPC"},
+        "ev":      {"TSLA","RIVN","LCID","NIO","PLUG","FSLR","ENPH"},
+        "crypto":  {"COIN","MSTR","MARA","RIOT","HUT","CLSK","BTBT","CIFR"},
+        "etf":     {"SPY","QQQ","IWM","TQQQ","SPXL","SOXL","TECL","FNGU"},
+        "consumer":{"UBER","LYFT","DASH","SHOP","RBLX","ABNB","MELI","YELP"},
+        "biotech": {"MRNA","HIMS","LLY","NVO","VKTX","RXRX"},
+        "defense": {"LMT","RTX","NOC","GE","CAT"},
+        "media":   {"NFLX","DIS","GOOGL"},
+    }
+    _SYM_TO_SECTOR: dict = {}  # populated on first call
+
+    def _get_sector(self, sym: str) -> Optional[str]:
+        if not self._SYM_TO_SECTOR:
+            for sect, syms in self._SECTOR_GROUPS.items():
+                for s in syms:
+                    self._SYM_TO_SECTOR[s] = sect
+        return self._SYM_TO_SECTOR.get(sym.upper())
+
     def _check_correlation(
         self,
         symbol: str,
@@ -1373,19 +1477,32 @@ class HighAccuracyFilter:
     ) -> Tuple[bool, str]:
         """
         Gate 14: Block if a highly correlated position is already open in same direction.
-        open_positions: list of currently open position symbols (same direction).
+        Two-pass: (1) explicit pair lookup, (2) same-sector heuristic for unknown pairs.
         Correlation >= CORR_BLOCK_THRESHOLD (0.75) triggers a block.
         """
         if not open_positions:
             return True, "No open positions"
 
+        sym_up = symbol.upper()
         for open_sym in open_positions:
-            pair = frozenset({symbol.upper(), open_sym.upper()})
+            open_up = open_sym.upper()
+            pair = frozenset({sym_up, open_up})
+            # Pass 1: explicit pair correlation table
             corr = self.CORRELATION_PAIRS.get(pair)
             if corr and corr >= self.CORR_BLOCK_THRESHOLD:
                 return False, (
                     f"CORR_BLOCK: {symbol} correlates {corr:.0%} with open {open_sym}"
                 )
+            # Pass 2: same-sector heuristic for unlisted pairs
+            if corr is None:
+                sect_a = self._get_sector(sym_up)
+                sect_b = self._get_sector(open_up)
+                if sect_a and sect_b and sect_a == sect_b:
+                    # Same sector, unknown pair → estimated 0.78 correlation
+                    return False, (
+                        f"CORR_BLOCK (sector): {symbol} and {open_sym} both in '{sect_a}' — "
+                        f"estimated correlation ~0.78"
+                    )
 
         return True, "Correlation OK"
 

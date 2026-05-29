@@ -1014,16 +1014,20 @@ class TradingBot:
         # RL agent pre-trade signal validation (learn from every trade)
         try:
             from rl_agent import LakshKingRL
+            _rl_ind = getattr(signal, "indicators", None)
             _rl_mkt = {
-                "rsi": getattr(signal, "rsi", 50.0),
-                "macd_hist": 0.0,
-                "vwap_deviation_pct": 0.0,
-                "volume_ratio": getattr(signal, "volume_ratio", 1.0),
+                "rsi": getattr(_rl_ind, "rsi", 50.0) if _rl_ind else getattr(signal, "rsi", 50.0),
+                "macd_hist": getattr(_rl_ind, "macd_hist", 0.0) if _rl_ind else 0.0,
+                "vwap_deviation_pct": (
+                    (signal.entry_price - getattr(_rl_ind, "vwap", signal.entry_price))
+                    / max(getattr(_rl_ind, "vwap", signal.entry_price), 0.01) * 100.0
+                ) if _rl_ind and getattr(_rl_ind, "vwap", 0) > 0 else 0.0,
+                "volume_ratio": getattr(_rl_ind, "volume_ratio", 1.0) if _rl_ind else 1.0,
                 "mtf_score": signal.signal_score,
                 "pattern_score": signal.signal_score,
                 "signal_score": signal.signal_score,
-                "nifty_trend": "NEUTRAL",
-                "adx": 20.0,
+                "nifty_trend": "BULLISH" if signal.direction == "LONG" else "BEARISH",
+                "adx": getattr(_rl_ind, "adx", 20.0) if _rl_ind else 20.0,
             }
             _rl_decision = LakshKingRL.signal(signal.symbol, signal.direction, _rl_mkt, 250.0)
             if _rl_decision == "SKIP" and signal.signal_score < 88:
@@ -3013,6 +3017,16 @@ class TradingBot:
 
         # Save compounded capital for tomorrow
         self._save_compounded_capital()
+
+        # EOD walk-forward optimization: train on today's data, save params for tomorrow
+        try:
+            from trainer import EODSelfTrainer
+            logger.info(f"[{format_ist_timestamp()}] Running EOD walk-forward optimization…")
+            trainer = EODSelfTrainer()
+            trainer.run(lookback_days=60)
+            logger.info(f"[{format_ist_timestamp()}] EOD trainer complete — params saved for tomorrow")
+        except Exception as _te:
+            logger.warning(f"[{format_ist_timestamp()}] EOD trainer skipped: {_te}")
 
         # Send EOD reports via email + Discord
         try:
