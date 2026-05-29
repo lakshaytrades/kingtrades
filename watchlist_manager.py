@@ -129,29 +129,101 @@ class WatchlistManager:
 
     def _run_momentum_scan(self, data_fetcher, learner=None, top_n: int = 40):
         """
-        Score all liquid stocks by momentum.
+        Score all liquid stocks by momentum using a single yfinance batch download.
         18yr rule: "Trade what's moving RIGHT NOW, not what moved yesterday."
+
+        NOTE: Previously called get_quote() 80+ times individually → Alpaca rate-limited
+        after ~10 calls → most symbols returned zero data → watchlist shrank to 2-14 stocks.
+        Fix: one yf.download() call for all symbols = no rate limiting, full universe.
         """
-        logger.info(f"[{format_ist_timestamp()}] Running momentum scan on {len(LIQUID_UNIVERSE)} stocks...")
+        symbols = [s for s in LIQUID_UNIVERSE
+                   if not (learner and learner.is_symbol_blacklisted(s))]
+
+        logger.info(f"[{format_ist_timestamp()}] Momentum scan: batch-fetching {len(symbols)} symbols via yfinance...")
         scores = []
 
-        import time as _time
-        for i, symbol in enumerate(LIQUID_UNIVERSE):
-            # Skip blacklisted symbols
-            if learner and learner.is_symbol_blacklisted(symbol):
-                continue
-            try:
-                score = self._score_stock(symbol, data_fetcher)
-                if score and score["tradeable"]:
-                    scores.append(score)
-            except Exception as e:
-                logger.debug(f"Score failed {symbol}: {e}")
-            # Throttle: 5 requests per 2s to stay within Alpaca rate limits
-            if i % 5 == 4:
-                _time.sleep(2.0)
+        try:
+            import yfinance as yf
+            # One batch call: today's OHLCV for all symbols (partial bar during market hours)
+            raw = yf.download(
+                symbols, period="2d", interval="1d",
+                auto_adjust=True, threads=True, progress=False, timeout=20,
+                group_by="ticker",
+            )
+
+            for symbol in symbols:
+                try:
+                    if len(symbols) == 1:
+                        df = raw
+                    else:
+                        df = raw[symbol] if symbol in raw.columns.get_level_values(0) else pd.DataFrame()
+
+                    if df is None or df.empty or len(df) < 2:
+                        continue
+
+                    ltp        = float(df["Close"].iloc[-1])
+                    prev_close = float(df["Close"].iloc[-2])
+                    volume     = int(df["Volume"].iloc[-1])
+                    high       = float(df["High"].iloc[-1])
+                    low        = float(df["Low"].iloc[-1])
+
+                    if ltp <= 0 or prev_close <= 0:
+                        continue
+
+                    change_pct        = (ltp - prev_close) / prev_close * 100
+                    intraday_range_pct = (high - low) / low * 100 if low > 0 else 0
+
+                    if ltp < 1 or ltp > 10000:
+                        continue
+
+                    score = 0.0
+                    score += abs(change_pct) * 10
+                    if change_pct > 0:
+                        score += 5
+                    score += intraday_range_pct * 5
+                    if volume > 500_000:   score += 15
+                    elif volume > 100_000: score += 8
+                    elif volume < 50_000:  score -= 20
+                    if abs(change_pct) > 2:  score += 20
+                    elif abs(change_pct) > 1: score += 10
+
+                    tradeable = intraday_range_pct >= 0.3 and ltp >= 1
+
+                    if tradeable:
+                        scores.append({
+                            "symbol":         symbol,
+                            "ltp":            round(ltp, 2),
+                            "change_pct":     round(change_pct, 2),
+                            "volume":         volume,
+                            "range_pct":      round(intraday_range_pct, 2),
+                            "momentum_score": round(score, 1),
+                            "tradeable":      True,
+                        })
+                except Exception:
+                    continue
+
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] Momentum scan batch download failed: {e}")
+
+        # Always guarantee a minimum watchlist — merge with DEFAULT if scan is thin
+        MIN_SCAN_SIZE = 20
+        if len(scores) < MIN_SCAN_SIZE:
+            logger.info(
+                f"[{format_ist_timestamp()}] Momentum scan returned only {len(scores)} stocks — "
+                f"merging with DEFAULT_WATCHLIST to reach {MIN_SCAN_SIZE}+"
+            )
+            scan_symbols = {s["symbol"] for s in scores}
+            for sym in config.DEFAULT_WATCHLIST:
+                if sym not in scan_symbols:
+                    scores.append({
+                        "symbol": sym, "ltp": 0, "change_pct": 0,
+                        "volume": 0, "range_pct": 0, "momentum_score": 0, "tradeable": True,
+                    })
+                if len(scores) >= max(top_n, MIN_SCAN_SIZE):
+                    break
 
         if not scores:
-            logger.info(f"[{format_ist_timestamp()}] Momentum scan: no new picks — using default watchlist ({len(config.DEFAULT_WATCHLIST)} symbols)")
+            logger.info(f"[{format_ist_timestamp()}] Momentum scan: using full default watchlist")
             self._watchlist = config.DEFAULT_WATCHLIST[:top_n]
             return
 

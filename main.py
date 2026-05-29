@@ -780,8 +780,8 @@ class TradingBot:
                         f"{len(watchlist)} stocks (hot sectors first)"
                     )
                 except AttributeError:
-                    # Fallback to old NSE method signature
-                    watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=8)
+                    # Fallback to old NSE method signature — top_n=40 to match main path
+                    watchlist = self.sector_rotation.filter_watchlist_by_sector(watchlist, top_n=40)
                 if sector_summary:
                     logger.info(f"[{format_ist_timestamp()}] {sector_summary}")
                     if self.alerter:
@@ -1541,12 +1541,19 @@ class TradingBot:
                         f"[{format_ist_timestamp()}] Scan complete — 0 signals on "
                         f"{len(watchlist)} symbols (min_score={eff_min_score:.0f}, day={day_name})"
                     )
+                    # Build gate rejection summary so user knows WHY — not just "no signals"
                     try:
+                        _stats = self.signal_gen.ha_filter.get_stats()
+                        _top_rejects = _stats.get("top_rejection_reasons", [])
+                        _reject_str = ""
+                        if _top_rejects:
+                            _reject_str = "\nTop blocks: " + " | ".join(_top_rejects[:3])
                         self.alerter.send_html(
                             f"📊 <b>Market Scan — No Signals</b>\n"
                             f"Scanned {len(watchlist)} stocks at "
                             f"{now_ist.strftime('%H:%M')} ET\n"
-                            f"Min score required: {eff_min_score:.0f} | Day: {day_name}\n"
+                            f"Min score required: {eff_min_score:.0f} | Day: {day_name}"
+                            f"{_reject_str}\n"
                             f"<i>Bot is running — waiting for quality setups</i>"
                         )
                     except Exception as _e:
@@ -4023,14 +4030,28 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _get_watchlist_cached(self) -> List[str]:
-        """Get watchlist with 15-min cache to avoid excessive API calls."""
+        """Get watchlist with 15-min cache. Guarantees >= 30 symbols (DEFAULT_WATCHLIST floor)."""
+        from config import DEFAULT_WATCHLIST
         now = get_current_ist_time()
         if (not self._watchlist_cache or
                 self._watchlist_cache_time is None or
                 (now - self._watchlist_cache_time).total_seconds() > self._watchlist_cache_ttl):
-            self._watchlist_cache = self.watchlist_mgr.get_watchlist(
+            wl = self.watchlist_mgr.get_watchlist(
                 data_fetcher=self.fetcher, learner=self.learner
             )
+            # Safety floor: never scan fewer than 30 symbols
+            if len(wl) < 30:
+                existing = set(wl)
+                for sym in DEFAULT_WATCHLIST:
+                    if sym not in existing:
+                        wl.append(sym)
+                    if len(wl) >= 50:
+                        break
+                logger.info(
+                    f"[{format_ist_timestamp()}] Watchlist padded to {len(wl)} symbols "
+                    f"(was below 30 — DEFAULT_WATCHLIST merged in)"
+                )
+            self._watchlist_cache = wl
             self._watchlist_cache_time = now
         return self._watchlist_cache
 

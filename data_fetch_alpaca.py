@@ -75,7 +75,7 @@ class BarCache:
     per interval). Refreshes every REFRESH_INTERVAL seconds in the background.
     Serves get_ohlcv() requests from in-memory DataFrames — sub-millisecond.
     """
-    REFRESH_INTERVAL = 300   # refresh bars every 5 minutes
+    REFRESH_INTERVAL = 60    # refresh bars every 60 seconds (was 300 — 5-min stale caused missed entries)
 
     def __init__(self):
         self._cache: Dict[Tuple[str, str], pd.DataFrame] = {}  # (symbol, interval) → df

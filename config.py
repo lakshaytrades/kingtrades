@@ -414,7 +414,7 @@ DOW_MIN_SCORE: dict = {
     1: 72.0,   # Tuesday — best trend day
     2: 72.0,   # Wednesday — trend continuation
     3: 72.0,   # Thursday
-    4: 74.0,   # Friday — slightly stricter: EOD gap risk, no new runners
+    4: 72.0,   # Friday — same as rest of week (size already reduced to 0.8x)
 }
 
 DOW_MAX_TRADES: dict = {
