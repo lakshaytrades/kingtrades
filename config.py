@@ -172,6 +172,9 @@ EARNINGS_PROXIMITY_DAYS: int  = int(os.getenv("EARNINGS_PROXIMITY_DAYS", "3"))  
 # Prevents opening-window time bonus from pushing weak-indicator signals over the threshold
 INDICATOR_FLOOR_GATE: bool = os.getenv("INDICATOR_FLOOR_GATE", "True").lower() in ("true","1","yes")
 INDICATOR_FLOOR_MIN:  int  = int(os.getenv("INDICATOR_FLOOR_MIN", "2"))  # minimum indicators that must align
+# Gate 20: Bid/Ask Volume Imbalance — buyers/sellers must be aggressive side
+BA_IMBALANCE_GATE:      bool  = os.getenv("BA_IMBALANCE_GATE", "True").lower() in ("true","1","yes")
+BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"))
 MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses reward higher volume
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False

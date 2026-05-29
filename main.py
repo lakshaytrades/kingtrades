@@ -2160,6 +2160,20 @@ class TradingBot:
                             self._symbol_stats.record(pos.symbol, win=pnl > 0)
                         except Exception as _ss_e:
                             logger.debug(f"[suppressed] symbol_stats.record: {_ss_e}")
+                        # PatternAnalytics: record per-pattern win rate for adaptive scoring
+                        try:
+                            from pattern_analytics import PatternAnalytics
+                            if not hasattr(self, "_pattern_analytics"):
+                                self._pattern_analytics = PatternAnalytics()
+                            _entry_hour = getattr(pos, "entry_time", None)
+                            _entry_hour = _entry_hour.hour if hasattr(_entry_hour, "hour") else 0
+                            _time_b = "OPEN" if _entry_hour < 11 else "MID"
+                            for _pname in getattr(pos, "pattern_names", []):
+                                self._pattern_analytics.record(
+                                    _pname, win=pnl > 0, pnl=pnl, time_bucket=_time_b
+                                )
+                        except Exception as _pa_e:
+                            logger.debug(f"[suppressed] pattern_analytics.record: {_pa_e}")
 
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:

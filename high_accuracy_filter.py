@@ -436,6 +436,23 @@ class HighAccuracyFilter:
         except Exception:
             result.gates_passed.append("IND_FLOOR_SKIP")
 
+        # ── GATE 20: BID/ASK VOLUME IMBALANCE ──────────────
+        try:
+            import config as _cfg20
+            if getattr(_cfg20, "BA_IMBALANCE_GATE", True) and fetcher and symbol:
+                _ba_ok, _ba_reason = self._gate_ba_imbalance(
+                    symbol, direction, fetcher,
+                    min_ratio=getattr(_cfg20, "BA_IMBALANCE_MIN_RATIO", 0.52),
+                )
+                if not _ba_ok:
+                    result.gates_failed.append("BA_IMBALANCE")
+                    result.rejection_reason = f"[GATE-20 BA_IMBALANCE] {symbol} — {_ba_reason}"
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append("BA_OK")
+        except Exception:
+            result.gates_passed.append("BA_SKIP")
+
         # ─────────────────────────────────────────────────
         # ALL GATES PASSED — now calculate bonus score
         # ─────────────────────────────────────────────────
@@ -1269,6 +1286,31 @@ class HighAccuracyFilter:
             return True, ""
         except Exception:
             return True, ""   # fail open
+
+    def _gate_ba_imbalance(
+        self, symbol: str, direction: str, fetcher, min_ratio: float = 0.52
+    ) -> Tuple[bool, str]:
+        """Gate 20: Bid/Ask size imbalance — aggressive side must dominate."""
+        try:
+            quote = fetcher.get_quote(symbol)
+            if not quote:
+                return True, ""
+            bid_sz = float(quote.get("bid_size", 0) or quote.get("bidsize", 0) or 0)
+            ask_sz = float(quote.get("ask_size", 0) or quote.get("asksize", 0) or 0)
+            total = bid_sz + ask_sz
+            if total < 10:
+                return True, ""  # insufficient order book data — fail open
+            if direction in ("BUY", "LONG"):
+                ratio = ask_sz / total  # high ask_size = buyers lifting offers
+                if ratio < min_ratio:
+                    return False, f"ask_ratio={ratio:.2f} < {min_ratio} — sellers dominant"
+            else:
+                ratio = bid_sz / total  # high bid_size = sellers hitting bids
+                if ratio < min_ratio:
+                    return False, f"bid_ratio={ratio:.2f} < {min_ratio} — buyers dominant"
+            return True, f"imbalance_ok ratio={ratio:.2f}"
+        except Exception:
+            return True, ""  # fail open
 
     def _rsi_bonus(self, rsi: float, direction: str) -> float:
         """Ideal RSI zones for momentum entries."""

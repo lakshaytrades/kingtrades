@@ -219,6 +219,9 @@ class SignalGenerator:
         # Session-level no-data tracker: symbols with 3+ consecutive 0-bar
         # failures are skipped for the rest of the session to avoid log spam.
         self._no_data_strikes: Dict[str, int] = {}
+
+        # Pattern performance analytics (lazy-loaded)
+        self._pattern_analytics = None
         self._session_skip: set = set()
 
         # Concurrent scanning config
@@ -382,6 +385,23 @@ class SignalGenerator:
             score_1h  = analysis_1h.get("score", {})  if analysis_1h else {}
 
             ind = analysis_5m.get("indicators", IndicatorSet())
+
+            # Apply pattern analytics confidence multiplier (proven patterns score stronger)
+            try:
+                if self._pattern_analytics is None:
+                    from pattern_analytics import PatternAnalytics
+                    self._pattern_analytics = PatternAnalytics()
+                _now_et = get_current_ist_time()
+                _time_b = "OPEN" if _now_et.hour + _now_et.minute / 60 <= 11 else "MID"
+                _regime_b = ""  # regime not yet computed here — use global bucket
+                for _p in analysis_5m.get("patterns", []):
+                    _mult = self._pattern_analytics.confidence_multiplier(
+                        _p.name, _time_b, _regime_b
+                    )
+                    if _mult != 1.0 and hasattr(_p, "confidence"):
+                        _p.confidence = min(100.0, _p.confidence * _mult)
+            except Exception:
+                pass
 
             # 3. Multi-timeframe alignment
             alignment = self._check_mtf_alignment(score_5m, score_15m, score_1h)
@@ -1153,16 +1173,21 @@ class SignalGenerator:
           fii_size_mult: float
         """
         ctx = {
-            "oc_score":        0.0,
-            "oc_signals":      [],
-            "vp_score":        0.0,
-            "vp_notes":        [],
-            "vp_levels":       {},
-            "fii_score":       self._fii_adjustment,
-            "fii_size_mult":   self._fii_size_mult,
-            "nse_score":       0,
-            "nse_reason":      "",
-            "ltp":             float(df_5m["close"].iloc[-1]) if df_5m is not None and not df_5m.empty and "close" in df_5m.columns else 0.0,
+            "oc_score":                    0.0,
+            "oc_signals":                  [],
+            "vp_score":                    0.0,
+            "vp_notes":                    [],
+            "vp_levels":                   {},
+            "fii_score":                   self._fii_adjustment,
+            "fii_size_mult":               self._fii_size_mult,
+            "nse_score":                   0,
+            "nse_reason":                  "",
+            "ltp":                         float(df_5m["close"].iloc[-1]) if df_5m is not None and not df_5m.empty and "close" in df_5m.columns else 0.0,
+            # Pre-market conviction defaults (filled by global_market_context when available)
+            "vix3m":                       0.0,
+            "premarket_volume_ratio":      0.0,
+            "premarket_consecutive_up":    0,
+            "gap_pct":                     0.0,
         }
 
         # ── Option Chain ─────────────────────────────────
@@ -1846,6 +1871,81 @@ class SignalGenerator:
         else:
             # AVOID/RANGING: position sizing reduced by regime (0.4x); mild score penalty
             score -= 4
+
+        # ── Regime Transition Bonus — RANGING→MOMENTUM = highest-probability entry ──
+        # The moment trending starts is when the biggest moves happen (institutional FOMO)
+        try:
+            _prev_regime = getattr(self, "_prev_regime_strategy", regime_strategy)
+            if (_prev_regime in ("MEAN_REVERSION", "RANGING") and
+                    regime_strategy == "MOMENTUM"):
+                score += 18
+                logger.debug(f"{symbol}: REGIME TRANSITION {_prev_regime}→MOMENTUM +18pts")
+            self._prev_regime_strategy = regime_strategy
+        except Exception:
+            pass
+
+        # ── Anchored VWAP from session open (more reliable than daily VWAP reset) ──
+        # Price bouncing off AVWAP = institutional support confirmed
+        try:
+            _avwap = ind.vwap  # anchored from session open (9:30 AM)
+            _ltp = ctx.get("ltp", 0.0)
+            if _avwap > 0 and _ltp > 0:
+                _avwap_dist = abs(_ltp - _avwap) / _avwap * 100
+                if direction == "LONG":
+                    if _avwap_dist < 0.15:
+                        score += 12  # AT AVWAP = maximum precision entry
+                    elif _avwap_dist < 0.3 and _ltp >= _avwap:
+                        score += 8   # bouncing off AVWAP support — classic institutional entry
+                else:  # SHORT
+                    if _avwap_dist < 0.15:
+                        score += 12
+                    elif _avwap_dist < 0.3 and _ltp <= _avwap:
+                        score += 8
+        except Exception:
+            pass
+
+        # ── VIX Term Structure Bias ───────────────────────────
+        # Backwardation (spot > 3-month) = fear = short-bias
+        # Contango (spot < 3-month) = calm = long-bias
+        try:
+            _vix   = ctx.get("vix", 0.0)
+            _vix3m = ctx.get("vix3m", 0.0)
+            if _vix > 0 and _vix3m > 0:
+                _vts_ratio = _vix / _vix3m
+                if direction == "LONG":
+                    if _vts_ratio > 1.15:    # steep backwardation = panic
+                        score -= 12
+                    elif _vts_ratio > 1.05:  # mild backwardation
+                        score -= 5
+                    elif _vts_ratio < 0.90:  # contango = calm = trend-following works
+                        score += 5
+                else:  # SHORT
+                    if _vts_ratio > 1.15:
+                        score += 8   # panic = shorts work
+                    elif _vts_ratio > 1.05:
+                        score += 4
+        except Exception:
+            pass
+
+        # ── Pre-Market Conviction Score ───────────────────────
+        # Gap + pre-market volume + direction consistency = 68% opening follow-through
+        try:
+            _pm_vol    = ctx.get("premarket_volume_ratio", 0.0)
+            _pm_consec = ctx.get("premarket_consecutive_up", 0)
+            _gap       = ctx.get("gap_pct", 0.0)
+            _pm_score  = 0.0
+            if _pm_vol >= 2.0:   _pm_score += 6
+            if _pm_vol >= 4.0:   _pm_score += 4
+            if _pm_consec >= 3:  _pm_score += 5
+            if _pm_consec >= 5:  _pm_score += 3
+            if abs(_gap) >= 1.0 and _pm_score > 0:
+                _pm_score += 4   # gap confirmed by pre-market activity
+            if direction == "LONG":
+                score += _pm_score if _gap >= 0 else -_pm_score
+            else:
+                score += _pm_score if _gap <= 0 else -_pm_score
+        except Exception:
+            pass
 
         # ── Global Market Context (inter-market: VIX, gold, yields, calendar) ──
         gmc_adj = ctx.get("gmc_score", 0.0)

@@ -3680,6 +3680,15 @@ class PatternRecognizer:
         mom_long  = min(mom_long,  25.0)
         mom_short = min(mom_short, 25.0)
 
+        # Volume-weight the momentum component: high-volume confirmation = stronger signal
+        # 0.7x at 0x vol, 1.0x at 2x vol (capped at 3x so extreme spikes don't dominate)
+        _vol_weight = min(float(rvol or 1.0), 3.0)
+        _vol_scale  = 0.7 + 0.3 * min(_vol_weight / 2.0, 1.0)
+        mom_long  *= _vol_scale
+        mom_short *= _vol_scale
+        mom_long  = min(mom_long,  25.0)
+        mom_short = min(mom_short, 25.0)
+
         # ── Category 4: Regime alignment (Grok: 10 pts max) ──────────────
         # EMA full-stack alignment: 4 pts
         reg_long = 0.0
