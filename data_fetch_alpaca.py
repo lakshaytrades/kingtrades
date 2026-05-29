@@ -320,6 +320,8 @@ class AlpacaDataFetcher:
                 "ltp":          ltp,
                 "bid":          float(q.bid_price),
                 "ask":          float(q.ask_price),
+                "bid_size":     float(getattr(q, "bid_size", 0) or 0),
+                "ask_size":     float(getattr(q, "ask_size", 0) or 0),
                 "volume":       int(b.volume),
                 "daily_volume": daily_volume,
                 "open":         float(b.open),
@@ -701,6 +703,121 @@ def get_vix_level() -> float:
     except Exception as e:
         logger.debug(f"VIX fetch failed: {e}")
     return _vix_cache.get("level") or 18.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# VIX3M LEVEL FETCH — cached, yfinance ^VIX3M (3-month VIX)
+# ─────────────────────────────────────────────────────────────────────────────
+
+_vix3m_cache: Dict = {"level": 0.0, "ts": 0.0}
+_VIX3M_TTL = 300.0   # refresh every 5 minutes
+
+
+def get_vix3m_level() -> float:
+    """
+    Returns current VIX3M (3-month VIX) level from yfinance ^VIX3M.
+    Used for VIX term structure: VIX/VIX3M ratio signals backwardation/contango.
+    Cached 5 min. Returns 0.0 on failure so the scoring block safely skips.
+    """
+    global _vix3m_cache
+    now = _time.monotonic()
+    if now - _vix3m_cache["ts"] < _VIX3M_TTL and _vix3m_cache["level"] > 0:
+        return _vix3m_cache["level"]
+    try:
+        import yfinance as yf
+        tick = yf.Ticker("^VIX3M")
+        info = tick.fast_info
+        v = float(getattr(info, "last_price", 0) or getattr(info, "regularMarketPrice", 0) or 0)
+        if v <= 0:
+            hist = tick.history(period="1d", interval="5m")
+            if not hist.empty:
+                v = float(hist["Close"].iloc[-1])
+        if v > 0:
+            _vix3m_cache = {"level": round(v, 2), "ts": now}
+            logger.debug(f"VIX3M fetched: {v:.1f}")
+            return _vix3m_cache["level"]
+    except Exception as e:
+        logger.debug(f"VIX3M fetch failed: {e}")
+    return _vix3m_cache.get("level") or 0.0
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# PRE-MARKET DATA — volume ratio + consecutive-up bars before 9:30 AM ET
+# ─────────────────────────────────────────────────────────────────────────────
+
+# Per-symbol per-day cache: {symbol: {"date": date, "ratio": float, "consec": int}}
+_pm_data_cache: Dict = {}
+
+
+def get_premarket_data(symbol: str, avg_daily_vol: int = 0) -> Dict:
+    """
+    Fetch pre-market 5-min bars (4:00–9:30 AM ET) and compute:
+      - premarket_volume_ratio: PM volume / (20-day avg × 0.08 premarket fraction)
+      - premarket_consecutive_up: consecutive up 5-min closes from most-recent bar back
+
+    Cached per-symbol per trading day. Returns zeros after 11 AM or on any error.
+    """
+    from datetime import date as _date
+    today = datetime.now(ET).date()
+    now_et = datetime.now(ET)
+
+    # Only meaningful before 11 AM ET
+    if now_et.hour >= 11:
+        return {"premarket_volume_ratio": 0.0, "premarket_consecutive_up": 0}
+
+    cached = _pm_data_cache.get(symbol)
+    if cached and cached.get("date") == today:
+        return {"premarket_volume_ratio": cached["ratio"], "premarket_consecutive_up": cached["consec"]}
+
+    try:
+        from alpaca.data.requests import StockBarsRequest
+        from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+
+        pm_start = datetime(today.year, today.month, today.day, 4, 0, 0, tzinfo=ET)
+        pm_end   = min(
+            datetime(today.year, today.month, today.day, 9, 30, 0, tzinfo=ET),
+            now_et - timedelta(minutes=1),
+        )
+        if pm_end <= pm_start:
+            return {"premarket_volume_ratio": 0.0, "premarket_consecutive_up": 0}
+
+        fetcher     = get_data_fetcher()
+        data_client = fetcher._auth.get_data_client()
+        req = StockBarsRequest(
+            symbol_or_symbols=symbol,
+            timeframe=TimeFrame(5, TimeFrameUnit.Minute),
+            start=pm_start,
+            end=pm_end,
+        )
+        bars_resp = data_client.get_stock_bars(req)
+        if symbol not in bars_resp or not bars_resp[symbol]:
+            return {"premarket_volume_ratio": 0.0, "premarket_consecutive_up": 0}
+
+        closes  = [float(b.close)  for b in bars_resp[symbol]]
+        volumes = [int(b.volume)   for b in bars_resp[symbol]]
+
+        pm_total_vol = sum(volumes)
+        # Premarket is ~8% of a full trading day's volume on active stocks.
+        ref_vol = max(avg_daily_vol * 0.08, 1)
+        vol_ratio = round(pm_total_vol / ref_vol, 2) if avg_daily_vol > 0 else 0.0
+
+        consecutive_up = 0
+        for i in range(len(closes) - 1, 0, -1):
+            if closes[i] > closes[i - 1]:
+                consecutive_up += 1
+            else:
+                break
+
+        _pm_data_cache[symbol] = {"date": today, "ratio": vol_ratio, "consec": consecutive_up}
+        logger.debug(
+            f"[PM] {symbol}: vol_ratio={vol_ratio:.1f}x consec_up={consecutive_up} "
+            f"pm_vol={pm_total_vol:,}"
+        )
+        return {"premarket_volume_ratio": vol_ratio, "premarket_consecutive_up": consecutive_up}
+
+    except Exception as e:
+        logger.debug(f"get_premarket_data({symbol}): {e}")
+        return {"premarket_volume_ratio": 0.0, "premarket_consecutive_up": 0}
 
 
 # ─────────────────────────────────────────────────────────────────────────────

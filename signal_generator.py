@@ -1345,6 +1345,33 @@ class SignalGenerator:
         except Exception as _wv_e:
             logger.debug(f"[suppressed] weekly/monthly vwap: {_wv_e}")
 
+        # ── Gap % — from pre-loaded GapAnalyzer (called at market open) ──────
+        try:
+            ctx["gap_pct"] = self._get_gap_pct(symbol)
+        except Exception:
+            pass
+
+        # ── VIX3M for term structure (VIX/VIX3M ratio backwardation/contango) ─
+        try:
+            from data_fetch_alpaca import get_vix3m_level
+            ctx["vix3m"] = get_vix3m_level()
+        except Exception:
+            pass
+
+        # ── Pre-market conviction: volume ratio + consecutive up bars ─────────
+        # Only computed before 11 AM ET; cached per-symbol per trading day.
+        try:
+            from data_fetch_alpaca import get_premarket_data as _get_pm
+            _avg_vol = 0
+            _daily_df = getattr(self, "_daily_candles_cache", {}).get(symbol)
+            if _daily_df is not None and len(_daily_df) >= 5 and "volume" in _daily_df.columns:
+                _avg_vol = int(float(_daily_df["volume"].tail(20).mean()))
+            _pm = _get_pm(symbol, avg_daily_vol=_avg_vol)
+            ctx["premarket_volume_ratio"]   = _pm.get("premarket_volume_ratio", 0.0)
+            ctx["premarket_consecutive_up"] = _pm.get("premarket_consecutive_up", 0)
+        except Exception:
+            pass
+
         return ctx
 
     # --------------------------------------------------------
