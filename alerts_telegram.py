@@ -490,6 +490,7 @@ class TelegramAlerter:
         stats      = self._live_stats_line()
 
         text = (
+            f"👑 *KING* — lakshaytrades\n"
             f"{emoji} *ORDER EXECUTED — {dir_word}*\n"
             f"{_sep()}\n"
             f"  *{symbol}*  |  `{direction}`\n"
@@ -531,6 +532,7 @@ class TelegramAlerter:
         reason_clean = reason.replace("_", " ").upper()
 
         text = (
+            f"👑 *KING* — lakshaytrades\n"
             f"{pnl_emoji} *POSITION CLOSED — {reason_clean}*\n"
             f"{_sep()}\n"
             f"  *{symbol}*  |  `{direction}`  |  `{reason_clean}`\n"

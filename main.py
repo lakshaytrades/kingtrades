@@ -1105,7 +1105,12 @@ class TradingBot:
     def run(self):
         """Main bot run loop. Blocks until stopped. systemd Restart=always handles process-level restarts."""
         self.running = True
-        logger.info(f"[{format_ist_timestamp()}] Bot running. Waiting for market open...")
+        try:
+            from bot_identity import print_banner, TRADING_PHILOSOPHY
+            print_banner()
+        except Exception:
+            pass
+        logger.info(f"[{format_ist_timestamp()}] KING v15.0 — lakshaytrades | 26 gates | 8 frameworks | ML-scored")
 
         try:
             while self.running:

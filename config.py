@@ -552,6 +552,10 @@ ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60
 # Raise to 0.70 for ultra-selective mode (fewer trades, higher WR)
 # Lower to 0.50 to effectively disable the gate (returns neutral prob)
 
+# KING Knowledge Base v15.0 — 8 legendary trading frameworks
+# Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
+KNOWLEDGE_BASE_ENABLED:   bool  = os.getenv("KNOWLEDGE_BASE_ENABLED", "True").lower() in ("true","1","yes")
+
 # PDT enforcement (Pattern Day Trader rule — US margin accounts < $25K)
 # Set ACCOUNT_TYPE=CASH (default) to disable PDT restriction
 # Set ACCOUNT_TYPE=MARGIN + PDT_ENFORCE=True to hard-block after 3 day trades

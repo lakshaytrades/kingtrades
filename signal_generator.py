@@ -1134,6 +1134,33 @@ class SignalGenerator:
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
+            # ── KING KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
+            # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
+            # Each framework validates the setup independently. Consensus = conviction.
+            try:
+                if getattr(config, 'KNOWLEDGE_BASE_ENABLED', True):
+                    from strategy_knowledge_base import compute_master_knowledge_score
+                    _kb_delta, _kb_reasons = compute_master_knowledge_score(
+                        symbol       = symbol,
+                        direction    = direction,
+                        df_5m        = df_5m,
+                        volume_ratio = ind.volume_ratio,
+                        rsi          = ind.rsi,
+                        atr          = ind.atr,
+                    )
+                    if _kb_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0,
+                            filter_result.final_score + _kb_delta))
+                        for _r in _kb_reasons:
+                            logger.debug(f"{symbol}: KB {_kb_delta:+.1f} — {_r}")
+                        if abs(_kb_delta) >= 8.0:
+                            logger.info(
+                                f"[{format_ist_timestamp()}] KING KB {symbol}: "
+                                f"{_kb_delta:+.1f}pts | {' | '.join(_kb_reasons[:3])}"
+                            )
+            except Exception as _kb_e:
+                logger.debug(f"[suppressed] knowledge_base: {_kb_e}")
+
             # ── Session Momentum — adapt to what's working this session ────────────────
             try:
                 if getattr(config, "SESSION_MOMENTUM_ENABLED", True):
