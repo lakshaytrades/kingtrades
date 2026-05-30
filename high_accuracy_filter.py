@@ -188,7 +188,7 @@ class HighAccuracyFilter:
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
-    def __init__(self, min_score: float = 76.0):  # v16.0: raised from 72 → 76 for 65-70% WR target
+    def __init__(self, min_score: float = 72.0):  # v16.0: recalibrated to 72 post neutral-fix
         self._rejection_log: List[Dict] = []
         self._pass_count    = 0
         self._reject_count  = 0

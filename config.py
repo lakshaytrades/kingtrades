@@ -154,10 +154,11 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "76.0"))
-                                       # v16.0: raised 68→76 for 65-70% WR target
-                                       # Every +1pt on this threshold ≈ +0.5-1pp WR improvement
-HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses (v16.0: was 80)
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "72.0"))
+                                       # v16.0: calibrated to actual score range after neutral-fix
+                                       # Neutral fix raises moderate-signal scores from ~55 → ~73
+                                       # so 72 = "good signal" floor (was 68, which admitted too many weak trades)
+HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses (v16.0: was 80)
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
 

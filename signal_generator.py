@@ -1868,9 +1868,22 @@ class SignalGenerator:
         # When 15m/1h data is unavailable (fetcher returned nothing) treat as neutral (50)
         # so the 5m pattern signal carries its full weight rather than being discarded.
         # Missing data ≠ opposing data — neutral fallback avoids the 40%-weight penalty.
-        key = "long" if direction == "LONG" else "short"
-        _s15  = score_15m.get(key, 0) if score_15m else 50
-        _s1h  = score_1h.get(key, 0)  if score_1h  else 50
+        key     = "long" if direction == "LONG" else "short"
+        opp_key = "short" if key == "long" else "long"
+
+        def _tf_score(score_dict, k, opp_k):
+            # Neutral fix: if both directions near 0 (no pattern fired), use 50 not 0.
+            # Only use actual low score when the opposing direction genuinely fired (bearish 15m for LONG).
+            if not score_dict:
+                return 50
+            val = score_dict.get(k, 0)
+            opp = score_dict.get(opp_k, 0)
+            if val < 10 and opp < 10:   # neither direction has a signal → genuinely neutral
+                return 50
+            return val
+
+        _s15 = _tf_score(score_15m, key, opp_key)
+        _s1h = _tf_score(score_1h,  key, opp_key)
         score += 10.0                        # base: signal exists at all (+10 pts)
         score += score_5m.get(key, 0) * 0.40
         score += _s15 * 0.30
