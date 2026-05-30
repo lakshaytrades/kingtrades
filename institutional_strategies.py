@@ -326,7 +326,7 @@ def get_tod_rvol_score(symbol: str, bar_time_str: str, current_volume: int, dire
 # ── Strategy 6: Sortino-Based Dynamic Sizing ──────────────────────────────────
 
 _trade_returns: Dict[str, List[float]] = {}   # {symbol: [pnl_pct, ...]}
-_MIN_SORTINO_SAMPLES = 5
+_MIN_SORTINO_SAMPLES = 3
 
 
 def record_trade_result(symbol: str, pnl_pct: float) -> None:
