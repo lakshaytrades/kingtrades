@@ -188,7 +188,7 @@ class HighAccuracyFilter:
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
-    def __init__(self, min_score: float = 72.0):  # default matches config.MIN_SIGNAL_SCORE
+    def __init__(self, min_score: float = 76.0):  # v16.0: raised from 72 → 76 for 65-70% WR target
         self._rejection_log: List[Dict] = []
         self._pass_count    = 0
         self._reject_count  = 0
@@ -729,6 +729,40 @@ class HighAccuracyFilter:
         except Exception as _ml_e:
             result.gates_passed.append('ML_SKIP')
             result._ml_win_prob = 0.5
+
+        # ── GATE 27: VWAP OVEREXTENSION (no chasing) ─────────────────────────
+        # Prop desk rule: "Never buy when the stock is 2+ ATR extended from VWAP."
+        # Extended entries = buying exhaustion = highest false breakout rate.
+        # Score penalty (not hard block) so an exceptional signal can still pass.
+        try:
+            import config as _cfg27
+            _vwap_max_atr = float(getattr(_cfg27, 'VWAP_EXTENSION_MAX_ATR', 2.0))
+            if df_5m is not None and not df_5m.empty and atr and atr > 0:
+                _tp27  = (df_5m['high'] + df_5m['low'] + df_5m['close']) / 3.0
+                _cv27  = df_5m['volume'].cumsum()
+                _cvp27 = (_tp27 * df_5m['volume']).cumsum()
+                _vwap27 = float((_cvp27 / _cv27).iloc[-1])
+                _dist_atr = abs(ltp - _vwap27) / atr if _vwap27 > 0 else 0.0
+                if _dist_atr > _vwap_max_atr:
+                    # Penalty proportional to overextension (harder penalty the further we are)
+                    _penalty = min(20.0, round((_dist_atr - _vwap_max_atr) * 8.0, 1))
+                    signal_score = max(0.0, signal_score - _penalty)
+                    result.gates_passed.append(f'VWAP_EXT({_dist_atr:.1f}ATR,-{_penalty:.0f})')
+                    if signal_score < self.min_score:
+                        result.passed = False
+                        result.gates_failed.append(f'VWAP_CHASE({_dist_atr:.1f}ATR)')
+                        result.rejection_reason = (
+                            f'[GATE-27 VWAP_EXT] {symbol} — price {_dist_atr:.1f}×ATR from VWAP '
+                            f'(max {_vwap_max_atr}×). Score penalized -{_penalty:.0f} → {signal_score:.0f} '
+                            f'< {self.min_score:.0f} min. Chasing exhaustion move.'
+                        )
+                        self._log_rejection(result, signal_score, direction)
+                        return result
+                else:
+                    result.gates_passed.append(f'VWAP_OK({_dist_atr:.1f}ATR)')
+        except Exception:
+            result.gates_passed.append('VWAP_EXT_SKIP')
+
         result.passed   = True
         bonus_score     = 0.0
         bonus_score    += _sh_pending_bonus  # stop-hunt setup bonus (0 if no hunt)
@@ -1259,17 +1293,22 @@ class HighAccuracyFilter:
 
     def _check_adx(self, adx: float) -> Tuple[bool, str]:
         """
-        Gate 12: ADX >= 17 confirms directional trend exists.
-        ADX = 0 means data unavailable — fail open (don't block on missing data).
-        Lowered from 20 → 17 to allow early-trend entries (ADX lags price action).
+        Gate 12: ADX >= 22 confirms a real trend exists.
+        v16.0: raised from 17 → 22. ADX < 20 = no real trend, false breakouts dominate.
+        ADX = 0 means data unavailable — fail open.
         """
+        try:
+            import config as _cfg_adx
+            _adx_min = float(getattr(_cfg_adx, 'ADX_MIN_TREND', 22.0))
+        except Exception:
+            _adx_min = 22.0
         if adx == 0:
-            return True, "ADX_MISSING"   # Data unavailable — log but allow; don't block on missing data
-        if adx >= 17:
+            return True, "ADX_MISSING"
+        if adx >= _adx_min:
             return True, ""
         return False, (
-            f"ADX {adx:.0f} < 17 — market is choppy/ranging. "
-            "Momentum strategies require ADX >= 17."
+            f"ADX {adx:.0f} < {_adx_min:.0f} — market is choppy/ranging. "
+            f"Momentum strategies require ADX >= {_adx_min:.0f}."
         )
 
     def _check_spy_alignment(

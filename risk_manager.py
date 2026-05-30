@@ -880,7 +880,11 @@ class RiskManager:
             runner_trail_dist *= 0.80
 
         # ATR-based thresholds — more adaptive than fixed % triggers
-        be_atr_mult   = 0.5   # move SL to entry when price is 0.5× ATR above entry
+        try:
+            import config as _cfg_be
+            be_atr_mult = float(getattr(_cfg_be, 'BE_ATR_TRIGGER', 0.3))
+        except Exception:
+            be_atr_mult = 0.3   # v16.0: tightened 0.5→0.3 — faster breakeven = fewer winners turned losers
         t1_lock_mult  = 0.8   # move SL to entry + 0.8× ATR when T1 is hit
 
         if position.direction == "LONG":

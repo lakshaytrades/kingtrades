@@ -154,12 +154,17 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "68.0"))
-                                       # 68 = profit engine NORMAL base (dynamically raised to 74/78/84 by mode)
-                                       # Was 72 — too high, blocked profit engine from using adaptive thresholds
-HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ after bonuses: 72 base + 8 bonus points = 80
-GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+ (2× size)
-PREMIUM_SCORE: float = 78.0           # A grade entry: solid signal with good confluence
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "76.0"))
+                                       # v16.0: raised 68→76 for 65-70% WR target
+                                       # Every +1pt on this threshold ≈ +0.5-1pp WR improvement
+HIGH_CONFIDENCE_SCORE: float = 84.0   # A+ after bonuses (v16.0: was 80)
+GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
+PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
+
+# ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
+ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "22.0"))  # was 17 — choppy mkt filter
+VWAP_EXTENSION_MAX_ATR: float = float(os.getenv("VWAP_EXTENSION_MAX_ATR", "2.0"))  # gate 27 — no chasing
+BE_ATR_TRIGGER:        float = float(os.getenv("BE_ATR_TRIGGER",   "0.3"))   # was 0.5 — faster breakeven
 
 # ── Pullback Entry System (pullback_entry.py) ──────────────────────────────
 # Wait for 23-38% Fibonacci retrace before entering instead of hitting the breakout bar.
@@ -442,11 +447,11 @@ TOD_MIN_SCORES: dict = {
     # (start_min_from_midnight, end_min): min_score
     # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
     # ── v13.0: tighter midday + near-close thresholds for 70-80% WR target ──
-    (570, 600): 65.0,   # 9:30–10:00: open drive — best momentum, lower bar OK
+    (570, 600): 76.0,   # 9:30–10:00: open drive — high false-breakout risk, A-grade minimum
     (600, 690): 70.0,   # 10:00–11:30: morning prime window
     (690, 810): 78.0,   # 11:30–13:30: midday chop — only A-grade or better
     (810, 900): 72.0,   # 13:30–15:00: afternoon — moderate selectivity
-    (900, 925): 65.0,   # 15:00–15:25: power hour — institutional rebalancing
+    (900, 925): 76.0,   # 15:00–15:25: power hour — fast moves, only A-grade setups
     (925, 960): 85.0,   # 15:25–16:00: near close — extreme selectivity only
 }
 TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
