@@ -169,6 +169,13 @@ BAR_QUALITY_GATE:       bool  = os.getenv("BAR_QUALITY_GATE",   "True").lower() 
 SECTOR_FILTER_ENABLED:  bool  = os.getenv("SECTOR_FILTER_ENABLED", "True").lower() in ("true","1","yes")  # gate 14b — sector ETF alignment
 BE_ATR_TRIGGER:        float = float(os.getenv("BE_ATR_TRIGGER",   "0.3"))   # was 0.5 — faster breakeven
 
+# Advanced setups v18.0
+ORB_ENABLED:              bool = os.getenv("ORB_ENABLED",              "True").lower() in ("true","1","yes")
+FPE9_ENABLED:             bool = os.getenv("FPE9_ENABLED",             "True").lower() in ("true","1","yes")
+VBB_ENABLED:              bool = os.getenv("VBB_ENABLED",              "True").lower() in ("true","1","yes")
+MARKET_BREADTH_ENABLED:   bool = os.getenv("MARKET_BREADTH_ENABLED",   "True").lower() in ("true","1","yes")
+PREMARKET_FILTER_ENABLED: bool = os.getenv("PREMARKET_FILTER_ENABLED", "True").lower() in ("true","1","yes")
+
 # ── Pullback Entry System (pullback_entry.py) ──────────────────────────────
 # Wait for 23-38% Fibonacci retrace before entering instead of hitting the breakout bar.
 # Improves average entry price by 0.15-0.4% per trade on A/A+ signals.
@@ -241,7 +248,7 @@ GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from si
 # ── Aggressive sizing on elite setups — defined earlier from env var, not duplicated here ──
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────
-ORB_ENABLED: bool = True
+# ORB_ENABLED: defined above as env-var-driven (v18.0)
 ORB_WINDOW_MINUTES: int = 15         # range established in first 15 min
 ORB_MIN_RANGE_PCT: float = 0.3       # range must be at least 0.3% of price
 ORB_RISK_MULTIPLIER: float = 1.2     # slightly larger size on ORB plays

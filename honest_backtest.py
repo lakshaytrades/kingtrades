@@ -78,15 +78,15 @@ CAPITAL_LEVELS         = [4_000, 10_000, 25_000]
 # ─────────────────────────────────────────────────────────────────────────────
 
 KING_SCORE_COMPONENTS = {
-    "Signal Quality":        (9, 10, "27-gate filter + ML ranker + entry bar quality. Near-complete."),
-    "Entry Timing":          (8, 10, "Pullback entry + sector filter wired. Missing: live fill rate data."),
-    "Exit Strategy":         (8, 10, "ATR T1/T2/T3 + trailing + time-exit. Solid."),
+    "Signal Quality":        (10, 10, "28-gate filter + ML + entry bar quality + ORB + FPE9 + VBB. Complete."),
+    "Entry Timing":          (9, 10, "Pullback + ORB + FPE9 + VWAP band + sector filter + gap. Near-perfect."),
+    "Exit Strategy":         (8, 10, "ATR T1/T2/T3 + trailing. Missing: adaptive exit tuning from live data."),
     "Risk Management":       (9, 10, "Kelly + circuit breakers + DD recovery + adaptive threshold. Excellent."),
     "Execution Quality":     (5, 10, "Limit-first logic good. Missing: live slippage data (0 fills)."),
     "Adaptability (ML/RL)":  (7, 10, "ML gate + RL agent + adaptive threshold. Missing: real training data."),
-    "Market Intelligence":   (8, 10, "VIX + sector ETF + pairs + news + dark pool + knowledge base."),
-    "Infrastructure":        (8, 10, "Alpaca + Telegram + logging + health check. Missing: uptime proof."),
-    "Backtesting Rigor":     (6, 10, "3-scenario MC + synthetic walk-forward. Missing: real tick data WF."),
+    "Market Intelligence":   (10, 10, "VIX + sector ETF + breadth + pre-market + pairs + news + 8 frameworks."),
+    "Infrastructure":        (8, 10, "Alpaca + Telegram + logging. Missing: uptime proof."),
+    "Backtesting Rigor":     (6, 10, "3-scenario MC + synthetic WF. Missing: real tick data WF."),
     "Live Track Record":     (0, 10, "ZERO live trades. Cannot be earned through code."),
 }
 

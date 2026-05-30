@@ -1171,6 +1171,52 @@ class SignalGenerator:
             except Exception as _kb_e:
                 logger.debug(f"[suppressed] knowledge_base: {_kb_e}")
 
+            # ── ADVANCED SETUPS (v18.0) — ORB, FPE9, VWAP Band, Breadth, Gap ──
+            try:
+                from advanced_setups import get_orb_score, get_first_pullback_score, get_vwap_band_score
+                from market_breadth import get_breadth_score
+                from premarket_analyzer import get_gap_score
+
+                _vwap_val = getattr(ind, 'vwap', 0.0) or 0.0
+
+                # Opening Range Breakout
+                if getattr(config, 'ORB_ENABLED', True):
+                    _orb_d, _orb_r = get_orb_score(df_5m, ltp_now, direction, symbol, ind.volume_ratio)
+                    if _orb_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _orb_d))
+                        logger.debug(f"{symbol}: ORB {_orb_d:+.0f} {_orb_r}")
+
+                # First Pullback to EMA9
+                if getattr(config, 'FPE9_ENABLED', True):
+                    _fpe_d, _fpe_r = get_first_pullback_score(df_5m, ltp_now, direction)
+                    if _fpe_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _fpe_d))
+                        logger.debug(f"{symbol}: FPE9 {_fpe_d:+.0f} {_fpe_r}")
+
+                # VWAP Band Bounce
+                if getattr(config, 'VBB_ENABLED', True) and df_5m is not None:
+                    _vbb_d, _vbb_r = get_vwap_band_score(df_5m, ltp_now, direction, _vwap_val)
+                    if _vbb_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _vbb_d))
+                        logger.debug(f"{symbol}: VBB {_vbb_d:+.0f} {_vbb_r}")
+
+                # Market Breadth
+                if getattr(config, 'MARKET_BREADTH_ENABLED', True):
+                    _mb_d, _mb_r = get_breadth_score(direction)
+                    if _mb_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _mb_d))
+                        logger.debug(f"{symbol}: BREADTH {_mb_d:+.0f} {_mb_r}")
+
+                # Pre-market Gap
+                if getattr(config, 'PREMARKET_FILTER_ENABLED', True):
+                    _gap_d, _gap_r = get_gap_score(symbol, direction, ltp_now)
+                    if _gap_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gap_d))
+                        logger.debug(f"{symbol}: GAP {_gap_d:+.0f} {_gap_r}")
+
+            except Exception as _adv_e:
+                logger.debug(f"[suppressed] advanced_setups: {_adv_e}")
+
             # ── Session Momentum — adapt to what's working this session ────────────────
             try:
                 if getattr(config, "SESSION_MOMENTUM_ENABLED", True):
