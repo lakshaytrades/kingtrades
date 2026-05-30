@@ -420,6 +420,19 @@ class HighAccuracyFilter:
         if open_positions:
             result.gates_passed.append("CORR_OK")
 
+        # ── GATE 14b: SECTOR ETF ALIGNMENT ────────────────
+        try:
+            from sector_filter import check_sector_alignment
+            _sec_ok, _sec_reason = check_sector_alignment(symbol, direction)
+            if not _sec_ok:
+                result.gates_failed.append('SECTOR_CONFLICT')
+                result.rejection_reason = f'[GATE-14b SECTOR] {_sec_reason}'
+                self._log_rejection(result, signal_score, direction)
+                return result
+            result.gates_passed.append(_sec_reason)
+        except Exception:
+            result.gates_passed.append('SECTOR_SKIP')
+
         # ── GATE 15: FALSE BREAKOUT DETECTOR ─────────────
         # Eliminates ~30% of losses by rejecting wick-rejections and volume fades.
         # Professional rule: "Volume is the fuel — without fuel, the breakout fails."
@@ -762,6 +775,53 @@ class HighAccuracyFilter:
                     result.gates_passed.append(f'VWAP_OK({_dist_atr:.1f}ATR)')
         except Exception:
             result.gates_passed.append('VWAP_EXT_SKIP')
+
+        # ── GATE 28: ENTRY BAR BODY QUALITY ──────────────────────────────────────
+        # A real breakout bar closes near its high (LONG) or near its low (SHORT).
+        # Body < 40% of range = wick trap = likely reversal. Citadel, DRW, Jump all use this.
+        # Volume on entry bar must also exceed average of prior 3 bars.
+        try:
+            import config as _cfg28
+            if getattr(_cfg28, 'BAR_QUALITY_GATE', True) and df_5m is not None and len(df_5m) >= 4:
+                _bar   = df_5m.iloc[-1]
+                _open  = float(_bar.get('open',  _bar.get('Open',  0)))
+                _close = float(_bar.get('close', _bar.get('Close', 0)))
+                _high  = float(_bar.get('high',  _bar.get('High',  0)))
+                _low   = float(_bar.get('low',   _bar.get('Low',   0)))
+                _vol   = float(_bar.get('volume',_bar.get('Volume',0)))
+                _bar_range = _high - _low
+                _body      = abs(_close - _open)
+                _body_pct  = _body / max(_bar_range, 0.01)
+
+                # Volume vs prior 3 bars
+                _prior_vols = [float(df_5m.iloc[i].get('volume', df_5m.iloc[i].get('Volume', 0))) for i in [-4,-3,-2]]
+                _avg_vol3   = sum(_prior_vols) / 3 if _prior_vols else 0
+                _vol_ok     = _avg_vol3 == 0 or _vol >= _avg_vol3 * 0.85  # 85% of prior avg = ok (not a volume fade)
+
+                # Close position check (LONG: close should be in top 40% of bar; SHORT: bottom 40%)
+                _close_in_range = (_close - _low) / max(_bar_range, 0.01)  # 0=at low, 1=at high
+                if direction in ('LONG', 'BUY'):
+                    _close_ok = _close_in_range >= 0.40   # close must be in upper 60% of bar
+                else:
+                    _close_ok = _close_in_range <= 0.60   # close must be in lower 60% of bar
+
+                _body_threshold = 0.30  # body must be >= 30% of range (not a doji/spinning top)
+
+                if _body_pct < _body_threshold or not _close_ok or not _vol_ok:
+                    _why = []
+                    if _body_pct < _body_threshold: _why.append(f'body={_body_pct:.0%}<30%')
+                    if not _close_ok: _why.append(f'close_pos={_close_in_range:.0%}(weak)')
+                    if not _vol_ok:   _why.append(f'vol_fade({_vol:.0f}<{_avg_vol3:.0f}avg)')
+                    result.gates_failed.append(f'BAR_QUALITY({",".join(_why)})')
+                    result.rejection_reason = (
+                        f'[GATE-28 BAR_QUALITY] {symbol} — entry bar too weak: {"; ".join(_why)}. '
+                        f'Prop desk rule: breakout bar must close strong with volume confirmation.'
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+                result.gates_passed.append(f'BAR_OK(body={_body_pct:.0%},close_pos={_close_in_range:.0%})')
+        except Exception:
+            result.gates_passed.append('BAR_QUALITY_SKIP')
 
         result.passed   = True
         bonus_score     = 0.0

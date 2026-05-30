@@ -2377,6 +2377,13 @@ class TradingBot:
                         except Exception as _ml_e:
                             logger.debug(f"[suppressed] ml_record_outcome: {_ml_e}")
 
+                        # AdaptiveThreshold: record outcome for rolling WR-based score floor
+                        try:
+                            from adaptive_threshold import record_outcome as _rec_adaptive_outcome
+                            _rec_adaptive_outcome(pnl > 0)
+                        except Exception as _at_e:
+                            logger.debug(f"[suppressed] adaptive_threshold.record: {_at_e}")
+
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
                             try:

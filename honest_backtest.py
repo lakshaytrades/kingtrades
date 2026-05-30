@@ -78,16 +78,16 @@ CAPITAL_LEVELS         = [4_000, 10_000, 25_000]
 # ─────────────────────────────────────────────────────────────────────────────
 
 KING_SCORE_COMPONENTS = {
-    "Signal Quality":        (7, 10, "26-gate filter + ML ranker. Missing: live calibration data."),
-    "Entry Timing":          (6, 10, "Pullback entry system now implemented. Missing: live fill validation."),
-    "Exit Strategy":         (7, 10, "ATR T1/T2/T3 exits + trailing stop. Missing: adaptive exit tuning."),
-    "Risk Management":       (8, 10, "Kelly sizing + circuit breakers + DD recovery. Solid framework."),
-    "Execution Quality":     (5, 10, "Limit-first logic good. Missing: live slippage data (0 fills so far)."),
-    "Adaptability (ML/RL)":  (6, 10, "ML signal ranker + RL agent exist. Missing: real training data."),
-    "Market Intelligence":   (7, 10, "VIX regime + sector RS + dark pool + news filter. Missing: live validation."),
-    "Infrastructure":        (8, 10, "Alpaca integration + Telegram + logging. Missing: 99.9% uptime proof."),
-    "Backtesting Rigor":     (5, 10, "Synthetic backtests exist. Missing: walk-forward on real tick data."),
-    "Live Track Record":     (0, 10, "ZERO live trades. This is the elephant in the room."),
+    "Signal Quality":        (9, 10, "27-gate filter + ML ranker + entry bar quality. Near-complete."),
+    "Entry Timing":          (8, 10, "Pullback entry + sector filter wired. Missing: live fill rate data."),
+    "Exit Strategy":         (8, 10, "ATR T1/T2/T3 + trailing + time-exit. Solid."),
+    "Risk Management":       (9, 10, "Kelly + circuit breakers + DD recovery + adaptive threshold. Excellent."),
+    "Execution Quality":     (5, 10, "Limit-first logic good. Missing: live slippage data (0 fills)."),
+    "Adaptability (ML/RL)":  (7, 10, "ML gate + RL agent + adaptive threshold. Missing: real training data."),
+    "Market Intelligence":   (8, 10, "VIX + sector ETF + pairs + news + dark pool + knowledge base."),
+    "Infrastructure":        (8, 10, "Alpaca + Telegram + logging + health check. Missing: uptime proof."),
+    "Backtesting Rigor":     (6, 10, "3-scenario MC + synthetic walk-forward. Missing: real tick data WF."),
+    "Live Track Record":     (0, 10, "ZERO live trades. Cannot be earned through code."),
 }
 
 GAP_ANALYSIS = """

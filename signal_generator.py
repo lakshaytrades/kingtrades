@@ -316,6 +316,16 @@ class SignalGenerator:
             # Target chase mode may lower it mid-session; this prevents permanent drift.
             self.ha_filter.min_score = self.min_score
 
+            # Adaptive threshold (adjusts based on recent 20-trade WR)
+            try:
+                from adaptive_threshold import get_adaptive_min_score as _get_adaptive_min
+                _effective_min, _thresh_label = _get_adaptive_min(self.min_score)
+                if _effective_min != self.min_score:
+                    self.ha_filter.min_score = _effective_min
+                    logger.debug(f"{symbol}: adaptive threshold {_thresh_label} → min={_effective_min:.0f}")
+            except Exception:
+                pass
+
             # Skip symbols that have repeatedly returned no data this session
             if symbol in self._session_skip:
                 logger.debug(f"{symbol}: skipped — no data available (session blacklist)")

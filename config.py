@@ -165,6 +165,8 @@ PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
 ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "22.0"))  # was 17 — choppy mkt filter
 VWAP_EXTENSION_MAX_ATR: float = float(os.getenv("VWAP_EXTENSION_MAX_ATR", "2.0"))  # gate 27 — no chasing
+BAR_QUALITY_GATE:       bool  = os.getenv("BAR_QUALITY_GATE",   "True").lower() in ("true","1","yes")  # gate 28 — entry bar body quality
+SECTOR_FILTER_ENABLED:  bool  = os.getenv("SECTOR_FILTER_ENABLED", "True").lower() in ("true","1","yes")  # gate 14b — sector ETF alignment
 BE_ATR_TRIGGER:        float = float(os.getenv("BE_ATR_TRIGGER",   "0.3"))   # was 0.5 — faster breakeven
 
 # ── Pullback Entry System (pullback_entry.py) ──────────────────────────────
