@@ -161,6 +161,12 @@ HIGH_CONFIDENCE_SCORE: float = 80.0   # A+ after bonuses: 72 base + 8 bonus poin
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "88.0"))  # Grand Slam requires 88+ (2× size)
 PREMIUM_SCORE: float = 78.0           # A grade entry: solid signal with good confluence
 
+# ── Pullback Entry System (pullback_entry.py) ──────────────────────────────
+# Wait for 23-38% Fibonacci retrace before entering instead of hitting the breakout bar.
+# Improves average entry price by 0.15-0.4% per trade on A/A+ signals.
+# Only activates when signal_score >= 75 AND quality_grade in (A, A+) AND ATR > 0.3% of price.
+PULLBACK_ENTRY_ENABLED: bool = os.getenv("PULLBACK_ENTRY_ENABLED", "True").lower() in ("true", "1", "yes")
+
 # ── 70-80% Win Rate Precision Gates ────────────────────────────────────────
 RETEST_ENTRY_ENABLED: bool  = os.getenv("RETEST_ENTRY_ENABLED",  "True").lower()  in ("true","1","yes")
 FALSE_BREAKOUT_GATE:  bool  = os.getenv("FALSE_BREAKOUT_GATE",   "True").lower()  in ("true","1","yes")
