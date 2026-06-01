@@ -923,7 +923,15 @@ class TradingBot:
                             self._day_bias_score  = 0
                 except Exception as _mie:
                     logger.debug(f"[suppressed] morning_intel sizing: {_mie}")
-            else:
+
+            # Enhanced morning report
+            try:
+                from enhanced_reports import send_morning_brief
+                send_morning_brief()
+            except Exception as _e:
+                logger.debug(f"[suppressed] morning brief: {_e}")
+
+            if not self.morning_intel:
                 self.alerter.send_morning_brief(
                     watchlist, available, spy_open,
                     oc_summary=oc_summary,
@@ -1151,6 +1159,7 @@ class TradingBot:
                     self._last_heartbeat_min  = -1
                     self._last_login_try_ts   = None
                     self._login_attempt_count = 0
+                    self._midday_sent_today   = False
                     self._last_trade_date     = today_str
                     logger.info(
                         f"[{format_ist_timestamp()}] 📅 New trading day: {today_str}"
@@ -1380,6 +1389,17 @@ class TradingBot:
             if now_ist.minute < 2 and now_ist.hour != self._last_heartbeat_min:
                 self._send_heartbeat()
                 self._last_heartbeat_min = now_ist.hour
+
+            # Mid-day pulse (send once per day at 1PM ET)
+            if not getattr(self, '_midday_sent_today', False):
+                _et_now = get_current_et_time()
+                if _et_now.hour == 13 and _et_now.minute < 5:
+                    try:
+                        from enhanced_reports import send_midday_pulse
+                        send_midday_pulse(risk_manager=self.risk_manager)
+                        self._midday_sent_today = True
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] midday pulse: {_e}")
 
             # Sync adaptive brain threshold once per cycle
             try:
@@ -3017,6 +3037,16 @@ class TradingBot:
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] EOD report error: {e}")
 
+        # Enhanced EOD performance report
+        try:
+            from enhanced_reports import send_eod_performance_report
+            send_eod_performance_report({
+                'trades_taken': self.risk_manager.state.daily_trades if self.risk_manager else 0,
+                'net_pnl': self.risk_manager.state.daily_pnl if self.risk_manager else 0.0,
+            })
+        except Exception as _e:
+            logger.debug(f"[suppressed] eod report: {_e}")
+
         # Update weekly P&L tracker (4-day profit mode)
         self._update_weekly_pnl()
 
@@ -3052,6 +3082,15 @@ class TradingBot:
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] EOD email/Discord report: {e}")
+
+        # Weekly report on Fridays
+        try:
+            import datetime
+            if datetime.datetime.now().weekday() == 4:  # Friday
+                from enhanced_reports import send_weekly_report
+                send_weekly_report()
+        except Exception as _e:
+            logger.debug(f"[suppressed] weekly report: {_e}")
 
         self.market_open_today = False
         self.eod_done = True
