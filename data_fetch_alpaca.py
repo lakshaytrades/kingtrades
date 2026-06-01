@@ -31,6 +31,28 @@ from price_stream import get_price_stream
 
 logger = logging.getLogger(__name__)
 
+# ── yfinance browser session (bypasses Yahoo Finance VPS/datacenter IP blocks) ──
+def _make_yf_session():
+    try:
+        import requests
+        s = requests.Session()
+        s.headers.update({
+            "User-Agent": (
+                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                "Chrome/124.0.0.0 Safari/537.36"
+            ),
+            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
+            "Accept-Language": "en-US,en;q=0.9",
+            "Accept-Encoding": "gzip, deflate, br",
+            "Connection":      "keep-alive",
+        })
+        return s
+    except Exception:
+        return None
+
+_YF_SESSION = _make_yf_session()
+
 # ET timezone for market hours and bar timestamps
 try:
     from zoneinfo import ZoneInfo
@@ -125,10 +147,15 @@ class BarCache:
 
             days = min(lookback_days + 2, 260 if yf_interval == "1d" else 59)
             t0 = _time.monotonic()
+            _dl_kwargs = dict(
+                auto_adjust=True, progress=False, threads=False,
+                group_by="ticker",
+            )
+            if _YF_SESSION is not None:
+                _dl_kwargs["session"] = _YF_SESSION
             raw = yf.download(
                 symbols, period=f"{days}d", interval=yf_interval,
-                auto_adjust=True, progress=False, threads=True,
-                group_by="ticker",
+                **_dl_kwargs,
             )
             elapsed = _time.monotonic() - t0
 
@@ -689,7 +716,8 @@ def get_vix_level() -> float:
         return _vix_cache["level"]
     try:
         import yfinance as yf
-        tick = yf.Ticker("^VIX")
+        _kw = {"session": _YF_SESSION} if _YF_SESSION is not None else {}
+        tick = yf.Ticker("^VIX", **_kw)
         info = tick.fast_info
         vix = float(getattr(info, "last_price", 0) or getattr(info, "regularMarketPrice", 0) or 0)
         if vix <= 0:
@@ -725,7 +753,8 @@ def get_vix3m_level() -> float:
         return _vix3m_cache["level"]
     try:
         import yfinance as yf
-        tick = yf.Ticker("^VIX3M")
+        _kw = {"session": _YF_SESSION} if _YF_SESSION is not None else {}
+        tick = yf.Ticker("^VIX3M", **_kw)
         info = tick.fast_info
         v = float(getattr(info, "last_price", 0) or getattr(info, "regularMarketPrice", 0) or 0)
         if v <= 0:
@@ -877,7 +906,8 @@ def get_top_movers(n: int = 15) -> List[Dict]:
                 "MELI","RBLX","MRNA","HIMS","JPM","GS","MS","XOM","CVX","OXY",
                 "TQQQ","SPXL","SOXL","IWM","SPY","QQQ",
             ]
-            tickers = yf.Tickers(" ".join(_SCREEN))
+            _kw = {"session": _YF_SESSION} if _YF_SESSION is not None else {}
+            tickers = yf.Tickers(" ".join(_SCREEN), **_kw)
             for sym in _SCREEN:
                 try:
                     t = tickers.tickers.get(sym)
