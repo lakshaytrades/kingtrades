@@ -1144,17 +1144,33 @@ class SignalGenerator:
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
-                # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
-                try:
-                    if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):
-                        from regime_params import apply_regime_to_score
-                        _regime_name = getattr(self, '_last_regime_name', 'UNKNOWN')
-                        _reg_adj, _reg_reason = apply_regime_to_score(filter_result.final_score, _regime_name)
-                        if _reg_adj != filter_result.final_score:
-                            filter_result.final_score = _reg_adj
-                            logger.debug(f"{symbol}: {_reg_reason}")
-                except Exception as _re:
-                    logger.debug(f"[suppressed] regime_params: {_re}")
+            # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
+            try:
+                if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):
+                    from regime_params import apply_regime_to_score
+                    _regime_name = getattr(self, '_last_regime_name', 'UNKNOWN')
+                    _reg_adj, _reg_reason = apply_regime_to_score(filter_result.final_score, _regime_name)
+                    if _reg_adj != filter_result.final_score:
+                        filter_result.final_score = _reg_adj
+                        logger.debug(f"{symbol}: {_reg_reason}")
+            except Exception as _re:
+                logger.debug(f"[suppressed] regime_params: {_re}")
+
+            # ── OPTIMAL ENTRY TIMING (v12.0) — time-of-day WR windows ─────────
+            try:
+                if getattr(config, 'TOD_ENTRY_TIMING_ENABLED', True):
+                    from optimal_entry_timing import get_tod_entry_score, is_entry_blocked
+                    _tod_blocked, _tod_block_reason = is_entry_blocked()
+                    if _tod_blocked:
+                        logger.debug(f"{symbol}: {_tod_block_reason} — skipping")
+                        return None
+                    _tod_delta, _tod_reason = get_tod_entry_score(direction)
+                    if _tod_delta and _tod_delta != -99.0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _tod_delta)
+                        if _tod_delta != 0:
+                            logger.debug(f"{symbol}: TOD {_tod_delta:+.0f} {_tod_reason}")
+            except Exception as _tod_e:
+                logger.debug(f"[suppressed] optimal_entry_timing: {_tod_e}")
 
             # ── KING KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
             # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros

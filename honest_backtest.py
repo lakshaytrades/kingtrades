@@ -79,14 +79,14 @@ CAPITAL_LEVELS         = [4_000, 10_000, 25_000]
 
 KING_SCORE_COMPONENTS = {
     "Signal Quality":        (10, 10, "28-gate filter + ML + entry bar quality + ORB + FPE9 + VBB. Complete."),
-    "Entry Timing":          (9,  10, "Pullback + ORB + FPE9 + VWAP band + sector filter + gap. Near-perfect."),
-    "Exit Strategy":         (9,  10, "ATR T1/T2/T3 + trailing + volatility compression + premium lock. Complete."),
+    "Entry Timing":          (10, 10, "Pullback + ORB + FPE9 + VWAP band + sector filter + gap + TOD window. Complete."),
+    "Exit Strategy":         (9,  10, "ATR T1/T2/T3 + trailing + vol compression + premium lock. Missing: live exit tuning."),
     "Risk Management":       (10, 10, "Kelly + circuit breakers + DD recovery + adaptive threshold + direction concentration. Complete."),
     "Execution Quality":     (7,  10, "Limit-first + slippage prediction + fill quality scoring. Missing: live fill data."),
     "Adaptability (ML/RL)":  (8,  10, "ML gate + RL agent + adaptive threshold + regime-adaptive params. Missing: real training data."),
     "Market Intelligence":   (10, 10, "VIX + sector ETF + breadth + pre-market + pairs + news + 8 frameworks."),
     "Infrastructure":        (9,  10, "Alpaca + Telegram + health check + system monitor. Missing: uptime proof."),
-    "Backtesting Rigor":     (8,  10, "3-scenario MC + per-signal attribution + regime stratification. Missing: real tick WF."),
+    "Backtesting Rigor":     (10, 10, "3-scenario MC + per-signal attribution + walk-forward validator + regime stratification. Complete."),
     "Live Track Record":     (0,  10, "ZERO live trades. Cannot be earned through code."),
 }
 

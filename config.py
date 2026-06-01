@@ -578,6 +578,9 @@ REGIME_ADAPTIVE_SIZING: bool   = os.getenv("REGIME_ADAPTIVE_SIZING",  "True").lo
 # ── Portfolio Direction Concentration v11.0 ──────────────────────────────────
 MAX_DIRECTION_CONCENTRATION_PCT: float = float(os.getenv("MAX_DIRECTION_CONCENTRATION_PCT", "70.0"))
 
+# ── Optimal Entry Timing v12.0 ───────────────────────────────────────────────
+TOD_ENTRY_TIMING_ENABLED: bool = os.getenv("TOD_ENTRY_TIMING_ENABLED", "True").lower() in ("true","1","yes")
+
 # ML Gate v13.0 — GradientBoosting win-probability pre-filter
 ML_GATE_ENABLED:          bool  = os.getenv("ML_GATE_ENABLED",  "True").lower() in ("true","1","yes")
 ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60"))
