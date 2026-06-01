@@ -1146,6 +1146,59 @@ class SignalGenerator:
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
+            # ── PREMIUM SCANNER (v11.0) — Free equivalents of paid tools ───────
+            try:
+                from premium_scanner import (
+                    get_short_squeeze_score, get_options_flow_score,
+                    get_sector_rotation_score, get_float_squeeze_score,
+                    get_earnings_edge_score, get_dark_pool_score,
+                )
+
+                if getattr(config, 'SHORT_SQUEEZE_SCANNER_ENABLED', True):
+                    _sq, _sqr = get_short_squeeze_score(symbol, direction)
+                    if _sq:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _sq)
+                        logger.debug(f"{symbol}: SHORT_SQUEEZE {_sq:+.0f} {_sqr}")
+
+                if getattr(config, 'OPTIONS_FLOW_SCANNER_ENABLED', True):
+                    _of, _ofr = get_options_flow_score(symbol, direction)
+                    if _of is None:
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: options flow says skip — {_ofr}")
+                        return None
+                    if _of:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _of)
+                        logger.debug(f"{symbol}: OPTIONS_FLOW {_of:+.0f} {_ofr}")
+
+                if getattr(config, 'SECTOR_ROTATION_ENABLED', True):
+                    _sr, _srr = get_sector_rotation_score(symbol, direction)
+                    if _sr:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _sr)
+                        logger.debug(f"{symbol}: SECTOR_ROT {_sr:+.0f} {_srr}")
+
+                if getattr(config, 'FLOAT_SQUEEZE_ENABLED', True):
+                    _fs, _fsr = get_float_squeeze_score(symbol, direction)
+                    if _fs:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _fs)
+                        logger.debug(f"{symbol}: FLOAT_SQZ {_fs:+.0f} {_fsr}")
+
+                if getattr(config, 'EARNINGS_EDGE_ENABLED', True):
+                    _ee, _eer = get_earnings_edge_score(symbol)
+                    if _ee is None:
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: earnings blackout — {_eer}")
+                        return None
+                    if _ee:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ee)
+                        logger.debug(f"{symbol}: EARNINGS_EDGE {_ee:+.0f} {_eer}")
+
+                if getattr(config, 'DARK_POOL_SCANNER_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _dp, _dpr = get_dark_pool_score(symbol, df_5m, direction)
+                    if _dp:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _dp)
+                        logger.debug(f"{symbol}: DARK_POOL {_dp:+.0f} {_dpr}")
+
+            except Exception as _prem_e:
+                logger.debug(f"[suppressed] premium_scanner: {_prem_e}")
+
             # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
             try:
                 if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):

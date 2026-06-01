@@ -567,6 +567,14 @@ PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lowe
 TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
 SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
 
+# ── PREMIUM SCANNER (v11.0) — free equivalents of paid trading tools ─────────
+SHORT_SQUEEZE_SCANNER_ENABLED: bool = os.getenv("SHORT_SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true","1","yes")
+OPTIONS_FLOW_SCANNER_ENABLED:  bool = os.getenv("OPTIONS_FLOW_SCANNER_ENABLED",  "True").lower() in ("true","1","yes")
+SECTOR_ROTATION_ENABLED:       bool = os.getenv("SECTOR_ROTATION_ENABLED",       "True").lower() in ("true","1","yes")
+FLOAT_SQUEEZE_ENABLED:         bool = os.getenv("FLOAT_SQUEEZE_ENABLED",         "True").lower() in ("true","1","yes")
+EARNINGS_EDGE_ENABLED:         bool = os.getenv("EARNINGS_EDGE_ENABLED",         "True").lower() in ("true","1","yes")
+DARK_POOL_SCANNER_ENABLED:     bool = os.getenv("DARK_POOL_SCANNER_ENABLED",     "True").lower() in ("true","1","yes")
+
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")
 FILL_QUALITY_MIN: float            = float(os.getenv("FILL_QUALITY_MIN", "0.6"))
