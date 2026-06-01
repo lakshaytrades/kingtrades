@@ -3674,17 +3674,23 @@ class TradingBot:
         while not self.running:
             await asyncio.sleep(0.1)
 
-        # Kill any stale polling session from previous deployment before starting
-        try:
+        def _force_close_tg_session():
+            """Call getUpdates with timeout=0 to immediately terminate any active long-poll session."""
             import requests as _req
-            _req.get(
-                f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
-                "/deleteWebhook?drop_pending_updates=true",
-                timeout=10,
-            )
-            logger.info(f"[{format_ist_timestamp()}] Telegram: cleared stale webhook/session")
-        except Exception as _e:
-            logger.debug(f"deleteWebhook cleanup: {_e}")
+            _tg_base = f"https://api.telegram.org/bot{config.TELEGRAM_BOT_TOKEN}"
+            try:
+                _req.get(f"{_tg_base}/deleteWebhook?drop_pending_updates=true", timeout=10)
+            except Exception:
+                pass
+            # getUpdates with timeout=0 bumps out any other getUpdates that's in flight
+            try:
+                _req.get(f"{_tg_base}/getUpdates?offset=-1&timeout=0&limit=1", timeout=12)
+            except Exception:
+                pass
+
+        # Clear any stale session before first attempt
+        _force_close_tg_session()
+        logger.info(f"[{format_ist_timestamp()}] Telegram: cleared stale webhook/polling session")
 
         for attempt in range(max_retries):
             app = None
@@ -3797,7 +3803,7 @@ class TradingBot:
 
             except tg_error.Conflict:
                 logger.warning(
-                    f"[{format_ist_timestamp()}] Telegram Conflict — previous instance still running. "
+                    f"[{format_ist_timestamp()}] Telegram Conflict — forcing session reset. "
                     f"Retry {attempt + 1}/{max_retries} in {retry_delay}s..."
                 )
                 if app:
@@ -3805,8 +3811,10 @@ class TradingBot:
                         await app.shutdown()
                     except Exception as _e:
                         logger.debug(f"[suppressed] {_e}")
+                # Force-terminate the competing getUpdates session before sleeping
+                _force_close_tg_session()
                 await asyncio.sleep(retry_delay)
-                retry_delay = min(int(retry_delay * 1.5), 120)
+                retry_delay = min(int(retry_delay * 1.5), 60)
 
             except Exception as e:
                 logger.error(f"[{format_ist_timestamp()}] Telegram listener error: {e}")
@@ -4316,6 +4324,23 @@ class _SuppressYFNoise(logging.Filter):
 
 
 def main():
+    # ── Single-instance guard — prevents duplicate processes owning the Telegram bot ──
+    import fcntl
+    _pid_path = Path(config.LOG_DIR) / "kingtrades.pid"
+    _pid_path.parent.mkdir(parents=True, exist_ok=True)
+    _pid_fh = open(_pid_path, "w")
+    try:
+        fcntl.flock(_pid_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
+    except BlockingIOError:
+        existing = _pid_path.read_text().strip() if _pid_path.exists() else "unknown"
+        print(
+            f"[KingTrades] Another instance is already running (PID {existing}). "
+            "Stop it first with: pkill -f main.py",
+            flush=True,
+        )
+        sys.exit(1)
+    _pid_path.write_text(str(os.getpid()))
+
     # Setup IST logging
     setup_logging(
         log_dir=config.LOG_DIR,
