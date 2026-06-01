@@ -1086,6 +1086,22 @@ class SignalGenerator:
             except Exception:
                 pass
 
+            # ── PORTFOLIO GUARD — correlation + heat check ────────────────────
+            try:
+                from portfolio_guard import check_correlation_risk, check_sector_concentration
+                _open_syms = list(getattr(self.risk_manager, '_positions', {}).keys()) if self.risk_manager else []
+                if _open_syms:
+                    _corr_risky, _corr_reason, _corr_score = check_correlation_risk(symbol, _open_syms)
+                    if _corr_risky and _corr_score > 0.8:
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: correlation block — {_corr_reason}")
+                        return None
+                    _sec_risky, _sec_reason = check_sector_concentration(symbol, _open_syms)
+                    if _sec_risky:
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: sector concentration — {_sec_reason}")
+                        return None
+            except Exception as _pg_e:
+                logger.debug(f"[suppressed] portfolio_guard: {_pg_e}")
+
             # ── INSTITUTIONAL STRATEGIES (v10.0) ──────────────────────────────────
             try:
                 from institutional_strategies import (
