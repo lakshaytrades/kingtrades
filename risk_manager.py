@@ -802,6 +802,23 @@ class RiskManager:
                     ),
                 }
 
+        # ── Portfolio direction concentration ──────────────────────────────
+        try:
+            import config as _cfg_conc
+            max_direction_pct = float(getattr(_cfg_conc, "MAX_DIRECTION_CONCENTRATION_PCT", 70.0))
+            long_positions  = [p for p in self.state.positions.values() if p.direction == "LONG"]
+            short_positions = [p for p in self.state.positions.values() if p.direction == "SHORT"]
+            total_open = len(long_positions) + len(short_positions)
+            if total_open >= 2:
+                long_pct = len(long_positions) / total_open * 100
+                short_pct = 100 - long_pct
+                if direction == "LONG" and long_pct >= max_direction_pct:
+                    return {"allowed": False, "reason": f"direction concentration: {long_pct:.0f}% LONG exceeds {max_direction_pct:.0f}% max"}
+                if direction == "SHORT" and short_pct >= max_direction_pct:
+                    return {"allowed": False, "reason": f"direction concentration: {short_pct:.0f}% SHORT exceeds {max_direction_pct:.0f}% max"}
+        except Exception:
+            pass
+
         return {"allowed": True, "reason": f"All checks passed | Session={session}"}
 
     def get_drawdown_size_mult(self) -> float:
@@ -1356,6 +1373,33 @@ class RiskManager:
                         }
             except Exception as _e:
                 logger.debug(f"[suppressed] {_e}")
+
+        # ── Rule 7: Volatility compression (trade stalling) ──────────────────
+        # 3 consecutive bars with narrowing range = momentum dying
+        if recent_candles and len(recent_candles) >= 3 and age_min >= 10:
+            try:
+                ranges = [abs(float(c.get("high", 0)) - float(c.get("low", 0)))
+                          for c in recent_candles[-3:]]
+                if all(r > 0 for r in ranges) and ranges[0] > ranges[1] > ranges[2]:
+                    compression_ratio = ranges[2] / max(ranges[0], 1e-9)
+                    if compression_ratio < 0.50 and move < atr * 0.5:
+                        return {
+                            "action": "EXIT_NOW",
+                            "reason": f"VOLATILITY_COMPRESSION ratio={compression_ratio:.2f} move={move/atr:.2f}ATR",
+                            "new_sl": None,
+                        }
+            except Exception:
+                pass
+
+        # ── Rule 8: Premium signal — lock gains faster ───────────────────────
+        # For A+ grade signals that have moved 0.8R+, never let them go to loss
+        if (pos.quality_grade == "A+" and peak_move >= atr * 0.8
+                and move < atr * 0.15 and age_min >= 8):
+            return {
+                "action": "BREAK_EVEN",
+                "reason": f"PREMIUM_LOCK grade=A+ peak={peak_move/atr:.1f}ATR now={move/atr:.1f}ATR",
+                "new_sl": pos.entry_price + (atr * 0.05 if pos.direction == "LONG" else -atr * 0.05),
+            }
 
         return {"action": "HOLD", "reason": "Trade health OK"}
 

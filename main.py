@@ -71,6 +71,8 @@ class TradingBot:
     """
 
     def __init__(self):
+        import time as _time_module
+        self._start_time = _time_module.time()   # for /health uptime tracking
         self.running = False
         self.market_open_today = False
         self.eod_done = False
@@ -3695,6 +3697,36 @@ class TradingBot:
                     .build()
                 )
 
+                async def cmd_health(update, context):
+                    if not _auth(update):
+                        return
+                    try:
+                        import psutil
+                        import time as _t
+                        from system_health import get_health_checker
+                        hc = get_health_checker()
+                        bot_state_health = {
+                            "running": self.running,
+                            "daily_pnl": self.risk_manager.state.daily_pnl if self.risk_manager else 0,
+                            "open_positions": len(self.risk_manager.state.positions) if self.risk_manager else 0,
+                        }
+                        report = hc.check(bot_state_health)
+                        uptime_hrs = (_t.time() - getattr(self, '_start_time', _t.time())) / 3600
+                        mem = psutil.virtual_memory()
+                        msg = (
+                            f"🏥 <b>KING Health Report</b>\n"
+                            f"{'─'*30}\n"
+                            f"Uptime: {uptime_hrs:.1f}h\n"
+                            f"Memory: {mem.percent:.0f}% used\n"
+                            f"Status: {'✅ HEALTHY' if getattr(report, 'healthy', True) else '⚠️ DEGRADED'}\n"
+                            f"Issues: {len(getattr(report, 'issues', []))}\n"
+                        )
+                        for issue in getattr(report, 'issues', [])[:5]:
+                            msg += f"  • {issue}\n"
+                        self.alerter.send_html(msg)
+                    except Exception as _he:
+                        self.alerter.send_text(f"Health check error: {_he}")
+
                 async def cmd_relogin(update, context):
                     if not _auth(update):
                         return
@@ -3737,6 +3769,7 @@ class TradingBot:
                 app.add_handler(CommandHandler("balance",    cmd_balance))
                 app.add_handler(CommandHandler("capital",    cmd_capital))
                 app.add_handler(CommandHandler("relogin",    cmd_relogin))
+                app.add_handler(CommandHandler("health",     cmd_health))
 
                 # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
                 async def _tg_error_handler(update, context):

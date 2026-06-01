@@ -566,6 +566,18 @@ PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lowe
 TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
 SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
 
+# ── Execution Quality v11.0 ─────────────────────────────────────────────────
+SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")
+FILL_QUALITY_MIN: float            = float(os.getenv("FILL_QUALITY_MIN", "0.6"))
+MAX_PREDICTED_SLIPPAGE_PCT: float  = float(os.getenv("MAX_PREDICTED_SLIPPAGE_PCT", "0.25"))
+
+# ── Regime-Adaptive Parameters v11.0 ────────────────────────────────────────
+REGIME_ADAPTIVE_ENABLED: bool  = os.getenv("REGIME_ADAPTIVE_ENABLED", "True").lower() in ("true","1","yes")
+REGIME_ADAPTIVE_SIZING: bool   = os.getenv("REGIME_ADAPTIVE_SIZING",  "True").lower() in ("true","1","yes")
+
+# ── Portfolio Direction Concentration v11.0 ──────────────────────────────────
+MAX_DIRECTION_CONCENTRATION_PCT: float = float(os.getenv("MAX_DIRECTION_CONCENTRATION_PCT", "70.0"))
+
 # ML Gate v13.0 — GradientBoosting win-probability pre-filter
 ML_GATE_ENABLED:          bool  = os.getenv("ML_GATE_ENABLED",  "True").lower() in ("true","1","yes")
 ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60"))

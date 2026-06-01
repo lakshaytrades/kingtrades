@@ -1144,6 +1144,18 @@ class SignalGenerator:
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
+                # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
+                try:
+                    if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):
+                        from regime_params import apply_regime_to_score
+                        _regime_name = getattr(self, '_last_regime_name', 'UNKNOWN')
+                        _reg_adj, _reg_reason = apply_regime_to_score(filter_result.final_score, _regime_name)
+                        if _reg_adj != filter_result.final_score:
+                            filter_result.final_score = _reg_adj
+                            logger.debug(f"{symbol}: {_reg_reason}")
+                except Exception as _re:
+                    logger.debug(f"[suppressed] regime_params: {_re}")
+
             # ── KING KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
             # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
             # Each framework validates the setup independently. Consensus = conviction.
