@@ -3377,31 +3377,111 @@ class TradingBot:
     # --------------------------------------------------------
 
     def _start_telegram_listener(self):
-        """Start Telegram bot command listener in background thread with auto-restart watchdog."""
+        """
+        Start Telegram command listener using direct HTTP polling (no PTB asyncio).
+        Simple getUpdates loop — immune to 409 Conflict by design.
+        """
         if not config.TELEGRAM_BOT_TOKEN or not config.TELEGRAM_CHAT_ID:
             logger.warning(f"[{format_ist_timestamp()}] Telegram not configured — command listener disabled")
             return
 
         def listener_thread():
-            # Spin-wait until run() sets self.running=True — the thread starts during
-            # __init__ when self.running is still False, so the loop would exit
-            # immediately without this guard.
+            import requests as _rq
+
             while not self.running:
                 time.sleep(0.2)
-            backoff = 5
+
+            token   = config.TELEGRAM_BOT_TOKEN
+            chat_id = str(config.TELEGRAM_CHAT_ID).strip()
+            base    = f"https://api.telegram.org/bot{token}"
+            offset  = 0
+
+            # Clear any stale session / webhook before starting
+            try:
+                _rq.get(f"{base}/deleteWebhook?drop_pending_updates=true", timeout=10)
+            except Exception:
+                pass
+            time.sleep(3)
+
+            logger.info(f"[{format_ist_timestamp()}] Telegram direct-HTTP listener started")
+
+            def _reply(text, parse_mode="HTML"):
+                try:
+                    _rq.post(f"{base}/sendMessage",
+                             json={"chat_id": chat_id, "text": text, "parse_mode": parse_mode},
+                             timeout=10)
+                except Exception:
+                    pass
+
             while self.running:
                 try:
-                    asyncio.run(self._telegram_listener())
-                except Exception as e:
-                    logger.error(f"Telegram listener crashed: {e} — restarting in {backoff}s")
-                    time.sleep(backoff)
-                    backoff = min(backoff * 2, 60)  # cap at 60s between retries
-                else:
-                    backoff = 5  # reset on clean exit
+                    r = _rq.get(f"{base}/getUpdates",
+                                params={"offset": offset, "timeout": 25, "allowed_updates": ["message"]},
+                                timeout=30)
+                    if not r.ok:
+                        time.sleep(5)
+                        continue
+                    updates = r.json().get("result", [])
+                    for upd in updates:
+                        offset = upd["update_id"] + 1
+                        msg = upd.get("message", {})
+                        from_id = str(msg.get("chat", {}).get("id", ""))
+                        text = (msg.get("text") or "").strip()
+                        if not text.startswith("/") or from_id != chat_id:
+                            continue
+                        cmd = text.split()[0].lower().split("@")[0]
+                        logger.info(f"[{format_ist_timestamp()}] Telegram cmd: {cmd}")
+                        try:
+                            if cmd == "/kill":
+                                _reply("🔴 <b>KILL SWITCH activated</b>")
+                                self.risk_manager.emergency_stop()
+                                self.alerter.send_kill_alert()
+                                self.executor.square_off_all("KILL SWITCH by Telegram /kill")
+                            elif cmd == "/status":
+                                try:
+                                    bal = self.fetcher.get_account_balance() if self.fetcher else {}
+                                    self.alerter.send_status(self.risk_manager,
+                                                             balance_available=bal.get("available", 0),
+                                                             margin_used=bal.get("used_margin", 0))
+                                except Exception:
+                                    self.alerter.send_status(self.risk_manager)
+                            elif cmd == "/pause":
+                                self.risk_manager._pause_trading("Manual pause via /pause")
+                                _reply(f"⏸ Trading paused at {format_ist_timestamp()}")
+                            elif cmd == "/resume":
+                                self.risk_manager.manual_resume()
+                                _reply(f"▶️ Trading resumed at {format_ist_timestamp()}")
+                            elif cmd == "/balance":
+                                bal = self.fetcher.get_account_balance() if self.fetcher else {}
+                                avail = bal.get("available", 0)
+                                pnl   = self.risk_manager.state.daily_pnl if self.risk_manager else 0
+                                trades = self.risk_manager.state.daily_trades if self.risk_manager else 0
+                                _reply(
+                                    f"💰 <b>Account Balance</b>\n"
+                                    f"Available: <b>${avail:,.2f}</b>\n"
+                                    f"Daily P&L: <b>${pnl:+,.2f}</b>\n"
+                                    f"Trades today: <b>{trades}</b>\n"
+                                    f"Live: {'✅' if config.LIVE_TRADING_ENABLED else '🔒 PAPER'}"
+                                )
+                            elif cmd == "/watchlist":
+                                status = self.watchlist_mgr.format_watchlist_message()
+                                _reply(status)
+                            elif cmd == "/report":
+                                self.alerter.send_eod_report(self.risk_manager)
+                            elif cmd == "/start":
+                                _reply(f"✅ <b>KingTrades running</b>\nChat ID: <code>{chat_id}</code>")
+                            else:
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill")
+                        except Exception as _ce:
+                            logger.warning(f"Telegram cmd {cmd} error: {_ce}")
+                            _reply(f"Error: {_ce}")
+                except Exception as _e:
+                    logger.debug(f"Telegram poll error: {_e}")
+                    time.sleep(5)
 
         self._tg_thread = threading.Thread(target=listener_thread, daemon=True, name="tg-listener")
         self._tg_thread.start()
-        logger.info(f"[{format_ist_timestamp()}] Telegram command listener started (auto-restart watchdog active)")
+        logger.info(f"[{format_ist_timestamp()}] Telegram command listener started (direct HTTP)")
 
     async def _telegram_listener(self):
         """
