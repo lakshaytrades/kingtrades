@@ -51,7 +51,7 @@ def _make_yf_session():
     except Exception:
         return None
 
-_YF_SESSION = _make_yf_session()
+_YF_SESSION = None  # Let yfinance use its internal curl_cffi session
 
 # ET timezone for market hours and bar timestamps
 try:

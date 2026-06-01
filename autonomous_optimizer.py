@@ -40,9 +40,9 @@ DAILY_TARGET_PCT   = MONTHLY_TARGET_PCT / TRADING_DAYS_PER_MONTH  # ~0.59%
 
 # ── Safe bounds for each adjustable parameter ──────────────────────────────
 BOUNDS: Dict[str, Tuple[float, float]] = {
-    "min_score":         (70.0, 82.0),    # tighter: floor matches new MIN_SIGNAL_SCORE
+    "min_score":         (45.0, 82.0),    # floor lowered to allow .env override
     "volume_ratio_min":  (0.3,  1.0),
-    "max_positions":     (3,    8),       # max 8 concurrent positions
+    "max_positions":     (3,    10),      # max 10 concurrent positions
     "risk_per_trade_pct":(0.5,  2.0),    # allow up to 2% on A+ setups
 }
 
@@ -56,10 +56,10 @@ STEPS: Dict[str, float] = {
 
 # ── Defaults (these are what the bot uses when no optimizer_config.json exists)
 DEFAULTS: Dict[str, float] = {
-    "min_score":         70.0,
-    "volume_ratio_min":  0.5,
-    "max_positions":     6,
-    "risk_per_trade_pct":1.0,    # 1% base risk — needed for 13%/month target
+    "min_score":         50.0,
+    "volume_ratio_min":  0.3,
+    "max_positions":     10,
+    "risk_per_trade_pct":0.8,    # 0.8% base risk
 }
 
 

@@ -1,27 +1,17 @@
 {
-  "date": "2026-05-18",
-  "consecutive_wins": 1,
+  "date": "2026-06-01",
+  "consecutive_wins": 0,
   "consecutive_losses": 0,
-  "day_pnl": -100.0,
+  "day_pnl": 0.0,
   "day_capital": 0.0,
-  "trades_today": 7,
-  "wins_today": 2,
-  "current_min_score": 85.0,
-  "size_multiplier": 0.5,
+  "trades_today": 0,
+  "wins_today": 0,
+  "current_min_score": 50.0,
+  "size_multiplier": 1.0,
   "paused": false,
   "pause_reason": "",
-  "pattern_today": {
-    "ORB_BREAKOUT": [
-      false,
-      true,
-      false,
-      false,
-      false,
-      false,
-      true
-    ]
-  },
-  "last_update": "2026-05-18 09:57:00 ET",
+  "pattern_today": {},
+  "last_update": "2026-06-01 09:00:00 ET",
   "pattern_boosts": {},
   "disabled_patterns": []
 }
