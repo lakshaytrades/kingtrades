@@ -4241,14 +4241,17 @@ class TradingBot:
                         )
             except Exception:
                 pass
-            self.alerter.send_html(
-                f"💓 <b>KingTrades Heartbeat</b> — {format_ist_timestamp()}\n"
-                f"Status: {status}\n"
-                f"Positions: {n_pos} ({pos_symbols})\n"
-                f"Day P&amp;L: ${pnl:+,.2f}\n"
-                f"Available: {bal_line}"
-                f"{_filter_lines}"
-            )
+            # Rich WR/P&L heartbeat via new alerter method
+            self.alerter.send_heartbeat(open_positions=dict(state.positions))
+
+            # Detailed diagnostics (score histogram, ML stats) as separate message
+            if _filter_lines:
+                self.alerter.send_html(
+                    f"📡 <b>KING Diagnostics</b> — {format_ist_timestamp()}\n"
+                    f"Status: {status}\n"
+                    f"Balance: {bal_line}"
+                    f"{_filter_lines}"
+                )
         except Exception as e:
             logger.debug(f"Heartbeat error: {e}")
 

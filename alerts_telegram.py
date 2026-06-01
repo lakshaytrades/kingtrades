@@ -323,11 +323,11 @@ class TelegramAlerter:
 
     def _live_stats_line(self) -> str:
         n, wins, losses, wr, pnl = self._live_stats()
-        if n == 0:
-            return ""
         pnl_s = f"+{_CUR}{pnl:,.0f}" if pnl >= 0 else f"-{_CUR}{abs(pnl):,.0f}"
+        if n == 0:
+            return f"📊 Session: `0 trades` | WR: `—` | P&L: `{_CUR}0`"
         return (
-            f"📊 Today: *{n}* trades | W/L: `{wins}/{losses}` | "
+            f"📊 Session: *{n}* trades | W/L: `{wins}/{losses}` | "
             f"WR: `{wr:.0f}%` | P&L: *{pnl_s}*"
         )
 
@@ -426,6 +426,7 @@ class TelegramAlerter:
         slam_line = "  🏆 *GRAND SLAM* — 2× size\n" if is_grand_slam else ""
         mtf_icon  = "✅" if mtf_ok else "⚠️"
 
+        stats_line = self._live_stats_line()
         text = (
             f"{direction_emoji} *{signal.direction} SIGNAL — {signal.symbol}*\n"
             f"{slam_line}"
@@ -447,6 +448,7 @@ class TelegramAlerter:
             f"{_sep()}\n"
             f"  _{rationale}_\n"
             f"{_sep()}\n"
+            f"  {stats_line}\n"
             f"  {E['clock']} `{signal.signal_time or format_ist_timestamp()}`"
         )
 
@@ -755,6 +757,76 @@ class TelegramAlerter:
         ]
 
         return self._send("\n".join(lines))
+
+    # --------------------------------------------------------
+    # HOURLY HEARTBEAT  — always-on live dashboard
+    # --------------------------------------------------------
+
+    def send_heartbeat(self, open_positions: dict = None) -> bool:
+        """
+        Hourly live update: WR, P&L, open positions, regime, circuit state.
+        Fires automatically every 60 min during market hours from main.py.
+        """
+        n, wins, losses, wr, pnl = self._live_stats()
+        pnl_str  = _pnl_str(pnl)
+        wr_bar   = _score_bar(wr) if n > 0 else "░░░░░░░░░░"
+        n_open   = len(open_positions) if open_positions else 0
+
+        try:
+            import config as _c
+            capital    = getattr(_c, "MAX_DAILY_CAPITAL", 0)
+            target_pct = getattr(_c, "DAILY_PROFIT_TARGET_PCT", 1.0)
+            target_amt = capital * target_pct / 100 if capital > 0 else 0
+            progress   = (pnl / target_amt * 100) if target_amt > 0 else 0
+            target_bar = _score_bar(min(100, progress))
+            target_str = f"`{target_bar}` `{progress:.0f}%` of `{_CUR}{target_amt:,.0f}` daily target"
+        except Exception:
+            target_str = ""
+
+        rm = self._risk_manager
+        paused  = getattr(getattr(rm, "state", None), "trading_paused", False) if rm else False
+        consec  = getattr(getattr(rm, "state", None), "consecutive_losses", 0) if rm else 0
+        circuit = "⏸ PAUSED" if paused else ("⚠️ CAUTION" if consec >= 2 else "✅ ACTIVE")
+
+        regime_str = ""
+        try:
+            regime_name = getattr(self, "_last_regime", "")
+            if not regime_name and rm:
+                regime_name = getattr(getattr(rm, "_signal_gen", None), "_last_regime_name", "")
+            if regime_name:
+                regime_str = f"  REGIME   `{regime_name}`\n"
+        except Exception:
+            pass
+
+        pos_lines = ""
+        if open_positions:
+            pos_lines = f"  {'─'*28}\n"
+            for sym, pos in list(open_positions.items())[:5]:
+                p_pnl = getattr(pos, "pnl", 0)
+                arrow = "↗" if p_pnl >= 0 else "↘"
+                pos_lines += (
+                    f"  {sym:<7} `{pos.direction:<5}` "
+                    f"`{'+' if p_pnl >= 0 else ''}{_CUR}{abs(p_pnl):,.0f}` {arrow}\n"
+                )
+
+        text = (
+            f"⏱ *KING HOURLY UPDATE*\n"
+            f"{_sep()}\n"
+            f"  {format_ist_timestamp()}\n"
+            f"{_sep()}\n"
+            f"  STATUS   `{circuit}`\n"
+            f"  DAY P&L  *{pnl_str}*\n"
+            f"  {target_str}\n"
+            f"{_sep()}\n"
+            f"  TRADES   `{n}` closed today   `{wins}W / {losses}L`\n"
+            f"  WIN RATE `{wr:.1f}%`  `{wr_bar}`\n"
+            f"  OPEN     `{n_open}` position{'s' if n_open != 1 else ''}\n"
+            f"{regime_str}"
+            f"{pos_lines}"
+            f"{_sep()}\n"
+            f"  /status for full detail · /kill to stop"
+        )
+        return self._send(text)
 
     # --------------------------------------------------------
     # PAUSE / RESUME
