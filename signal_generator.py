@@ -1384,6 +1384,31 @@ class SignalGenerator:
                 )
                 return None
 
+            # ── ELITE FILTER (v11.0) — VIX adaptive + R/R enforcer ────────────
+            try:
+                from elite_filter import (
+                    get_vix_regime, get_vix_score_threshold,
+                    get_adx_strength, get_score_adjustment_for_regime,
+                    check_reward_to_risk, calculate_optimal_levels,
+                )
+                # VIX regime adjustment
+                _vix_val, _vix_regime, _vix_size_mult, _vix_note = get_vix_regime()
+                _adj_threshold = get_vix_score_threshold(self.min_score)
+                if filter_result.final_score < _adj_threshold:
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: VIX-adjusted threshold {_adj_threshold:.0f} not met (score={filter_result.final_score:.0f}, VIX={_vix_val:.1f} {_vix_regime})")
+                    return None
+
+                # ADX trend strength adjustment
+                if df_5m is not None and not df_5m.empty and len(df_5m) >= 20:
+                    _adx, _adx_label = get_adx_strength(df_5m)
+                    _regime_delta, _regime_reason = get_score_adjustment_for_regime(_adx, _vix_val, direction)
+                    if _regime_delta != 0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _regime_delta)
+                        logger.debug(f"{symbol}: REGIME_ADJ {_regime_delta:+.0f} ADX={_adx:.0f} {_adx_label}")
+
+            except Exception as _ef_e:
+                logger.debug(f"[suppressed] elite_filter: {_ef_e}")
+
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,

@@ -207,6 +207,11 @@ TREND_QUALITY_GATE:     bool  = os.getenv("TREND_QUALITY_GATE",   "True").lower(
 # Score components: OFI, Dark Pool, Session Momentum
 OFI_SCORE_ENABLED:             bool = os.getenv("OFI_SCORE_ENABLED", "True").lower() in ("true","1","yes")
 DARK_POOL_ENABLED:             bool = os.getenv("DARK_POOL_ENABLED", "True").lower() in ("true","1","yes")
+# ── ELITE FILTER (v11.0) ──────────────────────────────────────────────────────
+ELITE_FILTER_ENABLED:    bool = os.getenv("ELITE_FILTER_ENABLED",    "True").lower() in ("true","1","yes")
+VIX_ADAPTIVE_ENABLED:    bool = os.getenv("VIX_ADAPTIVE_ENABLED",    "True").lower() in ("true","1","yes")
+ADX_GATE_ENABLED:        bool = os.getenv("ADX_GATE_ENABLED",        "True").lower() in ("true","1","yes")
+MIN_REWARD_RISK:        float = float(os.getenv("MIN_REWARD_RISK",   "2.0"))
 SESSION_MOMENTUM_ENABLED:      bool = os.getenv("SESSION_MOMENTUM_ENABLED", "True").lower() in ("true","1","yes")
 # Sector RS + Squeeze scanner (already in code, ensure flags exist)
 SECTOR_RS_ENABLED:             bool = os.getenv("SECTOR_RS_ENABLED", "True").lower() in ("true","1","yes")
