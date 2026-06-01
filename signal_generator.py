@@ -1301,6 +1301,18 @@ class SignalGenerator:
                 except Exception as e:
                     logger.debug(f"LLM gate error: {e}")
 
+            # ── Final execution gate: after ALL boosters, require ≥70 ────────────
+            # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can
+            # add 8–20 pts. If no booster fired, the signal is too weak to trade.
+            _FINAL_EXEC_MIN = getattr(config, "FINAL_EXEC_MIN_SCORE", 70.0)
+            if filter_result.final_score < _FINAL_EXEC_MIN:
+                logger.info(
+                    f"[{format_ist_timestamp()}] {symbol}: Final score "
+                    f"{filter_result.final_score:.0f} < {_FINAL_EXEC_MIN:.0f} after all "
+                    f"boosters — no conviction signal, skipping"
+                )
+                return None
+
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,

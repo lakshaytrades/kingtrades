@@ -33,9 +33,9 @@ from utils import format_ist_timestamp, get_current_ist_time
 logger = logging.getLogger(__name__)
 
 BRAIN_STATE_FILE = Path("data/adaptive_brain_state.json")
-MIN_SCORE_FLOOR  = 72.0    # Hard floor — real market ceiling is 72-75; 14-gate HAF is the quality guard
+MIN_SCORE_FLOOR  = 63.0    # Pre-filter floor — boosters (CSM, VWAP, OFI, etc.) add 8-20 pts after HAF gate
 MIN_SCORE_CEIL   = 88.0    # Cap — on defensive days tighten to 88 (A+ only)
-DEFAULT_SCORE    = 72.0    # Every day starts at 72; brain tightens dynamically on losses
+DEFAULT_SCORE    = 63.0    # Day starts at 63; institutional boosters push final score to 72-85
 
 
 @dataclass

@@ -154,13 +154,14 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "72.0"))
-                                       # v16.0: calibrated to actual score range after neutral-fix
-                                       # Neutral fix raises moderate-signal scores from ~55 → ~73
-                                       # so 72 = "good signal" floor (was 68, which admitted too many weak trades)
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "63.0"))
+                                       # v17.0: pre-filter threshold — institutional boosters (CSM, VWAP reclaim,
+                                       # OFI, futures bias, etc.) add 8-20 pts AFTER the HAF gate, pushing
+                                       # final scores from 63 → 73-85 before execution.
 HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses (v16.0: was 80)
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
+FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "70.0"))  # Post-booster execution gate
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
 ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "22.0"))  # was 17 — choppy mkt filter
@@ -439,11 +440,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 68.0,   # Monday
-    1: 68.0,   # Tuesday — best trend day
-    2: 68.0,   # Wednesday — trend continuation
-    3: 68.0,   # Thursday
-    4: 68.0,   # Friday — same as rest of week (size already reduced to 0.8x)
+    0: 63.0,   # Monday
+    1: 63.0,   # Tuesday — best trend day
+    2: 63.0,   # Wednesday — trend continuation
+    3: 63.0,   # Thursday
+    4: 63.0,   # Friday — size already reduced to 0.8x
 }
 
 # Time-of-day minimum score (ET, 24h format) — institutional trading windows
@@ -456,13 +457,13 @@ DOW_MIN_SCORE: dict = {
 TOD_MIN_SCORES: dict = {
     # (start_min_from_midnight, end_min): min_score
     # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
-    # ── v13.0: tighter midday + near-close thresholds for 70-80% WR target ──
-    (570, 600): 76.0,   # 9:30–10:00: open drive — high false-breakout risk, A-grade minimum
-    (600, 690): 70.0,   # 10:00–11:30: morning prime window
-    (690, 810): 78.0,   # 11:30–13:30: midday chop — only A-grade or better
-    (810, 900): 72.0,   # 13:30–15:00: afternoon — moderate selectivity
-    (900, 925): 76.0,   # 15:00–15:25: power hour — fast moves, only A-grade setups
-    (925, 960): 85.0,   # 15:25–16:00: near close — extreme selectivity only
+    # v17.0: pre-filter thresholds — boosters add 8-20 pts; final execution scores = these + 10
+    (570, 600): 66.0,   # 9:30–10:00: open drive (boosted final ~74-80)
+    (600, 690): 63.0,   # 10:00–11:30: morning prime window (boosted final ~71-80)
+    (690, 810): 68.0,   # 11:30–13:30: midday chop — tighter pre-filter (boosted final ~76-83)
+    (810, 900): 63.0,   # 13:30–15:00: afternoon (boosted final ~71-80)
+    (900, 925): 66.0,   # 15:00–15:25: power hour (boosted final ~74-80)
+    (925, 960): 75.0,   # 15:25–16:00: near close — high bar even pre-filter
 }
 TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
 
