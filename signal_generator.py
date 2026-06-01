@@ -427,13 +427,13 @@ class SignalGenerator:
             if dir_5m := score_5m.get("direction", "NEUTRAL"):
                 pass  # keep direction for fallback below
             if not alignment["aligned"]:
-                if config.REQUIRE_MTF_ALIGNMENT or dir_5m == "NEUTRAL":
+                if config.REQUIRE_MTF_ALIGNMENT:
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: MTF not aligned — dir_5m={dir_5m} align_score={alignment.get('score',0):.0f} require_mtf={config.REQUIRE_MTF_ALIGNMENT}")
                     return None
                 # MTF alignment not required — continue with 5m direction, apply penalty later
-                logger.debug(f"{symbol}: MTF partial alignment {alignment['score']:.0f} — proceeding with penalty")
+                logger.debug(f"{symbol}: MTF partial alignment {alignment['score']:.0f} dir_5m={dir_5m} — proceeding with penalty")
 
-            direction = alignment["direction"] if alignment["aligned"] else dir_5m
+            direction = alignment["direction"] if alignment["aligned"] else (dir_5m if dir_5m != "NEUTRAL" else "LONG")
 
             # 4. News filter
             news_clear = True
@@ -546,8 +546,10 @@ class SignalGenerator:
             # (price > 20-day SMA AND recent higher highs/lows).
             daily_bias_penalty = self._get_daily_htf_penalty(symbol, direction)
             if daily_bias_penalty is None:
-                logger.info(f"[{format_ist_timestamp()}] {symbol}: daily HTF opposes direction — skipping")
-                return None
+                if getattr(config, "DAILY_HTF_GATE", True):
+                    logger.info(f"[{format_ist_timestamp()}] {symbol}: daily HTF opposes direction — skipping")
+                    return None
+                daily_bias_penalty = -15.0  # gate off: apply heavy penalty instead of hard block
 
             # 6. Composite AI score
             ai_score = self._compute_ai_score(
