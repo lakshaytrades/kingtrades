@@ -636,6 +636,9 @@ GAMMA_SQUEEZE_ENABLED:       bool = os.getenv("GAMMA_SQUEEZE_ENABLED",       "Tr
 ZSCORE_REVERSION_ENABLED:    bool = os.getenv("ZSCORE_REVERSION_ENABLED",    "True").lower() in ("true","1","yes")
 PEAD_SCORE_ENABLED:          bool = os.getenv("PEAD_SCORE_ENABLED",          "True").lower() in ("true","1","yes")
 MOMENTUM_PERSIST_ENABLED:    bool = os.getenv("MOMENTUM_PERSIST_ENABLED",    "True").lower() in ("true","1","yes")
+WOLFE_WAVE_ENABLED:          bool = os.getenv("WOLFE_WAVE_ENABLED",          "True").lower() in ("true","1","yes")
+ELLIOTT_WAVE_ENABLED:        bool = os.getenv("ELLIOTT_WAVE_ENABLED",        "True").lower() in ("true","1","yes")
+GANN_ENABLED:                bool = os.getenv("GANN_ENABLED",                "True").lower() in ("true","1","yes")
 
 # ============================================================
 # VALIDATION

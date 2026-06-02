@@ -1584,44 +1584,67 @@ class SignalGenerator:
             except Exception as _mre_e:
                 logger.debug(f"[suppressed] mean_reversion: {_mre_e}")
 
+            # ── WOLFE WAVE (world-class reversal pattern) ─────────────────────
+            try:
+                if getattr(config, 'WOLFE_WAVE_ENABLED', True) and df_5m is not None and len(df_5m) >= 40:
+                    from wolfe_wave import get_wolfe_wave_score
+                    _ww_d, _ww_r = get_wolfe_wave_score(symbol, df_5m, direction)
+                    if _ww_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ww_d)
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: WOLFE_WAVE {_ww_d:+.0f} {_ww_r}")
+            except Exception as _ww_e:
+                logger.debug(f"[suppressed] wolfe_wave: {_ww_e}")
+
+            # ── ELLIOTT WAVE (wave 3 entry detection) ─────────────────────────
+            try:
+                if getattr(config, 'ELLIOTT_WAVE_ENABLED', True) and df_5m is not None and len(df_5m) >= 50:
+                    from elliott_wave import get_elliott_wave_score
+                    _ew_d, _ew_r = get_elliott_wave_score(symbol, df_5m, direction)
+                    if _ew_d:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _ew_d))
+                        logger.debug(f"{symbol}: ELLIOTT {_ew_d:+.0f} {_ew_r}")
+            except Exception as _ew_e:
+                logger.debug(f"[suppressed] elliott_wave: {_ew_e}")
+
+            # ── GANN LEVELS (time-price geometry) ────────────────────────────
+            try:
+                if getattr(config, 'GANN_ENABLED', True) and df_5m is not None:
+                    from gann_levels import get_gann_score
+                    _gn_d, _gn_r = get_gann_score(symbol, df_5m, ltp_now, direction)
+                    if _gn_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gn_d)
+                        logger.debug(f"{symbol}: GANN {_gn_d:+.0f} {_gn_r}")
+            except Exception as _gn_e:
+                logger.debug(f"[suppressed] gann_levels: {_gn_e}")
+
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
-            # Collects all score deltas fired during this evaluation, counts
-            # how many agreed with direction. Blocks low-confluence setups.
             try:
                 if getattr(config, 'MASTER_CONFLUENCE_ENABLED', True):
-                    from master_confluence import compute_confluence, make_vote, SignalVote
+                    from master_confluence import compute_confluence, make_vote
                     _mc_votes = []
                     _base = filter_result.final_score
-                    # Vote from score tier (proxy for all fired modules combined)
                     if _base >= 80:
                         _mc_votes.append(make_vote("SCORE_HIGH", direction, 10.0, _base, "momentum"))
                     elif _base >= 70:
                         _mc_votes.append(make_vote("SCORE_MED", direction, 6.0, _base, "momentum"))
                     else:
                         _mc_votes.append(make_vote("SCORE_LOW", direction, 2.0, _base, "momentum"))
-                    # Vote from volume ratio
                     if ind.volume_ratio >= 2.0:
                         _mc_votes.append(make_vote("VOLUME_SURGE", direction, 8.0, 80.0, "flow"))
                     elif ind.volume_ratio >= 1.5:
                         _mc_votes.append(make_vote("VOLUME_OK", direction, 4.0, 65.0, "flow"))
-                    # Vote from RSI
                     if direction == "LONG" and ind.rsi <= 35:
                         _mc_votes.append(make_vote("RSI_OVERSOLD", direction, 7.0, 75.0, "reversion"))
                     elif direction == "SHORT" and ind.rsi >= 65:
                         _mc_votes.append(make_vote("RSI_OVERBOUGHT", direction, 7.0, 75.0, "reversion"))
-                    elif 40 <= ind.rsi <= 60:
-                        _mc_votes.append(make_vote("RSI_NEUTRAL", "NEUTRAL", 0.0, 50.0, "reversion"))
-                    # Vote from MACD
                     if (direction == "LONG" and ind.macd > 0) or (direction == "SHORT" and ind.macd < 0):
                         _mc_votes.append(make_vote("MACD_ALIGN", direction, 5.0, 70.0, "momentum"))
-                    # Vote from VWAP
                     if ind.vwap > 0:
-                        above = ltp_now > ind.vwap
-                        if (direction == "LONG" and above) or (direction == "SHORT" and not above):
+                        _above = ltp_now > ind.vwap
+                        if (direction == "LONG" and _above) or (direction == "SHORT" and not _above):
                             _mc_votes.append(make_vote("VWAP_ALIGN", direction, 6.0, 72.0, "structure"))
                         else:
                             _mc_votes.append(make_vote("VWAP_OPPOSE", "SHORT" if direction == "LONG" else "LONG", 4.0, 65.0, "structure"))
-                    # Vote from ADX trend strength
                     if ind.adx >= 25:
                         _mc_votes.append(make_vote("ADX_TREND", direction, 5.0, 70.0, "regime"))
                     _min_agree = getattr(config, 'CONFLUENCE_MIN_AGREE', 2)
@@ -1630,10 +1653,9 @@ class SignalGenerator:
                         logger.info(
                             f"[{format_ist_timestamp()}] {symbol}: CONFLUENCE BLOCK "
                             f"— only {_mc_result.confluence_count}/{_min_agree} signals agree "
-                            f"(score={_base:.0f}) [{_mc_result.breakdown[:80]}]"
+                            f"(score={_base:.0f})"
                         )
                         return None
-                    # Apply confluence size multiplier
                     combined_size = round(combined_size * _mc_result.size_multiplier, 2)
                     logger.debug(
                         f"{symbol}: CONFLUENCE {_mc_result.confluence_count} agree "
