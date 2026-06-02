@@ -1469,6 +1469,55 @@ class SignalGenerator:
             except Exception as _ef_e:
                 logger.debug(f"[suppressed] elite_filter: {_ef_e}")
 
+            # ── FINAL SCORE → SIZE RECALIBRATION (v13.0) ─────────────────────
+            # combined_size was set at line ~826 using the PRE-BOOST score.
+            # Now ALL modules have fired. Recalculate using the FINAL score so
+            # A+ setups (score 90+) get proper 1.5–2.0x sizing.
+            _final_s = filter_result.final_score
+            if _final_s >= 95:
+                _final_size_mult = 2.0
+            elif _final_s >= 90:
+                _final_size_mult = 1.5
+            elif _final_s >= 85:
+                _final_size_mult = 1.2
+            elif _final_s >= 75:
+                _final_size_mult = 1.0
+            else:
+                _final_size_mult = 0.75
+            # Blend: keep any regime/breadth adjustments already in combined_size
+            # but replace the stale score-tier component with the final one
+            combined_size = round(
+                min(combined_size, _final_size_mult) * max(combined_size / max(_final_size_mult, 0.01), 0.5),
+                2
+            )
+            combined_size = max(0.25, min(3.0, combined_size))
+
+            # ── ADAPTIVE KELLY SIZING (v13.0) — live win-rate → optimal f ────
+            # Uses per-symbol historical WR from trade journal. Grows size on
+            # symbols with proven edge, shrinks on symbols where we lose.
+            try:
+                if getattr(config, 'ADAPTIVE_KELLY_ENABLED', True):
+                    from adaptive_kelly import get_kelly_size_pct
+                    _kelly_risk = get_kelly_size_pct(
+                        symbol       = symbol,
+                        base_risk_pct = getattr(config, 'RISK_PER_TRADE_PCT', 0.8),
+                    )
+                    # kelly returns recommended risk %, convert to size multiplier
+                    _base_risk = getattr(config, 'RISK_PER_TRADE_PCT', 0.8)
+                    _kelly_mult = _kelly_risk / max(_base_risk, 0.01)
+                    _kelly_mult = max(0.4, min(2.0, _kelly_mult))
+                    combined_size = round(combined_size * _kelly_mult, 2)
+                    if abs(_kelly_mult - 1.0) > 0.1:
+                        logger.debug(f"{symbol}: KELLY {_kelly_mult:.2f}x (risk={_kelly_risk:.2f}%)")
+            except Exception as _ke:
+                logger.debug(f"[suppressed] adaptive_kelly: {_ke}")
+
+            combined_size = max(0.25, min(3.0, combined_size))
+            logger.debug(
+                f"{symbol}: FINAL score={_final_s:.0f} size={combined_size:.2f}x "
+                f"(grade={filter_result.quality_grade})"
+            )
+
             signal = self._build_signal(
                 symbol=symbol,
                 direction=direction,

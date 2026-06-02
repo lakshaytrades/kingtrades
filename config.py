@@ -613,6 +613,10 @@ ACCOUNT_TYPE:           str  = os.getenv("ACCOUNT_TYPE",            "CASH").uppe
 PDT_ENFORCE:            bool = os.getenv("PDT_ENFORCE",             "True").lower() in ("true","1","yes")
 PDT_MAX_DAY_TRADES:     int  = int(os.getenv("PDT_MAX_DAY_TRADES",  "3"))
 
+# ── Adaptive Kelly + Dynamic Sizing (v13.0) ──────────────────────────────────
+ADAPTIVE_KELLY_ENABLED: bool  = os.getenv("ADAPTIVE_KELLY_ENABLED", "True").lower() in ("true","1","yes")
+RISK_PER_TRADE_PCT:     float = float(os.getenv("RISK_PER_TRADE_PCT", str(MAX_RISK_PER_TRADE_PCT)))
+
 # ── Quantum Strategies (v12.0) — 8 institutional-grade signal modules ────────
 ORB_SCORE_ENABLED:           bool = os.getenv("ORB_SCORE_ENABLED",           "True").lower() in ("true","1","yes")
 VWAP_BANDS_ENABLED:          bool = os.getenv("VWAP_BANDS_ENABLED",          "True").lower() in ("true","1","yes")
