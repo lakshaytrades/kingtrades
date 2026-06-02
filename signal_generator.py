@@ -344,7 +344,7 @@ class SignalGenerator:
             if bar_count < 10:
                 strikes = self._no_data_strikes.get(symbol, 0) + 1
                 self._no_data_strikes[symbol] = strikes
-                if strikes >= 3:
+                if strikes >= 6:
                     self._session_skip.add(symbol)
                     logger.info(
                         f"[{format_ist_timestamp()}] {symbol}: no 5m data after {strikes} attempts "
@@ -547,10 +547,7 @@ class SignalGenerator:
             # (price > 20-day SMA AND recent higher highs/lows).
             daily_bias_penalty = self._get_daily_htf_penalty(symbol, direction)
             if daily_bias_penalty is None:
-                if getattr(config, "DAILY_HTF_GATE", True):
-                    logger.info(f"[{format_ist_timestamp()}] {symbol}: daily HTF opposes direction — skipping")
-                    return None
-                daily_bias_penalty = -15.0  # gate off: apply heavy penalty instead of hard block
+                daily_bias_penalty = -5.0   # apply light penalty instead of hard block
 
             # 6. Composite AI score
             ai_score = self._compute_ai_score(
