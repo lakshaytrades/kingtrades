@@ -1278,7 +1278,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 55:   # require at least 2/3 TF agreement (original calibrated threshold)
+        if alignment_score < 35:   # require at least 1/3 TF agreement (IEX data, weaker markets)
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
@@ -1294,17 +1294,16 @@ class HighAccuracyFilter:
 
     def _check_volume(self, volume_ratio: float) -> Tuple[bool, float]:
         """
-        Volume participation gate — institutional standard.
-        Rule: never trade below-average volume — institutions don't.
-        1.0× = minimum (at-average), 1.5×+ = bonus territory.
-        Note: Alpaca 5-min bars undercount vs daily SMA in the first 90 min
-        of the day, so 1.0× is achievable from open; 1.5× is genuinely strong.
+        Volume participation gate — adjusted for Alpaca IEX free feed.
+        IEX captures ~3% of real market volume vs SIP (100%), so ratios
+        appear artificially low. A stock with 0.2x IEX ratio has strong
+        real volume. Minimum set to 0.15x to reflect IEX undercounting.
         """
-        if volume_ratio < 1.0:
-            return False, 0                         # below-average volume — skip
-        if volume_ratio < 1.5:
+        if volume_ratio < 0.15:
+            return False, 0                         # genuinely no volume
+        if volume_ratio < 0.5:
             return True, 0                          # passes, no bonus
-        bonus = min((volume_ratio - 1.5) * 8, 15)  # up to +15 for 3×+ surge
+        bonus = min((volume_ratio - 0.5) * 8, 15)  # up to +15 for strong surge
         return True, bonus
 
     def _check_pattern_quality(
