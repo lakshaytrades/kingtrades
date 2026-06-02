@@ -1275,6 +1275,67 @@ class SignalGenerator:
             except Exception as _quantum_e:
                 logger.debug(f"[suppressed] quantum_strategies: {_quantum_e}")
 
+            # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
+            try:
+                if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
+                    from harmonic_patterns import get_harmonic_detector
+                    _hd = get_harmonic_detector()
+                    _harm_results = []
+                    for _detect_fn in [_hd.detect_abcd, _hd.detect_gartley, _hd.detect_butterfly, _hd.detect_bat, _hd.detect_crab]:
+                        try:
+                            _hr = _detect_fn(df_5m)
+                            if _hr is not None:
+                                _harm_results.append(_hr)
+                        except Exception:
+                            pass
+                    # Score: aligning patterns give +pts, opposing patterns penalize
+                    for _hr in _harm_results:
+                        if _hr.direction == direction:
+                            _h_delta = min(15.0, _hr.confidence * 0.15)  # max +15
+                            filter_result.final_score = min(100.0, filter_result.final_score + _h_delta)
+                            logger.info(f"[{format_ist_timestamp()}] {symbol}: HARMONIC {_hr.name} {_h_delta:+.0f}pts (conf={_hr.confidence:.0f})")
+                        elif _hr.confidence > 75:
+                            filter_result.final_score = max(0.0, filter_result.final_score - 8.0)
+                            logger.debug(f"{symbol}: HARMONIC OPPOSE {_hr.name} -8pts")
+            except Exception as _harm_e:
+                logger.debug(f"[suppressed] harmonic_patterns: {_harm_e}")
+
+            # ── WYCKOFF + SMART MONEY ADVANCED (world-class) ─────────────────
+            try:
+                if getattr(config, 'WYCKOFF_ENABLED', True) and df_5m is not None and len(df_5m) >= 20:
+                    from smart_money_advanced import (
+                        detect_liquidity_sweep, detect_breaker_block,
+                        detect_wyckoff_spring, detect_wyckoff_upthrust,
+                        detect_wyckoff_accumulation, detect_wyckoff_distribution,
+                        detect_market_maker_cycle, detect_power_of_3,
+                    )
+                    _sma_score = 0.0
+                    _sma_hits  = []
+                    _sma_fns   = [
+                        detect_liquidity_sweep, detect_breaker_block,
+                        detect_wyckoff_spring, detect_wyckoff_upthrust,
+                        detect_wyckoff_accumulation, detect_wyckoff_distribution,
+                        detect_market_maker_cycle, detect_power_of_3,
+                    ]
+                    for _fn in _sma_fns:
+                        try:
+                            _pr = _fn(df_5m)
+                            if _pr is not None:
+                                if _pr.direction == direction:
+                                    _pts = min(12.0, _pr.confidence * 0.13)
+                                    _sma_score += _pts
+                                    _sma_hits.append(f"{_pr.name}(+{_pts:.0f})")
+                                elif _pr.confidence > 70:
+                                    _sma_score -= 6.0
+                                    _sma_hits.append(f"{_pr.name}(-6 OPPOSE)")
+                        except Exception:
+                            pass
+                    if _sma_score != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _sma_score))
+                        logger.info(f"[{format_ist_timestamp()}] {symbol}: WYCKOFF/SMA {_sma_score:+.1f}pts [{', '.join(_sma_hits[:3])}]")
+            except Exception as _sma_e:
+                logger.debug(f"[suppressed] smart_money_advanced: {_sma_e}")
+
             # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
             try:
                 if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):

@@ -615,6 +615,12 @@ PDT_MAX_DAY_TRADES:     int  = int(os.getenv("PDT_MAX_DAY_TRADES",  "3"))
 
 # ── Adaptive Kelly + Dynamic Sizing (v13.0) ──────────────────────────────────
 ADAPTIVE_KELLY_ENABLED: bool  = os.getenv("ADAPTIVE_KELLY_ENABLED", "True").lower() in ("true","1","yes")
+
+# ── World-Class Additions (v14.0) ────────────────────────────────────────────
+HARMONIC_PATTERNS_ENABLED: bool = os.getenv("HARMONIC_PATTERNS_ENABLED", "True").lower() in ("true","1","yes")
+WYCKOFF_ENABLED:            bool = os.getenv("WYCKOFF_ENABLED",            "True").lower() in ("true","1","yes")
+MASTER_CONFLUENCE_ENABLED:  bool = os.getenv("MASTER_CONFLUENCE_ENABLED",  "True").lower() in ("true","1","yes")
+CONFLUENCE_MIN_AGREE:       int  = int(os.getenv("CONFLUENCE_MIN_AGREE",  "2"))
 RISK_PER_TRADE_PCT:     float = float(os.getenv("RISK_PER_TRADE_PCT", str(MAX_RISK_PER_TRADE_PCT)))
 
 # ── Quantum Strategies (v12.0) — 8 institutional-grade signal modules ────────
