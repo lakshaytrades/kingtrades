@@ -85,10 +85,10 @@ class ProfitEngineConfig:
 
     # Min signal scores by mode — synced with config.MIN_SIGNAL_SCORE = 68
     # Post-bonus scores (after HAF): typical A = 74-83, A+ = 84+
-    score_normal:          float = 68.0   # base gate — bonuses push qualifying setups to 74+
-    score_caution:         float = 74.0   # caution: post-bonus A-grade required
-    score_protection:      float = 78.0   # protection: stricter after target hit
-    score_lock:            float = 84.0   # lock: A+ post-bonus only
+    score_normal:          float = 63.0   # base gate — aligned with MIN_SIGNAL_SCORE
+    score_caution:         float = 70.0   # caution: slightly tighter after losses
+    score_protection:      float = 74.0   # protection: stricter after target hit
+    score_lock:            float = 80.0   # lock: A+ post-bonus only
 
 
 # ─────────────────────────────────────────────────────────────────────────────

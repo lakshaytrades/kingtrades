@@ -150,7 +150,7 @@ class MomentumBurstDetector:
         try:
             from signal_generator import TradeSignal
             score      = setup.burst_score
-            grade      = "A+" if score >= 88 else "A" if score >= 80 else "B"
+            grade      = "A+" if score >= 80 else "A" if score >= 63 else "B"
             size_mult  = 1.4 if grade == "A+" else 1.2 if grade == "A" else 1.0
             rr         = round(abs(setup.target_1 - setup.entry_price) /
                                max(abs(setup.stop_loss - setup.entry_price), 0.01), 2)

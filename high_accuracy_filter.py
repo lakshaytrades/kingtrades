@@ -1259,8 +1259,9 @@ class HighAccuracyFilter:
             "HIGH_VOLATILITY":   ("BOTH", 0.6),
             "MIDDAY_CHOP":       ("BOTH", 0.6),   # Reduced size, not blocked
             "RANGING":           ("BOTH", 0.5),   # Very small size, not blocked
+            "LOW_VOLATILITY":    ("BOTH", 0.4),   # Quiet market — small size, not blocked
         }
-        blocked = {"LOW_VOLATILITY"}
+        blocked = set()  # Nothing universally blocked — regime only adjusts size
 
         if regime in blocked:
             return False, 0.0
