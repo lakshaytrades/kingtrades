@@ -188,7 +188,7 @@ class HighAccuracyFilter:
     }
     CORR_BLOCK_THRESHOLD = 0.75   # block if correlation >= this
 
-    def __init__(self, min_score: float = 72.0):  # v16.0: recalibrated to 72 post neutral-fix
+    def __init__(self, min_score: float = 63.0):  # default matches MIN_SIGNAL_SCORE
         self._rejection_log: List[Dict] = []
         self._pass_count    = 0
         self._reject_count  = 0
@@ -1178,8 +1178,8 @@ class HighAccuracyFilter:
         # ── FINAL SCORE & GRADE ───────────────────────────
         # Add CONVICTION bonus — passing all gates is itself a strong signal
         n_passed = len(result.gates_passed)
-        if n_passed >= 6:
-            _conv = min(5 + (n_passed - 6), 8)  # +5 for 6 gates, up to +8 for 9+ gates
+        if n_passed >= 5:
+            _conv = min(5 + (n_passed - 5), 8)  # +5 for 5 gates, up to +8 for 8+ gates
             bonus_score += _conv
             result.bonuses.append(f"CONVICTION_GATES({n_passed}gates,+{_conv})")
 

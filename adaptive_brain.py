@@ -170,8 +170,8 @@ class AdaptiveBrain:
                 self._save()
                 return {"healthy": False, "reason": s.pause_reason, "score_override": None}
 
-        # Resume if previously paused by ADX (ADX recovered)
-        if s.paused and "ADX" in s.pause_reason and spy_adx >= 20:
+        # Resume if previously paused by ADX — either ADX recovered OR no ADX data (never get stuck)
+        if s.paused and "ADX" in s.pause_reason and (spy_adx >= 20 or spy_adx == 0):
             s.paused      = False
             s.pause_reason = ""
             self._save()

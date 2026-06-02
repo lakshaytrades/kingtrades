@@ -162,10 +162,12 @@ class SelfLearningEngine:
 
     def _adapt_overall_thresholds(self, df: pd.DataFrame):
         """If win rate is low, tighten min_signal_score."""
+        if len(df) < 10:
+            return  # need at least 10 trades to adapt — don't ratchet up with no data
         wr = self._win_rate(df)
         if wr < 45:
-            # Poor win rate — raise the bar
-            self.config.min_signal_score = min(self.config.min_signal_score + 3.0, 92.0)
+            # Poor win rate — raise the bar, but cap at 68 (not 92) so the bot isn't locked out
+            self.config.min_signal_score = min(self.config.min_signal_score + 2.0, 68.0)
             logger.info(f"[{format_ist_timestamp()}] Low win rate {wr:.1f}% → raising min score to {self.config.min_signal_score}")
         elif wr > 65:
             # Good win rate — can loosen slightly toward the DOW floor

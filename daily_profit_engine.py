@@ -530,7 +530,7 @@ class DailyProfitEngine:
         elif pnl >= self.cfg.daily_stretch_target:
             self.state.mode = TradingMode.LOCK       # 1.5% → A+ only, 60% size, protect gains
         elif pnl >= self.cfg.daily_target:
-            self.state.mode = TradingMode.LOCK       # 1.0% → lock it in (was PROTECTION — too aggressive)
+            self.state.mode = TradingMode.PROTECTION # 1.0% → A-grade minimum, keep pressing
         elif pnl <= -self.cfg.daily_loss_limit:
             self.state.mode = TradingMode.STOP
         elif pnl <= -self.cfg.defensive_loss:
@@ -550,14 +550,22 @@ class DailyProfitEngine:
                 f"| P&L: ${pnl:+,.2f} | "
                 + TradingMode.DESCRIPTIONS.get(self.state.mode, "")
             )
-            # Log prominently when 1% daily target is first hit
-            if self.state.mode == TradingMode.LOCK and prev_mode not in (
-                TradingMode.LOCK, TradingMode.STOP
+            # Log prominently when daily target milestones are hit
+            if self.state.mode == TradingMode.PROTECTION and prev_mode not in (
+                TradingMode.PROTECTION, TradingMode.LOCK, TradingMode.STOP
             ):
                 _pct = (pnl / self._daily_target * 100) if self._daily_target else 0
                 logger.info(
                     f"[{format_ist_timestamp()}] 🎯 DAILY TARGET HIT — {_pct:.0f}% of goal "
-                    f"(${pnl:+,.2f}) | LOCK MODE: A+ only, 60% size, stops tightening"
+                    f"(${pnl:+,.2f}) | PROTECTION: A-grade minimum, keep pressing"
+                )
+            elif self.state.mode == TradingMode.LOCK and prev_mode not in (
+                TradingMode.LOCK, TradingMode.STOP
+            ):
+                _pct = (pnl / self._daily_target * 100) if self._daily_target else 0
+                logger.info(
+                    f"[{format_ist_timestamp()}] 🔒 1.5× TARGET SECURED — {_pct:.0f}% of goal "
+                    f"(${pnl:+,.2f}) | LOCK MODE: A+ only, 60% size"
                 )
 
     def _get_min_grade_for_mode(self) -> str:

@@ -1186,8 +1186,8 @@ class SignalGenerator:
                 if getattr(config, 'EARNINGS_EDGE_ENABLED', True):
                     _ee, _eer = get_earnings_edge_score(symbol)
                     if _ee is None:
-                        logger.info(f"[{format_ist_timestamp()}] {symbol}: earnings blackout — {_eer}")
-                        return None
+                        logger.debug(f"{symbol}: earnings tomorrow — skipping booster only, trade allowed")
+                        _ee = 0.0  # skip booster; Gate 15 (EARNINGS_BLACKOUT) handles the hard block
                     if _ee:
                         filter_result.final_score = min(100.0, filter_result.final_score + _ee)
                         logger.debug(f"{symbol}: EARNINGS_EDGE {_ee:+.0f} {_eer}")
@@ -1639,7 +1639,7 @@ class SignalGenerator:
                         ema_slope_pct=float(ind.ema_slope_pct if hasattr(ind, 'ema_slope_pct') else 0),
                         vwap_dist_pct=float(_vwap_dist),
                         bb_pct=float(ind.bb_pct if hasattr(ind, 'bb_pct') else 0.5),
-                        hour_et=float(_et_hour if '_et_hour' in dir() else 10),
+                        hour_et=float(locals().get('_et_now', type('_', (), {'hour': 10})()).hour),
                         long_flag=1 if direction == 'LONG' else 0,
                     )
                     # ML boost: prob > 0.7 → +8; prob > 0.6 → +4; prob < 0.4 → -8
@@ -1870,7 +1870,7 @@ class SignalGenerator:
                         ema_slope_pct=float(ind.ema_slope_pct if hasattr(ind, 'ema_slope_pct') else 0),
                         vwap_dist_pct=float(_vwap_dist2),
                         bb_pct=float(ind.bb_pct if hasattr(ind, 'bb_pct') else 0.5),
-                        hour_et=float(_et_hour if '_et_hour' in dir() else 10),
+                        hour_et=float(locals().get('_et_now', type('_', (), {'hour': 10})()).hour),
                         long_flag=1 if direction == 'LONG' else 0,
                     )
                     if _rf_prob >= 0.70:
