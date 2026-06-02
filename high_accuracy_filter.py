@@ -1655,12 +1655,17 @@ class HighAccuracyFilter:
         self, entry_price: float, direction: str, atr: float,
         daily_candles_df: Optional[pd.DataFrame] = None,
     ) -> Tuple[bool, str]:
-        """Gate 16: Verify no major resistance within 1.5×ATR above entry (LONG) or below (SHORT)."""
+        """Gate 16: Verify no MAJOR resistance within 1.5×ATR above entry (LONG) or below (SHORT).
+
+        Only checks $50 and $100 round numbers — $10 and $25 levels are too common (every
+        stock always has one within ATR) and don't provide meaningful resistance.
+        """
         try:
             resistance = []
             zone = 1.5 * atr
-            # Round-number check: scan common divisors for any level within the 1.5×ATR zone
-            for div in (100, 50, 25, 10):
+            # Only major round numbers matter: $100 and $50 levels act as institutional magnets.
+            # $25 and $10 levels are too granular — stocks cross them routinely.
+            for div in (100, 50):
                 lo = entry_price - zone
                 hi = entry_price + zone
                 rnd_lo = int(lo / div) * div
