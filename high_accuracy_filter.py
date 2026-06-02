@@ -639,11 +639,11 @@ class HighAccuracyFilter:
                 _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 0 else 0.0
                 # Direction check: slope must agree with signal direction
                 _slope_ok = (_slope > 0) if direction in ('LONG','BUY') else (_slope < 0)
-                if _r2 < 0.35 or (_r2 < 0.50 and not _slope_ok):
+                if _r2 < 0.20 or (_r2 < 0.35 and not _slope_ok):
                     result.gates_failed.append(f'TREND_QUALITY(R²={_r2:.2f})')
                     result.rejection_reason = (
                         f'[GATE-25 R²] {symbol} — trend R²={_r2:.2f} too choppy for {direction} '
-                        f'(need ≥0.35 with slope agreement — price action not directional)'
+                        f'(need ≥0.20 with slope agreement — price action not directional)'
                     )
                     self._log_rejection(result, signal_score, direction)
                     return result
@@ -719,17 +719,18 @@ class HighAccuracyFilter:
                     r2_quality=_r2_ml,
                 )
                 result._ml_win_prob = _win_prob
-                _ml_thresh = float(getattr(_cfg26, 'ML_WIN_PROB_THRESHOLD', 0.60))
+                _ml_thresh = float(getattr(_cfg26, 'ML_WIN_PROB_THRESHOLD', 0.45))
                 if _win_prob < _ml_thresh:
-                    result.gates_failed.append(f'ML_PROB({_win_prob:.2f}<{_ml_thresh:.2f})')
-                    result.rejection_reason = (
-                        f'[GATE-26 ML] {symbol} — ML win probability {_win_prob:.1%} '
-                        f'below threshold {_ml_thresh:.0%} '
-                        f'(GradientBoosting classifier: insufficient confluence)'
+                    # Soft gate: apply score penalty instead of hard block (untrained model ~0.50)
+                    _ml_penalty = -6.0
+                    result._ml_bonus = _ml_penalty
+                    result.gates_passed.append(f'ML_LOW({_win_prob:.2f},{_ml_penalty:+.0f})')
+                    logger.debug(
+                        f'[GATE-26 ML] {symbol} — ML prob {_win_prob:.2f} below {_ml_thresh:.2f} '
+                        f'→ soft penalty {_ml_penalty:+.0f} (model still training)'
                     )
-                    self._log_rejection(result, signal_score, direction)
-                    return result
-                result.gates_passed.append(f'ML_PROB({_win_prob:.2f})')
+                else:
+                    result.gates_passed.append(f'ML_PROB({_win_prob:.2f})')
                 # Bonus: high ML confidence boosts score
                 if _win_prob >= 0.80:
                     result._ml_bonus = 10.0
@@ -805,11 +806,11 @@ class HighAccuracyFilter:
                 else:
                     _close_ok = _close_in_range <= 0.60   # close must be in lower 60% of bar
 
-                _body_threshold = 0.30  # body must be >= 30% of range (not a doji/spinning top)
+                _body_threshold = 0.20  # body must be >= 20% of range (not a doji/spinning top)
 
                 if _body_pct < _body_threshold or not _close_ok or not _vol_ok:
                     _why = []
-                    if _body_pct < _body_threshold: _why.append(f'body={_body_pct:.0%}<30%')
+                    if _body_pct < _body_threshold: _why.append(f'body={_body_pct:.0%}<20%')
                     if not _close_ok: _why.append(f'close_pos={_close_in_range:.0%}(weak)')
                     if not _vol_ok:   _why.append(f'vol_fade({_vol:.0f}<{_avg_vol3:.0f}avg)')
                     result.gates_failed.append(f'BAR_QUALITY({",".join(_why)})')
