@@ -42,8 +42,8 @@ MAX_DISABLE_PCT      = 30   # Never disable more than 30% of patterns
 class AdaptiveConfig:
     """Live-adjustable strategy parameters. Saved to disk nightly, loaded at startup."""
     # Signal thresholds
-    min_signal_score:    float = 90.0
-    high_conf_score:     float = 92.0
+    min_signal_score:    float = 63.0
+    high_conf_score:     float = 80.0
 
     # RSI thresholds (adapted per performance)
     rsi_oversold:        float = 35.0
@@ -169,7 +169,7 @@ class SelfLearningEngine:
             logger.info(f"[{format_ist_timestamp()}] Low win rate {wr:.1f}% → raising min score to {self.config.min_signal_score}")
         elif wr > 65:
             # Good win rate — can loosen slightly toward the DOW floor
-            self.config.min_signal_score = max(self.config.min_signal_score - 1.0, 72.0)
+            self.config.min_signal_score = max(self.config.min_signal_score - 1.0, 60.0)
             logger.info(f"[{format_ist_timestamp()}] Good win rate {wr:.1f}% → min score {self.config.min_signal_score}")
 
     def _adapt_pattern_weights(self, df: pd.DataFrame):
@@ -312,7 +312,7 @@ class SelfLearningEngine:
             current = self.config.min_signal_score
             # Move slowly toward optimal
             new_score = current * 0.8 + practical_min * 0.2
-            self.config.min_signal_score = round(max(min(new_score, 92), 72), 1)
+            self.config.min_signal_score = round(max(min(new_score, 85), 60), 1)
 
     # -------------------------------------------------------
     # QUERY HELPERS
