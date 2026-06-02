@@ -674,6 +674,12 @@ TAPE_SPEED_ENABLED:          bool = os.getenv("TAPE_SPEED_ENABLED",          "Tr
 COPPER_GOLD_ENABLED:         bool = os.getenv("COPPER_GOLD_ENABLED",         "True").lower() not in ("false", "0", "no")
 RANDOM_FOREST_ENABLED:       bool = os.getenv("RANDOM_FOREST_ENABLED",       "True").lower() not in ("false", "0", "no")
 
+# ── Premium v19.0 — 4-model ML ensemble + execution optimizer + regime v2 + portfolio optimizer ──
+ML_ENSEMBLE_ENABLED:          bool = os.getenv("ML_ENSEMBLE_ENABLED",          "True").lower() not in ("false", "0", "no")
+EXECUTION_OPTIMIZER_ENABLED:  bool = os.getenv("EXECUTION_OPTIMIZER_ENABLED",  "True").lower() not in ("false", "0", "no")
+REGIME_V2_ENABLED:            bool = os.getenv("REGIME_V2_ENABLED",            "True").lower() not in ("false", "0", "no")
+PORTFOLIO_OPTIMIZER_ENABLED:  bool = os.getenv("PORTFOLIO_OPTIMIZER_ENABLED",  "True").lower() not in ("false", "0", "no")
+
 # ============================================================
 # VALIDATION
 # ============================================================

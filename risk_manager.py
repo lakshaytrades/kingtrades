@@ -677,6 +677,21 @@ class RiskManager:
             }
         quantity = max(quantity, 1)
 
+        # 6b. Advanced Portfolio Optimizer — CVaR + Kelly + correlation + drawdown
+        try:
+            import config as _po_cfg
+            if getattr(_po_cfg, 'PORTFOLIO_OPTIMIZER_ENABLED', True):
+                from advanced_portfolio import get_portfolio_optimizer
+                _po = get_portfolio_optimizer()
+                _po_mult = _po.get_combined_size_multiplier(symbol, direction, 70.0)
+                if _po_mult == 0.0:
+                    return {"quantity": 0, "reason": "portfolio_optimizer: drawdown/heat stop"}
+                if _po_mult != 1.0:
+                    quantity = max(1, int(quantity * _po_mult))
+                    logger.info(f"{symbol}: portfolio_optimizer ×{_po_mult:.2f} → {quantity} shares")
+        except Exception:
+            pass
+
         # 7. Hard total-risk guard — grade-aware cap prevents runaway sizing
         # A+: base × 1.5 (matches _grade_base above, hard ceil at 2.5%)
         # A:  base × 1.0 (standard, hard ceil at 2.0%)

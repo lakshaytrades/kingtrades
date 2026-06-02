@@ -1904,6 +1904,101 @@ class SignalGenerator:
             except Exception as _prx_e:
                 logger.debug(f"[suppressed] premium_proxies: {_prx_e}")
 
+            # ── 4-MODEL ML ENSEMBLE (v19.0) — GBM+RF+ET+LR weighted ensemble ────────
+            try:
+                if getattr(config, 'ML_ENSEMBLE_ENABLED', True):
+                    from ml_ensemble import get_ensemble_prediction, EnsemblePrediction
+                    _ens_feat = {
+                        "rsi":             float(ind.rsi or 50),
+                        "macd_hist_norm":  float((ind.macd_hist or 0) / max(ind.atr or 1, 0.01)),
+                        "volume_ratio":    float(ind.volume_ratio or 1.0),
+                        "atr_pct":         float((ind.atr or 0) / max(ltp_now, 0.01) * 100),
+                        "signal_score":    float(filter_result.final_score),
+                        "adx":             float(ind.adx or 25),
+                        "ema_slope_pct":   float(getattr(ind, "ema_slope_pct", 0.0)),
+                        "vwap_dist_pct":   float(abs(ltp_now - ind.vwap) / max(ltp_now, 0.01) * 100) if ind.vwap > 0 else 0.0,
+                        "bb_pct":          float(getattr(ind, "bb_pct", 0.5)),
+                        "hour_et":         float(getattr(locals().get("_et_now", type("_", (), {"hour": 10})()), "hour", 10)),
+                        "is_long":         1.0 if direction in ("LONG", "BUY") else 0.0,
+                        "r2_quality":      float(getattr(filter_result, "_r2_quality", 0.5)),
+                        "mfi_norm":        0.5,
+                        "ofi_5bar":        0.0,
+                        "vix_level_norm":  0.5,
+                        "short_ratio_norm": 0.3,
+                        "consecutive_wins": 0.0,
+                    }
+                    _ens: EnsemblePrediction = get_ensemble_prediction(_ens_feat)
+                    if _ens.score_delta != 0.0:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _ens.score_delta, 0.0, 100.0
+                        ))
+                        logger.debug(
+                            f"{symbol}: ML_ENSEMBLE {_ens.score_delta:+.0f} "
+                            f"prob={_ens.win_prob:.2f} agree={_ens.model_agreement}/4 {_ens.reason}"
+                        )
+            except Exception as _ens_e:
+                logger.debug(f"[suppressed] ml_ensemble: {_ens_e}")
+
+            # ── EXECUTION OPTIMIZER (v19.0) — timing + spread + fill quality ─────────
+            try:
+                if getattr(config, 'EXECUTION_OPTIMIZER_ENABLED', True) and df_5m is not None:
+                    from execution_optimizer import get_execution_score
+                    _exec_delta, _exec_reason = get_execution_score(
+                        df_5m, ltp_now, float(ind.volume_ratio or 1.0), direction
+                    )
+                    if _exec_delta != 0.0:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _exec_delta, 0.0, 100.0
+                        ))
+                        logger.debug(f"{symbol}: EXEC_OPT {_exec_delta:+.0f} {_exec_reason}")
+            except Exception as _exec_e:
+                logger.debug(f"[suppressed] execution_optimizer: {_exec_e}")
+
+            # ── MULTI-DIMENSIONAL REGIME v2 (v19.0) — 6-factor composite ────────────
+            try:
+                if getattr(config, 'REGIME_V2_ENABLED', True):
+                    from market_regime_v2 import get_composite_regime, update_breadth, RegimeState
+                    # Update breadth cache with this symbol
+                    _ema20_v2 = float(getattr(ind, "ema20", 0.0) or ltp_now)
+                    update_breadth(symbol, ltp_now, _ema20_v2)
+                    # Get composite regime (cached 90s — cheap)
+                    _rv2: RegimeState = get_composite_regime()
+                    if _rv2.composite == "AVOID":
+                        logger.debug(f"{symbol}: REGIME_V2=AVOID — skip")
+                        # soft skip: apply score penalty instead of hard block
+                        filter_result.final_score = 0.0
+                    elif _rv2.score_multiplier != 1.0 and _rv2.score_multiplier > 0:
+                        _rv2_delta = (filter_result.final_score * _rv2.score_multiplier) - filter_result.final_score
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _rv2_delta * 0.3, 0.0, 100.0
+                        ))
+                        logger.debug(
+                            f"{symbol}: REGIME_V2={_rv2.composite} "
+                            f"sc_mult={_rv2.score_multiplier:.2f} {_rv2.reason[:60]}"
+                        )
+            except Exception as _rv2_e:
+                logger.debug(f"[suppressed] market_regime_v2: {_rv2_e}")
+
+            # ── PORTFOLIO OPTIMIZER (v19.0) — CVaR + Kelly + correlation ─────────────
+            try:
+                if getattr(config, 'PORTFOLIO_OPTIMIZER_ENABLED', True):
+                    from advanced_portfolio import get_portfolio_optimizer
+                    _po = get_portfolio_optimizer()
+                    _po_corr = _po.get_correlation_penalty(symbol, direction)
+                    _po_heat = _po.get_portfolio_heat_multiplier()
+                    _po_dd   = _po.get_drawdown_control_multiplier()
+                    if _po_dd == 0.0:
+                        logger.info(f"{symbol}: PORTFOLIO_OPT drawdown stop — skip")
+                        filter_result.final_score = 0.0
+                    elif _po_heat == 0.0:
+                        logger.info(f"{symbol}: PORTFOLIO_OPT max positions — skip")
+                        filter_result.final_score = 0.0
+                    elif _po_corr < 1.0:
+                        combined_size = round(combined_size * _po_corr, 2)
+                        logger.debug(f"{symbol}: PORTFOLIO_OPT corr_penalty={_po_corr:.2f}")
+            except Exception as _po_e:
+                logger.debug(f"[suppressed] advanced_portfolio: {_po_e}")
+
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
             try:
                 if getattr(config, 'MASTER_CONFLUENCE_ENABLED', True):
