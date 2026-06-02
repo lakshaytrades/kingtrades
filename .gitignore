@@ -66,6 +66,11 @@ data/*.json
 *.hdf5
 __pycache__/
 
+# Database files (runtime state — never commit)
+*.db
+*.sqlite
+*.sqlite3
+
 # IDE
 .vscode/
 .idea/
