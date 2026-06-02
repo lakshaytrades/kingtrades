@@ -1464,7 +1464,7 @@ class TradingBot:
 
                 # ── Dynamic score relaxation: never sit idle all day ──────
                 # If no trades by key times, gently lower the bar.
-                # Floor is 67 — never below this, that's noise territory.
+                # Floor = MIN_SIGNAL_SCORE (63) — don't raise above base when already at base
                 _n_trades = self.risk_manager.state.daily_trades
                 _pe_mode  = self.profit_engine.state.mode if self.profit_engine else "STOP"
                 if _n_trades == 0 and _pe_mode not in ("STOP", "DEFENSIVE"):
@@ -1474,22 +1474,22 @@ class TradingBot:
                         _et = now_ist
                     _et_min = _et.hour * 60 + _et.minute
                     if _et_min >= 810:      # 1:30 PM ET — afternoon, still zero trades
-                        _floor = max(self.signal_gen.min_score - 5, 67)
+                        _floor = max(config.MIN_SIGNAL_SCORE - 3, 60)
                         if self.signal_gen.min_score != _floor:
                             self.signal_gen.min_score = _floor
                             self.signal_gen.ha_filter.min_score = _floor
                             logger.info(
                                 f"[{format_ist_timestamp()}] No trades by 1:30 PM — "
-                                f"score relaxed to {_floor:.0f} (best available, floor=67)"
+                                f"score relaxed to {_floor:.0f} (floor={_floor})"
                             )
                     elif _et_min >= 630:    # 10:30 AM ET — morning over, still zero trades
-                        _floor = max(self.signal_gen.min_score - 3, 69)
-                        if self.signal_gen.min_score != _floor:
+                        _floor = config.MIN_SIGNAL_SCORE
+                        if self.signal_gen.min_score > _floor:
                             self.signal_gen.min_score = _floor
                             self.signal_gen.ha_filter.min_score = _floor
                             logger.debug(
                                 f"[{format_ist_timestamp()}] No trades by 10:30 AM — "
-                                f"score relaxed to {_floor:.0f}"
+                                f"score reset to base {_floor:.0f}"
                             )
 
             if self.risk_manager.state.daily_trades >= dow_max_trades:
