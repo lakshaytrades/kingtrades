@@ -1618,6 +1618,133 @@ class SignalGenerator:
             except Exception as _gn_e:
                 logger.debug(f"[suppressed] gann_levels: {_gn_e}")
 
+            # ── HOLLY AI RANKING (v16.0) — top-ranked symbol boost ────────────────
+            try:
+                if getattr(config, 'HOLLY_AI_ENABLED', True):
+                    from holly_ai import get_holly_rankings
+                    _watchlist_for_holly = getattr(self, '_watchlist', [symbol])
+                    if _watchlist_for_holly and len(_watchlist_for_holly) >= 3:
+                        _holly_ranks = get_holly_rankings(_watchlist_for_holly[:30])
+                        _holly_top = [r.symbol for r in _holly_ranks[:10]]
+                        _holly_rank_pos = next((i for i, r in enumerate(_holly_ranks) if r.symbol == symbol), None)
+                        if _holly_rank_pos is not None:
+                            if _holly_rank_pos < 3:
+                                filter_result.final_score = min(100.0, filter_result.final_score + 12.0)
+                                logger.info(f"{symbol}: HOLLY_AI rank #{_holly_rank_pos+1} +12")
+                            elif _holly_rank_pos < 7:
+                                filter_result.final_score = min(100.0, filter_result.final_score + 6.0)
+                                logger.debug(f"{symbol}: HOLLY_AI rank #{_holly_rank_pos+1} +6")
+                            elif _holly_rank_pos >= len(_holly_ranks) - 3:
+                                filter_result.final_score = max(0.0, filter_result.final_score - 6.0)
+            except Exception as _holly_e:
+                logger.debug(f"[suppressed] holly_ai: {_holly_e}")
+
+            # ── ML WIN PROBABILITY BOOST (v16.0) — GradientBoosting score modifier ──
+            try:
+                if getattr(config, 'ML_SCORE_BOOST_ENABLED', True):
+                    from ml_signal_ranker import get_win_probability
+                    _vwap_dist = abs(ltp_now - ind.vwap) / (ltp_now + 1e-9) * 100 if ind.vwap > 0 else 0.0
+                    _ml_prob = get_win_probability(
+                        rsi=float(ind.rsi or 50),
+                        macd_hist_norm=float((ind.macd_hist or 0) / (ind.atr or 1)),
+                        volume_ratio=float(ind.volume_ratio or 1.0),
+                        atr_pct=float((ind.atr or 0) / (ltp_now + 1e-9) * 100),
+                        signal_score=float(filter_result.final_score),
+                        adx=float(ind.adx or 25),
+                        ema_slope_pct=float(ind.ema_slope_pct if hasattr(ind, 'ema_slope_pct') else 0),
+                        vwap_dist_pct=float(_vwap_dist),
+                        bb_pct=float(ind.bb_pct if hasattr(ind, 'bb_pct') else 0.5),
+                        hour_et=float(_et_hour if '_et_hour' in dir() else 10),
+                        long_flag=1 if direction == 'LONG' else 0,
+                    )
+                    # ML boost: prob > 0.7 → +8; prob > 0.6 → +4; prob < 0.4 → -8
+                    if _ml_prob >= 0.70:
+                        filter_result.final_score = min(100.0, filter_result.final_score + 8.0)
+                        logger.debug(f"{symbol}: ML_PROB {_ml_prob:.2f} +8")
+                    elif _ml_prob >= 0.60:
+                        filter_result.final_score = min(100.0, filter_result.final_score + 4.0)
+                        logger.debug(f"{symbol}: ML_PROB {_ml_prob:.2f} +4")
+                    elif _ml_prob < 0.40:
+                        filter_result.final_score = max(0.0, filter_result.final_score - 8.0)
+                        logger.debug(f"{symbol}: ML_PROB {_ml_prob:.2f} -8")
+            except Exception as _ml_e:
+                logger.debug(f"[suppressed] ml_signal_ranker boost: {_ml_e}")
+
+            # ── MOMENTUM BURST DETECTOR (v16.0) — coil-and-explode setups ─────────
+            try:
+                if getattr(config, 'MOMENTUM_BURST_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
+                    from momentum_burst import MomentumBurstDetector
+                    _mb_det = MomentumBurstDetector()
+                    _mb_setups = _mb_det.scan([symbol], {symbol: df_5m})
+                    _mb_match = next((s for s in _mb_setups if s.symbol == symbol), None)
+                    if _mb_match is not None:
+                        _mb_dir = getattr(_mb_match, 'direction', direction)
+                        if _mb_dir == direction:
+                            _mb_score = getattr(_mb_match, 'score', 0)
+                            _mb_delta = min(12.0, _mb_score * 0.12) if _mb_score > 0 else 0.0
+                            if _mb_delta > 0:
+                                filter_result.final_score = min(100.0, filter_result.final_score + _mb_delta)
+                                logger.debug(f"{symbol}: MOMENTUM_BURST {_mb_delta:+.0f}")
+            except Exception as _mb_e:
+                logger.debug(f"[suppressed] momentum_burst: {_mb_e}")
+
+            # ── RL AGENT CONFIRMATION (v16.0) — Q-learning action alignment ────────
+            try:
+                if getattr(config, 'RL_AGENT_ENABLED', True):
+                    from rl_agent import LakshKingRL
+                    _rl = LakshKingRL.get_instance() if hasattr(LakshKingRL, 'get_instance') else None
+                    if _rl is None:
+                        _rl = LakshKingRL()
+                    _rl_action = _rl.get_signal(symbol) if hasattr(_rl, 'get_signal') else None
+                    if _rl_action is not None:
+                        _rl_dir = getattr(_rl_action, 'direction', None)
+                        _rl_conf = getattr(_rl_action, 'confidence', 0)
+                        if _rl_dir == direction and _rl_conf > 0.6:
+                            filter_result.final_score = min(100.0, filter_result.final_score + 8.0)
+                            logger.debug(f"{symbol}: RL_AGENT confirms {direction} conf={_rl_conf:.2f} +8")
+                        elif _rl_dir is not None and _rl_dir != direction and _rl_conf > 0.7:
+                            filter_result.final_score = max(0.0, filter_result.final_score - 6.0)
+                            logger.debug(f"{symbol}: RL_AGENT opposes {direction} -6")
+            except Exception as _rl_e:
+                logger.debug(f"[suppressed] rl_agent: {_rl_e}")
+
+            # ── IBD RS RATING (v16.0) — Relative Strength 1-99 ───────────────────
+            try:
+                if getattr(config, 'IBD_RS_ENABLED', True):
+                    from ibd_rs_rating import get_rs_rating
+                    _rs_delta, _rs_reason = get_rs_rating(symbol, direction)
+                    if _rs_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _rs_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: RS_RATING {_rs_delta:+.0f} {_rs_reason}")
+            except Exception as _rs_e:
+                logger.debug(f"[suppressed] ibd_rs_rating: {_rs_e}")
+
+            # ── FEAR & GREED INDEX (v16.0) — market sentiment composite ─────────
+            try:
+                if getattr(config, 'FEAR_GREED_ENABLED', True):
+                    from fear_greed_engine import get_fear_greed_score
+                    _fg_delta, _fg_reason, _fg_val = get_fear_greed_score(direction)
+                    if _fg_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _fg_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: FEAR_GREED {_fg_delta:+.0f} FG={_fg_val:.0f} {_fg_reason}")
+            except Exception as _fg_e:
+                logger.debug(f"[suppressed] fear_greed_engine: {_fg_e}")
+
+            # ── OPTIONS SKEW + GEX (v16.0) — SpotGamma free replica ─────────────
+            try:
+                if getattr(config, 'OPTIONS_SKEW_ENABLED', True):
+                    from options_skew import get_skew_score, get_gex_score
+                    _sk_delta, _sk_reason = get_skew_score(symbol, direction)
+                    if _sk_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _sk_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: SKEW {_sk_delta:+.0f} {_sk_reason}")
+                    _gex_delta, _gex_reason = get_gex_score(symbol, direction, ltp_now)
+                    if _gex_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _gex_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: GEX {_gex_delta:+.0f} {_gex_reason}")
+            except Exception as _sk_e:
+                logger.debug(f"[suppressed] options_skew: {_sk_e}")
+
             # ── PREMIUM DATA PROXIES (v15.0) — free duplicates of L2/dark pool/options/tick/earnings/alt/news/colocation ──
             try:
                 if getattr(config, 'PREMIUM_PROXIES_ENABLED', True):

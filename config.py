@@ -651,6 +651,15 @@ ALT_DATA_PROXY_ENABLED:  bool = os.getenv("ALT_DATA_PROXY_ENABLED",  "True").low
 NEWS_PROXY_ENABLED:      bool = os.getenv("NEWS_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
 COLOC_PROXY_ENABLED:     bool = os.getenv("COLOC_PROXY_ENABLED",     "True").lower() not in ("false", "0", "no")
 
+# ── v16.0 module flags ────────────────────────────────────────────────────────
+HOLLY_AI_ENABLED:        bool = os.getenv("HOLLY_AI_ENABLED",        "True").lower() not in ("false", "0", "no")
+ML_SCORE_BOOST_ENABLED:  bool = os.getenv("ML_SCORE_BOOST_ENABLED",  "True").lower() not in ("false", "0", "no")
+MOMENTUM_BURST_ENABLED:  bool = os.getenv("MOMENTUM_BURST_ENABLED",  "True").lower() not in ("false", "0", "no")
+RL_AGENT_ENABLED:        bool = os.getenv("RL_AGENT_ENABLED",        "True").lower() not in ("false", "0", "no")
+IBD_RS_ENABLED:          bool = os.getenv("IBD_RS_ENABLED",          "True").lower() not in ("false", "0", "no")
+FEAR_GREED_ENABLED:      bool = os.getenv("FEAR_GREED_ENABLED",      "True").lower() not in ("false", "0", "no")
+OPTIONS_SKEW_ENABLED:    bool = os.getenv("OPTIONS_SKEW_ENABLED",    "True").lower() not in ("false", "0", "no")
+
 # ============================================================
 # VALIDATION
 # ============================================================
