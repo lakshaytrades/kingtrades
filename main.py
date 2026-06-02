@@ -693,6 +693,11 @@ class TradingBot:
         if available == 0:
             available = self._load_compounded_capital()
 
+        # Auto-update MAX_DAILY_CAPITAL with today's actual balance (compounding)
+        if available > 0:
+            config.MAX_DAILY_CAPITAL = available
+            logger.info(f"[{format_ist_timestamp()}] Capital auto-updated: ${available:,.2f}")
+
         # ── Step 2: Build capital-based trading plan (sets risk params + Telegram) ──
         plan = self._build_trading_plan(available)
         daily_target = plan["daily_target"]
