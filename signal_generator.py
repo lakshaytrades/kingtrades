@@ -923,9 +923,7 @@ class SignalGenerator:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Gemini news penalty {_g_delta:+.0f} → {filter_result.final_score:.0f} | {_g_reason}")
                         elif _g_delta > 5:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Gemini news boost {_g_delta:+.0f} → {filter_result.final_score:.0f} | {_g_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Score fell to {filter_result.final_score:.0f} after news penalty — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
             except Exception as _ge:
                 logger.debug(f"[suppressed] gemini_filter: {_ge}")
 
@@ -941,9 +939,7 @@ class SignalGenerator:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Sector RS boost {_rs_delta:+.0f} → {filter_result.final_score:.0f} | {_rs_reason}")
                         elif _rs_delta <= -5:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Sector RS drag {_rs_delta:+.0f} → {filter_result.final_score:.0f} | {_rs_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Fell below min score after sector RS — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
             except Exception as _rse:
                 logger.debug(f"[suppressed] sector_rs: {_rse}")
 
@@ -958,9 +954,7 @@ class SignalGenerator:
                         filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _sq_delta))
                         if abs(_sq_delta) >= 5:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Squeeze {_sq_delta:+.0f} → {filter_result.final_score:.0f} | {_sq_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Score fell below min after squeeze penalty — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
             except Exception as _sqe:
                 logger.debug(f"[suppressed] squeeze_scanner: {_sqe}")
 
@@ -975,9 +969,7 @@ class SignalGenerator:
                         filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _pead_delta))
                         if abs(_pead_delta) >= 3:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: PEAD {_pead_delta:+.0f} → {filter_result.final_score:.0f} | {_pead_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Fell below min score after PEAD — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
             except Exception as _pe2:
                 logger.debug(f"[suppressed] pead_scorer: {_pe2}")
 
@@ -993,9 +985,7 @@ class SignalGenerator:
                         filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _fb_delta))
                         if abs(_fb_delta) >= 5:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: Futures bias {_fb_delta:+.0f} → {filter_result.final_score:.0f} | {_fb_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: Below min score after futures bias — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
                         # Apply futures size multiplier on top of existing size
                         if abs(_fb_delta) >= 5:
                             combined_size = round(combined_size * _fbias.size_mult, 3)
@@ -1012,9 +1002,7 @@ class SignalGenerator:
                         filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _ofi_delta))
                         if abs(_ofi_delta) >= 4:
                             logger.info(f"[{format_ist_timestamp()}] {symbol}: OFI {_ofi_delta:+.0f} → {filter_result.final_score:.0f} | {_ofi_reason}")
-                        if filter_result.final_score < config.MIN_SIGNAL_SCORE:
-                            logger.info(f"[{format_ist_timestamp()}] {symbol}: OFI penalty dropped score below min — skipping")
-                            return None
+                        # no early exit — let all boosters accumulate; final exec gate decides
             except Exception as _ofie:
                 logger.debug(f"[suppressed] order_flow: {_ofie}")
 

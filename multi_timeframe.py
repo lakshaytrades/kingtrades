@@ -333,11 +333,11 @@ class MultiTimeframeAnalyzer:
 
         # Only 5m agrees — weakest valid entry (others neutral, not bearish)
         if t5["trend"] == TREND_BULLISH and t15["trend"] != TREND_BEARISH and t1h["trend"] != TREND_BEARISH:
-            return {"aligned": True, "score": 40, "direction": "LONG",
-                    "reason": f"5m bullish. 15m/1h neutral. Weak but not opposed."}
+            return {"aligned": True, "score": 50, "direction": "LONG",
+                    "reason": f"5m bullish. 15m/1h neutral. Adequate for entry."}
         if t5["trend"] == TREND_BEARISH and t15["trend"] != TREND_BULLISH and t1h["trend"] != TREND_BULLISH:
-            return {"aligned": True, "score": 40, "direction": "SHORT",
-                    "reason": f"5m bearish. 15m/1h neutral. Weak but not opposed."}
+            return {"aligned": True, "score": 50, "direction": "SHORT",
+                    "reason": f"5m bearish. 15m/1h neutral. Adequate for entry."}
 
         # Conflict — skip trade
         return {

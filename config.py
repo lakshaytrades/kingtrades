@@ -161,7 +161,7 @@ MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "63.0"))
 HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses (v16.0: was 80)
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
-FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "70.0"))  # Post-booster execution gate
+FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "65.0"))  # Post-booster execution gate (lowered 70→65)
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
 ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "18.0"))  # lowered 22→18 for IEX data

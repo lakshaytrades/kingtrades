@@ -1176,13 +1176,20 @@ class HighAccuracyFilter:
             pass
 
         # ── FINAL SCORE & GRADE ───────────────────────────
+        # Add CONVICTION bonus — passing all gates is itself a strong signal
+        n_passed = len(result.gates_passed)
+        if n_passed >= 6:
+            _conv = min(5 + (n_passed - 6), 8)  # +5 for 6 gates, up to +8 for 9+ gates
+            bonus_score += _conv
+            result.bonuses.append(f"CONVICTION_GATES({n_passed}gates,+{_conv})")
+
         result.final_score = signal_score + bonus_score
 
-        # Reject if post-bonus score drops below min_score
-        if result.final_score < self.min_score:
+        # Reject if post-bonus score is still below execution floor
+        if result.final_score < 55.0:
             result.passed = False
             result.rejection_reason = (
-                f"Post-bonus score {result.final_score:.0f} < {self.min_score:.0f}. "
+                f"Post-bonus score {result.final_score:.0f} < 55.0. "
                 f"Bonuses: {bonus_score:+.0f}. Too many counter-indicators."
             )
             self._log_rejection(result, signal_score, direction)
@@ -1329,7 +1336,7 @@ class HighAccuracyFilter:
                 return False, 0, f"{best_pattern}(DISABLED)"
             effective_score = signal_score * weight
 
-        return effective_score >= self.min_score, effective_score, best_pattern
+        return effective_score >= 50.0, effective_score, best_pattern  # soft floor; final exec gate catches true weak signals
 
     def _check_key_level(
         self, at_key_level: bool, ltp: float, above_vwap: bool
