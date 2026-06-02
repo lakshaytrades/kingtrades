@@ -1623,10 +1623,10 @@ class HighAccuracyFilter:
                     return False, f"[FALSE BREAKOUT] wick rejection {u_wick/c_range:.0%} > 60% — shooting star"
                 vol_now  = float(last.get("volume", 1) or 1)
                 vol_prev = float(prev.get("volume", 1) or 1)
-                if vol_now < vol_prev * 0.8:
-                    return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.8:.0f} — momentum dying"
-                if body < 0.25 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.25×ATR={0.25*atr:.2f} — no conviction"
+                if vol_now < vol_prev * 0.5:
+                    return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.5:.0f} — momentum dying"
+                if body < 0.15 * atr:
+                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.15×ATR={0.15*atr:.2f} — no conviction"
             else:  # SELL / SHORT
                 body  = float(last["open"]) - float(last["close"])
                 l_wick = min(float(last["close"]), float(last["open"])) - float(last["low"])
@@ -1634,10 +1634,10 @@ class HighAccuracyFilter:
                     return False, f"[FALSE BREAKOUT] lower wick {l_wick/c_range:.0%} > 60% — hammer rejection"
                 vol_now  = float(last.get("volume", 1) or 1)
                 vol_prev = float(prev.get("volume", 1) or 1)
-                if vol_now < vol_prev * 0.8:
+                if vol_now < vol_prev * 0.5:
                     return False, f"[FALSE BREAKOUT] volume fade on short signal — no conviction"
-                if body < 0.25 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body < 0.25×ATR — noise candle"
+                if body < 0.15 * atr:
+                    return False, f"[FALSE BREAKOUT] tiny body < 0.15×ATR — noise candle"
             return True, ""
         except Exception:
             return True, ""   # fail open

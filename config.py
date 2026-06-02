@@ -164,7 +164,7 @@ PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
 FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "70.0"))  # Post-booster execution gate
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
-ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "22.0"))  # was 17 — choppy mkt filter
+ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "18.0"))  # lowered 22→18 for IEX data
 VWAP_EXTENSION_MAX_ATR: float = float(os.getenv("VWAP_EXTENSION_MAX_ATR", "2.0"))  # gate 27 — no chasing
 BAR_QUALITY_GATE:       bool  = os.getenv("BAR_QUALITY_GATE",   "True").lower() in ("true","1","yes")  # gate 28 — entry bar body quality
 SECTOR_FILTER_ENABLED:  bool  = os.getenv("SECTOR_FILTER_ENABLED", "True").lower() in ("true","1","yes")  # gate 14b — sector ETF alignment
