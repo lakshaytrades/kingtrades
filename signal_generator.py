@@ -1745,6 +1745,160 @@ class SignalGenerator:
             except Exception as _sk_e:
                 logger.debug(f"[suppressed] options_skew: {_sk_e}")
 
+            # ── SOCIAL SENTIMENT (v17.0) — Reddit WSB + StockTwits ─────────────────
+            try:
+                if getattr(config, 'SOCIAL_SENTIMENT_ENABLED', True):
+                    from social_sentiment import get_social_score
+                    _ss_delta, _ss_reason = get_social_score(symbol, direction)
+                    if _ss_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _ss_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: SOCIAL {_ss_delta:+.0f} {_ss_reason}")
+            except Exception as _ss_e:
+                logger.debug(f"[suppressed] social_sentiment: {_ss_e}")
+
+            # ── 13F INSTITUTIONAL FLOW (v17.0) — quarterly ownership changes ────────
+            try:
+                if getattr(config, 'INSTITUTIONAL_FLOW_ENABLED', True):
+                    from institutional_flow import get_institutional_score
+                    _if_delta, _if_reason = get_institutional_score(symbol, direction)
+                    if _if_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _if_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: INST_FLOW {_if_delta:+.0f} {_if_reason}")
+            except Exception as _if_e:
+                logger.debug(f"[suppressed] institutional_flow: {_if_e}")
+
+            # ── ECONOMIC SURPRISE (v17.0) — FRED macro actual vs consensus ──────────
+            try:
+                if getattr(config, 'ECONOMIC_SURPRISE_ENABLED', True):
+                    from economic_surprise import get_economic_surprise_score
+                    _es_delta, _es_reason = get_economic_surprise_score(direction)
+                    if _es_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _es_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: ECON_SURPRISE {_es_delta:+.0f} {_es_reason}")
+            except Exception as _es_e:
+                logger.debug(f"[suppressed] economic_surprise: {_es_e}")
+
+            # ── McCLELLAN + BREADTH THRUST (v17.0) ───────────────────────────────────
+            try:
+                if getattr(config, 'MCCLELLAN_ENABLED', True):
+                    from mcclellan_engine import get_mcclellan_score, get_breadth_thrust_score
+                    _mc_delta, _mc_reason = get_mcclellan_score(direction)
+                    if _mc_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _mc_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: MCCLELLAN {_mc_delta:+.0f} {_mc_reason}")
+                    _bt_delta, _bt_reason = get_breadth_thrust_score(direction)
+                    if _bt_delta > 0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _bt_delta, 0.0, 100.0))
+                        logger.info(f"{symbol}: BREADTH_THRUST {_bt_delta:+.0f} {_bt_reason}")
+            except Exception as _mc_e:
+                logger.debug(f"[suppressed] mcclellan_engine: {_mc_e}")
+
+            # ── SUPPLY/DEMAND ZONES (v17.0) — Sam Seiden methodology ─────────────────
+            try:
+                if getattr(config, 'SUPPLY_DEMAND_ENABLED', True) and df_5m is not None and len(df_5m) >= 50:
+                    from supply_demand_zones import get_supply_demand_score
+                    _sdz_delta, _sdz_reason = get_supply_demand_score(symbol, df_5m, direction, ltp_now)
+                    if _sdz_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _sdz_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: SDZ {_sdz_delta:+.0f} {_sdz_reason}")
+            except Exception as _sdz_e:
+                logger.debug(f"[suppressed] supply_demand_zones: {_sdz_e}")
+
+            # ── VANNA/CHARM FLOW (v17.0) — options dealer hedging flows ───────────────
+            try:
+                if getattr(config, 'VANNA_CHARM_ENABLED', True):
+                    from vanna_charm_flow import get_vanna_charm_score
+                    _vc_delta, _vc_reason = get_vanna_charm_score(symbol, direction, ltp_now)
+                    if _vc_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _vc_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: VANNA_CHARM {_vc_delta:+.0f} {_vc_reason}")
+            except Exception as _vc_e:
+                logger.debug(f"[suppressed] vanna_charm_flow: {_vc_e}")
+
+            # ── SEASONAL ALPHA (v17.0) — calendar statistical edges ──────────────────
+            try:
+                if getattr(config, 'SEASONAL_ALPHA_ENABLED', True):
+                    from seasonal_alpha import get_seasonal_score
+                    _sea_delta, _sea_reason = get_seasonal_score(symbol, direction)
+                    if _sea_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _sea_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: SEASONAL {_sea_delta:+.0f} {_sea_reason}")
+            except Exception as _sea_e:
+                logger.debug(f"[suppressed] seasonal_alpha: {_sea_e}")
+
+            # ── MINERVINI SEPA (v17.0) — 7-criterion trend template ──────────────────
+            try:
+                if getattr(config, 'MINERVINI_ENABLED', True):
+                    from minervini_sepa import get_minervini_score
+                    _mv_delta, _mv_reason = get_minervini_score(symbol, None, direction)
+                    if _mv_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _mv_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: MINERVINI {_mv_delta:+.0f} {_mv_reason}")
+            except Exception as _mv_e:
+                logger.debug(f"[suppressed] minervini_sepa: {_mv_e}")
+
+            # ── WEINSTEIN STAGE (v17.0) — 4-stage cycle analysis ─────────────────────
+            try:
+                if getattr(config, 'WEINSTEIN_ENABLED', True):
+                    from weinstein_stage import get_weinstein_score
+                    _ws_delta, _ws_reason = get_weinstein_score(symbol, direction)
+                    if _ws_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _ws_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: WEINSTEIN {_ws_delta:+.0f} {_ws_reason}")
+            except Exception as _ws_e:
+                logger.debug(f"[suppressed] weinstein_stage: {_ws_e}")
+
+            # ── TAPE SPEED / URGENCY (v17.0) ─────────────────────────────────────────
+            try:
+                if getattr(config, 'TAPE_SPEED_ENABLED', True) and df_5m is not None and len(df_5m) >= 20:
+                    from tape_speed import get_tape_speed_score
+                    _ts_delta, _ts_reason = get_tape_speed_score(symbol, df_5m, direction)
+                    if _ts_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _ts_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: TAPE_SPEED {_ts_delta:+.0f} {_ts_reason}")
+            except Exception as _ts_e:
+                logger.debug(f"[suppressed] tape_speed: {_ts_e}")
+
+            # ── COPPER/GOLD RATIO (v17.0) — Dr. Copper economic health ───────────────
+            try:
+                if getattr(config, 'COPPER_GOLD_ENABLED', True):
+                    from copper_gold_ratio import get_copper_gold_score
+                    _cg_delta, _cg_reason = get_copper_gold_score(direction)
+                    if _cg_delta != 0.0:
+                        filter_result.final_score = float(np.clip(filter_result.final_score + _cg_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: COPPER_GOLD {_cg_delta:+.0f} {_cg_reason}")
+            except Exception as _cg_e:
+                logger.debug(f"[suppressed] copper_gold_ratio: {_cg_e}")
+
+            # ── RANDOM FOREST ENSEMBLE (v17.0) — second ML opinion ───────────────────
+            try:
+                if getattr(config, 'RANDOM_FOREST_ENABLED', True):
+                    from random_forest_ranker import get_rf_win_probability
+                    _vwap_dist2 = abs(ltp_now - ind.vwap) / (ltp_now + 1e-9) * 100 if ind.vwap > 0 else 0.0
+                    _rf_prob = get_rf_win_probability(
+                        rsi=float(ind.rsi or 50),
+                        macd_hist_norm=float((ind.macd_hist or 0) / (ind.atr or 1)),
+                        volume_ratio=float(ind.volume_ratio or 1.0),
+                        atr_pct=float((ind.atr or 0) / (ltp_now + 1e-9) * 100),
+                        signal_score=float(filter_result.final_score),
+                        adx=float(ind.adx or 25),
+                        ema_slope_pct=float(ind.ema_slope_pct if hasattr(ind, 'ema_slope_pct') else 0),
+                        vwap_dist_pct=float(_vwap_dist2),
+                        bb_pct=float(ind.bb_pct if hasattr(ind, 'bb_pct') else 0.5),
+                        hour_et=float(_et_hour if '_et_hour' in dir() else 10),
+                        long_flag=1 if direction == 'LONG' else 0,
+                    )
+                    if _rf_prob >= 0.70:
+                        filter_result.final_score = min(100.0, filter_result.final_score + 6.0)
+                        logger.debug(f"{symbol}: RF_PROB {_rf_prob:.2f} +6")
+                    elif _rf_prob >= 0.60:
+                        filter_result.final_score = min(100.0, filter_result.final_score + 3.0)
+                    elif _rf_prob < 0.40:
+                        filter_result.final_score = max(0.0, filter_result.final_score - 6.0)
+                        logger.debug(f"{symbol}: RF_PROB {_rf_prob:.2f} -6")
+            except Exception as _rf_e:
+                logger.debug(f"[suppressed] random_forest_ranker: {_rf_e}")
+
             # ── PREMIUM DATA PROXIES (v15.0) — free duplicates of L2/dark pool/options/tick/earnings/alt/news/colocation ──
             try:
                 if getattr(config, 'PREMIUM_PROXIES_ENABLED', True):

@@ -660,6 +660,20 @@ IBD_RS_ENABLED:          bool = os.getenv("IBD_RS_ENABLED",          "True").low
 FEAR_GREED_ENABLED:      bool = os.getenv("FEAR_GREED_ENABLED",      "True").lower() not in ("false", "0", "no")
 OPTIONS_SKEW_ENABLED:    bool = os.getenv("OPTIONS_SKEW_ENABLED",    "True").lower() not in ("false", "0", "no")
 
+# ── v17.0 premium module flags ────────────────────────────────────────────────
+SOCIAL_SENTIMENT_ENABLED:    bool = os.getenv("SOCIAL_SENTIMENT_ENABLED",    "True").lower() not in ("false", "0", "no")
+INSTITUTIONAL_FLOW_ENABLED:  bool = os.getenv("INSTITUTIONAL_FLOW_ENABLED",  "True").lower() not in ("false", "0", "no")
+ECONOMIC_SURPRISE_ENABLED:   bool = os.getenv("ECONOMIC_SURPRISE_ENABLED",   "True").lower() not in ("false", "0", "no")
+MCCLELLAN_ENABLED:           bool = os.getenv("MCCLELLAN_ENABLED",           "True").lower() not in ("false", "0", "no")
+SUPPLY_DEMAND_ENABLED:       bool = os.getenv("SUPPLY_DEMAND_ENABLED",       "True").lower() not in ("false", "0", "no")
+VANNA_CHARM_ENABLED:         bool = os.getenv("VANNA_CHARM_ENABLED",         "True").lower() not in ("false", "0", "no")
+SEASONAL_ALPHA_ENABLED:      bool = os.getenv("SEASONAL_ALPHA_ENABLED",      "True").lower() not in ("false", "0", "no")
+MINERVINI_ENABLED:           bool = os.getenv("MINERVINI_ENABLED",           "True").lower() not in ("false", "0", "no")
+WEINSTEIN_ENABLED:           bool = os.getenv("WEINSTEIN_ENABLED",           "True").lower() not in ("false", "0", "no")
+TAPE_SPEED_ENABLED:          bool = os.getenv("TAPE_SPEED_ENABLED",          "True").lower() not in ("false", "0", "no")
+COPPER_GOLD_ENABLED:         bool = os.getenv("COPPER_GOLD_ENABLED",         "True").lower() not in ("false", "0", "no")
+RANDOM_FOREST_ENABLED:       bool = os.getenv("RANDOM_FOREST_ENABLED",       "True").lower() not in ("false", "0", "no")
+
 # ============================================================
 # VALIDATION
 # ============================================================
