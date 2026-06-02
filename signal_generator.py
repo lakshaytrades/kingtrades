@@ -23,6 +23,7 @@ Signal pipeline:
 
 import logging
 import config
+import numpy as np
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1616,6 +1617,26 @@ class SignalGenerator:
                         logger.debug(f"{symbol}: GANN {_gn_d:+.0f} {_gn_r}")
             except Exception as _gn_e:
                 logger.debug(f"[suppressed] gann_levels: {_gn_e}")
+
+            # ── PREMIUM DATA PROXIES (v15.0) — free duplicates of L2/dark pool/options/tick/earnings/alt/news/colocation ──
+            try:
+                if getattr(config, 'PREMIUM_PROXIES_ENABLED', True):
+                    from premium_data_proxies import get_all_proxy_scores
+                    _df_bars = df_5m if df_5m is not None else None
+                    _proxy_delta, _proxy_reasons = get_all_proxy_scores(
+                        symbol=symbol,
+                        direction=direction,
+                        df_bars=_df_bars,
+                        current_score=filter_result.final_score,
+                    )
+                    if _proxy_delta != 0.0:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _proxy_delta, 0.0, 100.0
+                        ))
+                        for _pr in _proxy_reasons:
+                            logger.debug(f"{symbol}: PROXY {_pr}")
+            except Exception as _prx_e:
+                logger.debug(f"[suppressed] premium_proxies: {_prx_e}")
 
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
             try:

@@ -640,6 +640,17 @@ WOLFE_WAVE_ENABLED:          bool = os.getenv("WOLFE_WAVE_ENABLED",          "Tr
 ELLIOTT_WAVE_ENABLED:        bool = os.getenv("ELLIOTT_WAVE_ENABLED",        "True").lower() in ("true","1","yes")
 GANN_ENABLED:                bool = os.getenv("GANN_ENABLED",                "True").lower() in ("true","1","yes")
 
+# ── PREMIUM DATA PROXIES (v15.0) — free duplicates of L2/dark pool/options/tick/earnings/alt/news/colocation ──
+PREMIUM_PROXIES_ENABLED: bool = os.getenv("PREMIUM_PROXIES_ENABLED", "True").lower() not in ("false", "0", "no")
+L2_PROXY_ENABLED:        bool = os.getenv("L2_PROXY_ENABLED",        "True").lower() not in ("false", "0", "no")
+DARK_POOL_PROXY_ENABLED: bool = os.getenv("DARK_POOL_PROXY_ENABLED", "True").lower() not in ("false", "0", "no")
+OPTIONS_PROXY_ENABLED:   bool = os.getenv("OPTIONS_PROXY_ENABLED",   "True").lower() not in ("false", "0", "no")
+TICK_PROXY_ENABLED:      bool = os.getenv("TICK_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
+EARNINGS_PROXY_ENABLED:  bool = os.getenv("EARNINGS_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
+ALT_DATA_PROXY_ENABLED:  bool = os.getenv("ALT_DATA_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
+NEWS_PROXY_ENABLED:      bool = os.getenv("NEWS_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
+COLOC_PROXY_ENABLED:     bool = os.getenv("COLOC_PROXY_ENABLED",     "True").lower() not in ("false", "0", "no")
+
 # ============================================================
 # VALIDATION
 # ============================================================
