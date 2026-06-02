@@ -323,6 +323,22 @@ class MultiTimeframeAnalyzer:
             return {"aligned": score >= 60, "score": score, "direction": "SHORT",
                     "reason": f"5m+15m bearish. 1h={t1h['trend']}. Moderate confidence."}
 
+        # 5m + 1h agree (1h is the map, 5m is the entry trigger)
+        if t5["trend"] == TREND_BULLISH and t1h["trend"] == TREND_BULLISH:
+            return {"aligned": True, "score": 65, "direction": "LONG",
+                    "reason": f"5m+1h bullish. 15m={t15['trend']}. Good HTF+entry alignment."}
+        if t5["trend"] == TREND_BEARISH and t1h["trend"] == TREND_BEARISH:
+            return {"aligned": True, "score": 65, "direction": "SHORT",
+                    "reason": f"5m+1h bearish. 15m={t15['trend']}. Good HTF+entry alignment."}
+
+        # Only 5m agrees — weakest valid entry (others neutral, not bearish)
+        if t5["trend"] == TREND_BULLISH and t15["trend"] != TREND_BEARISH and t1h["trend"] != TREND_BEARISH:
+            return {"aligned": True, "score": 40, "direction": "LONG",
+                    "reason": f"5m bullish. 15m/1h neutral. Weak but not opposed."}
+        if t5["trend"] == TREND_BEARISH and t15["trend"] != TREND_BULLISH and t1h["trend"] != TREND_BULLISH:
+            return {"aligned": True, "score": 40, "direction": "SHORT",
+                    "reason": f"5m bearish. 15m/1h neutral. Weak but not opposed."}
+
         # Conflict — skip trade
         return {
             "aligned": False, "score": 20, "direction": "SKIP",
