@@ -1215,6 +1215,66 @@ class SignalGenerator:
             except Exception as _prem_e:
                 logger.debug(f"[suppressed] premium_scanner: {_prem_e}")
 
+            # ── QUANTUM STRATEGIES (v12.0) — 8 institutional modules ──────────
+            try:
+                from quantum_strategies import (
+                    get_orb_score, get_vwap_deviation_score,
+                    get_market_profile_score, get_order_flow_score,
+                    get_gamma_squeeze_score, get_zscore_reversion_score,
+                    get_pead_score, get_momentum_persistence_score,
+                )
+
+                if getattr(config, 'ORB_SCORE_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _orb_d, _orb_r = get_orb_score(symbol, df_5m, direction, ltp_now)
+                    if _orb_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _orb_d)
+                        logger.debug(f"{symbol}: ORB {_orb_d:+.0f} {_orb_r}")
+
+                if getattr(config, 'VWAP_BANDS_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _vb_d, _vb_r = get_vwap_deviation_score(symbol, df_5m, direction, ind.vwap if ind.vwap > 0 else ltp_now)
+                    if _vb_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _vb_d)
+                        logger.debug(f"{symbol}: VWAP_BANDS {_vb_d:+.0f} {_vb_r}")
+
+                if getattr(config, 'MARKET_PROFILE_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _mp_d, _mp_r = get_market_profile_score(symbol, df_5m, direction, ltp_now)
+                    if _mp_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mp_d)
+                        logger.debug(f"{symbol}: MKT_PROFILE {_mp_d:+.0f} {_mp_r}")
+
+                if getattr(config, 'ORDER_FLOW_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _of_d, _of_r = get_order_flow_score(symbol, df_5m, direction)
+                    if _of_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _of_d)
+                        logger.debug(f"{symbol}: ORDER_FLOW {_of_d:+.0f} {_of_r}")
+
+                if getattr(config, 'GAMMA_SQUEEZE_ENABLED', True):
+                    _gm_d, _gm_r = get_gamma_squeeze_score(symbol, direction, ltp_now)
+                    if _gm_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gm_d)
+                        logger.debug(f"{symbol}: GAMMA_SQZ {_gm_d:+.0f} {_gm_r}")
+
+                if getattr(config, 'ZSCORE_REVERSION_ENABLED', True):
+                    _zs_d, _zs_r = get_zscore_reversion_score(symbol, direction, ltp_now)
+                    if _zs_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _zs_d)
+                        logger.debug(f"{symbol}: ZSCORE {_zs_d:+.0f} {_zs_r}")
+
+                if getattr(config, 'PEAD_SCORE_ENABLED', True):
+                    _pe_d, _pe_r = get_pead_score(symbol, direction)
+                    if _pe_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pe_d)
+                        logger.debug(f"{symbol}: PEAD {_pe_d:+.0f} {_pe_r}")
+
+                if getattr(config, 'MOMENTUM_PERSIST_ENABLED', True):
+                    _mom_d, _mom_r = get_momentum_persistence_score(symbol, direction)
+                    if _mom_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mom_d)
+                        logger.debug(f"{symbol}: MOM_PERSIST {_mom_d:+.0f} {_mom_r}")
+
+            except Exception as _quantum_e:
+                logger.debug(f"[suppressed] quantum_strategies: {_quantum_e}")
+
             # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
             try:
                 if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):

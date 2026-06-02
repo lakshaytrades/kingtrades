@@ -613,6 +613,16 @@ ACCOUNT_TYPE:           str  = os.getenv("ACCOUNT_TYPE",            "CASH").uppe
 PDT_ENFORCE:            bool = os.getenv("PDT_ENFORCE",             "True").lower() in ("true","1","yes")
 PDT_MAX_DAY_TRADES:     int  = int(os.getenv("PDT_MAX_DAY_TRADES",  "3"))
 
+# ── Quantum Strategies (v12.0) — 8 institutional-grade signal modules ────────
+ORB_SCORE_ENABLED:           bool = os.getenv("ORB_SCORE_ENABLED",           "True").lower() in ("true","1","yes")
+VWAP_BANDS_ENABLED:          bool = os.getenv("VWAP_BANDS_ENABLED",          "True").lower() in ("true","1","yes")
+MARKET_PROFILE_ENABLED:      bool = os.getenv("MARKET_PROFILE_ENABLED",      "True").lower() in ("true","1","yes")
+ORDER_FLOW_ENABLED:          bool = os.getenv("ORDER_FLOW_ENABLED",          "True").lower() in ("true","1","yes")
+GAMMA_SQUEEZE_ENABLED:       bool = os.getenv("GAMMA_SQUEEZE_ENABLED",       "True").lower() in ("true","1","yes")
+ZSCORE_REVERSION_ENABLED:    bool = os.getenv("ZSCORE_REVERSION_ENABLED",    "True").lower() in ("true","1","yes")
+PEAD_SCORE_ENABLED:          bool = os.getenv("PEAD_SCORE_ENABLED",          "True").lower() in ("true","1","yes")
+MOMENTUM_PERSIST_ENABLED:    bool = os.getenv("MOMENTUM_PERSIST_ENABLED",    "True").lower() in ("true","1","yes")
+
 # ============================================================
 # VALIDATION
 # ============================================================
