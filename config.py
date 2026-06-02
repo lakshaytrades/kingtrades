@@ -680,6 +680,13 @@ EXECUTION_OPTIMIZER_ENABLED:  bool = os.getenv("EXECUTION_OPTIMIZER_ENABLED",  "
 REGIME_V2_ENABLED:            bool = os.getenv("REGIME_V2_ENABLED",            "True").lower() not in ("false", "0", "no")
 PORTFOLIO_OPTIMIZER_ENABLED:  bool = os.getenv("PORTFOLIO_OPTIMIZER_ENABLED",  "True").lower() not in ("false", "0", "no")
 
+# ── Frontier Quant Intelligence v20.0 — Kalman · HMM · Factor · VPIN · IC ───
+KALMAN_ENABLED:               bool = os.getenv("KALMAN_ENABLED",               "True").lower() not in ("false", "0", "no")
+HMM_REGIME_ENABLED:           bool = os.getenv("HMM_REGIME_ENABLED",           "True").lower() not in ("false", "0", "no")
+FACTOR_ALPHA_ENABLED:         bool = os.getenv("FACTOR_ALPHA_ENABLED",         "True").lower() not in ("false", "0", "no")
+VPIN_ENABLED:                 bool = os.getenv("VPIN_ENABLED",                 "True").lower() not in ("false", "0", "no")
+IC_TRACKER_ENABLED:           bool = os.getenv("IC_TRACKER_ENABLED",           "True").lower() not in ("false", "0", "no")
+
 # ============================================================
 # VALIDATION
 # ============================================================

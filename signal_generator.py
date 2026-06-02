@@ -1999,6 +1999,81 @@ class SignalGenerator:
             except Exception as _po_e:
                 logger.debug(f"[suppressed] advanced_portfolio: {_po_e}")
 
+            # ── FRONTIER QUANT INTELLIGENCE (v20.0) ─────────────────────────────────
+            # Kalman · HMM · Factor Alpha · VPIN · IC-Weighted Bayesian Signals
+            # — mathematically impossible for any human to compute in real-time —
+            _v20_signal_deltas: dict = {}
+            try:
+                # 1. Kalman Filter — adaptive momentum signal (noise-filtered velocity+accel)
+                if getattr(config, 'KALMAN_ENABLED', True):
+                    from kalman_signals import get_kalman_score
+                    _kl_d, _kl_r = get_kalman_score(symbol, df_5m, direction)
+                    if _kl_d != 0.0:
+                        _v20_signal_deltas["kalman"] = _kl_d
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _kl_d, 0.0, 100.0))
+                        logger.debug(f"{symbol}: KALMAN {_kl_d:+.0f} {_kl_r}")
+            except Exception as _kl_e:
+                logger.debug(f"[suppressed] kalman: {_kl_e}")
+
+            try:
+                # 2. HMM — Hidden Markov Model latent regime state (3-state Baum-Welch)
+                if getattr(config, 'HMM_REGIME_ENABLED', True):
+                    from hmm_regime import get_hmm_score
+                    _hmm_d, _hmm_r = get_hmm_score(symbol, df_5m, direction)
+                    if _hmm_d != 0.0:
+                        _v20_signal_deltas["hmm"] = _hmm_d
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _hmm_d, 0.0, 100.0))
+                        logger.debug(f"{symbol}: HMM {_hmm_d:+.0f} {_hmm_r}")
+            except Exception as _hmm_e:
+                logger.debug(f"[suppressed] hmm_regime: {_hmm_e}")
+
+            try:
+                # 3. Factor Alpha — cross-sectional rank (momentum + RS + quality)
+                if getattr(config, 'FACTOR_ALPHA_ENABLED', True):
+                    from factor_alpha import get_factor_score
+                    _watchlist_fa = getattr(self, '_watchlist', []) or [symbol]
+                    _fa_d, _fa_r  = get_factor_score(symbol, direction, _watchlist_fa)
+                    if _fa_d != 0.0:
+                        _v20_signal_deltas["factor_alpha"] = _fa_d
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _fa_d, 0.0, 100.0))
+                        logger.debug(f"{symbol}: FACTOR_ALPHA {_fa_d:+.0f} {_fa_r}")
+            except Exception as _fa_e:
+                logger.debug(f"[suppressed] factor_alpha: {_fa_e}")
+
+            try:
+                # 4. VPIN — Volume-Synchronized Probability of Informed Trading
+                if getattr(config, 'VPIN_ENABLED', True) and df_5m is not None:
+                    from vpin_detector import get_vpin_score
+                    _vp_d, _vp_r = get_vpin_score(symbol, df_5m, direction, ltp_now)
+                    if _vp_d != 0.0:
+                        _v20_signal_deltas["vpin"] = _vp_d
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _vp_d, 0.0, 100.0))
+                        logger.debug(f"{symbol}: VPIN {_vp_d:+.0f} {_vp_r}")
+            except Exception as _vp_e:
+                logger.debug(f"[suppressed] vpin: {_vp_e}")
+
+            try:
+                # 5. IC-Weighted Bayesian boost — weight signals by rolling Spearman IC
+                if getattr(config, 'IC_TRACKER_ENABLED', True) and _v20_signal_deltas:
+                    from signal_ic_tracker import get_composite_weight, register_signal_prediction
+                    _ic_boost = get_composite_weight(_v20_signal_deltas)
+                    # Apply a gentle adjustment from IC weighting (cap at ±6 to avoid runaway)
+                    _ic_adj = float(np.clip(_ic_boost * 0.15, -6.0, 6.0))
+                    if abs(_ic_adj) >= 0.5:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _ic_adj, 0.0, 100.0))
+                        logger.debug(f"{symbol}: IC_WEIGHT {_ic_adj:+.1f} (raw_boost={_ic_boost:.1f})")
+                    # Register this signal prediction for future IC tracking
+                    conf = float(np.clip(filter_result.final_score / 100.0, 0.0, 1.0))
+                    for _sn in _v20_signal_deltas:
+                        register_signal_prediction(_sn, direction, conf)
+            except Exception as _ic_e:
+                logger.debug(f"[suppressed] signal_ic_tracker: {_ic_e}")
+
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
             try:
                 if getattr(config, 'MASTER_CONFLUENCE_ENABLED', True):

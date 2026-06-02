@@ -2060,6 +2060,16 @@ class TradingBot:
                     except Exception as _pe:
                         logger.warning(f"add_position failed for {signal.symbol}: {_pe}")
 
+                    # v20.0 — portfolio optimizer: track new position for CVaR/correlation
+                    try:
+                        from advanced_portfolio import get_portfolio_optimizer
+                        get_portfolio_optimizer().update_position(
+                            signal.symbol, fill_price, fill_qty,
+                            signal.direction, getattr(signal, "ai_score", 70.0),
+                        )
+                    except Exception:
+                        pass
+
                     # Place broker-side stop order (SL enforced even if bot crashes)
                     try:
                         sl_order_id = self.executor.place_stop_order(
@@ -2410,6 +2420,40 @@ class TradingBot:
                             _rec_adaptive_outcome(pnl > 0)
                         except Exception as _at_e:
                             logger.debug(f"[suppressed] adaptive_threshold.record: {_at_e}")
+
+                        # v20.0 — IC tracker + 4-model ensemble + portfolio optimizer ─────
+                        try:
+                            from signal_ic_tracker import record_trade_outcome as _ic_record
+                            _pos_signals = getattr(pos, "_signal_deltas", {})
+                            _ic_record(_pos_signals, pnl > 0)
+                        except Exception as _ic_e:
+                            logger.debug(f"[suppressed] signal_ic_tracker.record: {_ic_e}")
+
+                        try:
+                            from ml_ensemble import record_trade_outcome_ensemble
+                            _ens_feat = {
+                                "rsi":            getattr(getattr(pos, "indicators", None), "rsi", 55.0) or 55.0,
+                                "signal_score":   getattr(pos, "signal_score", 70.0),
+                                "volume_ratio":   getattr(getattr(pos, "indicators", None), "volume_ratio", 1.0) or 1.0,
+                                "adx":            getattr(getattr(pos, "indicators", None), "adx", 25.0) or 25.0,
+                                "is_long":        1.0 if pos.direction == "LONG" else 0.0,
+                                "r2_quality":     getattr(pos, "_r2_quality", 0.5),
+                                "macd_hist_norm": 0.0, "atr_pct": 1.0, "ema_slope_pct": 0.0,
+                                "vwap_dist_pct":  0.0, "bb_pct": 0.5,
+                                "hour_et":        getattr(pos, "_entry_hour_et", 10),
+                                "mfi_norm": 0.5, "ofi_5bar": 0.0, "vix_level_norm": 0.5,
+                                "short_ratio_norm": 0.3, "consecutive_wins": 0.0,
+                            }
+                            record_trade_outcome_ensemble(_ens_feat, pnl > 0)
+                        except Exception as _ense:
+                            logger.debug(f"[suppressed] ml_ensemble.record: {_ense}")
+
+                        try:
+                            from advanced_portfolio import get_portfolio_optimizer
+                            _pnl_pct = pnl / max(pos.entry_price * pos.quantity, 1.0)
+                            get_portfolio_optimizer().close_position(pos.symbol, pos.entry_price * (1 + _pnl_pct))
+                        except Exception as _poe:
+                            logger.debug(f"[suppressed] advanced_portfolio.close: {_poe}")
 
                         # AdaptiveBrain: record trade outcome for intraday adaptation
                         if hasattr(self, "adaptive_brain") and self.adaptive_brain:
