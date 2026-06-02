@@ -51,7 +51,7 @@ def _make_yf_session():
     except Exception:
         return None
 
-_YF_SESSION = None  # Let yfinance use its internal curl_cffi session
+_YF_SESSION = _make_yf_session()  # browser-UA session to avoid VPS IP blocks
 
 # ET timezone for market hours and bar timestamps
 try:
@@ -153,44 +153,61 @@ class BarCache:
             )
             if _YF_SESSION is not None:
                 _dl_kwargs["session"] = _YF_SESSION
-            raw = yf.download(
-                symbols, period=f"{days}d", interval=yf_interval,
-                **_dl_kwargs,
-            )
-            elapsed = _time.monotonic() - t0
 
-            if raw.empty:
-                return
-
+            # Chunk into batches of 25 to avoid Yahoo Finance rate limits on large requests
+            CHUNK = 25
+            chunks = [symbols[i:i+CHUNK] for i in range(0, len(symbols), CHUNK)]
             new_data: Dict[Tuple[str, str], pd.DataFrame] = {}
-            for sym in symbols:
+
+            for chunk in chunks:
                 try:
-                    if len(symbols) == 1:
-                        df = raw.copy()
-                    elif sym in raw.columns.get_level_values(0):
-                        df = raw[sym].copy()
-                    else:
+                    raw = yf.download(
+                        chunk, period=f"{days}d", interval=yf_interval,
+                        **_dl_kwargs,
+                    )
+                    if raw is None or raw.empty:
                         continue
 
-                    df.columns = [c.lower() for c in df.columns]
-                    df = df[["open", "high", "low", "close", "volume"]].dropna()
-                    # Drop partial bar at end of intraday data: yfinance returns the
-                    # current in-progress bar with volume=0, making volume_ratio=0 for
-                    # all stocks and blocking every trade via the volume gate.
-                    if len(df) > 1 and df["volume"].iloc[-1] == 0:
-                        df = df.iloc[:-1]
-                    if df.empty:
-                        continue
-                    if df.index.tz is None:
-                        df.index = df.index.tz_localize("America/New_York")
-                    else:
-                        df.index = df.index.tz_convert("America/New_York")
-                    df.index.name = "timestamp"
-                    df.sort_index(inplace=True)
-                    new_data[(sym, interval)] = df
-                except Exception:
-                    pass
+                    for sym in chunk:
+                        try:
+                            # Handle both yfinance MultiIndex structures:
+                            # older: (Ticker, Price)  — group_by="ticker"
+                            # newer: (Price, Ticker)  — default
+                            if len(chunk) == 1:
+                                df = raw.copy()
+                            else:
+                                lvl0 = list(raw.columns.get_level_values(0))
+                                lvl1 = list(raw.columns.get_level_values(1))
+                                if sym in lvl0:
+                                    df = raw[sym].copy()          # (Ticker, Price)
+                                elif sym in lvl1:
+                                    df = raw.xs(sym, axis=1, level=1).copy()  # (Price, Ticker)
+                                else:
+                                    continue
 
+                            df.columns = [c.lower() for c in df.columns]
+                            needed = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+                            if len(needed) < 5:
+                                continue
+                            df = df[needed].dropna()
+                            # Drop the current in-progress bar (volume=0) to prevent false volume_ratio=0
+                            if len(df) > 1 and df["volume"].iloc[-1] == 0:
+                                df = df.iloc[:-1]
+                            if df.empty:
+                                continue
+                            if df.index.tz is None:
+                                df.index = df.index.tz_localize("America/New_York")
+                            else:
+                                df.index = df.index.tz_convert("America/New_York")
+                            df.index.name = "timestamp"
+                            df.sort_index(inplace=True)
+                            new_data[(sym, interval)] = df
+                        except Exception:
+                            pass
+                except Exception as _ce:
+                    logger.debug(f"BarCache chunk download failed ({interval}): {_ce}")
+
+            elapsed = _time.monotonic() - t0
             with self._lock:
                 self._cache.update(new_data)
             self._last_refresh[interval] = _time.monotonic()
