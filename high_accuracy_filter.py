@@ -1247,8 +1247,8 @@ class HighAccuracyFilter:
             "AFTERNOON_TREND":   ("BOTH", 1.0),
         }
         reduced_size = {
-            "WEAK_TREND_UP":     ("BUY",  0.8),
-            "WEAK_TREND_DOWN":   ("SELL", 0.8),
+            "WEAK_TREND_UP":     ("BOTH", 0.8),
+            "WEAK_TREND_DOWN":   ("BOTH", 0.7),
             "HIGH_VOLATILITY":   ("BOTH", 0.6),
             "MIDDAY_CHOP":       ("BOTH", 0.6),   # Reduced size, not blocked
             "RANGING":           ("BOTH", 0.5),   # Very small size, not blocked
