@@ -622,6 +622,9 @@ WYCKOFF_ENABLED:            bool = os.getenv("WYCKOFF_ENABLED",            "True
 MASTER_CONFLUENCE_ENABLED:  bool = os.getenv("MASTER_CONFLUENCE_ENABLED",  "True").lower() in ("true","1","yes")
 CONFLUENCE_MIN_AGREE:       int  = int(os.getenv("CONFLUENCE_MIN_AGREE",  "2"))
 MEAN_REVERSION_ENABLED:     bool = os.getenv("MEAN_REVERSION_ENABLED",     "True").lower() in ("true","1","yes")
+VSA_ENABLED:                bool = os.getenv("VSA_ENABLED",                "True").lower() in ("true","1","yes")
+INTERMARKET_ENABLED:        bool = os.getenv("INTERMARKET_ENABLED",        "True").lower() in ("true","1","yes")
+EVENT_SCANNER_ENABLED:      bool = os.getenv("EVENT_SCANNER_ENABLED",      "True").lower() in ("true","1","yes")
 RISK_PER_TRADE_PCT:     float = float(os.getenv("RISK_PER_TRADE_PCT", str(MAX_RISK_PER_TRADE_PCT)))
 
 # ── Quantum Strategies (v12.0) — 8 institutional-grade signal modules ────────

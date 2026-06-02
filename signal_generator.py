@@ -1336,6 +1336,39 @@ class SignalGenerator:
             except Exception as _sma_e:
                 logger.debug(f"[suppressed] smart_money_advanced: {_sma_e}")
 
+            # ── VSA ENGINE (v14.0) — Volume Spread Analysis ───────────────────
+            try:
+                if getattr(config, 'VSA_ENABLED', True) and df_5m is not None and len(df_5m) >= 20:
+                    from vsa_engine import get_vsa_score
+                    _vsa_d, _vsa_r = get_vsa_score(symbol, df_5m, direction)
+                    if _vsa_d != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _vsa_d))
+                        logger.debug(f"{symbol}: VSA {_vsa_d:+.0f} {_vsa_r}")
+            except Exception as _vsa_e:
+                logger.debug(f"[suppressed] vsa_engine: {_vsa_e}")
+
+            # ── INTERMARKET ANALYSIS (v14.0) — macro regime ───────────────────
+            try:
+                if getattr(config, 'INTERMARKET_ENABLED', True):
+                    from intermarket_analysis import get_intermarket_score
+                    _im_d, _im_regime, _im_reasons = get_intermarket_score(direction)
+                    if _im_d != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _im_d))
+                        logger.debug(f"{symbol}: INTERMARKET {_im_d:+.0f} {_im_regime}")
+            except Exception as _im_e:
+                logger.debug(f"[suppressed] intermarket_analysis: {_im_e}")
+
+            # ── EVENT SCANNER (v14.0) — corporate catalysts ───────────────────
+            try:
+                if getattr(config, 'EVENT_SCANNER_ENABLED', True):
+                    from event_scanner import get_event_score
+                    _ev_d, _ev_r = get_event_score(symbol, direction)
+                    if _ev_d != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _ev_d))
+                        logger.debug(f"{symbol}: EVENT {_ev_d:+.0f} {_ev_r}")
+            except Exception as _ev_e:
+                logger.debug(f"[suppressed] event_scanner: {_ev_e}")
+
             # ── REGIME-ADAPTIVE SCORE ADJUSTMENT (v11.0) ──────────────────────
             try:
                 if getattr(config, 'REGIME_ADAPTIVE_ENABLED', True):
