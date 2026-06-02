@@ -227,7 +227,7 @@ class SignalGenerator:
         self._overnight_bias: int = 0   # set by main.py after overnight_analyzer.run_analysis()
 
         # Concurrent scanning config
-        self._max_workers = 6   # Parallel symbol scans (Groww rate-limit safe)
+        self._max_workers = 10  # Parallel symbol scans (Alpaca rate-limit safe)
 
         # ── World market intelligence (global context + sector rotation + calendar) ──
         self._global_ctx: Optional["GlobalMarketContext"] = None
@@ -2112,18 +2112,23 @@ class SignalGenerator:
 
         with ThreadPoolExecutor(max_workers=self._max_workers, thread_name_prefix="sig") as pool:
             futures = {pool.submit(self._scan_one, sym): sym for sym in symbols}
-            for fut in as_completed(futures, timeout=90):
-                sym = futures[fut]
-                try:
-                    sig = fut.result(timeout=20)
-                    if sig:
-                        signals.append(sig)
-                except FuturesTimeout:
-                    logger.debug(f"Scan timeout: {sym}")
-                    errors += 1
-                except Exception as e:
-                    logger.debug(f"Scan error {sym}: {e}")
-                    errors += 1
+            try:
+                for fut in as_completed(futures, timeout=180):
+                    sym = futures[fut]
+                    try:
+                        sig = fut.result(timeout=30)
+                        if sig:
+                            signals.append(sig)
+                    except FuturesTimeout:
+                        logger.debug(f"Scan timeout: {sym}")
+                        errors += 1
+                    except Exception as e:
+                        logger.debug(f"Scan error {sym}: {e}")
+                        errors += 1
+            except FuturesTimeout:
+                done = len(signals) + errors
+                remaining = len(symbols) - done
+                logger.warning(f"Scan cycle timeout — completed {done}/{len(symbols)}, skipped {remaining}")
 
         # Sort: grade first (A+ > A > B > C), then score
         grade_rank = {"A+": 4, "A": 3, "B": 2, "C": 1}
