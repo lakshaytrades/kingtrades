@@ -135,6 +135,10 @@ class CatalystScanner:
 
         surprise_pct = (eps_act - eps_est) / abs(eps_est) * 100
 
+        import math as _math
+        if _math.isnan(surprise_pct) or _math.isinf(surprise_pct):
+            return result
+
         if surprise_pct < MIN_SURPRISE_PCT:
             return result
 

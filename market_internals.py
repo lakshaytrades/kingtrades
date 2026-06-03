@@ -19,6 +19,7 @@ so the trading engine is never blocked by an unavailability here.
 """
 
 import logging
+import threading
 import time as _time
 from datetime import datetime, timedelta
 from typing import Dict, List, Optional, Tuple
@@ -125,6 +126,7 @@ class MarketInternals:
     """
 
     CACHE_TTL = 300  # seconds (5 minutes)
+    _compute_lock = threading.Lock()  # class-level: prevents concurrent breadth recomputation
 
     def __init__(self):
         self._cache: Dict = {}
@@ -155,14 +157,20 @@ class MarketInternals:
         """
         now = _time.monotonic()
         if self._cache and self._cache_time is not None:
-            age = now - self._cache_time
-            if age < self.CACHE_TTL:
+            if now - self._cache_time < self.CACHE_TTL:
                 return self._cache
 
-        result = self._compute_breadth()
-        self._cache = result
-        self._cache_time = now
-        return result
+        # Lock prevents 12 concurrent scan threads from all recomputing at once
+        with MarketInternals._compute_lock:
+            # Re-check after acquiring lock — another thread may have just computed it
+            now = _time.monotonic()
+            if self._cache and self._cache_time is not None:
+                if now - self._cache_time < self.CACHE_TTL:
+                    return self._cache
+            result = self._compute_breadth()
+            self._cache = result
+            self._cache_time = now
+            return result
 
     def is_long_ok(self) -> Tuple[bool, str]:
         """
@@ -239,7 +247,7 @@ class MarketInternals:
     def _compute_breadth(self) -> Dict:
         """Run all sub-components and assemble the final breadth score."""
         ts = format_ist_timestamp()
-        logger.info(f"[{ts}] MarketInternals: computing breadth snapshot")
+        logger.debug(f"[{ts}] MarketInternals: computing breadth snapshot")
 
         # --- 1. Sector breadth -------------------------------------------
         sector_score, bullish, bearish, sector_labels = self._sector_breadth()
