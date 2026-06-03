@@ -1,8 +1,9 @@
 #!/bin/bash
 # status.sh — Check bot status
 
+BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="kingtrades"
-LOG_FILE="/home/user/kingtrades/logs/bot_output.log"
+LOG_FILE="$BOT_DIR/logs/bot_output.log"
 
 echo "================================"
 echo "   KingTrades Bot Status"
@@ -16,8 +17,10 @@ else
     echo "Start:   bash start.sh"
 fi
 
-LIVE=$(grep "^LIVE_TRADING_ENABLED" /home/user/kingtrades/.env | cut -d= -f2 | tr -d '[:space:]')
-[ "$LIVE" = "True" ] && echo "Mode:    ⚡ LIVE (real money)" || echo "Mode:    📄 PAPER (no real money)"
+if [ -f "$BOT_DIR/.env" ]; then
+    LIVE=$(grep "^LIVE_TRADING_ENABLED" "$BOT_DIR/.env" | cut -d= -f2 | tr -d '[:space:]')
+    [ "$LIVE" = "True" ] && echo "Mode:    ⚡ LIVE (real money)" || echo "Mode:    📄 PAPER (no real money)"
+fi
 
 echo ""
 echo "--- Last 25 log lines ---"

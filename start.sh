@@ -1,12 +1,11 @@
 #!/bin/bash
 # ============================================================
 # start.sh — KingTrades Bot Launcher
-# Uses 'screen' so bot keeps running after you close SSH
+# Works from any directory — path is auto-detected.
 # ============================================================
 
-BOT_DIR="/home/user/kingtrades"
+BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="kingtrades"
-LOG_FILE="$BOT_DIR/logs/bot_output.log"
 
 mkdir -p "$BOT_DIR/logs"
 cd "$BOT_DIR"
@@ -20,45 +19,51 @@ if screen -list | grep -q "$SESSION"; then
     exit 1
 fi
 
-# Safety check
-LIVE=$(grep "^LIVE_TRADING_ENABLED" .env | cut -d= -f2 | tr -d '[:space:]')
-if [ "$LIVE" = "True" ]; then
-    echo ""
-    echo "⚡⚡⚡ WARNING: LIVE TRADING = REAL MONEY ⚡⚡⚡"
-    echo "Type 'yes' to confirm you want real-money trading:"
-    read -r CONFIRM
-    if [ "$CONFIRM" != "yes" ]; then
-        echo "Aborted."
-        exit 1
+# Safety check for live trading
+if [ -f "$BOT_DIR/.env" ]; then
+    LIVE=$(grep "^LIVE_TRADING_ENABLED" "$BOT_DIR/.env" | cut -d= -f2 | tr -d '[:space:]')
+    if [ "$LIVE" = "True" ]; then
+        echo ""
+        echo "⚡⚡⚡ WARNING: LIVE TRADING = REAL MONEY ⚡⚡⚡"
+        echo "Type 'yes' to confirm you want real-money trading:"
+        read -r CONFIRM
+        if [ "$CONFIRM" != "yes" ]; then
+            echo "Aborted."
+            exit 1
+        fi
     fi
 fi
 
 echo "Starting KingTrades bot..."
 echo ""
 
-# Start in screen with auto-restart loop
-screen -dmS "$SESSION" bash -c '
-cd /home/user/kingtrades
+# Write a self-contained runner script so screen has no quoting issues
+RUNNER="$BOT_DIR/logs/.runner.sh"
+cat > "$RUNNER" << RUNNER_EOF
+#!/bin/bash
+cd "$BOT_DIR"
 RESTARTS=0
 while true; do
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Bot starting (attempt $((RESTARTS+1)))..."
+    echo "[\$(date +'%Y-%m-%d %H:%M:%S')] Bot starting (attempt \$((RESTARTS+1)))..."
     python3 main.py 2>&1 | tee -a logs/bot_output.log
-    CODE=${PIPESTATUS[0]}
-    echo "[$(date +"%Y-%m-%d %H:%M:%S")] Bot exited (code $CODE)"
-    # Exit code 0 = clean shutdown (/kill or Ctrl+C) — do not restart
-    if [ $CODE -eq 0 ] || [ $CODE -eq 130 ]; then
+    CODE=\${PIPESTATUS[0]}
+    echo "[\$(date +'%Y-%m-%d %H:%M:%S')] Bot exited (code \$CODE)"
+    if [ "\$CODE" -eq 0 ] || [ "\$CODE" -eq 130 ]; then
         echo "Clean shutdown. Bye."
         break
     fi
-    RESTARTS=$((RESTARTS+1))
-    if [ $RESTARTS -ge 5 ]; then
+    RESTARTS=\$((RESTARTS+1))
+    if [ "\$RESTARTS" -ge 5 ]; then
         echo "5 crashes in a row — stopping auto-restart."
         break
     fi
-    echo "Restarting in 30 seconds... (restart $RESTARTS of 5)"
+    echo "Restarting in 30 seconds... (restart \$RESTARTS of 5)"
     sleep 30
 done
-'
+RUNNER_EOF
+chmod +x "$RUNNER"
+
+screen -dmS "$SESSION" bash "$RUNNER"
 
 sleep 2
 if screen -list | grep -q "$SESSION"; then
@@ -67,10 +72,10 @@ if screen -list | grep -q "$SESSION"; then
     echo "  Watch live:     screen -r $SESSION"
     echo "  Detach screen:  Ctrl+A then D"
     echo "  Check status:   bash status.sh"
-    echo "  View logs:      tail -f logs/bot_output.log"
+    echo "  View logs:      tail -f $BOT_DIR/logs/bot_output.log"
     echo "  Stop bot:       bash stop.sh"
     echo ""
-    echo "Check Telegram for startup message in 30 seconds."
+    echo "Check Telegram for startup message in ~30 seconds."
 else
-    echo "❌ Failed to start. Check logs: tail -f logs/bot_output.log"
+    echo "❌ Failed to start. Check logs: tail -f $BOT_DIR/logs/bot_output.log"
 fi
