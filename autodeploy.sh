@@ -99,27 +99,35 @@ Log file not found: $_TODAY_LOG
 Bot may not have started yet or log dir missing."
     fi
 
-    # Push to vps-status branch (orphan branch — never conflicts with code branch)
+    # Push to vps-status branch (never conflicts with code branch)
     cd "$INSTALL_DIR" || exit 0
     git fetch origin vps-status 2>/dev/null || true
 
-    # Write status file and force-push to vps-status branch
-    echo "$_STATUS_CONTENT" > "$INSTALL_DIR/live_status.txt"
+    # Write status file
+    printf '%s\n' "$_STATUS_CONTENT" > "$INSTALL_DIR/live_status.txt"
 
-    # Use a worktree-free approach: update the file directly on vps-status branch
+    # git commit-tree needs author identity — set explicitly so it works on any VPS
+    export GIT_AUTHOR_NAME="kingtrades-vps"
+    export GIT_AUTHOR_EMAIL="vps@kingtrades.local"
+    export GIT_COMMITTER_NAME="kingtrades-vps"
+    export GIT_COMMITTER_EMAIL="vps@kingtrades.local"
+
     _BLOB=$(git hash-object -w "$INSTALL_DIR/live_status.txt" 2>/dev/null)
     if [ -n "$_BLOB" ]; then
-        _TREE=$(git mktree <<EOF
-100644 blob $_BLOB	live_status.txt
-EOF
-)
-        _PARENT=$(git ls-remote origin vps-status 2>/dev/null | cut -f1)
+        _TREE=$(printf '100644 blob %s\tlive_status.txt\n' "$_BLOB" | git mktree 2>/dev/null)
+        _PARENT=$(git ls-remote origin vps-status 2>/dev/null | awk '{print $1}' | head -1)
         if [ -n "$_PARENT" ]; then
             _COMMIT=$(git commit-tree "$_TREE" -p "$_PARENT" -m "status: $_TS_ET" 2>/dev/null)
         else
             _COMMIT=$(git commit-tree "$_TREE" -m "status: $_TS_ET" 2>/dev/null)
         fi
-        git push origin "${_COMMIT}:refs/heads/vps-status" --quiet 2>/dev/null || true
+        if [ -n "$_COMMIT" ]; then
+            git push origin "${_COMMIT}:refs/heads/vps-status" --quiet 2>/dev/null \
+                && echo "[$_TS_ET] Status pushed to vps-status: ${_COMMIT:0:7}" >> "$LOG" \
+                || echo "[$_TS_ET] Status push FAILED (no push creds?)" >> "$LOG"
+        else
+            echo "[$_TS_ET] Status commit-tree failed (git author missing?)" >> "$LOG"
+        fi
     fi
 
     # Clean up temp file
