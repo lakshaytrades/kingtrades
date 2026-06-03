@@ -48,29 +48,15 @@ echo "[fix_vps] Git reset complete."
 # 3. Python dependencies
 # ─────────────────────────────────────────────────────────────
 echo "[fix_vps] Installing/upgrading Python dependencies..."
-
-# Detect if system Python is externally-managed (PEP 668 — Python 3.12+ on Debian/Ubuntu)
-# If so, use --break-system-packages so pip works without a venv.
-PIP_FLAGS="--quiet"
-if python3 -m pip install --dry-run pip 2>&1 | grep -q "externally-managed"; then
-    PIP_FLAGS="--quiet --break-system-packages"
-    echo "[fix_vps] Detected externally-managed Python — using --break-system-packages"
-fi
-
-python3 -m pip install $PIP_FLAGS --upgrade pip 2>/dev/null || true
-
-# Check and install pandas-ta
+# Always use --break-system-packages on this VPS (Python 3.12 Debian externally-managed)
+PIP="pip3 --quiet --break-system-packages"
+$PIP install --upgrade pip 2>/dev/null || true
 if ! python3 -c "import pandas_ta" 2>/dev/null; then
-    echo "[fix_vps] pandas-ta not installed — installing..."
-    python3 -m pip install $PIP_FLAGS pandas-ta
-else
-    echo "[fix_vps] pandas-ta already installed."
+    echo "[fix_vps] Installing pandas-ta..."
+    $PIP install pandas-ta
 fi
-
-# Install requirements.txt if present
 if [ -f "$BOT_DIR/requirements.txt" ]; then
-    python3 -m pip install $PIP_FLAGS -r "$BOT_DIR/requirements.txt"
-    echo "[fix_vps] requirements.txt installed."
+    $PIP install -r "$BOT_DIR/requirements.txt" && echo "[fix_vps] requirements.txt OK."
 fi
 
 # ─────────────────────────────────────────────────────────────
