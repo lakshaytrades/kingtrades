@@ -194,7 +194,8 @@ class BarCache:
                                     if len(df) > 1 and yf_interval in ("1m", "5m", "15m", "60m"):
                                         _bar_mins = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}.get(yf_interval, 5)
                                         _now_et = datetime.now(ET)
-                                        if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                                        _eod_keep = _now_et.hour > 15 or (_now_et.hour == 15 and _now_et.minute >= 50)
+                                        if not _eod_keep and (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
                                             df = df.iloc[:-1]
                                     if df.empty:
                                         continue
@@ -279,11 +280,13 @@ class BarCache:
                         df.index = df.index.tz_convert("America/New_York")
                         df.index.name = "timestamp"
                         df.sort_index(inplace=True)
-                        # Drop incomplete last bar
+                        # Drop incomplete last bar — but keep it after 15:50 ET so EOD
+                        # exits have current price data for the last 5 minutes of trading.
                         if len(df) > 1:
                             _bar_mins = _BAR_MINS.get(interval, 5)
                             _now_et = datetime.now(ET)
-                            if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                            _eod_keep = _now_et.hour > 15 or (_now_et.hour == 15 and _now_et.minute >= 50)
+                            if not _eod_keep and (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
                                 df = df.iloc[:-1]
                         if not df.empty:
                             new_data[(sym, interval)] = df

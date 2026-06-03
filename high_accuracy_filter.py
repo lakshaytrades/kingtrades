@@ -763,13 +763,16 @@ class HighAccuracyFilter:
                     # Penalty proportional to overextension (harder penalty the further we are)
                     _penalty = min(20.0, round((_dist_atr - _vwap_max_atr) * 8.0, 1))
                     signal_score = max(0.0, signal_score - _penalty)
+                    # Apply the same penalty to result.final_score so it stays consistent
+                    result.final_score = max(0.0, result.final_score - _penalty)
                     result.gates_passed.append(f'VWAP_EXT({_dist_atr:.1f}ATR,-{_penalty:.0f})')
-                    if signal_score < self.min_score:
+                    # Use result.final_score (authoritative) — signal_score may be stale after Gate 11 penalty
+                    if result.final_score < self.min_score:
                         result.passed = False
                         result.gates_failed.append(f'VWAP_CHASE({_dist_atr:.1f}ATR)')
                         result.rejection_reason = (
                             f'[GATE-27 VWAP_EXT] {symbol} — price {_dist_atr:.1f}×ATR from VWAP '
-                            f'(max {_vwap_max_atr}×). Score penalized -{_penalty:.0f} → {signal_score:.0f} '
+                            f'(max {_vwap_max_atr}×). Score penalized -{_penalty:.0f} → {result.final_score:.0f} '
                             f'< {self.min_score:.0f} min. Chasing exhaustion move.'
                         )
                         self._log_rejection(result, signal_score, direction)

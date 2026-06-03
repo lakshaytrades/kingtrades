@@ -910,6 +910,12 @@ class SignalGenerator:
             except Exception as _vix:
                 logger.debug(f"[suppressed] vix_sizing: {_vix}")
 
+            # ── Booster cap: track base score so total booster delta cannot exceed +25 ──
+            # 40+ booster modules can stack uncapped, pushing weak signals to false conviction.
+            # Hard cap: booster contribution (delta from base) is limited to +25 points.
+            _booster_base_score = filter_result.final_score
+            _BOOSTER_MAX_DELTA  = 25.0
+
             # ── Gemini news sentiment adjustment (runs FIRST — adjusts score before LLM sees it) ─
             try:
                 from gemini_filter import get_gemini_filter
@@ -1511,6 +1517,15 @@ class SignalGenerator:
                         logger.info(f"[{format_ist_timestamp()}] {symbol}: LLM REDUCE — {reason}")
                 except Exception as e:
                     logger.debug(f"LLM gate error: {e}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +25 ────
+            _booster_delta = filter_result.final_score - _booster_base_score
+            if _booster_delta > _BOOSTER_MAX_DELTA:
+                filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)
+                logger.debug(
+                    f"{symbol}: booster cap applied — delta was {_booster_delta:+.1f}, "
+                    f"clamped to +{_BOOSTER_MAX_DELTA:.0f} → score {filter_result.final_score:.1f}"
+                )
 
             # ── Final execution gate: after ALL boosters, require ≥70 ────────────
             # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can

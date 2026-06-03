@@ -362,8 +362,24 @@ class AlpacaExecutor:
                     result.order_type = "LIMIT"
                     break
                 else:
-                    # Cancel unfilled limit, retry with wider or MARKET
+                    # Cancel timed-out limit; check for partial fill before retrying
                     self.cancel_order(result.order_id)
+                    # Re-fetch order status to get any partial fill that happened before cancel
+                    _canceled_status = get_data_fetcher().get_order_status(result.order_id)
+                    _already_filled = int(float(_canceled_status.get("filled_qty", 0) or 0))
+                    if _already_filled > 0:
+                        # Partial fill occurred — use it; retry only for remaining qty
+                        _partial_price = float(_canceled_status.get("filled_avg_price", 0) or 0)
+                        if _partial_price > 0:
+                            result.fill_price = _partial_price
+                            result.quantity   = _already_filled
+                            result.order_type = "LIMIT"
+                            logger.info(
+                                f"[{format_ist_timestamp()}] Partial fill on canceled LIMIT: "
+                                f"{symbol} filled_qty={_already_filled} @ ${_partial_price:.2f}; "
+                                f"skipping retry for remaining {quantity - _already_filled} shares"
+                            )
+                            break   # treat partial fill as the result; do not double the position
                     logger.info(
                         f"[{format_ist_timestamp()}] Limit not filled in {self.LIMIT_WAIT_SECONDS}s "
                         f"— attempt {attempt+2}"
