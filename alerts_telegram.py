@@ -362,27 +362,32 @@ class TelegramAlerter:
         try:
             if image_buf:
                 image_buf.seek(0)
+                post_data: dict = {"chat_id": self.chat_id, "caption": text[:1024]}
+                if parse_mode:
+                    post_data["parse_mode"] = parse_mode
                 resp = _requests.post(
                     f"{self._api_base}/sendPhoto",
-                    data={
-                        "chat_id":    self.chat_id,
-                        "caption":    text[:1024],
-                        "parse_mode": parse_mode,
-                    },
+                    data=post_data,
                     files={"photo": ("chart.png", image_buf, "image/png")},
                     timeout=15,
                 )
             else:
+                msg_data: dict = {"chat_id": self.chat_id, "text": text[:4096]}
+                if parse_mode:
+                    msg_data["parse_mode"] = parse_mode
                 resp = _requests.post(
                     f"{self._api_base}/sendMessage",
-                    json={
-                        "chat_id":    self.chat_id,
-                        "text":       text[:4096],
-                        "parse_mode": parse_mode,
-                    },
+                    json=msg_data,
                     timeout=15,
                 )
             if not resp.ok:
+                # Retry as plain text when Telegram rejects our formatting
+                # (e.g. dynamic content like "<" in rejection reasons breaks HTML mode)
+                if resp.status_code == 400 and "parse entities" in resp.text and parse_mode:
+                    import re as _re
+                    plain = _re.sub(r'<[^>]+>', '', text)  # strip HTML tags
+                    logger.debug("Telegram parse-entities error — retrying as plain text")
+                    return self._send(plain, image_buf, parse_mode="")
                 logger.warning(f"Telegram API {resp.status_code}: {resp.text[:200]}")
                 return False
             return True

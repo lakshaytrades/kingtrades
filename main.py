@@ -1664,11 +1664,15 @@ class TradingBot:
                     )
                     # Build gate rejection summary so user knows WHY — not just "no signals"
                     try:
+                        import html as _html
                         _stats = self.signal_gen.ha_filter.get_stats()
                         _top_rejects = _stats.get("top_rejection_reasons", [])
                         _reject_str = ""
                         if _top_rejects:
-                            _reject_str = "\nTop blocks: " + " | ".join(_top_rejects[:3])
+                            # HTML-escape rejection reasons — they contain "<" from comparisons
+                            # like "score 62 < 65 required" which breaks Telegram HTML mode
+                            _escaped = [_html.escape(r) for r in _top_rejects[:3]]
+                            _reject_str = "\nTop blocks: " + " | ".join(_escaped)
                         self.alerter.send_html(
                             f"📊 <b>Market Scan — No Signals</b>\n"
                             f"Scanned {len(watchlist)} stocks at "
