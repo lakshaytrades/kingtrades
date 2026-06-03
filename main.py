@@ -1114,6 +1114,82 @@ class TradingBot:
             )
 
     # --------------------------------------------------------
+    # DIAGNOSTIC HELPERS (called by /debug and /fixdata Telegram commands)
+    # --------------------------------------------------------
+
+    def _build_debug_message(self) -> str:
+        import html as _h
+        lines = ["🔧 <b>LIVE DIAGNOSTIC</b>", "━━━━━━━━━━━━━━━━"]
+        try:
+            q = self.fetcher.get_quote("SPY") if self.fetcher else None
+            ltp = q.get("ltp", 0) if q else 0
+            lines.append(f"{'✅' if ltp > 0 else '❌'} Alpaca API: {'SPY $' + str(round(ltp, 2)) if ltp > 0 else 'NO DATA'}")
+        except Exception as e:
+            lines.append(f"❌ Alpaca API: {_h.escape(str(e))[:60]}")
+        try:
+            import yfinance as yf
+            _t = yf.download("SPY", period="1d", progress=False, auto_adjust=True)
+            lines.append(f"{'✅' if not _t.empty else '❌'} yfinance: {'working' if not _t.empty else 'BLOCKED'}")
+        except Exception:
+            lines.append("❌ yfinance: BLOCKED (403/error)")
+        try:
+            from data_fetch_alpaca import get_bar_cache
+            bc = get_bar_cache()
+            n5m = sum(1 for (s, i) in bc._cache if i == "5minute")
+            age = int(time.monotonic() - bc._last_refresh.get("5minute", 0))
+            lines.append(f"📊 BarCache: {n5m} symbols loaded, refreshed {age}s ago")
+        except Exception as e:
+            lines.append(f"❌ BarCache: {_h.escape(str(e))[:60]}")
+        try:
+            if self.signal_gen:
+                s = self.signal_gen.ha_filter.get_stats()
+                lines.append(f"🔍 Scan: {s['total_evaluated']} eval | {s['passed']} passed | {s['rejected']} rejected")
+                top = s.get("top_rejection_reasons", [])[:2]
+                if top:
+                    lines.append(f"🚫 Top blocks: {' | '.join(_h.escape(r[:40]) for r in top)}")
+                nms = s.get("near_miss_symbols", [])
+                if nms:
+                    parts = [f"<b>{_h.escape(n['symbol'])}</b> {n['score']:.0f}→{_h.escape(n['gate'][:15])}" for n in nms]
+                    lines.append(f"🎯 Nearest: {' | '.join(parts)}")
+        except Exception as e:
+            lines.append(f"❌ Scan stats: {_h.escape(str(e))[:60]}")
+        try:
+            from market_internals import get_market_internals
+            b = get_market_internals().get_breadth()
+            lines.append(f"📈 Breadth: {b.get('breadth_score', 0):.0f}/100 ({b.get('bias', '?')})")
+        except Exception:
+            lines.append("❌ Market internals: unavailable")
+        try:
+            lines.append(f"⚙️ min_score={config.MIN_SIGNAL_SCORE} | capital=${config.MAX_DAILY_CAPITAL:,.0f} | live={config.LIVE_TRADING_ENABLED}")
+        except Exception:
+            pass
+        try:
+            import glob, os as _os
+            logs = sorted(glob.glob(_os.path.join(config.LOG_DIR, "trading_*.log")))
+            if logs:
+                with open(logs[-1]) as fh:
+                    tail = fh.readlines()[-5:]
+                lines.append("📝 Last log:")
+                for ln in tail:
+                    lines.append(f"<code>{_h.escape(ln.strip()[:100])}</code>")
+        except Exception:
+            pass
+        return "\n".join(lines)
+
+    def _force_barcache_refresh(self) -> str:
+        try:
+            from data_fetch_alpaca import get_bar_cache
+            bc = get_bar_cache()
+            for iv in ("5minute", "15minute", "1hour"):
+                bc._last_refresh[iv] = 0.0
+            bc._refresh_interval("5minute", 5)
+            n5m = sum(1 for (s, i) in bc._cache if i == "5minute")
+            return f"🔄 <b>BarCache force-refreshed</b>\n{n5m} symbols loaded @ 5min\nBot uses fresh data on next scan."
+        except Exception as e:
+            import html as _h
+            return f"❌ BarCache refresh failed: {_h.escape(str(e))[:200]}"
+
+    # --------------------------------------------------------
     # MAIN TRADING LOOP
     # --------------------------------------------------------
 
@@ -3595,10 +3671,14 @@ class TradingBot:
                                 _reply(status)
                             elif cmd == "/report":
                                 self.alerter.send_eod_report(self.risk_manager)
+                            elif cmd == "/debug":
+                                _reply(self._build_debug_message())
+                            elif cmd == "/fixdata":
+                                _reply(self._force_barcache_refresh())
                             elif cmd == "/start":
                                 _reply(f"✅ <b>KingTrades running</b>\nChat ID: <code>{chat_id}</code>")
                             else:
-                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill")
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /debug /fixdata")
                         except Exception as _ce:
                             logger.warning(f"Telegram cmd {cmd} error: {_ce}")
                             _reply(f"Error: {_ce}")
@@ -3871,6 +3951,16 @@ class TradingBot:
             except Exception as e:
                 self.alerter.send_text(f"Capital data error: {e}")
 
+        async def cmd_debug(update, context):
+            if not _auth(update):
+                return
+            self.alerter.send_html(self._build_debug_message())
+
+        async def cmd_fixdata(update, context):
+            if not _auth(update):
+                return
+            self.alerter.send_html(self._force_barcache_refresh())
+
         # ── Retry loop — handles Render deployment overlap ───────────────
         max_retries = 15
         retry_delay = 20  # seconds; old instance usually dies within 30s
@@ -3983,6 +4073,8 @@ class TradingBot:
                 app.add_handler(CommandHandler("capital",    cmd_capital))
                 app.add_handler(CommandHandler("relogin",    cmd_relogin))
                 app.add_handler(CommandHandler("health",     cmd_health))
+                app.add_handler(CommandHandler("debug",      cmd_debug))
+                app.add_handler(CommandHandler("fixdata",    cmd_fixdata))
 
                 # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
                 async def _tg_error_handler(update, context):
@@ -4499,6 +4591,180 @@ class TradingBot:
             self._watchlist_cache = wl
             self._watchlist_cache_time = now
         return self._watchlist_cache
+
+    # --------------------------------------------------------
+    # DEBUG DIAGNOSTICS
+    # --------------------------------------------------------
+
+    def _build_debug_message(self) -> str:
+        """
+        Build a comprehensive diagnostic message for the /debug Telegram command.
+        Tests Alpaca API, yfinance, BarCache stats, scan stats, market breadth,
+        config values, and last log lines.
+        """
+        import html as _html
+        lines = [
+            "🔧 <b>LIVE DIAGNOSTIC</b>",
+            "━━━━━━━━━━━━━━━━",
+        ]
+
+        # 1. Alpaca API connectivity test
+        try:
+            q = self.fetcher.get_quote("SPY") if self.fetcher else {}
+            ltp = q.get("ltp", 0) if q else 0
+            if ltp and ltp > 0:
+                lines.append(f"✅ Alpaca API: connected (SPY ${ltp:.2f})")
+            else:
+                lines.append("❌ Alpaca API: no data returned")
+        except Exception as _ae:
+            lines.append(f"❌ Alpaca API: error ({_html.escape(str(_ae)[:60])})")
+
+        # 2. yfinance connectivity test
+        try:
+            import yfinance as _yf
+            _df_yf = _yf.download("SPY", period="1d", progress=False)
+            if _df_yf is not None and not _df_yf.empty:
+                lines.append("✅ yfinance: working")
+            else:
+                lines.append("❌ yfinance: BLOCKED (empty response)")
+        except Exception as _yfe:
+            _yf_err = str(_yfe)
+            if "403" in _yf_err or "Forbidden" in _yf_err:
+                lines.append("❌ yfinance: BLOCKED (403)")
+            else:
+                lines.append(f"❌ yfinance: error ({_html.escape(_yf_err[:60])})")
+
+        # 3. BarCache stats
+        try:
+            from data_fetch_alpaca import get_bar_cache
+            import time as _t_mod
+            bc = get_bar_cache()
+            n_keys = sum(1 for (_, iv) in bc._cache.keys() if iv == "5minute")
+            last_refresh = bc._last_refresh.get("5minute", 0)
+            elapsed_s = int(_t_mod.monotonic() - last_refresh) if last_refresh > 0 else -1
+            if elapsed_s < 0:
+                lines.append(f"📊 BarCache: {n_keys} symbols loaded, never refreshed")
+            else:
+                lines.append(f"📊 BarCache: {n_keys} symbols loaded, last refresh {elapsed_s}s ago")
+        except Exception as _bce:
+            lines.append(f"📊 BarCache: unavailable ({_html.escape(str(_bce)[:60])})")
+
+        # 4. Scan stats
+        try:
+            if self.signal_gen and hasattr(self.signal_gen, "ha_filter"):
+                _fs = self.signal_gen.ha_filter.get_stats()
+                _eval = _fs.get("evaluated", 0)
+                _pass = _fs.get("passed", 0)
+                _rej  = _fs.get("rejected", 0)
+                lines.append(f"🔍 Scan stats: {_eval} evaluated, {_pass} passed, {_rej} rejected")
+            else:
+                lines.append("🔍 Scan stats: signal_gen not ready")
+        except Exception as _se:
+            lines.append(f"🔍 Scan stats: error ({_html.escape(str(_se)[:60])})")
+
+        # 5. Market breadth
+        try:
+            from market_internals import get_market_internals
+            _mi = get_market_internals()
+            _br = _mi.get_breadth()
+            _score = _br.get("breadth_score", 0)
+            _bias = _br.get("bias", "NEUTRAL")
+            _long_ok = "LONG_OK" if _br.get("long_ok") else ""
+            _short_ok = "SHORT_OK" if _br.get("short_ok") else ""
+            _state = "/".join(filter(None, [_long_ok, _short_ok])) or "NEUTRAL"
+            lines.append(f"📈 Market breadth: {_score:.0f}/100 ({_bias} | {_state})")
+        except Exception as _mbe:
+            lines.append(f"📈 Market breadth: error ({_html.escape(str(_mbe)[:60])})")
+
+        # 6. Top rejection reasons
+        try:
+            if self.signal_gen and hasattr(self.signal_gen, "ha_filter"):
+                _fs = self.signal_gen.ha_filter.get_stats()
+                _top = _fs.get("top_rejection_reasons", [])
+                if _top:
+                    lines.append("🚫 Top blocks: " + " | ".join(_html.escape(r) for r in _top[:3]))
+                _near = _fs.get("near_miss_symbols", [])
+                if _near:
+                    _parts = []
+                    for _ns in _near[:3]:
+                        _g = _ns["gate"].replace("INDICATOR_FLOOR","IND_FLOOR").replace("FALSE_BREAKOUT","FB")[:18]
+                        _parts.append(f"{_html.escape(_ns['symbol'])} {_ns['score']:.0f}pts→{_html.escape(_g)}")
+                    lines.append("🎯 Near-miss: " + " | ".join(_parts))
+        except Exception:
+            pass
+
+        # 7. Config snapshot
+        try:
+            _min_s = getattr(self.signal_gen, "min_score", config.MIN_SIGNAL_SCORE) if self.signal_gen else config.MIN_SIGNAL_SCORE
+            _cap   = config.MAX_DAILY_CAPITAL
+            _live  = config.LIVE_TRADING_ENABLED
+            lines.append(
+                f"⚙️ Config: min_score={_min_s:.0f}, capital=${_cap:,.0f}, live={'True' if _live else 'False'}"
+            )
+        except Exception:
+            pass
+
+        # 8. Last 5 log lines
+        try:
+            from pathlib import Path as _Path
+            import glob as _glob
+            _log_pattern = str(_Path(config.LOG_DIR) / "trading_*.log")
+            _log_files = sorted(_glob.glob(_log_pattern))
+            if _log_files:
+                _log_path = _log_files[-1]
+                with open(_log_path, "r", errors="replace") as _lf:
+                    _all_lines = _lf.readlines()
+                _last5 = [l.rstrip() for l in _all_lines[-5:]]
+                lines.append("📝 Last 5 log lines:")
+                for _ll in _last5:
+                    lines.append(f"  <code>{_html.escape(_ll[-120:])}</code>")
+            else:
+                lines.append("📝 Last 5 log lines: no log file found")
+        except Exception as _loge:
+            lines.append(f"📝 Last 5 log lines: error ({_html.escape(str(_loge)[:60])})")
+
+        return "\n".join(lines)
+
+    def _force_barcache_refresh(self) -> str:
+        """
+        Force an immediate BarCache refresh for all intervals.
+        Called by the /fixdata Telegram command.
+        """
+        import html as _html
+        try:
+            from data_fetch_alpaca import get_bar_cache
+            import config as _cfg
+
+            bc = get_bar_cache()
+            _intervals = ["5minute", "15minute", "1hour"]
+            _results = {}
+
+            for _iv in _intervals:
+                try:
+                    # Reset last_refresh to force a fresh download
+                    bc._last_refresh[_iv] = 0.0
+                    bc._refresh_interval(_iv, 5)
+                    _cnt = sum(1 for (_, v) in bc._cache.keys() if v == _iv)
+                    _results[_iv] = _cnt
+                except Exception as _re:
+                    _results[_iv] = f"error: {_html.escape(str(_re)[:60])}"
+
+            # Detect if Alpaca fallback is enabled (config attribute)
+            _alpaca_fb = getattr(_cfg, "BARCACHE_ALPACA_FALLBACK", True)
+
+            # Total unique symbols in cache
+            _total_syms = len(set(sym for (sym, _) in bc._cache.keys()))
+
+            lines = [
+                "🔄 <b>BarCache Force Refresh Complete</b>",
+                f"yfinance: {_results.get('5minute', 0)}/5min | {_results.get('15minute', 0)}/15min | {_results.get('1hour', 0)}/1hr symbols loaded",
+                f"Alpaca fallback: {'enabled' if _alpaca_fb else 'disabled'}",
+                f"BarCache ready: {_total_syms} symbols × {len(_intervals)} intervals",
+            ]
+            return "\n".join(lines)
+
+        except Exception as e:
+            return f"🔄 Forcing BarCache refresh...\n❌ Error: {_html.escape(str(e)[:120])}"
 
     # --------------------------------------------------------
     # CLEANUP
