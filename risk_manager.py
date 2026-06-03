@@ -95,6 +95,7 @@ class Position:
     price_history: list = field(default_factory=list)  # Rolling 20 bars for swing detection
     realized_pnl: float = 0.0        # Accumulated P&L from T1/T2 partial exits
     time_stop_minutes: int = 30      # Exit if flat/losing after this many minutes (0=disabled)
+    is_bracket: bool = False         # True when entered via bracket order (Alpaca manages child SL/TP)
 
     def __post_init__(self):
         if not self.entry_time:

@@ -738,7 +738,7 @@ class AlpacaDataFetcher:
             for p in positions:
                 result.append({
                     "symbol":     p.symbol,
-                    "qty":        int(p.qty),
+                    "qty":        float(p.qty),  # float: fractional shares have qty like 0.5
                     "side":       p.side.value,   # "long" or "short"
                     "avg_price":  float(p.avg_entry_price),
                     "market_val": float(p.market_value or 0),

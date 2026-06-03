@@ -2166,8 +2166,17 @@ class TradingBot:
                     qty = sizing.get("quantity", 0)
                     if qty <= 0:
                         result = self.executor.place_entry_order(signal)  # fractional fallback
+                        use_bracket = False
                     else:
                         result = self.executor.place_bracket_order(signal, qty)
+                        if not result.success:
+                            # Bracket rejected (API error, wash-trade check, etc.) — fall back
+                            logger.warning(
+                                f"[{format_ist_timestamp()}] Bracket failed for "
+                                f"{signal.symbol} ({result.message}) — falling back to plain entry"
+                            )
+                            use_bracket = False
+                            result = self.executor.place_entry_order(signal)
                 else:
                     result = self.executor.place_entry_order(signal)
                 if not result.success:
@@ -2206,6 +2215,7 @@ class TradingBot:
                             quality_grade     = getattr(signal, "quality_grade", "B"),
                             size_multiplier   = getattr(signal, "size_multiplier", 1.0),
                             time_stop_minutes = getattr(signal, "time_stop_minutes", 30),
+                            is_bracket        = use_bracket,
                         )
                         self.risk_manager.add_position(position)
                     except Exception as _pe:
@@ -2660,17 +2670,24 @@ class TradingBot:
                         # Update local position quantity
                         pos.quantity = max(0, pos.quantity - exit_qty)
                         # Cancel old stop order (wrong qty after partial) + place new one
-                        if pos.sl_order_id:
-                            try:
-                                self.executor.cancel_order(pos.sl_order_id)
-                            except Exception as _cse:
-                                logger.warning(f"cancel_order(stop) failed on partial exit {pos.symbol}: {_cse}")
-                        if pos.quantity > 0:
-                            new_sl_oid = self.executor.place_stop_order(
-                                pos.symbol, pos.quantity, action["new_sl"], pos.direction
-                            )
-                            pos.sl_order_id = new_sl_oid
-                        self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
+                        if getattr(pos, "is_bracket", False):
+                            # Bracket positions: Alpaca manages child SL internally.
+                            # Do NOT place or cancel broker-side stops — that would break
+                            # the bracket structure and could cause double-sell on same bar.
+                            # SL level is tracked in-memory only; trailing stop still applies.
+                            pass
+                        else:
+                            if pos.sl_order_id:
+                                try:
+                                    self.executor.cancel_order(pos.sl_order_id)
+                                except Exception as _cse:
+                                    logger.warning(f"cancel_order(stop) failed on partial exit {pos.symbol}: {_cse}")
+                            if pos.quantity > 0:
+                                new_sl_oid = self.executor.place_stop_order(
+                                    pos.symbol, pos.quantity, action["new_sl"], pos.direction
+                                )
+                                pos.sl_order_id = new_sl_oid
+                            self.executor.modify_stop_loss(pos.symbol, action["new_sl"])
                         actual_fill = result.fill_price if result.fill_price > 0 else ltp
                         pnl_partial = (actual_fill - pos.entry_price) * exit_qty if pos.direction == "LONG" else (pos.entry_price - actual_fill) * exit_qty
                         # Accumulate partial P&L for correct win/loss determination at final close
@@ -3083,7 +3100,7 @@ class TradingBot:
             groww_syms: set = {
                 str(p.get("symbol", ""))
                 for p in groww_raw
-                if int(p.get("qty", 0)) != 0
+                if float(p.get("qty", 0)) != 0
             }
             bot_syms: set = set(self.risk_manager.state.positions.keys())
 
