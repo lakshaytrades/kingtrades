@@ -193,6 +193,7 @@ class HighAccuracyFilter:
         self._pass_count    = 0
         self._reject_count  = 0
         self.min_score      = min_score
+        self._current_symbol: str = ""
         # Score histogram: buckets of 5 (40–45, 45–50, ... 95–100)
         self._score_histogram: Dict[str, int] = {}
 
@@ -237,6 +238,7 @@ class HighAccuracyFilter:
         fetcher=None,                                        # Gate 17/18: data fetcher for daily HTF + spread
     ) -> FilterResult:
 
+        self._current_symbol = symbol
         result = FilterResult()
         now_et = get_current_ist_time()   # Returns ET after IST=ET alias in utils.py
 
@@ -1909,11 +1911,14 @@ class HighAccuracyFilter:
         _bucket = f"{int(score // 5) * 5}-{int(score // 5) * 5 + 4}"
         self._score_histogram[_bucket] = self._score_histogram.get(_bucket, 0) + 1
         self._rejection_log.append({
-            "time_et":   format_ist_timestamp(),
-            "score":     score,
-            "direction": direction,
-            "reason":    result.rejection_reason,
-            "window":    result.time_window,
+            "symbol":       self._current_symbol,
+            "time_et":      format_ist_timestamp(),
+            "score":        score,
+            "direction":    direction,
+            "reason":       result.rejection_reason,
+            "gate":         result.gates_failed[-1] if result.gates_failed else "unknown",
+            "gates_passed": len(result.gates_passed),
+            "window":       result.time_window,
         })
         logger.debug(
             f"[{format_ist_timestamp()}] FILTERED OUT: {result.rejection_reason}"
@@ -1929,6 +1934,24 @@ class HighAccuracyFilter:
             if r.get("score", 0) >= self.min_score - 8
             and "PATTERN_SCORE" in r.get("reason", "")
         )
+        # Top 3 near-miss symbols sorted by gates passed (furthest through filter), then score
+        _recent = [r for r in self._rejection_log[-300:] if r.get("score", 0) >= self.min_score - 15]
+        _recent_sorted = sorted(_recent, key=lambda x: (-x.get("gates_passed", 0), -x.get("score", 0)))
+        _near_syms = []
+        _seen_syms: set = set()
+        for _r in _recent_sorted:
+            _sym = _r.get("symbol", "")
+            if _sym and _sym not in _seen_syms:
+                _seen_syms.add(_sym)
+                _near_syms.append({
+                    "symbol":       _sym,
+                    "score":        round(_r.get("score", 0), 1),
+                    "gate":         _r.get("gate", "?"),
+                    "reason":       _r.get("reason", "")[:55],
+                    "gates_passed": _r.get("gates_passed", 0),
+                })
+                if len(_near_syms) >= 3:
+                    break
         return {
             "total_evaluated":       total,
             "passed":                self._pass_count,
@@ -1937,6 +1960,7 @@ class HighAccuracyFilter:
             "top_rejection_reasons": self._top_rejections(),
             "score_histogram":       hist_sorted,
             "near_miss_count":       near_miss,   # rejected but within 8 pts of threshold
+            "near_miss_symbols":     _near_syms,
             "min_score":             self.min_score,
         }
 

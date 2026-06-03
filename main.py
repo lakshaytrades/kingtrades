@@ -1673,12 +1673,21 @@ class TradingBot:
                             # like "score 62 < 65 required" which breaks Telegram HTML mode
                             _escaped = [_html.escape(r) for r in _top_rejects[:3]]
                             _reject_str = "\nTop blocks: " + " | ".join(_escaped)
+                        _near_syms = _stats.get("near_miss_symbols", [])
+                        _near_str = ""
+                        if _near_syms:
+                            _parts = []
+                            for _ns in _near_syms:
+                                _gate_short = _ns["gate"].replace("INDICATOR_FLOOR","IND_FLOOR").replace("FALSE_BREAKOUT","FB")[:20]
+                                _parts.append(f"<b>{_html.escape(_ns['symbol'])}</b> {_ns['score']:.0f}pts → {_html.escape(_gate_short)}")
+                            _near_str = "\nNearest: " + " | ".join(_parts)
                         self.alerter.send_html(
                             f"📊 <b>Market Scan — No Signals</b>\n"
                             f"Scanned {len(watchlist)} stocks at "
                             f"{now_ist.strftime('%H:%M')} ET\n"
                             f"Min score required: {eff_min_score:.0f} | Day: {day_name}"
-                            f"{_reject_str}\n"
+                            f"{_reject_str}"
+                            f"{_near_str}\n"
                             f"<i>Bot is running — waiting for quality setups</i>"
                         )
                     except Exception as _e:
