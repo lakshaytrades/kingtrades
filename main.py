@@ -1120,74 +1120,112 @@ class TradingBot:
     def _build_debug_message(self) -> str:
         import html as _h
         lines = ["🔧 <b>LIVE DIAGNOSTIC</b>", "━━━━━━━━━━━━━━━━"]
+        # Alpaca API
         try:
             q = self.fetcher.get_quote("SPY") if self.fetcher else None
             ltp = q.get("ltp", 0) if q else 0
-            lines.append(f"{'✅' if ltp > 0 else '❌'} Alpaca API: {'SPY $' + str(round(ltp, 2)) if ltp > 0 else 'NO DATA'}")
+            lines.append(f"{'✅' if ltp > 0 else '❌'} Alpaca API: {'connected (SPY $' + str(round(ltp, 2)) + ')' if ltp > 0 else 'error'}")
         except Exception as e:
-            lines.append(f"❌ Alpaca API: {_h.escape(str(e))[:60]}")
+            lines.append(f"❌ Alpaca API: error ({_h.escape(str(e))[:60]})")
+        # yfinance
         try:
             import yfinance as yf
             _t = yf.download("SPY", period="1d", progress=False, auto_adjust=True)
-            lines.append(f"{'✅' if not _t.empty else '❌'} yfinance: {'working' if not _t.empty else 'BLOCKED'}")
-        except Exception:
-            lines.append("❌ yfinance: BLOCKED (403/error)")
+            if _t is not None and not _t.empty:
+                lines.append("✅ yfinance: working")
+            else:
+                lines.append("❌ yfinance: BLOCKED (empty response)")
+        except Exception as _yfe:
+            _s = str(_yfe)
+            if "403" in _s or "Forbidden" in _s:
+                lines.append("❌ yfinance: BLOCKED (403)")
+            else:
+                lines.append(f"❌ yfinance: error ({_h.escape(_s[:60])})")
+        # BarCache
         try:
             from data_fetch_alpaca import get_bar_cache
             bc = get_bar_cache()
-            n5m = sum(1 for (s, i) in bc._cache if i == "5minute")
-            age = int(time.monotonic() - bc._last_refresh.get("5minute", 0))
-            lines.append(f"📊 BarCache: {n5m} symbols loaded, refreshed {age}s ago")
+            n5m = sum(1 for (_, iv) in bc._cache.keys() if iv == "5minute")
+            _lr = bc._last_refresh.get("5minute", 0)
+            age = int(time.monotonic() - _lr) if _lr > 0 else -1
+            _age_str = f"{age}s ago" if age >= 0 else "never"
+            lines.append(f"📊 BarCache: {n5m} symbols loaded, last refresh {_age_str}")
         except Exception as e:
             lines.append(f"❌ BarCache: {_h.escape(str(e))[:60]}")
+        # Scan stats
         try:
             if self.signal_gen:
                 s = self.signal_gen.ha_filter.get_stats()
-                lines.append(f"🔍 Scan: {s['total_evaluated']} eval | {s['passed']} passed | {s['rejected']} rejected")
-                top = s.get("top_rejection_reasons", [])[:2]
+                _eval = s.get("total_evaluated", s.get("evaluated", 0))
+                lines.append(f"🔍 Scan stats: {_eval} evaluated, {s.get('passed', 0)} passed, {s.get('rejected', 0)} rejected")
+                top = s.get("top_rejection_reasons", [])[:3]
                 if top:
                     lines.append(f"🚫 Top blocks: {' | '.join(_h.escape(r[:40]) for r in top)}")
                 nms = s.get("near_miss_symbols", [])
                 if nms:
-                    parts = [f"<b>{_h.escape(n['symbol'])}</b> {n['score']:.0f}→{_h.escape(n['gate'][:15])}" for n in nms]
-                    lines.append(f"🎯 Nearest: {' | '.join(parts)}")
+                    _parts = []
+                    for n in nms[:3]:
+                        _g = n["gate"].replace("INDICATOR_FLOOR","IND_FLOOR").replace("FALSE_BREAKOUT","FB")[:18]
+                        _parts.append(f"<b>{_h.escape(n['symbol'])}</b> {n['score']:.0f}pts→{_h.escape(_g)}")
+                    lines.append(f"🎯 Near-miss: {' | '.join(_parts)}")
         except Exception as e:
             lines.append(f"❌ Scan stats: {_h.escape(str(e))[:60]}")
+        # Market breadth
         try:
             from market_internals import get_market_internals
             b = get_market_internals().get_breadth()
-            lines.append(f"📈 Breadth: {b.get('breadth_score', 0):.0f}/100 ({b.get('bias', '?')})")
+            _long_ok  = "LONG_OK"  if b.get("long_ok")  else ""
+            _short_ok = "SHORT_OK" if b.get("short_ok") else ""
+            _state = "/".join(filter(None, [_long_ok, _short_ok])) or "NEUTRAL"
+            lines.append(f"📈 Market breadth: {b.get('breadth_score', 0):.0f}/100 ({b.get('bias', '?')} | {_state})")
         except Exception:
             lines.append("❌ Market internals: unavailable")
+        # Config
         try:
-            lines.append(f"⚙️ min_score={config.MIN_SIGNAL_SCORE} | capital=${config.MAX_DAILY_CAPITAL:,.0f} | live={config.LIVE_TRADING_ENABLED}")
+            _min_s = getattr(self.signal_gen, "min_score", config.MIN_SIGNAL_SCORE) if self.signal_gen else config.MIN_SIGNAL_SCORE
+            lines.append(f"⚙️ Config: min_score={_min_s:.0f}, capital=${config.MAX_DAILY_CAPITAL:,.0f}, live={config.LIVE_TRADING_ENABLED}")
         except Exception:
             pass
+        # Last 5 log lines
         try:
             import glob, os as _os
             logs = sorted(glob.glob(_os.path.join(config.LOG_DIR, "trading_*.log")))
             if logs:
-                with open(logs[-1]) as fh:
+                with open(logs[-1], errors="replace") as fh:
                     tail = fh.readlines()[-5:]
-                lines.append("📝 Last log:")
+                lines.append("📝 Last 5 log lines:")
                 for ln in tail:
-                    lines.append(f"<code>{_h.escape(ln.strip()[:100])}</code>")
+                    lines.append(f"<code>{_h.escape(ln.strip()[-120:])}</code>")
         except Exception:
             pass
         return "\n".join(lines)
 
     def _force_barcache_refresh(self) -> str:
+        import html as _h
         try:
             from data_fetch_alpaca import get_bar_cache
             bc = get_bar_cache()
-            for iv in ("5minute", "15minute", "1hour"):
-                bc._last_refresh[iv] = 0.0
-            bc._refresh_interval("5minute", 5)
-            n5m = sum(1 for (s, i) in bc._cache if i == "5minute")
-            return f"🔄 <b>BarCache force-refreshed</b>\n{n5m} symbols loaded @ 5min\nBot uses fresh data on next scan."
+            _intervals = ["5minute", "15minute", "1hour"]
+            _results = {}
+            for iv in _intervals:
+                try:
+                    bc._last_refresh[iv] = 0.0
+                    bc._refresh_interval(iv, 5)
+                    _results[iv] = sum(1 for (_, v) in bc._cache.keys() if v == iv)
+                except Exception as _re:
+                    _results[iv] = f"err({_h.escape(str(_re)[:40])})"
+            _total = len(set(sym for (sym, _) in bc._cache.keys()))
+            _yf_n = _results.get("5minute", 0)
+            _alpaca_fb = "enabled"  # Alpaca fallback is now always compiled in
+            lines = [
+                "🔄 <b>BarCache Force Refresh Complete</b>",
+                f"yfinance: {_yf_n}/5min | {_results.get('15minute', 0)}/15min | {_results.get('1hour', 0)}/1hr symbols loaded",
+                f"Alpaca fallback: {_alpaca_fb}",
+                f"BarCache ready: {_total} symbols × {len(_intervals)} intervals",
+            ]
+            return "\n".join(lines)
         except Exception as e:
-            import html as _h
-            return f"❌ BarCache refresh failed: {_h.escape(str(e))[:200]}"
+            return f"🔄 Forcing BarCache refresh...\n❌ Error: {_h.escape(str(e)[:200])}"
 
     # --------------------------------------------------------
     # MAIN TRADING LOOP
