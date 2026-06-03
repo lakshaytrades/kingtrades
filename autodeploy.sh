@@ -99,37 +99,41 @@ Log file not found: $_TODAY_LOG
 Bot may not have started yet or log dir missing."
     fi
 
-    # Push to vps-status branch (never conflicts with code branch)
+    # Push live_status.txt via GitHub Contents API (same token as git pull, no push-creds needed)
     cd "$INSTALL_DIR" || exit 0
-    git fetch origin vps-status 2>/dev/null || true
 
-    # Write status file
-    printf '%s\n' "$_STATUS_CONTENT" > "$INSTALL_DIR/live_status.txt"
+    # Extract GitHub PAT from remote URL (https://TOKEN@github.com/... or https://TOKEN:x-oauth-basic@...)
+    _REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
+    _GH_TOKEN=$(printf '%s' "$_REMOTE_URL" | sed -n 's|https://\([^:@]*\)[^@]*@github\.com.*|\1|p' 2>/dev/null || true)
 
-    # git commit-tree needs author identity — set explicitly so it works on any VPS
-    export GIT_AUTHOR_NAME="kingtrades-vps"
-    export GIT_AUTHOR_EMAIL="vps@kingtrades.local"
-    export GIT_COMMITTER_NAME="kingtrades-vps"
-    export GIT_COMMITTER_EMAIL="vps@kingtrades.local"
-
-    _BLOB=$(git hash-object -w "$INSTALL_DIR/live_status.txt" 2>/dev/null)
-    if [ -n "$_BLOB" ]; then
-        _TREE=$(printf '100644 blob %s\tlive_status.txt\n' "$_BLOB" | git mktree 2>/dev/null)
-        _PARENT=$(git ls-remote origin vps-status 2>/dev/null | awk '{print $1}' | head -1)
-        if [ -n "$_PARENT" ]; then
-            _COMMIT=$(git commit-tree "$_TREE" -p "$_PARENT" -m "status: $_TS_ET" 2>/dev/null)
-        else
-            _COMMIT=$(git commit-tree "$_TREE" -m "status: $_TS_ET" 2>/dev/null)
-        fi
-        if [ -n "$_COMMIT" ]; then
-            git push origin "${_COMMIT}:refs/heads/vps-status" --quiet 2>/dev/null \
-                && echo "[$_TS_ET] Status pushed to vps-status: ${_COMMIT:0:7}" >> "$LOG" \
-                || echo "[$_TS_ET] Status push FAILED (no push creds?)" >> "$LOG"
-        else
-            echo "[$_TS_ET] Status commit-tree failed (git author missing?)" >> "$LOG"
-        fi
+    # Fallback: read from ~/.git-credentials
+    if [ -z "$_GH_TOKEN" ] && [ -f "$HOME/.git-credentials" ]; then
+        _GH_TOKEN=$(grep "github\.com" "$HOME/.git-credentials" 2>/dev/null \
+            | sed -n 's|.*://\([^:@]*\)[^@]*@.*|\1|p' | head -1 || true)
     fi
 
-    # Clean up temp file
-    rm -f "$INSTALL_DIR/live_status.txt"
+    if [ -n "$_GH_TOKEN" ]; then
+        # Base64-encode content (no line wrapping)
+        _B64=$(printf '%s' "$_STATUS_CONTENT" | base64 | tr -d '\n' 2>/dev/null || true)
+        # Get current file SHA for update (empty on first create)
+        _FILE_SHA=$(curl -sf \
+            -H "Authorization: token $_GH_TOKEN" \
+            "https://api.github.com/repos/lakshaytrades/kingtrades/contents/live_status.txt?ref=vps-status" \
+            2>/dev/null | grep '"sha"' | head -1 | sed 's/.*"sha": "\([^"]*\)".*/\1/' || true)
+        if [ -n "$_FILE_SHA" ]; then
+            _API_BODY="{\"message\":\"status: $_TS_ET\",\"content\":\"$_B64\",\"sha\":\"$_FILE_SHA\",\"branch\":\"vps-status\"}"
+        else
+            _API_BODY="{\"message\":\"status: $_TS_ET\",\"content\":\"$_B64\",\"branch\":\"vps-status\"}"
+        fi
+        curl -sf -X PUT \
+            -H "Authorization: token $_GH_TOKEN" \
+            -H "Content-Type: application/json" \
+            -d "$_API_BODY" \
+            "https://api.github.com/repos/lakshaytrades/kingtrades/contents/live_status.txt" \
+            > /dev/null 2>&1 \
+            && echo "[$_TS_ET] Status pushed via API OK" >> "$LOG" \
+            || echo "[$_TS_ET] Status API push FAILED" >> "$LOG"
+    else
+        echo "[$_TS_ET] Status push skipped: no GitHub token found in remote URL" >> "$LOG"
+    fi
 fi
