@@ -1795,7 +1795,11 @@ class HighAccuracyFilter:
                 return True, ""
             spread_pct = (ask - bid) / mid * 100
             if spread_pct > 2.0:
-                # Likely stale IEX quote — real spread can't be >2% on a liquid stock
+                # Stale IEX quote — any stock above $5 cannot have a real >2% spread
+                # during regular market hours. IEX reports pre/post-market bid/ask for
+                # many NYSE/NASDAQ stocks; mid > $5 is the definitive guard.
+                if mid > 5.0:
+                    return True, ""  # fail open — stale IEX quote
                 daily_vol = float(quote.get("daily_volume", 0) or quote.get("volume", 0) or 0)
                 if daily_vol > 2_000_000:
                     return True, ""  # fail open — stale quote, not a real wide spread

@@ -4529,6 +4529,8 @@ class _SuppressYFNoise(logging.Filter):
         "Invalid Crumb",
         "<!doctype html",
         "<html>",
+        "possibly delisted",   # ^VIX has no intraday bars — not a real delisting
+        "$VIX",                # some yfinance versions log "$VIX" for index errors
     )
     def filter(self, record):
         msg = record.getMessage()
