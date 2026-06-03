@@ -279,7 +279,7 @@ DEFAULT_WATCHLIST = [
     # ── Leveraged ETFs — 2-3x index (strongest momentum signals) ──────────
     "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL", "TECL", "FNGU",
     # ── Fintech / high-growth finance ──────────────────────────────────────
-    "SOFI", "HOOD", "AFRM", "SQ", "PYPL", "V", "MA",
+    "SOFI", "HOOD", "AFRM", "PYPL", "V", "MA",
     # ── Big finance & energy ────────────────────────────────────────────────
     "JPM", "GS", "MS", "BAC", "XOM", "CVX", "OXY", "SLB", "MPC",
     # ── Biotech / healthcare momentum ──────────────────────────────────────

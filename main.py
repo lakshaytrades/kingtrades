@@ -2018,7 +2018,31 @@ class TradingBot:
                     continue
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
-                result = self.executor.place_entry_order(signal)
+                # Live trading: use bracket orders (entry+SL+TP in one atomic order)
+                # to avoid Alpaca's "potential wash trade" rejection on separate stop orders.
+                use_bracket = (
+                    config.LIVE_TRADING_ENABLED
+                    and getattr(signal, "stop_loss", 0) > 0
+                    and getattr(signal, "target_1", 0) > 0
+                )
+                if use_bracket:
+                    sizing = self.risk_manager.calculate_position_size(
+                        symbol          = signal.symbol,
+                        entry_price     = signal.entry_price,
+                        stop_loss       = signal.stop_loss,
+                        direction       = signal.direction,
+                        size_multiplier = getattr(signal, "size_multiplier", 1.0),
+                        signal_rr       = getattr(signal, "risk_reward", 2.0),
+                        quality_grade   = getattr(signal, "quality_grade", "B"),
+                        atr             = getattr(signal, "atr", 0.0),
+                    )
+                    qty = sizing.get("quantity", 0)
+                    if qty <= 0:
+                        result = self.executor.place_entry_order(signal)  # fractional fallback
+                    else:
+                        result = self.executor.place_bracket_order(signal, qty)
+                else:
+                    result = self.executor.place_entry_order(signal)
                 if not result.success:
                     logger.error(
                         f"[{format_ist_timestamp()}] ORDER REJECTED: {signal.symbol} "
@@ -2070,17 +2094,19 @@ class TradingBot:
                     except Exception:
                         pass
 
-                    # Place broker-side stop order (SL enforced even if bot crashes)
-                    try:
-                        sl_order_id = self.executor.place_stop_order(
-                            signal.symbol, fill_qty, signal.stop_loss, signal.direction
-                        )
-                        if sl_order_id:
-                            pos_ref = self.risk_manager.state.positions.get(signal.symbol)
-                            if pos_ref:
-                                pos_ref.sl_order_id = sl_order_id
-                    except Exception as _se:
-                        logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
+                    # Place broker-side stop order only when NOT using bracket order
+                    # (bracket orders already contain the stop loss and take profit)
+                    if not use_bracket:
+                        try:
+                            sl_order_id = self.executor.place_stop_order(
+                                signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                            )
+                            if sl_order_id:
+                                pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                                if pos_ref:
+                                    pos_ref.sl_order_id = sl_order_id
+                        except Exception as _se:
+                            logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
                     # Send Telegram alert with chart + trade fill notification
                     try:
