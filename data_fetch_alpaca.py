@@ -117,7 +117,6 @@ class BarCache:
 
     def _refresh_interval(self, interval: str, lookback_days: int):
         try:
-            import yfinance as yf
             import config
 
             # Include sector ETFs and market reference symbols so market_internals
@@ -125,98 +124,92 @@ class BarCache:
             _REFERENCE_SYMBOLS = [
                 "XLK", "XLF", "XLE", "XLY", "XLI", "XLB", "XLV", "XLU", "XLRE", "XLC", "XLP",
                 "SPY", "QQQ", "IWM", "DIA", "UVXY",
-                # Note: ^VIX is a CBOE index — not downloadable by yfinance for intraday bars;
-                # use UVXY as VIX proxy instead.
             ]
             symbols = list(config.WATCHLIST)
             for s in _REFERENCE_SYMBOLS:
                 if s not in symbols:
                     symbols.append(s)
-            yf_interval = {
-                "5minute": "5m", "15minute": "15m",
-                "1hour": "60m", "60minute": "60m",
-                "1minute": "1m", "day": "1d",
-            }.get(interval, "5m")
 
-            days = min(lookback_days + 2, 260 if yf_interval == "1d" else 59)
-            t0 = _time.monotonic()
-            _dl_kwargs = dict(
-                auto_adjust=True, progress=False, threads=False,
-                group_by="ticker",
-            )
-            if _YF_SESSION is not None:
-                _dl_kwargs["session"] = _YF_SESSION
-
-            # Chunk into batches of 25 to avoid Yahoo Finance rate limits on large requests
-            CHUNK = 25
-            chunks = [symbols[i:i+CHUNK] for i in range(0, len(symbols), CHUNK)]
             new_data: Dict[Tuple[str, str], pd.DataFrame] = {}
+            t0 = _time.monotonic()
 
-            for chunk in chunks:
+            # ── Alpaca PRIMARY ───────────────────────────────────────────────────
+            # Alpaca is always authenticated (it's our broker) — use it as primary.
+            # This guarantees data even when Yahoo Finance blocks the server IP.
+            try:
+                alpaca_count = self._fetch_alpaca_bars(interval, lookback_days, symbols, new_data)
+                logger.info(f"[BarCache] Alpaca primary: {alpaca_count}/{len(symbols)} symbols loaded")
+            except Exception as _ae:
+                logger.warning(f"[BarCache] Alpaca primary error: {_ae}")
+                alpaca_count = 0
+
+            # ── yfinance SUPPLEMENT ─────────────────────────────────────────────
+            # Fill in any symbols Alpaca missed (rate-limited, delisted, or free-plan gaps).
+            _missing = [s for s in symbols if (s, interval) not in new_data]
+            if _missing:
                 try:
-                    raw = yf.download(
-                        chunk, period=f"{days}d", interval=yf_interval,
-                        **_dl_kwargs,
-                    )
-                    if raw is None or raw.empty:
-                        continue
+                    import yfinance as yf
+                    yf_interval = {
+                        "5minute": "5m", "15minute": "15m",
+                        "1hour": "60m", "60minute": "60m",
+                        "1minute": "1m", "day": "1d",
+                    }.get(interval, "5m")
+                    days = min(lookback_days + 2, 260 if yf_interval == "1d" else 59)
+                    _dl_kwargs = dict(auto_adjust=True, progress=False, threads=False, group_by="ticker")
+                    if _YF_SESSION is not None:
+                        _dl_kwargs["session"] = _YF_SESSION
 
-                    for sym in chunk:
+                    CHUNK = 25
+                    yf_count = 0
+                    chunks = [_missing[i:i+CHUNK] for i in range(0, len(_missing), CHUNK)]
+                    for chunk in chunks:
                         try:
-                            # Handle both yfinance MultiIndex structures:
-                            # older: (Ticker, Price)  — group_by="ticker"
-                            # newer: (Price, Ticker)  — default
-                            if len(chunk) == 1:
-                                df = raw.copy()
-                            else:
-                                lvl0 = list(raw.columns.get_level_values(0))
-                                lvl1 = list(raw.columns.get_level_values(1))
-                                if sym in lvl0:
-                                    df = raw[sym].copy()          # (Ticker, Price)
-                                elif sym in lvl1:
-                                    df = raw.xs(sym, axis=1, level=1).copy()  # (Price, Ticker)
-                                else:
-                                    continue
-
-                            df.columns = [c.lower() for c in df.columns]
-                            needed = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
-                            if len(needed) < 5:
+                            raw = yf.download(chunk, period=f"{days}d", interval=yf_interval, **_dl_kwargs)
+                            if raw is None or raw.empty:
                                 continue
-                            df = df[needed].dropna()
-                            if df.index.tz is None:
-                                df.index = df.index.tz_localize("America/New_York")
-                            else:
-                                df.index = df.index.tz_convert("America/New_York")
-                            df.index.name = "timestamp"
-                            df.sort_index(inplace=True)
-                            # Drop any bar that started less than one bar-length ago —
-                            # it's incomplete and will have artificially low volume,
-                            # causing false 0.1x volume_ratio rejections.
-                            if len(df) > 1 and yf_interval in ("1m", "5m", "15m", "60m"):
-                                _bar_mins = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}.get(yf_interval, 5)
-                                _now_et = datetime.now(ET)
-                                _last_start = df.index[-1]
-                                _age_secs = (_now_et - _last_start).total_seconds()
-                                if _age_secs < _bar_mins * 60:
-                                    df = df.iloc[:-1]  # drop the incomplete bar
-                            if df.empty:
-                                continue
-                            new_data[(sym, interval)] = df
-                        except Exception:
-                            pass
-                except Exception as _ce:
-                    logger.debug(f"BarCache chunk download failed ({interval}): {_ce}")
+                            for sym in chunk:
+                                try:
+                                    if len(chunk) == 1:
+                                        df = raw.copy()
+                                    else:
+                                        lvl0 = list(raw.columns.get_level_values(0))
+                                        lvl1 = list(raw.columns.get_level_values(1))
+                                        if sym in lvl0:
+                                            df = raw[sym].copy()
+                                        elif sym in lvl1:
+                                            df = raw.xs(sym, axis=1, level=1).copy()
+                                        else:
+                                            continue
+                                    df.columns = [c.lower() for c in df.columns]
+                                    needed = [c for c in ["open", "high", "low", "close", "volume"] if c in df.columns]
+                                    if len(needed) < 5:
+                                        continue
+                                    df = df[needed].dropna()
+                                    if df.index.tz is None:
+                                        df.index = df.index.tz_localize("America/New_York")
+                                    else:
+                                        df.index = df.index.tz_convert("America/New_York")
+                                    df.index.name = "timestamp"
+                                    df.sort_index(inplace=True)
+                                    if len(df) > 1 and yf_interval in ("1m", "5m", "15m", "60m"):
+                                        _bar_mins = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}.get(yf_interval, 5)
+                                        _now_et = datetime.now(ET)
+                                        if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                                            df = df.iloc[:-1]
+                                    if df.empty:
+                                        continue
+                                    new_data[(sym, interval)] = df
+                                    yf_count += 1
+                                except Exception:
+                                    pass
+                        except Exception as _ce:
+                            logger.debug(f"BarCache yfinance chunk failed ({interval}): {_ce}")
+                    if yf_count > 0:
+                        logger.info(f"[BarCache] yfinance supplement: {yf_count} additional symbols")
+                except Exception as _yfe:
+                    logger.debug(f"[BarCache] yfinance supplement error: {_yfe}")
 
             elapsed = _time.monotonic() - t0
-
-            # ── Alpaca bar fallback ──────────────────────────────────────────────
-            # If yfinance returned < 10% of expected symbols, switch to Alpaca bars.
-            # This handles the case where Yahoo Finance blocks the server IP (403).
-            if len(new_data) < len(symbols) * 0.1:
-                logger.info(f"[BarCache] yfinance returned {len(new_data)}/{len(symbols)} symbols — switching to Alpaca bar API")
-                alpaca_count = self._fetch_alpaca_bars(interval, lookback_days, symbols, new_data)
-                logger.info(f"[BarCache] Alpaca fallback: {alpaca_count} symbols fetched")
-
             with self._lock:
                 self._cache.update(new_data)
             self._last_refresh[interval] = _time.monotonic()
@@ -229,7 +222,7 @@ class BarCache:
 
 
     def _fetch_alpaca_bars(self, interval: str, lookback_days: int, symbols: list, new_data: dict) -> int:
-        """Fetch OHLCV bars from Alpaca Markets data API. Used as yfinance fallback."""
+        """Fetch OHLCV bars from Alpaca Markets data API. Primary data source."""
         try:
             from alpaca.data.requests import StockBarsRequest
             from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
@@ -249,6 +242,8 @@ class BarCache:
             tf = _TF_MAP.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
             data_client = get_auth_manager().get_data_client()
             start = _dt.now(ET) - _td(days=min(lookback_days + 2, 30))
+            # End 16 min ago — valid for both free SIP (15-min delay) and paid Unlimited plans
+            end = _dt.now(ET) - _td(minutes=16)
 
             count = 0
             CHUNK = 50  # Alpaca handles bulk requests efficiently
@@ -262,12 +257,15 @@ class BarCache:
                         symbol_or_symbols=chunk,
                         timeframe=tf,
                         start=start,
-                        end=_dt.now(ET),
+                        end=end,
                         adjustment="split",
                     )
                     resp = data_client.get_stock_bars(req)
+                    # BarSet in alpaca-py 0.43+ is a BaseDataSet (Pydantic model),
+                    # NOT a dict — access via .data attribute.
+                    bar_dict = resp.data if hasattr(resp, "data") else {}
                     for sym in chunk:
-                        bars = resp.get(sym) or []
+                        bars = bar_dict.get(sym) or []
                         if not bars:
                             continue
                         records = [
@@ -295,7 +293,7 @@ class BarCache:
 
             return count
         except Exception as e:
-            logger.warning(f"[BarCache] Alpaca fallback failed: {e}")
+            logger.warning(f"[BarCache] Alpaca primary failed: {e}")
             return 0
 
 
