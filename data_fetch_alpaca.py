@@ -124,7 +124,9 @@ class BarCache:
             # and breadth calculations work — these are NOT added to the trading watchlist.
             _REFERENCE_SYMBOLS = [
                 "XLK", "XLF", "XLE", "XLY", "XLI", "XLB", "XLV", "XLU", "XLRE", "XLC", "XLP",
-                "SPY", "QQQ", "IWM", "DIA", "UVXY", "VIX",
+                "SPY", "QQQ", "IWM", "DIA", "UVXY",
+                # Note: ^VIX is a CBOE index — not downloadable by yfinance for intraday bars;
+                # use UVXY as VIX proxy instead.
             ]
             symbols = list(config.WATCHLIST)
             for s in _REFERENCE_SYMBOLS:
@@ -181,17 +183,24 @@ class BarCache:
                             if len(needed) < 5:
                                 continue
                             df = df[needed].dropna()
-                            # Drop the current in-progress bar (volume=0) to prevent false volume_ratio=0
-                            if len(df) > 1 and df["volume"].iloc[-1] == 0:
-                                df = df.iloc[:-1]
-                            if df.empty:
-                                continue
                             if df.index.tz is None:
                                 df.index = df.index.tz_localize("America/New_York")
                             else:
                                 df.index = df.index.tz_convert("America/New_York")
                             df.index.name = "timestamp"
                             df.sort_index(inplace=True)
+                            # Drop any bar that started less than one bar-length ago —
+                            # it's incomplete and will have artificially low volume,
+                            # causing false 0.1x volume_ratio rejections.
+                            if len(df) > 1 and yf_interval in ("1m", "5m", "15m", "60m"):
+                                _bar_mins = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}.get(yf_interval, 5)
+                                _now_et = datetime.now(ET)
+                                _last_start = df.index[-1]
+                                _age_secs = (_now_et - _last_start).total_seconds()
+                                if _age_secs < _bar_mins * 60:
+                                    df = df.iloc[:-1]  # drop the incomplete bar
+                            if df.empty:
+                                continue
                             new_data[(sym, interval)] = df
                         except Exception:
                             pass
