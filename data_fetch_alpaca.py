@@ -31,27 +31,9 @@ from price_stream import get_price_stream
 
 logger = logging.getLogger(__name__)
 
-# ── yfinance browser session (bypasses Yahoo Finance VPS/datacenter IP blocks) ──
-def _make_yf_session():
-    try:
-        import requests
-        s = requests.Session()
-        s.headers.update({
-            "User-Agent": (
-                "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) "
-                "Chrome/124.0.0.0 Safari/537.36"
-            ),
-            "Accept":          "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-            "Accept-Language": "en-US,en;q=0.9",
-            "Accept-Encoding": "gzip, deflate, br",
-            "Connection":      "keep-alive",
-        })
-        return s
-    except Exception:
-        return None
-
-_YF_SESSION = _make_yf_session()  # browser-UA session to avoid VPS IP blocks
+# yfinance 1.3+ uses curl_cffi internally with impersonate="chrome" — do NOT pass
+# a requests.Session (causes YFDataException). Let yfinance manage its own session.
+_YF_SESSION = None
 
 # ET timezone for market hours and bar timestamps
 try:

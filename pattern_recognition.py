@@ -19,7 +19,8 @@ try:
     import pandas_ta as ta
 except ImportError:
     ta = None
-    logging.warning("pandas_ta not installed. Run: pip install pandas-ta")
+    # pandas_ta requires Python ≥3.12; pure-pandas fallback below is used automatically.
+    logging.debug("pandas_ta not available — using built-in pure-pandas indicator fallback")
 
 from utils import format_ist_timestamp
 
