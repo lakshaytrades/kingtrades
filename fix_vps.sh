@@ -48,15 +48,19 @@ echo "[fix_vps] Git reset complete."
 # 3. Python dependencies
 # ─────────────────────────────────────────────────────────────
 echo "[fix_vps] Installing/upgrading Python dependencies..."
-# Always use --break-system-packages on this VPS (Python 3.12 Debian externally-managed)
-PIP="pip3 --quiet --break-system-packages"
-$PIP install --upgrade pip 2>/dev/null || true
+# Try --break-system-packages first (pip >= 23), fall back to plain pip3
+_pip_install() {
+    pip3 --quiet --break-system-packages "$@" 2>/dev/null \
+    || pip3 --quiet "$@" 2>/dev/null \
+    || true
+}
+_pip_install install --upgrade pip
 if ! python3 -c "import pandas_ta" 2>/dev/null; then
     echo "[fix_vps] Installing pandas-ta..."
-    $PIP install pandas-ta
+    _pip_install install pandas-ta
 fi
 if [ -f "$BOT_DIR/requirements.txt" ]; then
-    $PIP install -r "$BOT_DIR/requirements.txt" && echo "[fix_vps] requirements.txt OK."
+    _pip_install install -r "$BOT_DIR/requirements.txt" && echo "[fix_vps] requirements.txt OK."
 fi
 
 # ─────────────────────────────────────────────────────────────
@@ -100,11 +104,11 @@ if [ ! -f "$AUTODEPLOY_TIMER" ]; then
     echo "[fix_vps] Creating $AUTODEPLOY_TIMER..."
     cat > "$AUTODEPLOY_TIMER" << EOF
 [Unit]
-Description=KingTrades Auto-Deploy Timer (hourly code update check)
+Description=KingTrades Auto-Deploy Timer (5-min code update check)
 
 [Timer]
-OnBootSec=5min
-OnUnitActiveSec=1h
+OnBootSec=2min
+OnUnitActiveSec=5min
 Unit=kingtrades-deploy.service
 
 [Install]
