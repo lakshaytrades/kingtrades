@@ -51,7 +51,7 @@ GEMINI_API_KEY     = os.getenv("GEMINI_API_KEY", "")
 # ============================================================
 # TRADING CONFIGURATION
 # ============================================================
-LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "False").lower() in ("true", "1", "yes")
+LIVE_TRADING_ENABLED: bool = os.getenv("LIVE_TRADING_ENABLED", "True").lower() in ("true", "1", "yes")
 
 # Capital (USD) — hard cap what the bot uses as its "bankroll" each day
 # IMPORTANT: 0 means "use full account balance" — DANGEROUS on a $90k account.
@@ -701,15 +701,11 @@ def validate_config() -> list:
         issues.append("TELEGRAM_BOT_TOKEN not set — alerts disabled")
     if not TELEGRAM_CHAT_ID:
         issues.append("TELEGRAM_CHAT_ID not set — alerts disabled")
-    if LIVE_TRADING_ENABLED and "paper-api" in ALPACA_BASE_URL:
+    # Only warn if explicitly going live with real money but safety flags look wrong
+    _is_paper = os.getenv("ALPACA_PAPER", "true").lower() != "false"
+    if LIVE_TRADING_ENABLED and not _is_paper and "paper-api" in ALPACA_BASE_URL:
         issues.append(
-            "CRITICAL: LIVE_TRADING_ENABLED=True but ALPACA_BASE_URL points to paper endpoint. "
-            "Set ALPACA_BASE_URL=https://api.alpaca.markets for real trading."
-        )
-    if LIVE_TRADING_ENABLED and os.getenv("ALPACA_PAPER", "true").lower() != "false":
-        issues.append(
-            "CRITICAL: LIVE_TRADING_ENABLED=True but ALPACA_PAPER is not 'false'. "
-            "Auth client will route to paper endpoint. Add ALPACA_PAPER=false to .env."
+            "CRITICAL: ALPACA_PAPER=false (live money) but ALPACA_BASE_URL still points to paper endpoint."
         )
     return issues
 

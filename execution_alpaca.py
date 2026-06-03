@@ -449,7 +449,7 @@ class AlpacaExecutor:
 
             api_key    = os.getenv("ALPACA_API_KEY", "")
             api_secret = os.getenv("ALPACA_SECRET_KEY", "")
-            paper      = not self.live_enabled   # consistent with rest of executor
+            paper      = os.getenv("ALPACA_PAPER", "true").lower() != "false"
             trading_client = TradingClient(api_key, api_secret, paper=paper)
 
             side = OrderSide.BUY if direction == "LONG" else OrderSide.SELL
