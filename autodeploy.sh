@@ -27,19 +27,19 @@ git reset --hard "origin/$BRANCH" --quiet 2>/dev/null
 
 AFTER=$(git rev-parse HEAD 2>/dev/null)
 
-# Always kill orphan processes and clean PID — prevents "another instance running" loop
-pkill -f "python3 main.py" 2>/dev/null || true
-pkill -f "python3 -m main" 2>/dev/null || true
-rm -f "$INSTALL_DIR/logs/kingtrades.pid" 2>/dev/null || true
-sleep 2
-
 if [ "$BEFORE" = "$AFTER" ]; then
-    # No new code — but still make sure the service is running
+    # No new code — only restart if the service crashed (do NOT kill a healthy bot)
     if ! systemctl is-active --quiet "$SERVICE"; then
         systemctl restart "$SERVICE" 2>/dev/null || true
     fi
     exit 0
 fi
+
+# New code detected — safe to kill and redeploy
+pkill -f "python3 main.py" 2>/dev/null || true
+pkill -f "python3 -m main" 2>/dev/null || true
+rm -f "$INSTALL_DIR/logs/kingtrades.pid" 2>/dev/null || true
+sleep 2
 
 TIMESTAMP=$(TZ="America/New_York" date '+%Y-%m-%d %H:%M:%S ET')
 SHORT_HASH=$(echo "$AFTER" | cut -c1-7)
