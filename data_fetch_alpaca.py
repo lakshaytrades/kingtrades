@@ -208,6 +208,15 @@ class BarCache:
                     logger.debug(f"BarCache chunk download failed ({interval}): {_ce}")
 
             elapsed = _time.monotonic() - t0
+
+            # ── Alpaca bar fallback ──────────────────────────────────────────────
+            # If yfinance returned < 10% of expected symbols, switch to Alpaca bars.
+            # This handles the case where Yahoo Finance blocks the server IP (403).
+            if len(new_data) < len(symbols) * 0.1:
+                logger.info(f"[BarCache] yfinance returned {len(new_data)}/{len(symbols)} symbols — switching to Alpaca bar API")
+                alpaca_count = self._fetch_alpaca_bars(interval, lookback_days, symbols, new_data)
+                logger.info(f"[BarCache] Alpaca fallback: {alpaca_count} symbols fetched")
+
             with self._lock:
                 self._cache.update(new_data)
             self._last_refresh[interval] = _time.monotonic()
@@ -217,6 +226,77 @@ class BarCache:
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] BarCache refresh {interval} failed: {e}")
+
+
+    def _fetch_alpaca_bars(self, interval: str, lookback_days: int, symbols: list, new_data: dict) -> int:
+        """Fetch OHLCV bars from Alpaca Markets data API. Used as yfinance fallback."""
+        try:
+            from alpaca.data.requests import StockBarsRequest
+            from alpaca.data.timeframe import TimeFrame, TimeFrameUnit
+            from auth_alpaca import get_auth_manager
+            from datetime import datetime as _dt, timedelta as _td
+
+            _TF_MAP = {
+                "1minute":  TimeFrame(1,  TimeFrameUnit.Minute),
+                "5minute":  TimeFrame(5,  TimeFrameUnit.Minute),
+                "15minute": TimeFrame(15, TimeFrameUnit.Minute),
+                "1hour":    TimeFrame(1,  TimeFrameUnit.Hour),
+                "60minute": TimeFrame(1,  TimeFrameUnit.Hour),
+                "day":      TimeFrame(1,  TimeFrameUnit.Day),
+            }
+            _BAR_MINS = {"1minute": 1, "5minute": 5, "15minute": 15, "1hour": 60, "60minute": 60, "day": 1440}
+
+            tf = _TF_MAP.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
+            data_client = get_auth_manager().get_data_client()
+            start = _dt.now(ET) - _td(days=min(lookback_days + 2, 30))
+
+            count = 0
+            CHUNK = 50  # Alpaca handles bulk requests efficiently
+
+            for i in range(0, len(symbols), CHUNK):
+                chunk = [s for s in symbols[i:i+CHUNK] if (s, interval) not in new_data]
+                if not chunk:
+                    continue
+                try:
+                    req = StockBarsRequest(
+                        symbol_or_symbols=chunk,
+                        timeframe=tf,
+                        start=start,
+                        end=_dt.now(ET),
+                        adjustment="split",
+                    )
+                    resp = data_client.get_stock_bars(req)
+                    for sym in chunk:
+                        bars = resp.get(sym) or []
+                        if not bars:
+                            continue
+                        records = [
+                            {"timestamp": b.timestamp, "open": float(b.open), "high": float(b.high),
+                             "low": float(b.low), "close": float(b.close), "volume": int(b.volume)}
+                            for b in bars
+                        ]
+                        df = pd.DataFrame(records).set_index("timestamp")
+                        if df.index.tz is None:
+                            df.index = df.index.tz_localize("UTC")
+                        df.index = df.index.tz_convert("America/New_York")
+                        df.index.name = "timestamp"
+                        df.sort_index(inplace=True)
+                        # Drop incomplete last bar
+                        if len(df) > 1:
+                            _bar_mins = _BAR_MINS.get(interval, 5)
+                            _now_et = datetime.now(ET)
+                            if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                                df = df.iloc[:-1]
+                        if not df.empty:
+                            new_data[(sym, interval)] = df
+                            count += 1
+                except Exception as _ce:
+                    logger.debug(f"[BarCache] Alpaca chunk {i//CHUNK+1} failed: {_ce}")
+
+            return count
+        except Exception as e:
+            logger.warning(f"[BarCache] Alpaca fallback failed: {e}")
+            return 0
 
 
 _bar_cache: Optional["BarCache"] = None
