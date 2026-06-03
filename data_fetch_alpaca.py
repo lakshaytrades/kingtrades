@@ -120,7 +120,16 @@ class BarCache:
             import yfinance as yf
             import config
 
+            # Include sector ETFs and market reference symbols so market_internals
+            # and breadth calculations work — these are NOT added to the trading watchlist.
+            _REFERENCE_SYMBOLS = [
+                "XLK", "XLF", "XLE", "XLY", "XLI", "XLB", "XLV", "XLU", "XLRE", "XLC", "XLP",
+                "SPY", "QQQ", "IWM", "DIA", "UVXY", "VIX",
+            ]
             symbols = list(config.WATCHLIST)
+            for s in _REFERENCE_SYMBOLS:
+                if s not in symbols:
+                    symbols.append(s)
             yf_interval = {
                 "5minute": "5m", "15minute": "15m",
                 "1hour": "60m", "60minute": "60m",

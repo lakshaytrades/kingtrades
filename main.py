@@ -4514,8 +4514,22 @@ class TradingBot:
 # ============================================================
 
 class _SuppressYFNoise(logging.Filter):
-    """Drop yfinance 404/fundamentals noise for ETFs — not actionable."""
-    _PATTERNS = ("No fundamentals data found", "HTTP Error 404", "No data found for")
+    """Drop yfinance HTTP errors and other noise that isn't actionable.
+
+    401 = stale crumb (auto-retried by yfinance internally)
+    400 = Yahoo rate limit / HTML error page
+    404 = ETF/fund has no fundamentals data
+    """
+    _PATTERNS = (
+        "No fundamentals data found",
+        "HTTP Error 404",
+        "No data found for",
+        "HTTP Error 401",
+        "HTTP Error 400",
+        "Invalid Crumb",
+        "<!doctype html",
+        "<html>",
+    )
     def filter(self, record):
         msg = record.getMessage()
         return not any(p in msg for p in self._PATTERNS)

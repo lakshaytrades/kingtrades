@@ -1777,7 +1777,13 @@ class HighAccuracyFilter:
     def _gate_spread(
         self, symbol: str, fetcher, max_spread_pct: float = 0.15
     ) -> Tuple[bool, str]:
-        """Gate 18: Skip if bid-ask spread > max_spread_pct — market maker trap."""
+        """Gate 18: Skip if bid-ask spread > max_spread_pct — market maker trap.
+
+        Stale-quote guard: if computed spread > 2% but daily volume > 2M, the
+        bid/ask is from a low-activity period (e.g. pre-market IEX quote) and
+        doesn't reflect the real intraday spread — skip the check rather than
+        blocking liquid large-caps with bad IEX data.
+        """
         try:
             quote = fetcher.get_quote(symbol)
             if not quote:
@@ -1788,6 +1794,11 @@ class HighAccuracyFilter:
             if mid <= 0 or bid <= 0 or ask <= 0:
                 return True, ""
             spread_pct = (ask - bid) / mid * 100
+            if spread_pct > 2.0:
+                # Likely stale IEX quote — real spread can't be >2% on a liquid stock
+                daily_vol = float(quote.get("daily_volume", 0) or quote.get("volume", 0) or 0)
+                if daily_vol > 2_000_000:
+                    return True, ""  # fail open — stale quote, not a real wide spread
             if spread_pct > max_spread_pct:
                 return False, f"spread {spread_pct:.2f}% > {max_spread_pct}% limit — market maker trap"
             return True, ""
