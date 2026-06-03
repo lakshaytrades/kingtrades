@@ -154,14 +154,14 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "63.0"))
-                                       # v17.0: pre-filter threshold — institutional boosters (CSM, VWAP reclaim,
-                                       # OFI, futures bias, etc.) add 8-20 pts AFTER the HAF gate, pushing
-                                       # final scores from 63 → 73-85 before execution.
-HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses (v16.0: was 80)
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "60.0"))
+                                       # v20.1: lowered 63→60. Pre-filter feeds the 28-gate HAF system.
+                                       # Boosters (CSM, VWAP, OFI, etc.) add pts after gates. Kept low so
+                                       # gate system — not the pre-filter — is the quality barrier.
+HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
-PREMIUM_SCORE: float = 80.0           # A grade entry (v16.0: was 78)
-FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "65.0"))  # Post-booster execution gate (lowered 70→65)
+PREMIUM_SCORE: float = 80.0           # A grade entry
+FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "60.0"))  # Post-booster gate — matches pre-filter (no dead zone)
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
 ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "18.0"))  # lowered 22→18 for IEX data

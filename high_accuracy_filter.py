@@ -1713,14 +1713,27 @@ class HighAccuracyFilter:
         Fails open (passes) if df_5m is None — never blocks due to missing data.
         """
         try:
-            # Prefer df_5m columns over zero-value direct args (direct args not in evaluate() signature)
-            if df_5m is not None and len(df_5m) >= 2:
+            # Compute indicators directly from raw OHLCV — df_5m has open/high/low/close/volume
+            # but NOT pre-computed columns like macd_hist/ema9/ema21 (those aren't in Alpaca bars).
+            if df_5m is not None and len(df_5m) >= 2 and "close" in df_5m.columns:
+                closes = df_5m["close"].astype(float)
                 last = df_5m.iloc[-1]
-                _rsi   = float(last.get("rsi",  rsi)   or rsi   or 50.0)
-                _mh    = float(last.get("macd_hist", macd_hist) or macd_hist or 0.0)
-                _e9    = float(last.get("ema9",  ema9)  or ema9  or 0.0)
-                _e21   = float(last.get("ema21", ema21) or ema21 or 0.0)
-                _vr    = float(last.get("volume_ratio", volume_ratio) or volume_ratio or 1.0)
+                # RSI: use passed-in value first, else compute from close
+                _rsi = float(rsi) if rsi and rsi > 0 else 50.0
+
+                # EMA9 / EMA21 computed from close prices via pandas ewm
+                _e9  = float(closes.ewm(span=9,  adjust=False).mean().iloc[-1]) if len(closes) >= 9  else 0.0
+                _e21 = float(closes.ewm(span=21, adjust=False).mean().iloc[-1]) if len(closes) >= 21 else 0.0
+
+                # MACD histogram = (EMA12 - EMA26) - EMA9_of_that
+                if len(closes) >= 26:
+                    _macd_line = closes.ewm(span=12, adjust=False).mean() - closes.ewm(span=26, adjust=False).mean()
+                    _sig_line  = _macd_line.ewm(span=9, adjust=False).mean()
+                    _mh = float(_macd_line.iloc[-1] - _sig_line.iloc[-1])
+                else:
+                    _mh = 0.0
+
+                _vr = float(volume_ratio) if volume_ratio and volume_ratio > 0 else 1.0
             else:
                 # No candle data — fail open (never block due to data gap)
                 return True, "no_data_skip"
