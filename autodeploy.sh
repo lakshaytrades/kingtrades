@@ -99,17 +99,13 @@ Log file not found: $_TODAY_LOG
 Bot may not have started yet or log dir missing."
     fi
 
-    # Push live_status.txt via GitHub Contents API (same token as git pull, no push-creds needed)
+    # Push live_status.txt via GitHub Contents API
     cd "$INSTALL_DIR" || exit 0
 
-    # Extract GitHub PAT from remote URL (https://TOKEN@github.com/... or https://TOKEN:x-oauth-basic@...)
-    _REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
-    _GH_TOKEN=$(printf '%s' "$_REMOTE_URL" | sed -n 's|https://\([^:@]*\)[^@]*@github\.com.*|\1|p' 2>/dev/null || true)
-
-    # Fallback: read from ~/.git-credentials
-    if [ -z "$_GH_TOKEN" ] && [ -f "$HOME/.git-credentials" ]; then
-        _GH_TOKEN=$(grep "github\.com" "$HOME/.git-credentials" 2>/dev/null \
-            | sed -n 's|.*://\([^:@]*\)[^@]*@.*|\1|p' | head -1 || true)
+    # Read token from .env (GITHUB_STATUS_TOKEN=ghp_xxx)
+    _GH_TOKEN=""
+    if [ -f "$INSTALL_DIR/.env" ]; then
+        _GH_TOKEN=$(grep "^GITHUB_STATUS_TOKEN=" "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d '"'"'"' ' || true)
     fi
 
     if [ -n "$_GH_TOKEN" ]; then
