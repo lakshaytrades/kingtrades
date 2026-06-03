@@ -260,36 +260,35 @@ ORB_MIN_RANGE_PCT: float = 0.3       # range must be at least 0.3% of price
 ORB_RISK_MULTIPLIER: float = 1.2     # slightly larger size on ORB plays
 
 # ============================================================
-# WATCHLIST — US liquid momentum stocks
+# WATCHLIST — US liquid momentum stocks (v21.0: 75 symbols)
 # ============================================================
 DEFAULT_WATCHLIST = [
-    # ── Mega-cap tech & AI (deepest liquidity, daily 3–8% moves) ──────────
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
-    # ── Semiconductors — highest beta, follow NVDA ─────────────────────────
-    "AMD", "MU", "QCOM", "ARM", "SMCI", "AVGO", "INTC", "MRVL", "ON",
-    "LRCX", "KLAC", "AMAT", "ASML", "TSM", "TXN", "MCHP",
-    # ── AI / Cloud / SaaS high-momentum ────────────────────────────────────
-    "NFLX", "COIN", "PLTR", "MSTR", "CRWD", "PANW", "ZS", "DDOG", "NET",
-    "NOW", "SNOW", "TEAM", "HUBS", "OKTA", "MDB", "GTLB", "U",
-    "AI", "SOUN", "BBAI",
-    # ── Consumer & social momentum ──────────────────────────────────────────
-    "UBER", "SHOP", "ABNB", "MELI", "RBLX", "LYFT", "DASH", "YELP",
-    # ── Crypto / blockchain high-beta ─────────────────────────────────────
-    "MARA", "RIOT", "HUT", "CLSK", "BTBT", "CIFR",
-    # ── Leveraged ETFs — 2-3x index (strongest momentum signals) ──────────
-    "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL", "TECL", "FNGU",
-    # ── Fintech / high-growth finance ──────────────────────────────────────
-    "SOFI", "HOOD", "AFRM", "PYPL", "V", "MA",
-    # ── Big finance & energy ────────────────────────────────────────────────
-    "JPM", "GS", "MS", "BAC", "XOM", "CVX", "OXY", "SLB", "MPC",
-    # ── Biotech / healthcare momentum ──────────────────────────────────────
-    "MRNA", "HIMS", "LLY", "NVO", "VKTX", "RXRX",
-    # ── EV & clean energy ──────────────────────────────────────────────────
-    "RIVN", "LCID", "NIO", "PLUG", "FSLR", "ENPH",
-    # ── Defense & industrials ──────────────────────────────────────────────
-    "LMT", "RTX", "NOC", "GE", "CAT",
+    # ── Mega-cap tech (10) ─────────────────────────────────────────────────
+    "AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA", "AMD", "AVGO", "ORCL",
+    # ── High-beta tech / disruptive (10) ───────────────────────────────────
+    "SMCI", "PLTR", "MSTR", "COIN", "HOOD", "SOFI", "UPST", "AI", "SOUN", "IONQ",
+    # ── Semiconductors (10) ────────────────────────────────────────────────
+    "INTC", "QCOM", "MU", "TSM", "AMAT", "LRCX", "KLAC", "ON", "MRVL", "TXN",
+    # ── Financials (10) ────────────────────────────────────────────────────
+    "JPM", "GS", "BAC", "MS", "WFC", "C", "AXP", "V", "MA", "PYPL",
+    # ── Energy (5) ─────────────────────────────────────────────────────────
+    "XOM", "CVX", "OXY", "SLB", "HAL",
+    # ── Biotech / Healthcare (6) ───────────────────────────────────────────
+    "MRNA", "BNTX", "REGN", "BIIB", "GILD", "LLY",
+    # ── Crypto-adjacent miners (5) ─────────────────────────────────────────
+    "MARA", "RIOT", "CLSK", "CIFR", "HUT",
+    # ── ETFs for regime context (7) ────────────────────────────────────────
+    "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "ARKK",
+    # ── Consumer / Retail (5) ──────────────────────────────────────────────
+    "WMT", "TGT", "COST", "HD", "SBUX",
+    # ── EV / Clean energy (4) ──────────────────────────────────────────────
+    "RIVN", "LCID", "NIO", "PLUG",
+    # ── Additional energy (3) ──────────────────────────────────────────────
+    "MPC", "VLO", "PSX",
 ]
-# 100 symbols — all liquid US stocks with min $1M daily dollar volume.
+# 75 symbols — high-liquidity momentum stocks across 10 sectors.
+# Covers mega-cap tech, semis, financials, energy, biotech, crypto-adjacent,
+# ETF regime indicators, consumer, EV/clean energy.
 # More watchlist = more breakout setups scanned per day = more executable signals.
 
 DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))

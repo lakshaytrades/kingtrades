@@ -27,6 +27,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _MODEL_PATH  = os.path.join(os.path.dirname(__file__), "data", "ml_ensemble_v1.pkl")
+_PRETRAINED_DIR = os.path.join(os.path.dirname(__file__), "data", "ml_pretrained")
 _RETRAIN_AT  = 10   # retrain when live buffer reaches this size
 _ROLL_WINDOW = 20   # rolling window for weight updates
 
@@ -205,8 +206,41 @@ class MLEnsemble:
             except Exception as e:
                 logger.warning(f"ml_ensemble: failed to train {name}: {e}")
 
+    def _load_pretrained(self) -> bool:
+        """
+        Load models pre-trained by pretrain_ml.py from data/ml_pretrained/.
+        Returns True if all 4 model files were loaded successfully.
+        The pre-trained models use real 2yr OHLCV history — far superior to
+        the synthetic anchor-point fallback used on a cold start.
+        """
+        required = {"gbm", "rf", "et", "lr"}
+        try:
+            if not os.path.isdir(_PRETRAINED_DIR):
+                return False
+            loaded: dict = {}
+            for name in required:
+                path = os.path.join(_PRETRAINED_DIR, f"{name}.pkl")
+                if not os.path.exists(path):
+                    logger.debug(f"ml_ensemble: pretrained/{name}.pkl not found")
+                    return False
+                with open(path, "rb") as f:
+                    payload = pickle.load(f)
+                loaded[name] = payload["model"]
+            self._models = loaded
+            self._weights = {k: 1.0 for k in self._models}
+            self._model_history = {k: [] for k in self._models}
+            logger.info(
+                f"ml_ensemble: loaded 4 pre-trained models from {_PRETRAINED_DIR} "
+                "(real 2yr history — skipping synthetic fallback)"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"ml_ensemble: pretrained load failed ({e}), falling back")
+            return False
+
     def _load_or_init(self):
         os.makedirs("data", exist_ok=True)
+        # Priority 1: load live-adapted ensemble (has online learning history)
         try:
             if os.path.exists(_MODEL_PATH):
                 with open(_MODEL_PATH, "rb") as f:
@@ -219,6 +253,12 @@ class MLEnsemble:
                 return
         except Exception as e:
             logger.warning(f"ml_ensemble: could not load model ({e}), retraining")
+        # Priority 2: load pre-trained models from pretrain_ml.py output
+        if self._load_pretrained():
+            self._save()   # persist as live ensemble so next restart is fast
+            self._loaded = True
+            return
+        # Priority 3: fall back to synthetic anchor-point training
         self._build_models()
         X, y = _generate_synthetic_data()
         self._train_all(X, y)

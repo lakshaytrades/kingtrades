@@ -27,6 +27,7 @@ import numpy as np
 
 import config as _config
 from utils import format_ist_timestamp, get_current_ist_time, get_current_et_time, format_currency
+import garch_sizing as _garch_sizing
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -642,6 +643,29 @@ class RiskManager:
         if _base_risk_qty > 0 and quantity > _base_risk_qty * 2:
             quantity = _base_risk_qty * 2
             logger.debug(f"Multiplier cap: clamped qty to 2× base ({_base_risk_qty * 2})")
+
+        # 4f. GARCH-style EWMA volatility sizing — scale by recent realized vol
+        # Fail-open: returns 1.0 on any error; skips silently if BarCache unavailable
+        try:
+            from market_data_store import BarCache
+            _bc = BarCache.instance() if hasattr(BarCache, 'instance') else None
+            _recent_returns: list = []
+            if _bc is not None:
+                _bars = getattr(_bc, 'get_daily_bars', None)
+                if callable(_bars):
+                    _daily = _bars(symbol, limit=22)
+                    if _daily and len(_daily) >= 2:
+                        _closes = [float(b.get("close", b.get("c", 0))) for b in _daily if b.get("close", b.get("c", 0)) > 0]
+                        _recent_returns = [
+                            (_closes[i] - _closes[i - 1]) / _closes[i - 1]
+                            for i in range(1, len(_closes))
+                        ]
+            _garch_mult = _garch_sizing.get_size_multiplier(symbol, _recent_returns)
+            if _garch_mult != 1.0:
+                quantity = max(1, int(quantity * _garch_mult))
+                logger.debug(f"{symbol}: GARCH vol sizing ×{_garch_mult:.2f} → {quantity} shares")
+        except Exception as _ge:
+            logger.debug(f"[suppressed] garch_sizing: {_ge}")
 
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
