@@ -2815,6 +2815,28 @@ class SignalGenerator:
             except Exception as _csr_e:
                 logger.debug(f"[suppressed] cross_sectional_ranker: {_csr_e}")
 
+        # Pre-warm BarCache before concurrent scan so threads serve from memory (not blocking Alpaca).
+        # On startup (empty cache) this blocks once; on subsequent calls it's a no-op (data is fresh).
+        try:
+            from data_fetch_alpaca import get_bar_cache as _get_bc
+            _bc = _get_bc()
+            _warmup_specs = [("5minute", 5), ("15minute", 10), ("1hour", 30)]
+            for _iv, _ld in _warmup_specs:
+                import time as _tw
+                _last = _bc._last_refresh.get(_iv, 0.0)
+                if (_tw.monotonic() - _last) > _bc.REFRESH_INTERVAL:
+                    # Force blocking refresh so the cache is warm before threads start
+                    with _bc._refresh_lock:
+                        if (_tw.monotonic() - _bc._last_refresh.get(_iv, 0.0)) > _bc.REFRESH_INTERVAL:
+                            _bc._last_refresh[_iv] = _tw.monotonic()
+                            try:
+                                _bc._refresh_interval(_iv, _ld)
+                            except Exception as _wue:
+                                _bc._last_refresh[_iv] = 0.0
+                                logger.warning(f"BarCache pre-warm {_iv}: {_wue}")
+        except Exception as _pwe:
+            logger.debug(f"[suppressed] BarCache pre-warm: {_pwe}")
+
         signals: List[TradeSignal] = []
         errors  = 0
 

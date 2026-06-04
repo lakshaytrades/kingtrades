@@ -94,16 +94,36 @@ class BarCache:
         last = self._last_refresh.get(interval, 0.0)
 
         if (now - last) > self.REFRESH_INTERVAL:
-            with self._refresh_lock:
-                # Re-check inside lock — another thread may have just refreshed
-                if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
-                    self._last_refresh[interval] = _time.monotonic()  # claim slot immediately
+            # Determine if cache has any data for this interval (empty = must block on first startup)
+            with self._lock:
+                cache_empty = not any(k[1] == interval for k in self._cache)
+
+            if cache_empty:
+                # First startup: must block until cache is populated
+                with self._refresh_lock:
+                    if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
+                        self._last_refresh[interval] = _time.monotonic()
+                        try:
+                            self._refresh_interval(interval, lookback_days)
+                        except Exception as _re:
+                            self._last_refresh[interval] = 0.0
+                            logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+            else:
+                # Cache has data: non-blocking try — if another thread is refreshing,
+                # serve the existing (slightly stale) data immediately rather than blocking
+                acquired = self._refresh_lock.acquire(blocking=False)
+                if acquired:
                     try:
-                        self._refresh_interval(interval, lookback_days)
-                    except Exception as _re:
-                        # Reset so next call retries instead of using a stale slot
-                        self._last_refresh[interval] = 0.0
-                        logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+                        if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
+                            self._last_refresh[interval] = _time.monotonic()
+                            try:
+                                self._refresh_interval(interval, lookback_days)
+                            except Exception as _re:
+                                self._last_refresh[interval] = 0.0
+                                logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+                    finally:
+                        self._refresh_lock.release()
+                # else: refresh already in progress — serve stale data, don't block
 
         with self._lock:
             df = self._cache.get(cache_key, pd.DataFrame())
@@ -617,13 +637,21 @@ class AlpacaDataFetcher:
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
         """
         Fetch 5m / 15m / 1h OHLCV for signal_generator multi-timeframe analysis.
-        Returns same structure as GrowwDataFetcher.get_multi_timeframe_data().
+        BarCache-first: serves from in-memory cache when warm, avoiding per-symbol Alpaca
+        calls during concurrent scans (which cause the 180s scan timeout on VPS).
         Keys: "5m", "15m", "1h"
         """
         specs = [("5m", "5minute", 5), ("15m", "15minute", 10), ("1h", "1hour", 30)]
         data: Dict[str, Optional[pd.DataFrame]] = {}
+        bc = get_bar_cache()
         for key, interval, days in specs:
             try:
+                # BarCache-first: in-memory hit is sub-millisecond and avoids Alpaca rate limits
+                df = bc.get(symbol, interval, days)
+                if not df.empty:
+                    data[key] = df
+                    continue
+                # Cache miss — fall back to direct Alpaca call
                 df = self.get_ohlcv(symbol, interval=interval, lookback_days=days)
                 data[key] = df if not df.empty else None
             except Exception as e:
