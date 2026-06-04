@@ -1007,6 +1007,31 @@ class TradingBot:
         self._day_initialized = True
         self.market_open_today = True
 
+        # ── Startup diagnostic — log every active gate so we can see blockers ──
+        try:
+            from auth_alpaca import get_auth_manager as _get_auth
+            _auth = _get_auth()
+            _keys_ok = _auth.is_configured()
+        except Exception:
+            _keys_ok = False
+        _rm = self.risk_manager
+        _sg = self.signal_gen
+        logger.info(
+            f"[{format_ist_timestamp()}] ═══ TRADING DAY GATES ═══\n"
+            f"  Alpaca keys:        {'✓ configured' if _keys_ok else '✗ NOT SET (paper-sim only)'}\n"
+            f"  Live trading:       {'ENABLED' if config.LIVE_TRADING_ENABLED else 'disabled (paper)'}\n"
+            f"  Capital:            ${_rm.state.daily_capital:,.0f}\n"
+            f"  Min signal score:   {getattr(_sg, 'min_score', config.MIN_SIGNAL_SCORE):.0f}\n"
+            f"  Max positions:      {_rm.max_positions}\n"
+            f"  Consec loss limit:  {_rm.consecutive_loss_limit} (pause {_rm.pause_minutes}min)\n"
+            f"  Daily loss limit:   {_rm.daily_loss_limit_pct}%\n"
+            f"  Watchlist size:     {len(watchlist)} symbols\n"
+            f"  HAFilter threshold: {getattr(getattr(_sg,'ha_filter',None),'min_score',0):.0f}\n"
+            f"  Circuit breaker:    {'ACTIVE' if _rm.state.circuit_breaker_active else 'clear'}\n"
+            f"  Trading paused:     {'YES — ' + _rm.state.pause_reason if _rm.state.trading_paused else 'no'}\n"
+            f"  ═══════════════════════════════"
+        )
+
     # --------------------------------------------------------
     # SIGNAL EXECUTION HELPER
     # --------------------------------------------------------

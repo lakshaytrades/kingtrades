@@ -1684,7 +1684,69 @@ class SignalGenerator:
                 except Exception as e:
                     logger.debug(f"LLM gate error: {e}")
 
-            # ── Enforce booster cap: clamp total booster contribution to +25 ────
+            # ── MICROSTRUCTURE SIGNALS (v25.0) ── 8 additional institutional signals ─
+            try:
+                from microstructure_signals import (
+                    get_orb_quality_score, get_52w_proximity_score,
+                    get_float_momentum_score, get_tick_divergence_score,
+                    get_zscore_mean_reversion, get_candle_streak_score,
+                    get_premarket_vol_score, get_correlation_filter_score,
+                )
+
+                if getattr(config, 'ORB_QUALITY_ENABLED', True) and df_5m is not None:
+                    _oq, _oqr = get_orb_quality_score(symbol, df_5m, direction, ltp_now)
+                    if _oq:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _oq)
+                        logger.debug(f"{symbol}: ORB_QUALITY {_oq:+.0f} {_oqr}")
+
+                if getattr(config, 'W52_PROXIMITY_ENABLED', True):
+                    _w52, _w52r = get_52w_proximity_score(symbol, direction)
+                    if _w52:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _w52)
+                        logger.debug(f"{symbol}: 52W_PROX {_w52:+.0f} {_w52r}")
+
+                if getattr(config, 'FLOAT_MOMENTUM_ENABLED', True):
+                    _fm, _fmr = get_float_momentum_score(symbol, direction)
+                    if _fm:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _fm)
+                        logger.debug(f"{symbol}: FLOAT_MOM {_fm:+.0f} {_fmr}")
+
+                if getattr(config, 'TICK_DIVERGENCE_ENABLED', True) and df_5m is not None:
+                    _td, _tdr = get_tick_divergence_score(df_5m, direction)
+                    if _td:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _td)
+                        logger.debug(f"{symbol}: TICK_DIV {_td:+.0f} {_tdr}")
+
+                if getattr(config, 'ZSCORE_MR_ENABLED', True) and df_5m is not None:
+                    _zs, _zsr = get_zscore_mean_reversion(df_5m, direction)
+                    if _zs:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _zs)
+                        logger.debug(f"{symbol}: ZSCORE_MR {_zs:+.0f} {_zsr}")
+
+                if getattr(config, 'CANDLE_STREAK_ENABLED', True) and df_5m is not None:
+                    _cs, _csr = get_candle_streak_score(df_5m, direction)
+                    if _cs:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cs)
+                        logger.debug(f"{symbol}: CANDLE_STREAK {_cs:+.0f} {_csr}")
+
+                if getattr(config, 'PREMARKET_VOL_ENABLED', True):
+                    _pmv, _pmvr = get_premarket_vol_score(symbol, direction)
+                    if _pmv:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pmv)
+                        logger.debug(f"{symbol}: PM_VOL {_pmv:+.0f} {_pmvr}")
+
+                if getattr(config, 'CORRELATION_FILTER_ENABLED', True):
+                    _cf, _cfr = get_correlation_filter_score(symbol, direction)
+                    if _cf:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cf)
+                        logger.debug(f"{symbol}: CORR_FILTER {_cf:+.0f} {_cfr}")
+
+            except Exception as _micro_e:
+                logger.debug(f"[suppressed] microstructure_signals: {_micro_e}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +30 ────
+            # Raised from +25 to +30 to account for v25.0's 8 additional modules.
+            _BOOSTER_MAX_DELTA = 30.0
             _booster_delta = filter_result.final_score - _booster_base_score
             if _booster_delta > _BOOSTER_MAX_DELTA:
                 filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)

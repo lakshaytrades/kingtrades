@@ -229,7 +229,7 @@ MAX_TRADES_PER_STOCK: int = 3         # allow re-entry on strong trends
 # CIRCUIT BREAKERS
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
-CONSECUTIVE_LOSS_LIMIT: int = 2        # pause after 2 consecutive losses — catches losing streaks fast
+CONSECUTIVE_LOSS_LIMIT: int = 3        # pause after 3 consecutive losses (2 was too aggressive — normal variance)
 PAUSE_AFTER_LOSSES_MINUTES: int = 25   # 25 min pause — enough time for market conditions to shift
 LARGE_LOSS_PAUSE_PCT: float = 1.5      # pause if single trade loses ≥1.5% of daily capital (was 3%)
 LARGE_LOSS_PAUSE_MINUTES: int = 25     # pause duration after large single loss
@@ -714,6 +714,24 @@ CROWD_SENTIMENT_ENABLED:      bool = os.getenv("CROWD_SENTIMENT_ENABLED",      "
 FF_FACTORS_ENABLED:           bool = os.getenv("FF_FACTORS_ENABLED",           "true").lower() == "true"
 # Congressional trading signal — politicians beat market 6-12% annually
 CONGRESSIONAL_ALPHA_ENABLED:  bool = os.getenv("CONGRESSIONAL_ALPHA_ENABLED",  "true").lower() == "true"
+
+# ── v25.0 Market Microstructure Signals ────────────────────────────────────────
+# ORB quality check — institutional commitment at open
+ORB_QUALITY_ENABLED:          bool = os.getenv("ORB_QUALITY_ENABLED",          "true").lower() == "true"
+# 52-week proximity bias — momentum persistence near highs
+W52_PROXIMITY_ENABLED:        bool = os.getenv("W52_PROXIMITY_ENABLED",        "true").lower() == "true"
+# Float-adjusted momentum — low float + high SI = squeeze candidate
+FLOAT_MOMENTUM_ENABLED:       bool = os.getenv("FLOAT_MOMENTUM_ENABLED",       "true").lower() == "true"
+# Tick divergence — smart money micro-accumulation detection
+TICK_DIVERGENCE_ENABLED:      bool = os.getenv("TICK_DIVERGENCE_ENABLED",      "true").lower() == "true"
+# Z-score mean reversion — Ornstein-Uhlenbeck statistical reversion signal
+ZSCORE_MR_ENABLED:            bool = os.getenv("ZSCORE_MR_ENABLED",            "true").lower() == "true"
+# Consecutive candle streak — institutional iceberg order detection
+CANDLE_STREAK_ENABLED:        bool = os.getenv("CANDLE_STREAK_ENABLED",        "true").lower() == "true"
+# Pre-market volume surge — institutional news reaction follow-through
+PREMARKET_VOL_ENABLED:        bool = os.getenv("PREMARKET_VOL_ENABLED",        "true").lower() == "true"
+# SPY correlation filter — independent alpha vs market-driven momentum
+CORRELATION_FILTER_ENABLED:   bool = os.getenv("CORRELATION_FILTER_ENABLED",   "true").lower() == "true"
 
 # ============================================================
 # VALIDATION
