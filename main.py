@@ -2317,6 +2317,15 @@ class TradingBot:
                         self.alerter.send_entry_alert(signal, df_5m)
                     except Exception as e:
                         logger.warning(f"Alert failed: {e}")
+                    # Plain-English WHY explanation (daily_intelligence)
+                    try:
+                        from daily_intelligence import explain_trade
+                        _why_msg = explain_trade(signal)
+                        if _why_msg:
+                            from daily_intelligence import _send as _di_send
+                            _di_send(_why_msg)
+                    except Exception as _de:
+                        logger.debug(f"[suppressed] explain_trade: {_de}")
                     try:
                         self.alerter.send_trade_fill(
                             symbol       = signal.symbol,
@@ -2654,6 +2663,12 @@ class TradingBot:
                             }, was_win=int(pnl > 0))
                         except Exception as _nne:
                             logger.debug(f"[suppressed] neural_record: {_nne}")
+                        # Daily intelligence: record close for EOD report
+                        try:
+                            from daily_intelligence import record_trade_close
+                            record_trade_close(pos.symbol, pnl)
+                        except Exception as _dic:
+                            logger.debug(f"[suppressed] daily_intel_close: {_dic}")
 
                         # AdaptiveThreshold: record outcome for rolling WR-based score floor
                         try:
