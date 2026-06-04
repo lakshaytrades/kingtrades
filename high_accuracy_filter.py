@@ -283,15 +283,23 @@ class HighAccuracyFilter:
         # ── GATE 3: MULTI-TIMEFRAME ALIGNMENT ────────────
         mtf_ok, mtf_score = self._check_mtf(mtf_alignment, direction)
         if not mtf_ok:
-            result.gates_failed.append("MTF_ALIGNMENT")
-            result.rejection_reason = (
-                f"MTF conflict: {mtf_alignment.get('description','no alignment')}. "
-                "Need ≥2 timeframes aligned."
-            )
-            self._log_rejection(result, signal_score, direction)
-            return result
-
-        result.gates_passed.append(f"MTF(score={mtf_score})")
+            try:
+                import config as _cfg_mtf
+                _require_mtf = getattr(_cfg_mtf, 'REQUIRE_MTF_ALIGNMENT', True)
+            except Exception:
+                _require_mtf = True
+            if _require_mtf:
+                result.gates_failed.append("MTF_ALIGNMENT")
+                result.rejection_reason = (
+                    f"MTF conflict: {mtf_alignment.get('description','no alignment')}. "
+                    "Need ≥2 timeframes aligned."
+                )
+                self._log_rejection(result, signal_score, direction)
+                return result
+            # REQUIRE_MTF_ALIGNMENT = False: soft gate — continue but no bonus
+            result.gates_passed.append("MTF_SOFT(no alignment — continuing)")
+        else:
+            result.gates_passed.append(f"MTF(score={mtf_score})")
 
         # ── GATE 4: VOLUME SURGE ─────────────────────────
         vol_ok, vol_bonus = self._check_volume(volume_ratio)
@@ -1292,7 +1300,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 35:   # require at least 1/3 TF agreement (IEX data, weaker markets)
+        if alignment_score < 20:   # only block if near-zero alignment (1 TF minimum)
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
@@ -1639,8 +1647,8 @@ class HighAccuracyFilter:
                 vol_prev = float(prev.get("volume", 1) or 1)
                 if vol_now < vol_prev * 0.5:
                     return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.5:.0f} — momentum dying"
-                if body < 0.15 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.15×ATR={0.15*atr:.2f} — no conviction"
+                if body < 0.08 * atr:
+                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.08×ATR={0.08*atr:.2f} — noise candle"
             else:  # SELL / SHORT
                 body  = float(last["open"]) - float(last["close"])
                 l_wick = min(float(last["close"]), float(last["open"])) - float(last["low"])
@@ -1650,8 +1658,8 @@ class HighAccuracyFilter:
                 vol_prev = float(prev.get("volume", 1) or 1)
                 if vol_now < vol_prev * 0.5:
                     return False, f"[FALSE BREAKOUT] volume fade on short signal — no conviction"
-                if body < 0.15 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body < 0.15×ATR — noise candle"
+                if body < 0.08 * atr:
+                    return False, f"[FALSE BREAKOUT] tiny body < 0.08×ATR — noise candle"
             return True, ""
         except Exception:
             return True, ""   # fail open
