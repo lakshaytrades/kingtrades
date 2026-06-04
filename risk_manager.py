@@ -842,6 +842,19 @@ class RiskManager:
                     ),
                 }
 
+        # ── Short position count gate (v22.0) ─────────────────────────────────
+        if direction == "SHORT":
+            import config as _cfg_short
+            if not getattr(_cfg_short, 'SHORT_SELLING_ENABLED', True):
+                return {"allowed": False, "reason": "SHORT_SELLING_ENABLED=false — short trades disabled"}
+            _max_shorts = int(getattr(_cfg_short, 'MAX_SHORT_POSITIONS', 3))
+            _short_count = sum(1 for p in self.state.positions.values() if p.direction == "SHORT")
+            if _short_count >= _max_shorts:
+                return {
+                    "allowed": False,
+                    "reason": f"Short position limit: {_short_count}/{_max_shorts} short positions open"
+                }
+
         # ── Portfolio direction concentration ──────────────────────────────
         try:
             import config as _cfg_conc

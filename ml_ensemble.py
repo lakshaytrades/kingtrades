@@ -1,9 +1,16 @@
 """
-ml_ensemble.py — 4-Model ML Ensemble with Dynamic Online Learning v1.0
+ml_ensemble.py — 4-Model ML Ensemble with Dynamic Online Learning v2.0
 
 Fuses GBM + RandomForest + ExtraTrees + LogisticRegression into a single
 weighted prediction. Model weights update each time a live outcome arrives —
 models that have been right recently vote louder.
+
+v22.0 upgrades:
+  - Regime-aware model selection: loads bull_models or bear_models based on
+    current SPY vs 200-day SMA regime (detected via yfinance fast_info).
+  - 8 pretrained models: gbm_bull/bear, rf_bull/bear, et_bull/bear, lr_bull/bear.
+  - Regime re-checked every 60 minutes, models swapped automatically if regime flips.
+  - Falls back to single model set (legacy .pkl) if regime detection fails.
 
 Why 4 models beat 1:
   - GBM excels at tabular momentum patterns (strong trends)
@@ -19,6 +26,7 @@ import logging
 import os
 import pickle
 import threading
+import time as _time
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Tuple
 
@@ -30,6 +38,7 @@ _MODEL_PATH  = os.path.join(os.path.dirname(__file__), "data", "ml_ensemble_v1.p
 _PRETRAINED_DIR = os.path.join(os.path.dirname(__file__), "data", "ml_pretrained")
 _RETRAIN_AT  = 10   # retrain when live buffer reaches this size
 _ROLL_WINDOW = 20   # rolling window for weight updates
+_REGIME_CHECK_INTERVAL = 3600.0  # seconds between regime re-checks (60 min)
 
 FEATURE_NAMES = [
     "rsi", "macd_hist_norm", "volume_ratio", "atr_pct", "signal_score",
@@ -157,8 +166,44 @@ def _generate_synthetic_data() -> Tuple[np.ndarray, np.ndarray]:
     return X[idx], y[idx]
 
 
+def _detect_spy_regime() -> str:
+    """
+    Detect current market regime by comparing SPY price to its 200-day SMA.
+    Returns "BULL" or "BEAR". Fail-open returns "BULL".
+    Uses yfinance fast_info for current price and history for SMA.
+    """
+    try:
+        import yfinance as yf
+        spy = yf.Ticker("SPY")
+        # Get current price via fast_info
+        current_price = float(spy.fast_info.get("lastPrice", 0) or 0)
+        if current_price <= 0:
+            # Fallback: use recent history
+            hist = spy.history(period="5d", auto_adjust=True)
+            if not hist.empty:
+                current_price = float(hist["Close"].iloc[-1])
+        if current_price <= 0:
+            logger.debug("ml_ensemble: SPY price unavailable — defaulting to BULL regime")
+            return "BULL"
+        # Get 200-day history for SMA
+        hist200 = spy.history(period="300d", auto_adjust=True)
+        if len(hist200) < 200:
+            logger.debug("ml_ensemble: insufficient SPY history for SMA200 — defaulting to BULL")
+            return "BULL"
+        sma200 = float(hist200["Close"].tail(200).mean())
+        regime = "BULL" if current_price >= sma200 else "BEAR"
+        logger.info(
+            f"ml_ensemble: SPY regime={regime} "
+            f"(price=${current_price:.2f} vs SMA200=${sma200:.2f})"
+        )
+        return regime
+    except Exception as e:
+        logger.debug(f"ml_ensemble: regime detection fail-open ({e}) → BULL")
+        return "BULL"
+
+
 class MLEnsemble:
-    """4-model weighted ensemble with online weight adaptation."""
+    """4-model weighted ensemble with online weight adaptation and regime-aware model selection."""
 
     def __init__(self):
         self._lock = threading.Lock()
@@ -169,6 +214,9 @@ class MLEnsemble:
         self._live_y: List[int] = []
         self._n_live: int = 0
         self._loaded = False
+        # Regime tracking
+        self._current_regime: str = "BULL"
+        self._last_regime_check: float = 0.0
         self._load_or_init()
 
     # ── model setup ──────────────────────────────────────────────────────────
@@ -206,17 +254,62 @@ class MLEnsemble:
             except Exception as e:
                 logger.warning(f"ml_ensemble: failed to train {name}: {e}")
 
+    def _load_pretrained_regime(self, regime: str) -> bool:
+        """
+        Load regime-specific models (bull or bear) from data/ml_pretrained/.
+        Tries gbm_{regime}.pkl, rf_{regime}.pkl, et_{regime}.pkl, lr_{regime}.pkl.
+        Returns True if all 4 regime model files were loaded successfully.
+        """
+        regime_lower = regime.lower()
+        required = {"gbm", "rf", "et", "lr"}
+        try:
+            if not os.path.isdir(_PRETRAINED_DIR):
+                return False
+            loaded: dict = {}
+            for name in required:
+                path = os.path.join(_PRETRAINED_DIR, f"{name}_{regime_lower}.pkl")
+                if not os.path.exists(path):
+                    logger.debug(f"ml_ensemble: pretrained/{name}_{regime_lower}.pkl not found")
+                    return False
+                with open(path, "rb") as f:
+                    payload = pickle.load(f)
+                loaded[f"{name}_{regime_lower}"] = payload["model"]
+            self._models = loaded
+            self._weights = {k: 1.0 for k in self._models}
+            self._model_history = {k: [] for k in self._models}
+            self._current_regime = regime
+            logger.info(
+                f"ml_ensemble: loaded 4 {regime} regime models from {_PRETRAINED_DIR} "
+                f"(10yr history, regime-aware v22.0)"
+            )
+            return True
+        except Exception as e:
+            logger.warning(f"ml_ensemble: {regime} regime model load failed ({e})")
+            return False
+
     def _load_pretrained(self) -> bool:
         """
         Load models pre-trained by pretrain_ml.py from data/ml_pretrained/.
-        Returns True if all 4 model files were loaded successfully.
-        The pre-trained models use real 2yr OHLCV history — far superior to
+        v22.0: First tries regime-aware models (bull/bear), then falls back to
+        legacy single-set models. Returns True if any models were loaded.
+        The pre-trained models use real 10yr OHLCV history — far superior to
         the synthetic anchor-point fallback used on a cold start.
         """
         required = {"gbm", "rf", "et", "lr"}
         try:
             if not os.path.isdir(_PRETRAINED_DIR):
                 return False
+
+            # Detect current regime for initial model selection
+            detected_regime = _detect_spy_regime()
+            self._current_regime = detected_regime
+            self._last_regime_check = _time.time()
+
+            # Priority 1: Load regime-specific models
+            if self._load_pretrained_regime(detected_regime):
+                return True
+
+            # Priority 2: Fall back to legacy (non-regime) single model set
             loaded: dict = {}
             for name in required:
                 path = os.path.join(_PRETRAINED_DIR, f"{name}.pkl")
@@ -230,13 +323,43 @@ class MLEnsemble:
             self._weights = {k: 1.0 for k in self._models}
             self._model_history = {k: [] for k in self._models}
             logger.info(
-                f"ml_ensemble: loaded 4 pre-trained models from {_PRETRAINED_DIR} "
-                "(real 2yr history — skipping synthetic fallback)"
+                f"ml_ensemble: loaded 4 legacy pre-trained models from {_PRETRAINED_DIR} "
+                "(regime-specific models not found — run pretrain_ml.py to generate them)"
             )
             return True
         except Exception as e:
             logger.warning(f"ml_ensemble: pretrained load failed ({e}), falling back")
             return False
+
+    def _check_and_swap_regime(self) -> None:
+        """
+        Check if regime has changed (every 60 min).
+        If SPY flipped from BULL→BEAR or BEAR→BULL, swap to corresponding model set.
+        Fail-open: keeps current models on any error.
+        """
+        try:
+            now = _time.time()
+            if now - self._last_regime_check < _REGIME_CHECK_INTERVAL:
+                return
+            self._last_regime_check = now
+            new_regime = _detect_spy_regime()
+            if new_regime == self._current_regime:
+                logger.debug(f"ml_ensemble: regime check — still {self._current_regime}")
+                return
+            # Regime has flipped — try to swap models
+            logger.info(
+                f"ml_ensemble: REGIME FLIP {self._current_regime} → {new_regime} "
+                "— swapping model set"
+            )
+            if self._load_pretrained_regime(new_regime):
+                logger.info(f"ml_ensemble: now using {new_regime} models")
+            else:
+                logger.warning(
+                    f"ml_ensemble: {new_regime} models not found — continuing with "
+                    f"{self._current_regime} models (run pretrain_ml.py to fix)"
+                )
+        except Exception as e:
+            logger.debug(f"ml_ensemble: regime swap suppressed: {e}")
 
     def _load_or_init(self):
         os.makedirs("data", exist_ok=True)
@@ -282,6 +405,8 @@ class MLEnsemble:
 
     def predict(self, features: dict) -> EnsemblePrediction:
         try:
+            # Regime re-check every 60 min (non-blocking — swaps model set in-place)
+            self._check_and_swap_regime()
             x = _build_x(features)
             probs: Dict[str, float] = {}
             for name, model in self._models.items():
@@ -307,24 +432,25 @@ class MLEnsemble:
             )
 
             # Score delta
+            _regime_tag = f"[{self._current_regime}]"
             if ensemble_prob >= 0.75 and model_agreement >= 3:
                 delta = 12.0
-                reason = f"ensemble:bull_consensus p={ensemble_prob:.2f} agree={model_agreement}/4"
+                reason = f"ensemble:bull_consensus p={ensemble_prob:.2f} agree={model_agreement}/4 {_regime_tag}"
             elif ensemble_prob >= 0.68 and model_agreement >= 2:
                 delta = 7.0
-                reason = f"ensemble:bull_majority p={ensemble_prob:.2f}"
+                reason = f"ensemble:bull_majority p={ensemble_prob:.2f} {_regime_tag}"
             elif ensemble_prob >= 0.58:
                 delta = 3.0
-                reason = f"ensemble:slight_bull p={ensemble_prob:.2f}"
+                reason = f"ensemble:slight_bull p={ensemble_prob:.2f} {_regime_tag}"
             elif ensemble_prob <= 0.30 and model_agreement >= 3:
                 delta = -8.0
-                reason = f"ensemble:bear_consensus p={ensemble_prob:.2f}"
+                reason = f"ensemble:bear_consensus p={ensemble_prob:.2f} {_regime_tag}"
             elif ensemble_prob <= 0.40:
                 delta = -5.0
-                reason = f"ensemble:bear_lean p={ensemble_prob:.2f}"
+                reason = f"ensemble:bear_lean p={ensemble_prob:.2f} {_regime_tag}"
             else:
                 delta = 0.0
-                reason = f"ensemble:neutral p={ensemble_prob:.2f}"
+                reason = f"ensemble:neutral p={ensemble_prob:.2f} {_regime_tag}"
 
             return EnsemblePrediction(
                 win_prob=ensemble_prob,

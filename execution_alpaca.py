@@ -199,6 +199,12 @@ class AlpacaExecutor:
             )
             return OrderResult(True, fill_price=signal.entry_price, quantity=qty, message="Paper fill")
 
+        # ── SHORT selling gate (v22.0) ────────────────────────────────────────
+        if direction == "SHORT":
+            import config as _cfg_short
+            if not getattr(_cfg_short, 'SHORT_SELLING_ENABLED', True):
+                return OrderResult(False, message="SHORT_SELLING_ENABLED=false — short trades disabled")
+
         if not self._auth.is_configured():
             return OrderResult(False, message="Alpaca API keys not configured")
 
@@ -835,10 +841,19 @@ class AlpacaExecutor:
 
         except Exception as e:
             msg = str(e)
-            logger.error(
-                f"[{format_ist_timestamp()}] ORDER FAILED: {symbol} {direction} "
-                f"{order_type} qty={qty} | Error: {msg}"
-            )
+            # Graceful handling for short-sell failures (HTB, not enabled on account, etc.)
+            if direction == "SHORT" and any(kw in msg.lower() for kw in (
+                "short", "borrow", "locate", "not available", "prohibited", "not supported"
+            )):
+                logger.warning(
+                    f"[{format_ist_timestamp()}] SHORT SELL REJECTED: {symbol} — {msg} "
+                    "(stock may not be available to borrow or account shorting not enabled)"
+                )
+            else:
+                logger.error(
+                    f"[{format_ist_timestamp()}] ORDER FAILED: {symbol} {direction} "
+                    f"{order_type} qty={qty} | Error: {msg}"
+                )
             return OrderResult(False, message=msg)
 
     def _wait_for_fill(self, order_id: str, wait: int = 12) -> tuple:

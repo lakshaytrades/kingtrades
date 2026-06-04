@@ -241,7 +241,14 @@ DD_RECOVERY_HARD_PCT: float = float(os.getenv("DD_RECOVERY_HARD_PCT", "10.0"))  
 DD_RECOVERY_SOFT_PCT: float = float(os.getenv("DD_RECOVERY_SOFT_PCT", "5.0"))   # halve size at 5% session DD from peak
 
 # ── Short selling ──────────────────────────────────────────────────────────
-SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "True").lower() in ("true","1","yes")
+SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "true").lower() == "true"
+MAX_SHORT_POSITIONS: int = int(os.getenv("MAX_SHORT_POSITIONS", "3"))
+
+# ── Cross-asset intelligence (VIX + bonds + dollar macro overlay) ───────────
+CROSS_ASSET_ENABLED: bool = os.getenv("CROSS_ASSET_ENABLED", "true").lower() == "true"
+
+# ── News sentiment (NewsAPI keyword scoring) ─────────────────────────────────
+NEWS_SENTIMENT_ENABLED: bool = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
 
 # ── VWAP mean-reversion strategy (best in choppy markets) ──────────────────
 VWAP_REVERSION_ENABLED: bool = True

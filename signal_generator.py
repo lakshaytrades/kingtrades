@@ -436,6 +436,55 @@ class SignalGenerator:
 
             direction = alignment["direction"] if alignment["aligned"] else (dir_5m if dir_5m != "NEUTRAL" else "LONG")
 
+            # 3b. SHORT signal override (v22.0) — check short conditions when enabled
+            # Activates in BEAR or CHOP regime when LONG alignment is weak or absent
+            if getattr(config, 'SHORT_SELLING_ENABLED', True) and direction == "LONG":
+                try:
+                    _regime_name_short = ""
+                    # Get current regime from inst_ctx if available (will be populated below)
+                    # Here we use a fast check on the 5m indicators directly
+                    _close_vals = df_5m["close"].values if "close" in df_5m.columns else (
+                        df_5m["Close"].values if "Close" in df_5m.columns else None
+                    )
+                    if _close_vals is not None and len(_close_vals) >= 20:
+                        import numpy as _np_s
+                        _ltp_s = float(_close_vals[-1])
+                        # Quick EMA9 check
+                        _ema9_s = float(pd.Series(_close_vals).ewm(span=9, adjust=False).mean().iloc[-1])
+                        # RSI quick check using score_5m
+                        _rsi_s = score_5m.get("rsi", 50.0) or 50.0
+                        # MACD histogram from score_5m
+                        _macd_hist_s = score_5m.get("macd_hist", 0.0) or 0.0
+                        # VWAP from analysis_5m indicators (will be set later; use a best-effort approach)
+                        _ind_s = analysis_5m.get("indicators", None)
+                        _vwap_s = getattr(_ind_s, "vwap", 0.0) if _ind_s else 0.0
+
+                        # Determine regime quickly from SPY change direction
+                        _regime_is_bear_or_chop = (
+                            self._nifty_change_pct < -1.0  # SPY down >1% = bearish session
+                            or (not alignment["aligned"] and dir_5m in ("SHORT", "NEUTRAL"))
+                        )
+
+                        # SHORT conditions: RSI overbought + price below EMA9 + MACD neg + below VWAP
+                        _short_rsi_ok    = float(_rsi_s) > 68
+                        _short_ema9_ok   = _ltp_s < _ema9_s
+                        _short_macd_ok   = float(_macd_hist_s) < 0
+                        _short_vwap_ok   = (_vwap_s > 0 and _ltp_s < _vwap_s) or _vwap_s == 0
+
+                        if (_regime_is_bear_or_chop
+                                and _short_rsi_ok
+                                and _short_ema9_ok
+                                and _short_macd_ok
+                                and _short_vwap_ok):
+                            direction = "SHORT"
+                            logger.info(
+                                f"[{format_ist_timestamp()}] {symbol}: SHORT override "
+                                f"(RSI={_rsi_s:.0f}>68, below EMA9=${_ema9_s:.2f}, "
+                                f"MACD<0, {'below VWAP' if _short_vwap_ok else 'no VWAP'})"
+                            )
+                except Exception as _short_det_e:
+                    logger.debug(f"[suppressed] short_detection: {_short_det_e}")
+
             # 4. News filter
             news_clear = True
             if self.news_filter:
@@ -1153,6 +1202,28 @@ class SignalGenerator:
 
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
+
+            # ── Cross-asset risk filter (v22.0) — VIX + bonds + dollar macro overlay ──
+            if getattr(config, 'CROSS_ASSET_ENABLED', True):
+                try:
+                    from cross_asset_signals import get_market_risk_score
+                    _ca_delta, _ca_reason = get_market_risk_score()
+                    if _ca_delta != 0.0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ca_delta)
+                        logger.debug(f"{symbol}: CROSS_ASSET {_ca_delta:+.0f} {_ca_reason}")
+                except Exception as _ca_e:
+                    logger.debug(f"[suppressed] cross_asset: {_ca_e}")
+
+            # ── News sentiment (v22.0) — NewsAPI keyword scoring per symbol ────────
+            if getattr(config, 'NEWS_SENTIMENT_ENABLED', True):
+                try:
+                    from news_sentiment import get_news_sentiment
+                    _ns_delta, _ns_reason = get_news_sentiment(symbol)
+                    if _ns_delta != 0.0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ns_delta)
+                        logger.debug(f"{symbol}: NEWS_SENTIMENT {_ns_delta:+.0f} {_ns_reason}")
+                except Exception as _ns_e:
+                    logger.debug(f"[suppressed] news_sentiment: {_ns_e}")
 
             # ── PREMIUM SCANNER (v11.0) — Free equivalents of paid tools ───────
             try:
