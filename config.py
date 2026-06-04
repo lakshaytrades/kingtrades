@@ -61,17 +61,17 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # via the risk_manager so a $90k account can never accidentally use $90k as capital.
 # Set MAX_DAILY_CAPITAL explicitly in .env to override, e.g. MAX_DAILY_CAPITAL=5000
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.8"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 2.0)   # raised cap: A+ signals need room to size
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "2.5"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 5.0)   # paper trading: aggressive sizing
 
 # Grade-based risk unlocking — institutional practice: size your best setups bigger
 # A+ Grand Slam (7+ confluence): 1.5× base risk — these are 70%+ win rate setups
 # A  grade       (5+ confluence): 1.0× base risk — standard full size
 # B  grade       (borderline)   : 0.6× base risk — conservative
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = float(os.getenv("HIGH_CONFIDENCE_RISK_MULTIPLIER", "1.5"))
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = float(os.getenv("HIGH_CONFIDENCE_RISK_MULTIPLIER", "2.5"))
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop the day early
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "8.0"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 10.0)  # paper trading: wide daily loss limit
 
 # Intraday leverage multiplier.
 # ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.
@@ -79,12 +79,12 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop t
 # SAFE OPTION (< $25K): Use Alpaca CASH account → no PDT, no leverage (1x).
 # FULL POWER ($25K+):   Margin account → 4x intraday, no PDT restriction.
 # Default 1.0 = cash account safe mode. Set to 4.0 only when account ≥ $25,000.
-ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
-ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
+ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "4.0"))
+ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # 4x intraday leverage ($93k → $372k buying power)
 
-MAX_POSITIONS: int = 5       # was 20 — too many concurrent losers compound the damage
+MAX_POSITIONS: int = 15      # paper trading: more concurrent positions = more profit
 MIN_POSITIONS: int = 1
-MAX_CAPITAL_PER_TRADE_PCT: float = 10.0   # was 30% — 30% of $90k = $27k per trade, catastrophic
+MAX_CAPITAL_PER_TRADE_PCT: float = 25.0   # paper trading: 25% per trade for larger size
 
 # Fractional shares: Alpaca supports fractional/notional orders on most symbols.
 # When enabled, stocks too expensive for 1 whole share use a notional ($ amount) order.
@@ -159,7 +159,7 @@ MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "60.0"))
                                        # Boosters (CSM, VWAP, OFI, etc.) add pts after gates. Kept low so
                                        # gate system — not the pre-filter — is the quality barrier.
 HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses
-GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
+GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "82.0"))  # Grand Slam requires 82+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry
 FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "60.0"))  # Post-booster gate — matches pre-filter (no dead zone)
 
@@ -222,17 +222,17 @@ MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses re
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 15          # enough capacity to scan 100 symbols for 2-3 real setups
-MAX_TRADES_PER_STOCK: int = 3         # allow re-entry on strong trends
+MAX_TRADES_PER_DAY: int = 50          # paper trading: no trade count limit
+MAX_TRADES_PER_STOCK: int = 5         # allow more re-entries on strong trends
 
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
-CONSECUTIVE_LOSS_LIMIT: int = 3        # pause after 3 consecutive losses (2 was too aggressive — normal variance)
-PAUSE_AFTER_LOSSES_MINUTES: int = 25   # 25 min pause — enough time for market conditions to shift
-LARGE_LOSS_PAUSE_PCT: float = 1.5      # pause if single trade loses ≥1.5% of daily capital (was 3%)
-LARGE_LOSS_PAUSE_MINUTES: int = 25     # pause duration after large single loss
+CONSECUTIVE_LOSS_LIMIT: int = 6        # paper trading: allow more consecutive losses before pause
+PAUSE_AFTER_LOSSES_MINUTES: int = 10   # shorter pause — get back in the market quickly
+LARGE_LOSS_PAUSE_PCT: float = 4.0      # pause only on very large single losses
+LARGE_LOSS_PAUSE_MINUTES: int = 10     # shorter pause duration
 NO_ENTRY_AFTER_ET_HOUR: int = 15       # no new entries at or after 3:00 PM ET (last 30 min = noisy reversals)
 NO_ENTRY_AFTER_ET_MINUTE: int = 0
 SKIP_VOLATILE_LONGS: bool = True       # in HIGH_VOLATILITY regime, skip LONG entries (only shorts)
@@ -451,11 +451,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 63.0,   # Monday
-    1: 63.0,   # Tuesday — best trend day
-    2: 63.0,   # Wednesday — trend continuation
-    3: 63.0,   # Thursday
-    4: 63.0,   # Friday — size already reduced to 0.8x
+    0: 55.0,   # Monday
+    1: 55.0,   # Tuesday — best trend day
+    2: 55.0,   # Wednesday — trend continuation
+    3: 55.0,   # Thursday
+    4: 55.0,   # Friday
 }
 
 # Time-of-day minimum score (ET, 24h format) — institutional trading windows
@@ -468,13 +468,12 @@ DOW_MIN_SCORE: dict = {
 TOD_MIN_SCORES: dict = {
     # (start_min_from_midnight, end_min): min_score
     # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
-    # v17.0: pre-filter thresholds — boosters add 8-20 pts; final execution scores = these + 10
-    (570, 600): 66.0,   # 9:30–10:00: open drive (boosted final ~74-80)
-    (600, 690): 63.0,   # 10:00–11:30: morning prime window (boosted final ~71-80)
-    (690, 810): 68.0,   # 11:30–13:30: midday chop — tighter pre-filter (boosted final ~76-83)
-    (810, 900): 63.0,   # 13:30–15:00: afternoon (boosted final ~71-80)
-    (900, 925): 66.0,   # 15:00–15:25: power hour (boosted final ~74-80)
-    (925, 960): 75.0,   # 15:25–16:00: near close — high bar even pre-filter
+    (570, 600): 58.0,   # 9:30–10:00: open drive
+    (600, 690): 55.0,   # 10:00–11:30: morning prime window
+    (690, 810): 60.0,   # 11:30–13:30: midday chop
+    (810, 900): 55.0,   # 13:30–15:00: afternoon
+    (900, 925): 58.0,   # 15:00–15:25: power hour
+    (925, 960): 68.0,   # 15:25–16:00: near close — keep higher bar
 }
 TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
 
@@ -487,8 +486,8 @@ DOW_MAX_TRADES: dict = {
 }
 
 WEEKLY_PROFIT_TARGET_PCT: float = 8.0    # 30%/mo ÷ 4.33 weeks = 6.9%/wk — use 8% as target
-WEEKLY_PROFIT_LOCK_PCT: float = 15.0    # don't throttle size until 15% weekly gain secured
-WEEKLY_LOSS_STOP_PCT: float = 5.0       # weekly stop-out at -5% — slightly more runway
+WEEKLY_PROFIT_LOCK_PCT: float = 30.0    # paper trading: don't throttle until 30% weekly gain
+WEEKLY_LOSS_STOP_PCT: float = 15.0      # paper trading: weekly stop-out at -15%
 WEEKLY_DATA_FILE: str = "data/weekly_pnl.json"
 
 # NSE-specific fields kept as stubs so any remaining references don't crash
