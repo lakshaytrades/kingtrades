@@ -2043,6 +2043,17 @@ class SignalGenerator:
                     f"clamped to +{_BOOSTER_MAX_DELTA:.0f} → score {filter_result.final_score:.1f}"
                 )
 
+            # ── TIER 2.5: Volatility Targeting (Bridgewater/AQR approach) ────────
+            if getattr(config, 'VOL_TARGET_ENABLED', True):
+                try:
+                    from volatility_targeting import get_vol_target_size_multiplier
+                    _vt_mult, _vt_reason = get_vol_target_size_multiplier(symbol, df_5m)
+                    if _vt_mult != 1.0:
+                        combined_size = max(0.1, round(combined_size * _vt_mult, 3))
+                        logger.debug(f"{symbol}: {_vt_reason}")
+                except Exception as _vt_e:
+                    logger.debug(f"[suppressed] vol_target: {_vt_e}")
+
             # ── Final execution gate: after ALL boosters, require ≥70 ────────────
             # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can
             # add 8–20 pts. If no booster fired, the signal is too weak to trade.
