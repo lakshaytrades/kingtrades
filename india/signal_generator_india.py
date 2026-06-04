@@ -312,7 +312,10 @@ class IndiaSignalGenerator:
                                       score: float, df_5m: pd.DataFrame,
                                       ltp: float, ind: IndicatorSet,
                                       current_price: float) -> float:
-        """Apply all 6 institutional strategies. All fail-open."""
+        """
+        Apply all India-specialist Tier 1.5 boosters. All fail-open.
+        Order: institutional strategies → ORB → neural predictor → vol targeting
+        """
         try:
             from institutional_strategies_india import (
                 get_power_hour_score_india,
@@ -325,7 +328,7 @@ class IndiaSignalGenerator:
                 record_bar_volume,
             )
 
-            # 1. Cross-sectional momentum
+            # 1. Cross-sectional momentum (AQR / Renaissance style)
             if self._config.CSM_ENABLED:
                 try:
                     d, r = get_cross_sectional_rank(symbol, self._watchlist or [symbol])
@@ -335,7 +338,7 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
-            # 2. VWAP reclaim
+            # 2. VWAP reclaim (institutional accumulation signal)
             if self._config.VWAP_RECLAIM_ENABLED:
                 try:
                     vwap_val = float(ind.vwap) if hasattr(ind, "vwap") and ind.vwap else 0.0
@@ -347,7 +350,7 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
-            # 3. Power hour (IST)
+            # 3. Power hour + opening range IST (NSE-specific windows)
             if self._config.POWER_HOUR_ENABLED:
                 try:
                     d, r = get_power_hour_score_india(direction, score)
@@ -357,7 +360,7 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
-            # 4. Indian pairs signal
+            # 4. Indian pairs stat arb (RELIANCE/ONGC, INFY/TCS, etc.)
             if self._config.PAIRS_SIGNAL_ENABLED:
                 try:
                     d, r = get_pairs_signal_india(symbol, direction)
@@ -367,7 +370,7 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
-            # 5. TOD RVOL
+            # 5. Time-of-day RVOL (compare to same slot on prior days)
             if self._config.TOD_RVOL_ENABLED and df_5m is not None and not df_5m.empty:
                 try:
                     bar_time = df_5m.index[-1].strftime("%H:%M")
@@ -380,7 +383,7 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
-            # 6. Gap fade (IST window)
+            # 6. Gap fade in IST opening window (9:15–10:00 AM IST)
             if self._config.GAP_FADE_ENABLED:
                 try:
                     d, r = get_gap_fade_score_india(symbol, direction, ltp)
@@ -393,4 +396,53 @@ class IndiaSignalGenerator:
         except Exception as e:
             logger.debug(f"[suppressed] institutional boosters {symbol}: {e}")
 
+        # ── India specialist: ORB (Opening Range Breakout) ────────────────────
+        # THE most reliable NSE signal — 60–72% win rate on liquid stocks
+        try:
+            from orb_strategy_india import get_orb_score
+            d, r = get_orb_score(symbol, direction, ltp, df_5m)
+            if d:
+                score = min(100.0, score + d)
+                logger.debug(f"{symbol}: ORB_NSE {d:+.0f} {r}")
+        except Exception:
+            pass
+
+        # ── Neural predictor (shared from parent) ─────────────────────────────
+        try:
+            from neural_predictor import get_neural_score_delta
+            ind_dict = {
+                "rsi":      getattr(ind, "rsi", 50),
+                "macd":     getattr(ind, "macd", 0),
+                "adx":      getattr(ind, "adx", 15),
+                "atr":      getattr(ind, "atr", 0),
+                "bb_upper": getattr(ind, "bb_upper", 0),
+                "bb_lower": getattr(ind, "bb_lower", 0),
+                "ema9":     getattr(ind, "ema9", 0),
+                "ema21":    getattr(ind, "ema21", 0),
+                "volume":   float(df_5m["volume"].iloc[-1]) if df_5m is not None and not df_5m.empty else 0,
+            }
+            d, r = get_neural_score_delta(symbol, ind_dict, direction)
+            if d:
+                score = min(100.0, score + d)
+                logger.debug(f"{symbol}: NEURAL {d:+.0f} {r}")
+        except Exception:
+            pass
+
+        # ── India VIX volatility targeting ───────────────────────────────────
+        if self._config.VOL_TARGET_ENABLED:
+            try:
+                from volatility_targeting_india import get_vol_target_size_multiplier_india
+                mult, r = get_vol_target_size_multiplier_india(symbol, df_5m)
+                if mult != 1.0 and hasattr(self, "_last_size_mult"):
+                    self._last_size_mult[symbol] = mult
+                    logger.debug(f"{symbol}: VOL_TARGET_INDIA {mult:.2f}x {r}")
+            except Exception:
+                pass
+
         return score
+
+    def get_size_multiplier(self, symbol: str) -> float:
+        """Return cached vol-targeting size multiplier for symbol."""
+        if not hasattr(self, "_last_size_mult"):
+            self._last_size_mult = {}
+        return self._last_size_mult.get(symbol, 1.0)

@@ -64,6 +64,17 @@ RUNNER_EOF
 chmod +x "$RUNNER"
 
 screen -dmS "$SESSION" bash "$RUNNER"
+
+# Launch India watchdog as independent background process
+WATCHDOG_PID_FILE="$ROOT_DIR/logs/india_watchdog.pid"
+if [ -f "$WATCHDOG_PID_FILE" ] && kill -0 "$(cat "$WATCHDOG_PID_FILE")" 2>/dev/null; then
+    echo "India watchdog already running (PID $(cat "$WATCHDOG_PID_FILE"))"
+else
+    nohup python3 "$BOT_DIR/watchdog_india.py" >> "$ROOT_DIR/logs/india_watchdog.log" 2>&1 &
+    echo $! > "$WATCHDOG_PID_FILE"
+    echo "✅ India watchdog started (PID $!)"
+fi
+
 sleep 2
 
 if screen -list | grep -q "$SESSION"; then
@@ -72,6 +83,7 @@ if screen -list | grep -q "$SESSION"; then
     echo "  Watch live:   screen -r $SESSION"
     echo "  Detach:       Ctrl+A then D"
     echo "  Logs:         tail -f $ROOT_DIR/logs/india_output.log"
+    echo "  Watchdog:     tail -f $ROOT_DIR/logs/india_watchdog.log"
     echo "  Stop:         bash stop_india.sh"
     echo ""
     echo "Telegram alert expected in ~30 seconds."
