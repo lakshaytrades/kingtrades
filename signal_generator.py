@@ -2834,6 +2834,28 @@ class SignalGenerator:
                             except Exception as _wue:
                                 _bc._last_refresh[_iv] = 0.0
                                 logger.warning(f"BarCache pre-warm {_iv}: {_wue}")
+            # Fetch any scan symbols not in the standard watchlist (top movers, dynamic additions).
+            # BarCache._refresh_interval() only fetches config.WATCHLIST; extra symbols miss the
+            # cache and fall back to slow per-symbol Alpaca calls → "insufficient 5m data".
+            try:
+                _cached_syms = set(k[0] for k in _bc._cache.keys() if k[1] == "5minute")
+                _extra_syms  = [s for s in symbols if s not in _cached_syms]
+                if _extra_syms:
+                    logger.info(
+                        f"[BarCache] Fetching {len(_extra_syms)} extra scan symbols: "
+                        f"{', '.join(_extra_syms[:8])}{'...' if len(_extra_syms) > 8 else ''}"
+                    )
+                    for _iv2, _ld2 in [("5minute", 5), ("15minute", 10), ("1hour", 30)]:
+                        _nd: dict = {}
+                        try:
+                            _bc._fetch_alpaca_bars(_iv2, _ld2, _extra_syms, _nd)
+                        except Exception:
+                            pass
+                        if _nd:
+                            with _bc._lock:
+                                _bc._cache.update(_nd)
+            except Exception as _ese:
+                logger.debug(f"[suppressed] extra-symbol BarCache fetch: {_ese}")
         except Exception as _pwe:
             logger.debug(f"[suppressed] BarCache pre-warm: {_pwe}")
 
