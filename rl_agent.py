@@ -511,7 +511,7 @@ class RLAgent:
         self._save_epsilon()
 
         logger.info(
-            f"[RL] {symbol} closed | PnL=₹{pnl:+.0f} | Reward={reward:+.3f} | "
+            f"[RL] {symbol} closed | PnL=${pnl:+.0f} | Reward={reward:+.3f} | "
             f"ε→{self.epsilon:.3f} | WR(50)={self.memory.win_rate()}%"
         )
 
@@ -618,5 +618,5 @@ class LakshKingRL:
             f"Win rate (last 50): {s['win_rate_50']}%\n"
             f"Avg reward: {s['avg_reward_50']:+.3f}\n"
             f"Open positions: {s['open_positions']}\n"
-            f"Daily P&L: ₹{s['daily_pnl']:+.0f}"
+            f"Daily P&L: ${s['daily_pnl']:+.0f}"
         )
