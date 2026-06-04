@@ -13,6 +13,8 @@ from datetime import date, datetime, time, timedelta
 from typing import List, Optional
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 logger = logging.getLogger("news_filter_india")
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -94,7 +96,11 @@ def get_nifty_open() -> float:
         hist = yf.download("^NSEI", period="2d", interval="1d",
                            progress=False, auto_adjust=True)
         if hist is not None and not hist.empty:
-            return float(hist["Open"].iloc[-1])
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = [str(c[0]).lower() for c in hist.columns]
+            else:
+                hist.columns = [str(c).lower() for c in hist.columns]
+            return float(hist["open"].iloc[-1])
     except Exception as e:
         logger.debug(f"Nifty open fetch: {e}")
     return 0.0
@@ -107,7 +113,11 @@ def get_nifty_current() -> float:
         hist = yf.download("^NSEI", period="1d", interval="5m",
                            progress=False, auto_adjust=True)
         if hist is not None and not hist.empty:
-            return float(hist["Close"].iloc[-1])
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = [str(c[0]).lower() for c in hist.columns]
+            else:
+                hist.columns = [str(c).lower() for c in hist.columns]
+            return float(hist["close"].iloc[-1])
     except Exception as e:
         logger.debug(f"Nifty current fetch: {e}")
     return 0.0

@@ -198,7 +198,11 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
                          progress=False, auto_adjust=True)
         if df is None or df.empty:
             return None
-        df.columns = [c.lower() for c in df.columns]
+        # Handle MultiIndex columns from newer yfinance versions
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [str(c[0]).lower() for c in df.columns]
+        else:
+            df.columns = [str(c).lower() for c in df.columns]
         df = df[["open", "high", "low", "close", "volume"]].dropna()
         if df.empty:
             return None

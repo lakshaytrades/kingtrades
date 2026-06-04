@@ -19,6 +19,8 @@ from pathlib import Path
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 sys.path.insert(0, str(Path(__file__).parent))
 
@@ -197,8 +199,12 @@ def _get_nifty_info() -> dict:
         hist = yf.download("^NSEI", period="2d", interval="1d",
                            progress=False, auto_adjust=True)
         if hist is not None and len(hist) >= 2:
-            close_today = float(hist["Close"].iloc[-1])
-            close_prev  = float(hist["Close"].iloc[-2])
+            if isinstance(hist.columns, pd.MultiIndex):
+                hist.columns = [str(c[0]).lower() for c in hist.columns]
+            else:
+                hist.columns = [str(c).lower() for c in hist.columns]
+            close_today = float(hist["close"].iloc[-1])
+            close_prev  = float(hist["close"].iloc[-2])
             chg_pct     = (close_today - close_prev) / close_prev * 100
             return {"level": close_today, "chg_pct": chg_pct}
     except Exception:
@@ -212,7 +218,8 @@ def _get_india_vix() -> float:
         tk   = yf.Ticker("^INDIAVIX")
         hist = tk.history(period="2d", interval="1d")
         if hist is not None and not hist.empty:
-            return float(hist["Close"].iloc[-1])
+            close_col = "Close" if "Close" in hist.columns else "close"
+            return float(hist[close_col].iloc[-1])
     except Exception:
         pass
     return 0.0

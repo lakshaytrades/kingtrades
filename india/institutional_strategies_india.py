@@ -14,6 +14,8 @@ from pathlib import Path
 from typing import Dict, List, Tuple
 from zoneinfo import ZoneInfo
 
+import pandas as pd
+
 # Import shared strategies from parent directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
 from institutional_strategies import (
@@ -106,7 +108,11 @@ def get_gap_fade_score_india(symbol: str, direction: str,
                 hist = yf.download(f"{symbol}.NS", period="2d",
                                    interval="1d", progress=False, auto_adjust=True)
                 if hist is not None and len(hist) >= 2:
-                    _gap_cache[symbol] = float(hist["Close"].iloc[-2])
+                    if isinstance(hist.columns, pd.MultiIndex):
+                        hist.columns = [str(c[0]).lower() for c in hist.columns]
+                    else:
+                        hist.columns = [str(c).lower() for c in hist.columns]
+                    _gap_cache[symbol] = float(hist["close"].iloc[-2])
             except Exception:
                 return (0.0, "")
 
@@ -166,13 +172,24 @@ def get_pairs_signal_india(symbol: str, direction: str) -> Tuple[float, str]:
         for sym_a, sym_b in relevant_pairs:
             try:
                 tickers = [f"{sym_a}.NS", f"{sym_b}.NS"]
-                hist = yf.download(tickers, period="25d", interval="1d",
-                                   progress=False, auto_adjust=True)["Close"]
-                if hist is None or hist.shape[0] < 20:
+                hist_raw = yf.download(tickers, period="25d", interval="1d",
+                                       progress=False, auto_adjust=True)
+                if hist_raw is None or hist_raw.shape[0] < 20:
                     continue
+                if isinstance(hist_raw.columns, pd.MultiIndex):
+                    lvl0 = hist_raw.columns.get_level_values(0).str.lower()
+                    if "close" in lvl0.tolist():
+                        hist = hist_raw.xs("Close", level=0, axis=1, drop_level=True) \
+                               if "Close" in hist_raw.columns.get_level_values(0) \
+                               else hist_raw.xs("close", level=0, axis=1, drop_level=True)
+                    else:
+                        continue
+                else:
+                    col = "Close" if "Close" in hist_raw.columns else "close"
+                    hist = hist_raw[col]
 
-                series_a = hist[f"{sym_a}.NS"].dropna()
-                series_b = hist[f"{sym_b}.NS"].dropna()
+                series_a = hist[f"{sym_a}.NS"].dropna() if f"{sym_a}.NS" in hist.columns else pd.Series(dtype=float)
+                series_b = hist[f"{sym_b}.NS"].dropna() if f"{sym_b}.NS" in hist.columns else pd.Series(dtype=float)
                 if len(series_a) < 15 or len(series_b) < 15:
                     continue
 

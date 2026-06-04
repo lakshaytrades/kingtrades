@@ -24,6 +24,15 @@ import pandas as pd
 
 warnings.filterwarnings("ignore")
 
+
+def _fix_yf_cols(df: "pd.DataFrame") -> "pd.DataFrame":
+    """Normalize yfinance columns — newer yfinance returns MultiIndex tuples."""
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [str(c[0]).lower() for c in df.columns]
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
+    return df
+
 sys.path.insert(0, str(Path(__file__).parent.parent))
 
 OUTPUT_DIR = Path(__file__).parent.parent / "data" / "ml_pretrained_india"
@@ -58,7 +67,7 @@ def _download_all() -> dict:
                 df = yf.download(sym, period=f"{PERIOD_YEARS}y", interval="1d",
                                  progress=False, auto_adjust=True)
                 if df is not None and len(df) > 100:
-                    df.columns = [c.lower() for c in df.columns]
+                    df = _fix_yf_cols(df)
                     data[sym] = df
                     print(f"  {sym}: {len(df)} rows")
                     break
