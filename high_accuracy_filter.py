@@ -618,11 +618,11 @@ class HighAccuracyFilter:
                     1 for o, c in zip(_opens, _closes)
                     if (c > o if direction in ('LONG','BUY') else c < o)
                 )
-                if _aligned < 3:
+                if _aligned < 2:
                     result.gates_failed.append(f'MOMENTUM_BARS({_aligned}/5)')
                     result.rejection_reason = (
                         f'[GATE-24 MOMENTUM] {symbol} — only {_aligned}/5 bars confirm {direction} '
-                        f'(need ≥3: institutional momentum not established)'
+                        f'(need ≥2: institutional momentum not established)'
                     )
                     self._log_rejection(result, signal_score, direction)
                     return result
@@ -646,10 +646,12 @@ class HighAccuracyFilter:
                 _slope  = _np25.sum((_x25 - _xm) * (_cl25 - _ym)) / (_np25.sum((_x25 - _xm) ** 2) + 1e-9)
                 _y_pred = _ym + _slope * (_x25 - _xm)
                 _ss_res = _np25.sum((_cl25 - _y_pred) ** 2)
-                _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 0 else 0.0
+                _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 1e-6 else 0.5
+                # When _ss_tot≈0 (perfect consolidation), price is flat — treat as neutral R²=0.5
+                # This prevents flat consolidation (pre-breakout base) from blocking legitimate setups
                 # Direction check: slope must agree with signal direction
                 _slope_ok = (_slope > 0) if direction in ('LONG','BUY') else (_slope < 0)
-                if _r2 < 0.20 or (_r2 < 0.35 and not _slope_ok):
+                if _r2 < 0.10 or (_r2 < 0.25 and not _slope_ok):
                     result.gates_failed.append(f'TREND_QUALITY(R²={_r2:.2f})')
                     result.rejection_reason = (
                         f'[GATE-25 R²] {symbol} — trend R²={_r2:.2f} too choppy for {direction} '
