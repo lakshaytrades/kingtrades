@@ -1751,16 +1751,16 @@ class HighAccuracyFilter:
             count = 0
             reasons = []
             if direction in ("BUY", "LONG"):
-                if 25 < _rsi < 72:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if 20 < _rsi < 78:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
                 if _mh > 0:            count += 1; reasons.append("MACD+")
                 if _e9 > _e21 > 0:     count += 1; reasons.append("EMA9>21")
-                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+                if _vr > 1.1:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
             else:  # SELL / SHORT
-                if 28 < _rsi < 75:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if 15 < _rsi < 80:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
                 if _mh < 0:            count += 1; reasons.append("MACD-")
                 if 0 < _e9 < _e21:     count += 1; reasons.append("EMA9<21")
-                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
-            if count < min_count:
+                if _vr > 1.1:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+            if count < 1:  # need at least 1 indicator aligned (was min_count=2)
                 return False, f"only {count}/{min_count} indicators aligned ({','.join(reasons) or 'none'})"
             return True, f"{count}/4 ({','.join(reasons)})"
         except Exception:
