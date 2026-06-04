@@ -703,6 +703,18 @@ OPTIONS_INTENSITY_ENABLED:    bool = os.getenv("OPTIONS_INTENSITY_ENABLED",    "
 # Pre-market gap scanner: classify overnight gaps as momentum/earnings/weak
 GAP_SCANNER_ENABLED:          bool = os.getenv("GAP_SCANNER_ENABLED",          "true").lower() == "true"
 
+# ── v24.0 Alternative Data Intelligence ────────────────────────────────────────
+# SEC Form 4 insider trading signal — CEO/CFO open-market buys = strongest signal in finance
+INSIDER_INTELLIGENCE_ENABLED: bool = os.getenv("INSIDER_INTELLIGENCE_ENABLED", "true").lower() == "true"
+# Gamma Exposure (GEX) — options market maker hedging flows; negative GEX = moves amplify
+GEX_ENABLED:                  bool = os.getenv("GEX_ENABLED",                  "true").lower() == "true"
+# Reddit WSB + StockTwits crowd sentiment — retail FOMO creates momentum
+CROWD_SENTIMENT_ENABLED:      bool = os.getenv("CROWD_SENTIMENT_ENABLED",      "true").lower() == "true"
+# Fama-French 5-Factor model alignment — Nobel Prize factors (Mkt, SMB, HML, RMW, CMA)
+FF_FACTORS_ENABLED:           bool = os.getenv("FF_FACTORS_ENABLED",           "true").lower() == "true"
+# Congressional trading signal — politicians beat market 6-12% annually
+CONGRESSIONAL_ALPHA_ENABLED:  bool = os.getenv("CONGRESSIONAL_ALPHA_ENABLED",  "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================

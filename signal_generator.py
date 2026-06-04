@@ -1269,6 +1269,57 @@ class SignalGenerator:
                 except Exception as _gp_e:
                     logger.debug(f"[suppressed] gap_scanner: {_gp_e}")
 
+            # ── ALTERNATIVE DATA INTELLIGENCE (v24.0) ─────────────────────────
+            # SEC insider trades
+            if getattr(config, 'INSIDER_INTELLIGENCE_ENABLED', True):
+                try:
+                    from insider_intelligence import get_insider_signal
+                    _ins_delta, _ins_reason = get_insider_signal(symbol, direction)
+                    if _ins_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ins_delta)
+                        logger.debug(f"{symbol}: INSIDER {_ins_delta:+.0f} {_ins_reason}")
+                except Exception as _ie: logger.debug(f"[suppressed] insider: {_ie}")
+
+            # Gamma Exposure
+            if getattr(config, 'GEX_ENABLED', True):
+                try:
+                    from gex_calculator import get_gex_signal
+                    _gex_delta, _gex_reason = get_gex_signal(symbol, float(ltp_now), direction)
+                    if _gex_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gex_delta)
+                        logger.debug(f"{symbol}: GEX {_gex_delta:+.0f} {_gex_reason}")
+                except Exception as _ge: logger.debug(f"[suppressed] gex: {_ge}")
+
+            # Crowd sentiment
+            if getattr(config, 'CROWD_SENTIMENT_ENABLED', True):
+                try:
+                    from crowd_sentiment import get_crowd_sentiment
+                    _cs_delta, _cs_reason = get_crowd_sentiment(symbol, direction)
+                    if _cs_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cs_delta)
+                        logger.debug(f"{symbol}: CROWD {_cs_delta:+.0f} {_cs_reason}")
+                except Exception as _cse: logger.debug(f"[suppressed] crowd: {_cse}")
+
+            # Fama-French factors
+            if getattr(config, 'FF_FACTORS_ENABLED', True):
+                try:
+                    from ff_factors import get_factor_signal
+                    _ff_delta, _ff_reason = get_factor_signal(symbol, direction)
+                    if _ff_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ff_delta)
+                        logger.debug(f"{symbol}: FF_FACTOR {_ff_delta:+.0f} {_ff_reason}")
+                except Exception as _ffe: logger.debug(f"[suppressed] ff: {_ffe}")
+
+            # Congressional trading
+            if getattr(config, 'CONGRESSIONAL_ALPHA_ENABLED', True):
+                try:
+                    from congressional_alpha import get_congressional_signal
+                    _cong_delta, _cong_reason = get_congressional_signal(symbol, direction)
+                    if _cong_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cong_delta)
+                        logger.debug(f"{symbol}: CONGRESS {_cong_delta:+.0f} {_cong_reason}")
+                except Exception as _conge: logger.debug(f"[suppressed] congress: {_conge}")
+
             # ── PREMIUM SCANNER (v11.0) — Free equivalents of paid tools ───────
             try:
                 from premium_scanner import (
