@@ -811,12 +811,15 @@ class SignalGenerator:
                 learner          = self._learner,
                 # ── Gates 6-10 parameters ─────────────────────────────
                 symbol           = symbol,
-                # Gate 6: daily_volume — use real daily volume fields; fall back to 0
-                # so Gate 6 only passes when data is actually available, not silently.
-                # The watchlist's liquid stocks (NVDA, SPY, etc.) always have daily_volume.
-                daily_volume     = float(stock_quote.get("daily_volume", 0) or
-                                         stock_quote.get("traded_volume", 0) or
-                                         stock_quote.get("volume", 0) or 0),
+                # Gate 6: Use PREVIOUS day's full volume from daily bar cache.
+                # The live quote volume is tiny at market open (only minutes of data)
+                # which would falsely filter NVDA/AAPL/TSLA as "low volume".
+                daily_volume     = self._get_prev_day_volume(
+                                       symbol,
+                                       stock_quote.get("daily_volume", 0) or
+                                       stock_quote.get("traded_volume", 0) or
+                                       stock_quote.get("volume", 0) or 0,
+                                   ),
                 ltp              = ltp_now,
                 prev_close       = float(stock_quote.get("prev_close", 0) or
                                          stock_quote.get("previous_close", 0) or
@@ -3252,6 +3255,32 @@ class SignalGenerator:
         except Exception:
             pass
         return 0.0
+
+    def _get_prev_day_volume(self, symbol: str, quote_volume: float) -> float:
+        """Return previous completed day's volume from daily bar cache.
+
+        The live quote volume is near-zero at market open (only minutes of data),
+        which falsely flags liquid stocks like NVDA/AAPL as low-volume.
+        We use the most recent COMPLETE daily bar instead.
+        Falls back to quote_volume if cache is unavailable.
+        """
+        try:
+            df = self._daily_candles_cache.get(symbol)
+            if df is not None and not df.empty and "volume" in df.columns:
+                today = __import__("utils").get_current_ist_time().date()
+                # Use the most recent bar that is NOT today's partial bar
+                for i in range(len(df) - 1, -1, -1):
+                    bar_date = df.index[i]
+                    if hasattr(bar_date, "date"):
+                        bar_date = bar_date.date()
+                    if bar_date < today:
+                        vol = float(df["volume"].iloc[i])
+                        if vol > 0:
+                            return vol
+                        break
+        except Exception:
+            pass
+        return float(quote_volume or 0)
 
     def _get_gap_pct(self, symbol: str) -> float:
         """Get today's opening gap % for symbol (0.0 if not available)."""

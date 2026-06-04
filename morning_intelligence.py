@@ -30,7 +30,7 @@ Server runs in UK (UTC) — all timestamps in IST (Asia/Kolkata).
 import logging
 import math
 from dataclasses import dataclass, field
-from typing import List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple
 
 from utils import format_ist_timestamp, get_current_ist_date, get_current_ist_time
 
@@ -681,14 +681,19 @@ class MorningIntelligence:
         2. Gapped stocks (potential ORB candidates)
         3. Original watchlist filtered to hot sectors
         """
-        from sector_rotation import SECTOR_STOCKS
+        from sector_rotation import STOCK_TO_SECTOR
+
+        # Build reverse map: ETF ticker → list of stocks
+        _sector_stocks: Dict[str, List[str]] = {}
+        for sym, etf in STOCK_TO_SECTOR.items():
+            _sector_stocks.setdefault(etf, []).append(sym)
 
         candidates: List[str] = []
         seen: set = set()
 
         # Add top 2 stocks from each hot sector
         for sector in hot_sectors[:3]:
-            stocks = SECTOR_STOCKS.get(sector, [])
+            stocks = _sector_stocks.get(sector, [])
             for sym in stocks[:2]:
                 if sym not in seen:
                     candidates.append(sym)
