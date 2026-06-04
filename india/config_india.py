@@ -64,3 +64,11 @@ YFINANCE_SUFFIX = ".NS"        # for yfinance historical data
 
 # ── Scan interval ────────────────────────────────────────────────────────────
 SCAN_INTERVAL_SECONDS = 300   # scan watchlist every 5 minutes
+
+# ── Tier 1 feature flags (India-specific free data) ──────────────────────────
+OPTION_CHAIN_ENABLED    = _flag("INDIA_OPTION_CHAIN_ENABLED")    # NSE option chain PCR/OI
+FII_DII_ENABLED         = _flag("INDIA_FII_DII_ENABLED")         # FII/DII daily flow
+DELIVERY_VOL_ENABLED    = _flag("INDIA_DELIVERY_VOL_ENABLED")    # NSE delivery %
+VOL_PROFILE_ENABLED     = _flag("INDIA_VOL_PROFILE_ENABLED")     # Volume profile VPOC
+NEWS_SENTIMENT_ENABLED  = _flag("INDIA_NEWS_SENTIMENT_ENABLED")  # MoneyControl/ET RSS
+ML_INDIA_ENABLED        = _flag("INDIA_ML_INDIA_ENABLED")        # NSE-specific ML models

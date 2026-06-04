@@ -1,8 +1,22 @@
 """
-signal_generator_india.py — Signal generation for NSE India
-Uses yfinance .NS data + parent pattern_recognition + high_accuracy_filter.
-Applies all institutional strategies (IST-adapted versions).
-Returns same TradeSignal dataclass as US bot — compatible interface.
+signal_generator_india.py — Signal generation for NSE India (Tier 1)
+Data: yfinance .NS bars + NSE live APIs (option chain, FII/DII, delivery vol)
+Filter: 26-gate HighAccuracyFilter (shared from parent)
+Strategies: 6 institutional + ORB + neural + option chain + FII/DII + delivery vol
+
+Tier 1 signal stack (in order of application):
+  1. Base score from indicators (RSI/MACD/ADX/VWAP/BB/EMA)
+  2. Multi-timeframe alignment (5m + 15m + 1h)
+  3. Institutional strategies (CSM, VWAP reclaim, TOD RVOL, pairs, gap fade, power hour)
+  4. ORB — Opening Range Breakout (NSE specialist, 60-72% win rate)
+  5. NSE Option Chain — PCR, max pain, OI walls (free from NSE)
+  6. FII/DII flow — who's buying/selling today (free from NSE)
+  7. NSE Delivery Volume — institutional vs speculative activity
+  8. News sentiment — MoneyControl/ET RSS for stock-specific news
+  9. Volume profile — VPOC/VAH/VAL support-resistance
+ 10. Neural predictor — MLP trained on NSE historical data
+ 11. India VIX vol targeting — size position by volatility
+ 12. 26-gate High Accuracy Filter — final gate
 """
 import logging
 import sys
@@ -17,6 +31,7 @@ import pandas as pd
 
 # Import shared logic from parent directory
 sys.path.insert(0, str(Path(__file__).parent.parent))
+sys.path.insert(0, str(Path(__file__).parent))
 from pattern_recognition import PatternRecognizer, IndicatorSet
 from high_accuracy_filter import HighAccuracyFilter, FilterResult
 
@@ -396,8 +411,8 @@ class IndiaSignalGenerator:
         except Exception as e:
             logger.debug(f"[suppressed] institutional boosters {symbol}: {e}")
 
-        # ── India specialist: ORB (Opening Range Breakout) ────────────────────
-        # THE most reliable NSE signal — 60–72% win rate on liquid stocks
+        # ── TIER 1: ORB (Opening Range Breakout) ─────────────────────────────
+        # THE most reliable NSE signal — 60–72% documented win rate
         try:
             from orb_strategy_india import get_orb_score
             d, r = get_orb_score(symbol, direction, ltp, df_5m)
@@ -407,7 +422,114 @@ class IndiaSignalGenerator:
         except Exception:
             pass
 
-        # ── Neural predictor (shared from parent) ─────────────────────────────
+        # ── TIER 1: NSE Option Chain (PCR + max pain + OI walls) ─────────────
+        # Institutions hedge in options BEFORE they move spot — read the chain
+        if self._config.OPTION_CHAIN_ENABLED:
+            try:
+                from option_chain import OptionChainAnalyzer
+                _oc = getattr(self, "_oc_analyzer", None)
+                if _oc is None:
+                    self._oc_analyzer = OptionChainAnalyzer()
+                    _oc = self._oc_analyzer
+                oc_result = _oc.analyze(symbol)
+                if oc_result:
+                    oc_adj = oc_result.confidence_score / 10.0   # scale to -10..+10
+                    if oc_result.direction_bias == "BULLISH" and direction == "LONG":
+                        d = min(12.0, oc_adj)
+                        score = min(100.0, score + d)
+                        logger.debug(f"{symbol}: OC_BULLISH {d:+.0f} PCR={oc_result.pcr:.2f}")
+                    elif oc_result.direction_bias == "BEARISH" and direction == "SHORT":
+                        d = min(12.0, oc_adj)
+                        score = min(100.0, score + d)
+                        logger.debug(f"{symbol}: OC_BEARISH {d:+.0f} PCR={oc_result.pcr:.2f}")
+                    elif oc_result.direction_bias in ("BULLISH","BEARISH"):
+                        # Option chain disagrees with direction — penalty
+                        score = max(0.0, score - 6.0)
+                        logger.debug(f"{symbol}: OC_DISAGREE -6 bias={oc_result.direction_bias}")
+
+                    # Max pain proximity — price near max pain = reduce target
+                    if oc_result.max_pain > 0:
+                        max_pain_dist = abs(ltp - oc_result.max_pain) / (ltp + 1e-9)
+                        if max_pain_dist < 0.005:   # within 0.5% of max pain
+                            logger.debug(f"{symbol}: near max_pain ₹{oc_result.max_pain:.0f}")
+            except Exception as e:
+                logger.debug(f"{symbol}: option_chain {e}")
+
+        # ── TIER 1: FII/DII Flow (institutional money direction) ──────────────
+        # "Never fight FII trend" — 18 years NSE trading principle
+        if self._config.FII_DII_ENABLED:
+            try:
+                from fii_dii_tracker import FIIDIITracker
+                _fii = getattr(self, "_fii_tracker", None)
+                if _fii is None:
+                    self._fii_tracker = FIIDIITracker()
+                    _fii = self._fii_tracker
+                flow_bias = _fii.get_flow_bias()
+                fii_adj   = _fii.get_signal_adjustment()   # -10 to +10
+                if fii_adj != 0:
+                    if (flow_bias == "BULLISH" and direction == "LONG") or \
+                       (flow_bias == "BEARISH" and direction == "SHORT"):
+                        d = min(10.0, abs(fii_adj))
+                        score = min(100.0, score + d)
+                        logger.debug(f"{symbol}: FII_{flow_bias} {d:+.0f}")
+                    elif flow_bias in ("BULLISH", "BEARISH"):
+                        score = max(0.0, score - 5.0)
+                        logger.debug(f"{symbol}: FII_AGAINST -5 flow={flow_bias}")
+            except Exception as e:
+                logger.debug(f"{symbol}: fii_dii {e}")
+
+        # ── TIER 1: NSE Delivery Volume (institutional vs speculative) ────────
+        # Free from NSE archives — unique India edge
+        if self._config.DELIVERY_VOL_ENABLED:
+            try:
+                from nse_delivery_volume import get_delivery_score
+                d, r = get_delivery_score(symbol, direction)
+                if d:
+                    score = min(100.0, score + d)
+                    logger.debug(f"{symbol}: DELIVERY {d:+.0f} {r}")
+            except Exception as e:
+                logger.debug(f"{symbol}: delivery_vol {e}")
+
+        # ── TIER 1: Volume Profile (VPOC / VAH / VAL) ────────────────────────
+        # Price at VPOC = highest activity level = strong support/resistance
+        if self._config.VOL_PROFILE_ENABLED and df_5m is not None and not df_5m.empty:
+            try:
+                from volume_profile import VolumeProfileAnalyzer
+                _vpa = getattr(self, "_vp_analyzer", None)
+                if _vpa is None:
+                    self._vp_analyzer = VolumeProfileAnalyzer()
+                    _vpa = self._vp_analyzer
+                vp = _vpa.analyze(df_5m, lookback_bars=200)
+                if vp:
+                    location = vp.price_location(ltp)
+                    if direction == "LONG" and location == "ABOVE_VAH":
+                        score = min(100.0, score + 6.0)
+                        logger.debug(f"{symbol}: VP_ABOVE_VAH +6")
+                    elif direction == "SHORT" and location == "BELOW_VAL":
+                        score = min(100.0, score + 6.0)
+                        logger.debug(f"{symbol}: VP_BELOW_VAL +6")
+                    elif location == "AT_VPOC":
+                        score = max(0.0, score - 4.0)   # indecision zone — reduce conviction
+            except Exception as e:
+                logger.debug(f"{symbol}: vol_profile {e}")
+
+        # ── TIER 1: News sentiment (MoneyControl/ET RSS) ─────────────────────
+        if self._config.NEWS_SENTIMENT_ENABLED:
+            try:
+                from news_sentiment import get_news_sentiment
+                sent_score, sent_reason = get_news_sentiment(symbol)
+                if sent_score and sent_score != 0:
+                    if (sent_score > 0 and direction == "LONG") or \
+                       (sent_score < 0 and direction == "SHORT"):
+                        d = min(6.0, abs(sent_score))
+                        score = min(100.0, score + d)
+                        logger.debug(f"{symbol}: NEWS_SENT {d:+.0f} {sent_reason}")
+                    else:
+                        score = max(0.0, score - 3.0)
+            except Exception as e:
+                logger.debug(f"{symbol}: news_sentiment {e}")
+
+        # ── TIER 1: Neural predictor ──────────────────────────────────────────
         try:
             from neural_predictor import get_neural_score_delta
             ind_dict = {
@@ -428,13 +550,15 @@ class IndiaSignalGenerator:
         except Exception:
             pass
 
-        # ── India VIX volatility targeting ───────────────────────────────────
+        # ── TIER 1: India VIX volatility targeting ────────────────────────────
         if self._config.VOL_TARGET_ENABLED:
             try:
                 from volatility_targeting_india import get_vol_target_size_multiplier_india
                 mult, r = get_vol_target_size_multiplier_india(symbol, df_5m)
-                if mult != 1.0 and hasattr(self, "_last_size_mult"):
-                    self._last_size_mult[symbol] = mult
+                if not hasattr(self, "_last_size_mult"):
+                    self._last_size_mult = {}
+                self._last_size_mult[symbol] = mult
+                if mult != 1.0:
                     logger.debug(f"{symbol}: VOL_TARGET_INDIA {mult:.2f}x {r}")
             except Exception:
                 pass

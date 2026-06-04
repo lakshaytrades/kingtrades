@@ -265,21 +265,55 @@ def send_morning_brief():
     try:
         from news_filter_india import next_blackout_event
         event = next_blackout_event()
-        event_str = f"\n⚠️ *Event*: {event}" if event else ""
+        event_str = f"⚠️ *Event*: {event}" if event else ""
     except Exception:
         event_str = ""
 
-    msg = (
-        f"🌅 *India Bot — Morning Brief*\n"
-        f"{datetime.now(IST).strftime('%A, %d %b %Y')}\n\n"
-        f"{nifty_str}\n"
-        f"{vix_str}\n"
-        f"{event_str}\n\n"
-        f"*Monthly P&L:* ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}\n"
-        f"{_target_bar(monthly_pct)}\n"
-        f"{on_track}\n\n"
-        f"Market opens: 9:15 AM IST | Bot scanning 50 NSE symbols"
-    )
+    # FII/DII flow
+    fii_str = ""
+    try:
+        from fii_dii_tracker import FIIDIITracker
+        tracker = FIIDIITracker()
+        flow    = tracker.get_today_flow()
+        if flow:
+            fii_emoji = "🟢" if flow.combined_net > 0 else "🔴"
+            fii_str = (f"{fii_emoji} FII: ₹{flow.fii_net/1e7:.0f}Cr | "
+                       f"DII: ₹{flow.dii_net/1e7:.0f}Cr | "
+                       f"Trend: {tracker.get_flow_bias()}")
+    except Exception:
+        pass
+
+    # Nifty option chain
+    oc_str = ""
+    try:
+        from option_chain import OptionChainAnalyzer
+        oc  = OptionChainAnalyzer()
+        res = oc.analyze("NIFTY")
+        if res:
+            oc_str = (f"📊 PCR: `{res.pcr:.2f}` | Max Pain: `{res.max_pain:,.0f}` | "
+                      f"Bias: `{res.direction_bias}`")
+    except Exception:
+        pass
+
+    lines = [
+        f"🌅 *India Bot — Morning Brief*",
+        f"{datetime.now(IST).strftime('%A, %d %b %Y')}",
+        "",
+        nifty_str,
+        vix_str,
+    ]
+    if oc_str:    lines.append(oc_str)
+    if fii_str:   lines.append(fii_str)
+    if event_str: lines.append(event_str)
+    lines += [
+        "",
+        f"*Monthly P&L:* ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}",
+        _target_bar(monthly_pct),
+        on_track,
+        "",
+        f"Market opens: 9:15 AM IST | Bot scanning 50 NSE symbols | 26 gates + 12 signal sources",
+    ]
+    msg = "\n".join(lines)
     _send(msg)
     logger.info("Morning brief sent")
 
