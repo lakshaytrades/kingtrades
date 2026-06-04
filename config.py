@@ -431,7 +431,7 @@ SENSITIVITY_ROBUSTNESS_MIN: float = 0.70
 # ============================================================
 # POSITION SIZING / GAP / LIQUIDITY
 # ============================================================
-MIN_DAILY_VOLUME: int = 1_000_000    # 1M shares/day minimum for US stocks
+MIN_DAILY_VOLUME: int = 200_000     # 200k shares/day — catches illiquid stocks, not blue chips
 MAX_GAP_PCT: float = 2.0
 LARGE_GAP_PCT: float = 3.5
 EXTREME_GAP_PCT: float = 5.0
