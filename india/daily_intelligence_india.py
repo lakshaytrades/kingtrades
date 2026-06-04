@@ -105,12 +105,17 @@ def explain_trade(signal) -> str:
         # Save decision
         _save_decision(symbol, direction, entry, sl, tp, reasons, score, grade)
 
+        dir_word = "BOUGHT" if direction == "LONG" else "SHORTED"
+        action_emoji = "🟢" if direction == "LONG" else "🔴"
         lines = [
-            f"🇮🇳 *Trade: {symbol}* ({direction})",
+            f"🇮🇳 {action_emoji} *[INDIA BOT] WHY this trade*",
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+            f"*{dir_word} {symbol}* | Grade: {grade} | Score: {score:.0f}/100",
             f"Entry: ₹{entry:.2f} | SL: ₹{sl:.2f} | Target: ₹{tp:.2f}",
-            "",
-            "*Why this trade:*",
-        ] + [f"  • {r}" for r in reasons]
+            f"R:R {rr:.1f}:1 | Sector: NSE Equity",
+            f"{'─' * 30}",
+            "*Reasons:*",
+        ] + [f"  {i}. {r}" for i, r in enumerate(reasons, 1)]
 
         return "\n".join(lines)
 
@@ -302,10 +307,13 @@ def send_morning_brief():
     except Exception:
         pass
 
+    filled = max(0, min(18, int(monthly_pct * 18)))
+    bar = "█" * filled + "░" * (18 - filled)
     lines = [
-        f"🌅 *India Bot — Morning Brief*",
-        f"{datetime.now(IST).strftime('%A, %d %b %Y')}",
-        "",
+        f"🇮🇳 🌅 *INDIA BOT — Morning Brief*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 {datetime.now(IST).strftime('%A, %d %b %Y')} | NSE | Dhan",
+        f"{'─' * 30}",
         nifty_str,
         vix_str,
     ]
@@ -313,12 +321,14 @@ def send_morning_brief():
     if fii_str:   lines.append(fii_str)
     if event_str: lines.append(event_str)
     lines += [
-        "",
+        f"{'─' * 30}",
         f"*Monthly P&L:* ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}",
-        _target_bar(monthly_pct),
+        f"`[{bar}]` {monthly_pct:.0%}",
         on_track,
-        "",
-        f"Market opens: 9:15 AM IST | Bot scanning 50 NSE symbols | 26 gates + 12 signal sources",
+        f"{'─' * 30}",
+        f"Market opens: 9:15 AM IST",
+        f"Scanning 50 NSE symbols | 26 gates | 12 signal sources | ORB active",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
     ]
     msg = "\n".join(lines)
     _send(msg)
@@ -338,17 +348,24 @@ def send_eod_report():
     total     = wins + losses
     win_rate  = wins / total if total else 0
 
+    filled = max(0, min(18, int(monthly_pct * 18)))
+    bar = "█" * filled + "░" * (18 - filled)
+    pnl_emoji = "🟢" if day_pnl > 0 else ("🔴" if total > 0 else "⏸")
+    wr_filled = max(0, min(10, int(win_rate * 10)))
+    wr_bar = "█" * wr_filled + "░" * (10 - wr_filled)
+
     lines = [
-        f"📊 *India Bot — EOD Report*",
-        f"{datetime.now(IST).strftime('%d %b %Y')} | NSE",
-        "",
-        f"Trades: {total} | Wins: {wins} | Losses: {losses}",
-        f"Win rate: {win_rate:.0%}" if total else "No trades today",
-        f"Day P&L: ₹{day_pnl:+,.0f}",
-        "",
+        f"🇮🇳 📊 *INDIA BOT — EOD Report*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan",
+        f"{'─' * 30}",
+        f"{pnl_emoji} Day P&L: `₹{day_pnl:+,.0f}`",
+        f"Trades: {total}  Wins: {wins}  Losses: {losses}",
+        f"Win rate: `{win_rate:.0%}` [{wr_bar}]" if total else "No trades — filters protected capital",
+        f"{'─' * 30}",
         f"*Monthly:* ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}",
-        _target_bar(monthly_pct),
-        "",
+        f"`[{bar}]` {monthly_pct:.0%}",
+        f"{'─' * 30}",
     ]
 
     # Trade details
@@ -356,20 +373,20 @@ def send_eod_report():
         lines.append("*Today's trades:*")
         for d in decisions:
             pnl = d.get("pnl")
-            pnl_str = f"₹{pnl:+.0f}" if pnl is not None else "open"
+            pnl_str = f"₹{pnl:+,.0f}" if pnl is not None else "open"
             emoji   = "🟢" if (pnl or 0) > 0 else ("🔴" if pnl is not None else "⏳")
-            lines.append(f"{emoji} {d['symbol']} {d['direction']} → {pnl_str}")
-            # Top reason
+            lines.append(f"  {emoji} {d['symbol']} {d['direction']} → `{pnl_str}`")
             reasons = d.get("reasons", [])
             if reasons:
-                lines.append(f"   _Why: {reasons[0]}_")
+                lines.append(f"     _Why: {reasons[0]}_")
     else:
-        lines.append("_No trades today — market conditions below threshold_")
+        lines.append("_No trades today — 26 gates held. Capital preserved._")
 
     if day_pnl > 0:
-        lines.append("\n✅ Profitable day!")
+        lines.append(f"\n✅ Profitable session! +₹{day_pnl:,.0f}")
     elif total > 0:
-        lines.append("\n🔴 Loss day — reviewing tomorrow's setup")
+        lines.append(f"\n🔴 Loss day — watchdog reviewing parameters")
+    lines.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
 
     _send("\n".join(lines))
     logger.info(f"EOD report sent: {total} trades, ₹{day_pnl:+.0f}")

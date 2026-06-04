@@ -152,14 +152,17 @@ class KingTradesIndia:
         self._stats.daily_start = balance
         logger.info(f"Available balance: ₹{balance:,.2f}")
 
-        mode = "🔴 LIVE" if config.LIVE_TRADING_ENABLED else "📄 PAPER"
+        mode = "🔴 LIVE TRADING" if config.LIVE_TRADING_ENABLED else "📄 PAPER MODE"
         _tg(
-            f"🇮🇳 *KingTrades India Bot Started*\n"
+            f"🇮🇳 *INDIA BOT — Session Started*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"🕐 {datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
             f"Mode: {mode}\n"
-            f"Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f}\n"
+            f"Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f} | Max pos: {config.MAX_POSITIONS}\n"
             f"Watchlist: {len(self._watchlist)} NSE symbols\n"
-            f"Gates: 26 | Frameworks: 8 | ML-scored\n"
-            f"Market opens: 9:15 AM IST"
+            f"Engine: 12 sources | 26 gates | ML-scored | ORB\n"
+            f"Broker: Dhan | Market: NSE | Opens 9:15 AM IST\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
         return True
 
@@ -185,8 +188,10 @@ class KingTradesIndia:
                 # ── Square-off warning ────────────────────────────────────────
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if self._positions:
-                        _tg(f"⚠️ *3:15 PM IST* — {len(self._positions)} open positions. "
-                            f"Squaring off at 3:20 PM IST.")
+                        syms = ", ".join(self._positions.keys())
+                        _tg(f"🇮🇳 ⚠️ *[INDIA BOT] Square-off Warning*\n"
+                            f"3:15 PM IST — {len(self._positions)} open: {syms}\n"
+                            f"Auto-closing at 3:20 PM IST")
 
                 # ── Force square-off ──────────────────────────────────────────
                 if t >= config.SQUAREOFF_TIME_IST:
@@ -294,13 +299,24 @@ class KingTradesIndia:
                 self._stats.trades += 1
 
                 _tg(
-                    f"✅ *Trade Entered* — {symbol}\n"
-                    f"Direction: {signal_obj.direction}\n"
+                    f"🇮🇳 ✅ *[INDIA BOT] Trade Entered* — {symbol}\n"
+                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"Direction: {signal_obj.direction} | Grade: {signal_obj.quality_grade}\n"
                     f"Entry: ₹{fill_price:.2f} | Qty: {fill_qty}\n"
-                    f"Stop: ₹{signal_obj.stop_loss:.2f} | Target: ₹{signal_obj.target_1:.2f}\n"
-                    f"Score: {signal_obj.signal_score:.0f}/100 | Grade: {signal_obj.quality_grade}\n"
-                    f"Sector: {get_sector(symbol)}"
+                    f"Stop:  ₹{signal_obj.stop_loss:.2f}  Target: ₹{signal_obj.target_1:.2f}\n"
+                    f"R:R: {abs(signal_obj.target_1-fill_price)/max(abs(fill_price-signal_obj.stop_loss),0.01):.1f}:1 | "
+                    f"Score: {signal_obj.signal_score:.0f}/100\n"
+                    f"Sector: {get_sector(symbol)} | NSE/Dhan | IST"
                 )
+
+                # Log trade explanation to decisions file
+                try:
+                    from daily_intelligence_india import explain_trade as _explain
+                    signal_obj.quantity = int(fill_qty)
+                    _why = _explain(signal_obj)
+                    _tg(_why)
+                except Exception:
+                    pass
 
                 # Neural predictor feedback (fail-open)
                 try:
@@ -401,11 +417,20 @@ class KingTradesIndia:
         except Exception:
             pass
 
+        # Record P&L for EOD report and monthly tracking
+        try:
+            from daily_intelligence_india import record_trade_close as _rtc
+            _rtc(symbol, pnl)
+        except Exception:
+            pass
+
         _tg(
-            f"{'🟢' if pnl > 0 else '🔴'} *Position Closed* — {symbol}\n"
-            f"Entry: ₹{pos.entry_price:.2f} | Exit: ₹{exit_price:.2f}\n"
-            f"P&L: ₹{pnl:+.2f} | Qty: {pos.quantity}\n"
-            f"Day total: ₹{self._stats.total_pnl:+.2f}"
+            f"🇮🇳 {'🟢' if pnl > 0 else '🔴'} *[INDIA BOT] Position Closed* — {symbol}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"Entry: ₹{pos.entry_price:.2f} → Exit: ₹{exit_price:.2f}\n"
+            f"P&L: `₹{pnl:+,.2f}` | Qty: {pos.quantity}\n"
+            f"Day P&L: ₹{self._stats.total_pnl:+,.2f} | "
+            f"W:{self._stats.wins} L:{self._stats.losses}"
         )
 
     # ── Force square-off ────────────────────────────────────────────────────────
@@ -414,7 +439,7 @@ class KingTradesIndia:
         if not self._positions:
             return
         logger.info(f"Force square-off: {len(self._positions)} positions")
-        _tg(f"🔔 *Square-off* — closing {len(self._positions)} positions at 3:20 PM IST")
+        _tg(f"🇮🇳 🔔 *[INDIA BOT] Force Square-off* — {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
 
         open_pos_dhan = self._executor.get_open_positions()
         self._executor.square_off_all(open_pos_dhan)
@@ -428,14 +453,24 @@ class KingTradesIndia:
     def _send_eod_report(self):
         s = self._stats
         win_rate = s.wins / s.trades if s.trades else 0
+        filled = max(0, min(10, int(round(win_rate * 10))))
+        bar = "█" * filled + "░" * (10 - filled)
         _tg(
-            f"📊 *KingTrades India — EOD Report*\n"
-            f"Date: {datetime.now(IST).strftime('%Y-%m-%d')}\n\n"
-            f"Trades: {s.trades} | Wins: {s.wins} | Losses: {s.losses}\n"
-            f"Win rate: {win_rate:.0%}\n"
-            f"Day P&L: ₹{s.total_pnl:+.2f}\n"
-            f"{'✅ Profitable day!' if s.total_pnl > 0 else '🔴 Loss day — review logs'}"
+            f"🇮🇳 📊 *INDIA BOT — EOD Report*\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+            f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
+            f"Trades: {s.trades}  Wins: {s.wins}  Losses: {s.losses}\n"
+            f"Win rate: `{win_rate:.0%}` [{bar}]\n"
+            f"Day P&L: `₹{s.total_pnl:+,.2f}`\n\n"
+            f"{'✅ Profitable session!' if s.total_pnl > 0 else ('🔴 Loss day — watchdog reviewing' if s.trades else '⏸ No trades — filters held')}\n"
+            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
         )
+        # Also trigger the full detailed EOD from daily intelligence
+        try:
+            from daily_intelligence_india import send_eod_report as _eod
+            _eod()
+        except Exception:
+            pass
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
@@ -481,7 +516,7 @@ class KingTradesIndia:
 
     def _handle_shutdown(self, *_):
         logger.info("Shutdown signal received — squaring off")
-        _tg("⚠️ *India Bot shutdown* — closing all positions")
+        _tg("🇮🇳 ⚠️ *[INDIA BOT] Emergency Shutdown* — squaring off all NSE positions now")
         self._force_square_off()
         self._running = False
 

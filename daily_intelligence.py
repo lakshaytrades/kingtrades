@@ -172,7 +172,8 @@ def explain_trade(signal) -> str:
     action_emoji = "🟢" if dir_ == "LONG" else "🔴"
 
     lines = [
-        f"{action_emoji} *{dir_word} {qty} {sym} @ ${entry:.2f}*",
+        f"🇺🇸 {action_emoji} *[US BOT] {dir_word} {qty} {sym} @ ${entry:.2f}*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
         "*WHY the bot took this trade:*",
     ]
@@ -381,7 +382,9 @@ def send_morning_brief():
         regime_str = "🟡 NEUTRAL"
 
     msg = (
-        f"☀️ *MORNING BRIEF — {now}*\n"
+        f"🇺🇸 ☀️ *US BOT — Morning Brief*\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+        f"📅 {now} | NYSE/NASDAQ | Alpaca\n"
         f"{'─' * 30}\n"
         f"  {spy_str}\n"
         f"  {vix_str}\n"
@@ -393,7 +396,8 @@ def send_morning_brief():
         f"{'─' * 30}\n"
         f"  Bot is *ACTIVE* — scanning every 60s\n"
         f"  You will be notified on every trade\n"
-        f"  No action needed from you today"
+        f"  No action needed from you today\n"
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
     )
     _send(msg)
     logger.info("Morning brief sent")
@@ -460,7 +464,9 @@ def send_eod_report():
     pnl_emoji = "🟢" if today_pnl >= 0 else "🔴"
 
     msg_parts = [
-        f"📋 *EOD REPORT — {now}*",
+        f"🇺🇸 📋 *US BOT — EOD Report*",
+        f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 {now} | NYSE/NASDAQ | Alpaca",
         f"{'─' * 30}",
         f"  {pnl_emoji} Today P&L: `${today_pnl:+,.0f}`",
         f"  Trades: `{len(closed)}` closed",
@@ -495,8 +501,8 @@ def send_eod_report():
             "  _This is normal — protecting capital beats forcing trades_",
         ]
 
-    msg_parts.append(f"{'─' * 30}")
-    msg_parts.append("_Bot resets for tomorrow. No action needed._")
+    msg_parts.append(f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    msg_parts.append("_US Bot resets for tomorrow. No action needed._")
 
     _send("\n".join(msg_parts))
     logger.info("EOD report sent")
