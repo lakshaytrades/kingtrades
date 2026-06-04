@@ -587,10 +587,10 @@ class AlpacaDataFetcher:
             tf = tf_map.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
 
             now_et  = datetime.now(ET)
-            # Data delay: free SIP plan needs 15-min delay; paid Unlimited plan can use 1 min.
-            # Set ALPACA_DATA_DELAY_MINUTES=16 for free plan, 1 for Unlimited plan.
-            # Default 1: free-plan calls get 0 bars and fall through to BarCache (yfinance).
-            _delay  = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "1"))
+            # Data delay: free SIP plan requires 15-min delay; paid Unlimited plan can use 1 min.
+            # Default 16 matches _fetch_alpaca_bars() so per-symbol calls work on the free plan.
+            # Override with ALPACA_DATA_DELAY_MINUTES=1 for paid Unlimited plan.
+            _delay  = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "16"))
             end_et  = now_et - timedelta(minutes=max(1, _delay))
             start   = now_et - timedelta(days=lookback_days + 2)  # +2 for weekends
 
