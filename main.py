@@ -2627,6 +2627,20 @@ class TradingBot:
                         except Exception as _ic_e:
                             logger.debug(f"[suppressed] signal_ic_tracker.record: {_ic_e}")
 
+                        # v27.0 — Adaptive IC tracker: feed signal scores → forward returns ─
+                        try:
+                            from ic_tracker import record_signal_outcome as _v27_ic_record
+                            _v27_pnl_pct = pnl / max(abs(pos.entry_price * pos.quantity), 1.0)
+                            _v27_score   = getattr(pos, "signal_score", 0.0)
+                            _v27_dir     = getattr(pos, "direction", "LONG")
+                            # Record composite score as "signal_value", actual return as forward_return
+                            _v27_ic_record("composite_score", _v27_score, _v27_pnl_pct)
+                            # Also record direction-adjusted score for asymmetric learning
+                            _v27_signed = _v27_score if _v27_dir == "LONG" else -_v27_score
+                            _v27_ic_record("directional_score", _v27_signed, _v27_pnl_pct)
+                        except Exception as _v27_ice:
+                            logger.debug(f"[suppressed] ic_tracker.record: {_v27_ice}")
+
                         try:
                             from ml_ensemble import record_trade_outcome_ensemble
                             _ens_feat = {

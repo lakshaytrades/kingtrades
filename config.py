@@ -747,6 +747,20 @@ ROLL_SPREAD_ENABLED:          bool = os.getenv("ROLL_SPREAD_ENABLED",          "
 KYLE_LAMBDA_ENABLED:          bool = os.getenv("KYLE_LAMBDA_ENABLED",          "true").lower() == "true"
 VOL_CLOCK_ENABLED:            bool = os.getenv("VOL_CLOCK_ENABLED",            "true").lower() == "true"
 
+# ── v27.0 Renaissance Medallion Strategies ──────────────────────────────────────
+# PCA factor decomposition: isolate idiosyncratic alpha from market/sector noise
+PCA_ALPHA_ENABLED:            bool = os.getenv("PCA_ALPHA_ENABLED",            "true").lower() == "true"
+# Event alpha: analyst upgrades/downgrades, dividend capture, stock splits
+EVENT_ALPHA_ENABLED:          bool = os.getenv("EVENT_ALPHA_ENABLED",          "true").lower() == "true"
+# STL trend decomposition via Loess: score trend component, not raw price noise
+STL_ENABLED:                  bool = os.getenv("STL_ENABLED",                  "true").lower() == "true"
+# Execution timing intelligence: avoid open chaos, last 10min MOC, boost power hour
+EXECUTION_TIMING_ENABLED:     bool = os.getenv("EXECUTION_TIMING_ENABLED",     "true").lower() == "true"
+# Market impact check (Almgren-Chriss): penalize orders > 1% ADV
+MARKET_IMPACT_ENABLED:        bool = os.getenv("MARKET_IMPACT_ENABLED",        "true").lower() == "true"
+# Cross-sectional pre-ranking: only scan top 40% of watchlist by momentum rank
+CROSS_SECTIONAL_RANKING_ENABLED: bool = os.getenv("CROSS_SECTIONAL_RANKING_ENABLED", "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================

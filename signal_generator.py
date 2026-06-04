@@ -1795,9 +1795,81 @@ class SignalGenerator:
             except Exception as _liqe:
                 logger.debug(f"[suppressed] liquidity: {_liqe}")
 
-            # ── Enforce booster cap: clamp total booster contribution to +35 ────
-            # Raised from +30 to +35 to account for v26.0's 3 new signal modules.
-            _BOOSTER_MAX_DELTA = 35.0
+            # ── RENAISSANCE MEDALLION STRATEGIES (v27.0) ─────────────────────────
+            # IC tracker adaptive weighting, PCA alpha, event alpha (analyst/
+            # dividend/split), STL trend decomposition, execution timing,
+            # and market impact check. All fail-open.
+            try:
+                from ic_tracker import get_signal_weight
+                from pca_alpha import get_pca_alpha_score
+                from event_alpha import get_analyst_signal, get_dividend_capture_score, get_split_signal
+                from stl_signals import get_stl_trend_score
+                from market_impact import get_market_impact_score, get_execution_timing_score
+
+                _watchlist_v27 = getattr(self, '_open_position_symbols', []) or []
+
+                # 1. PCA alpha: trade idiosyncratic moves, not market noise
+                if getattr(config, 'PCA_ALPHA_ENABLED', True):
+                    _pca_d, _pca_r = get_pca_alpha_score(symbol, direction, _watchlist_v27 or [symbol])
+                    _pca_w = get_signal_weight("pca_alpha", 1.0)
+                    _pca_d = round(_pca_d * _pca_w, 2)
+                    if _pca_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pca_d)
+                        logger.debug(f"{symbol}: PCA_ALPHA {_pca_d:+.1f} {_pca_r} (IC_w={_pca_w:.2f})")
+
+                # 2. Event alpha: analyst upgrades, dividend capture, splits
+                if getattr(config, 'EVENT_ALPHA_ENABLED', True):
+                    _an_d, _an_r = get_analyst_signal(symbol, direction)
+                    _an_w = get_signal_weight("analyst_signal", 1.0)
+                    _an_d = round(_an_d * _an_w, 2)
+                    if _an_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _an_d)
+                        logger.debug(f"{symbol}: EVENT_ANALYST {_an_d:+.1f} {_an_r}")
+
+                    _div_d, _div_r = get_dividend_capture_score(symbol, direction)
+                    _div_w = get_signal_weight("dividend_capture", 1.0)
+                    _div_d = round(_div_d * _div_w, 2)
+                    if _div_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _div_d)
+                        logger.debug(f"{symbol}: EVENT_DIV {_div_d:+.1f} {_div_r}")
+
+                    _spl_d, _spl_r = get_split_signal(symbol, direction)
+                    _spl_w = get_signal_weight("split_signal", 1.0)
+                    _spl_d = round(_spl_d * _spl_w, 2)
+                    if _spl_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _spl_d)
+                        logger.debug(f"{symbol}: EVENT_SPLIT {_spl_d:+.1f} {_spl_r}")
+
+                # 3. STL trend decomposition: trade the trend, not the noise
+                if getattr(config, 'STL_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _stl_d, _stl_r = get_stl_trend_score(df_5m, direction)
+                    _stl_w = get_signal_weight("stl_trend", 1.0)
+                    _stl_d = round(_stl_d * _stl_w, 2)
+                    if _stl_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _stl_d)
+                        logger.debug(f"{symbol}: STL_TREND {_stl_d:+.1f} {_stl_r}")
+
+                # 4. Execution timing: avoid open chaos and close MOC flow
+                if getattr(config, 'EXECUTION_TIMING_ENABLED', True):
+                    _et_d, _et_r = get_execution_timing_score(direction)
+                    if _et_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _et_d)
+                        logger.debug(f"{symbol}: EXEC_TIMING {_et_d:+.1f} {_et_r}")
+
+                # 5. Market impact check (Almgren-Chriss): penalize oversized orders
+                if getattr(config, 'MARKET_IMPACT_ENABLED', True) and combined_size > 0:
+                    _notional = combined_size * ltp_now * 10  # approx shares (10 = unit)
+                    _mi_d, _mi_r = get_market_impact_score(symbol, int(_notional / max(ltp_now, 0.01)), ltp_now, direction)
+                    if _mi_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mi_d)
+                        logger.debug(f"{symbol}: MKT_IMPACT {_mi_d:+.1f} {_mi_r}")
+
+            except Exception as _rene:
+                logger.debug(f"[suppressed] renaissance_v27: {_rene}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +40 ────
+            # Raised from +35 to +40 to account for v27.0's Renaissance modules.
+            _BOOSTER_MAX_DELTA = 40.0
             _booster_delta = filter_result.final_score - _booster_base_score
             if _booster_delta > _BOOSTER_MAX_DELTA:
                 filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)
@@ -2555,6 +2627,19 @@ class SignalGenerator:
                 )
         except Exception as _e:
             logger.debug(f"[suppressed] {_e}")
+
+        # Cross-sectional ranking (v27.0): pre-rank all symbols, keep top 40%
+        # This ensures we only enter the strongest setups when the watchlist is large
+        if getattr(config, 'CROSS_SECTIONAL_RANKING_ENABLED', True) and len(symbols) > 15:
+            try:
+                from cross_sectional_ranker import rank_symbols
+                symbols = rank_symbols(symbols, self.data_fetcher, top_pct=0.40)
+                logger.info(
+                    f"[{format_ist_timestamp()}] Cross-sectional pre-rank: "
+                    f"{len(symbols)} symbols selected"
+                )
+            except Exception as _csr_e:
+                logger.debug(f"[suppressed] cross_sectional_ranker: {_csr_e}")
 
         signals: List[TradeSignal] = []
         errors  = 0
