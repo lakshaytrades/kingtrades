@@ -2203,15 +2203,46 @@ class TradingBot:
                         result = self.executor.place_entry_order(signal)  # fractional fallback
                         use_bracket = False
                     else:
-                        result = self.executor.place_bracket_order(signal, qty)
-                        if not result.success:
-                            # Bracket rejected (API error, wash-trade check, etc.) — fall back
-                            logger.warning(
-                                f"[{format_ist_timestamp()}] Bracket failed for "
-                                f"{signal.symbol} ({result.message}) — falling back to plain entry"
-                            )
-                            use_bracket = False
-                            result = self.executor.place_entry_order(signal)
+                        # v29.0: TWAP execution for large orders (>$2k notional)
+                        _used_twap = False
+                        if getattr(config, 'TWAP_ENABLED', True):
+                            try:
+                                from twap_engine import should_use_twap, create_twap_plan
+                                _sig_price = getattr(signal, 'entry_price', 0) or \
+                                             getattr(signal, 'ltp', 0) or 1.0
+                                if should_use_twap(qty, float(_sig_price)):
+                                    _twap_plan = create_twap_plan(
+                                        symbol=signal.symbol,
+                                        direction=signal.direction,
+                                        total_quantity=qty,
+                                        current_price=float(_sig_price),
+                                    )
+                                    if hasattr(self, '_twap_plans'):
+                                        self._twap_plans[signal.symbol] = _twap_plan
+                                    else:
+                                        self._twap_plans = {signal.symbol: _twap_plan}
+                                    # Place first slice immediately
+                                    from twap_engine import execute_next_slice
+                                    execute_next_slice(_twap_plan, float(_sig_price), self.executor)
+                                    _used_twap = True
+                                    result = self.executor.place_entry_order(signal)  # records position
+                                    logger.info(
+                                        f"[{format_ist_timestamp()}] TWAP started for {signal.symbol}: "
+                                        f"{qty} shares in {len(_twap_plan.slices)} slices"
+                                    )
+                            except Exception as _twap_e:
+                                logger.debug(f"[suppressed] twap: {_twap_e}")
+
+                        if not _used_twap:
+                            result = self.executor.place_bracket_order(signal, qty)
+                            if not result.success:
+                                # Bracket rejected (API error, wash-trade check, etc.) — fall back
+                                logger.warning(
+                                    f"[{format_ist_timestamp()}] Bracket failed for "
+                                    f"{signal.symbol} ({result.message}) — falling back to plain entry"
+                                )
+                                use_bracket = False
+                                result = self.executor.place_entry_order(signal)
                 else:
                     result = self.executor.place_entry_order(signal)
                 if not result.success:

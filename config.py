@@ -747,6 +747,18 @@ ROLL_SPREAD_ENABLED:          bool = os.getenv("ROLL_SPREAD_ENABLED",          "
 KYLE_LAMBDA_ENABLED:          bool = os.getenv("KYLE_LAMBDA_ENABLED",          "true").lower() == "true"
 VOL_CLOCK_ENABLED:            bool = os.getenv("VOL_CLOCK_ENABLED",            "true").lower() == "true"
 
+# ── v29.0 Top 1% Modules ────────────────────────────────────────────────────────
+# PEAD: Post-Earnings Announcement Drift (Ball & Brown 1968) — systematic drift after earnings
+PEAD_ENGINE_ENABLED:          bool = os.getenv("PEAD_ENGINE_ENABLED",          "true").lower() == "true"
+# Regime signal router: BULL→momentum 1.5x, BEAR→mean-revert 1.3x, CHOPPY→reduce 0.7x
+REGIME_ROUTER_ENABLED:        bool = os.getenv("REGIME_ROUTER_ENABLED",        "true").lower() == "true"
+# Intraday VaR: historical simulation VaR-based position sizing (1% budget constraint)
+INTRADAY_VAR_ENABLED:         bool = os.getenv("INTRADAY_VAR_ENABLED",         "true").lower() == "true"
+# Correlation crisis: cut sizes 50-70% when market pairwise correlation spikes (crash detector)
+CORRELATION_CRISIS_ENABLED:   bool = os.getenv("CORRELATION_CRISIS_ENABLED",   "true").lower() == "true"
+# TWAP engine: split orders >$2k into 5 child orders over 5 minutes (reduces slippage 30-40%)
+TWAP_ENABLED:                 bool = os.getenv("TWAP_ENABLED",                 "true").lower() == "true"
+
 # ── v28.0 Top 0.1% Modules ──────────────────────────────────────────────────────
 # HAR-RV: Heterogeneous AutoRegressive Realized Variance (Corsi 2009) — replaces GARCH
 HAR_RV_ENABLED:               bool = os.getenv("HAR_RV_ENABLED",               "true").lower() == "true"

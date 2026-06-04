@@ -1966,6 +1966,54 @@ class SignalGenerator:
             except Exception as _top01_e:
                 logger.debug(f"[suppressed] top01_v28: {_top01_e}")
 
+            # ── TOP 1% SIGNALS (v29.0) ───────────────────────────────────────────
+            # PEAD drift, regime-adaptive weights, VaR sizing, correlation crisis,
+            # TWAP flag for large orders. All fail-open.
+            try:
+                # 1. PEAD: Post-Earnings Announcement Drift (Ball & Brown 1968 anomaly)
+                if getattr(config, 'PEAD_ENGINE_ENABLED', True):
+                    from pead_engine import get_pead_score
+                    _pead_d, _pead_r = get_pead_score(symbol, direction)
+                    if _pead_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pead_d)
+                        logger.debug(f"{symbol}: PEAD {_pead_d:+.0f} {_pead_r}")
+
+                # 2. Regime-adaptive signal routing: re-weight based on market regime
+                if getattr(config, 'REGIME_ROUTER_ENABLED', True):
+                    from regime_signal_router import detect_regime, get_regime_size_multiplier
+                    _cur_regime = detect_regime()
+                    _regime_size = get_regime_size_multiplier(_cur_regime)
+                    if _regime_size != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _regime_size, 2)))
+                        logger.debug(f"{symbol}: REGIME_ROUTER {_cur_regime} → {_regime_size:.2f}x size")
+
+                # 3. VaR-based position sizing (Historical Simulation)
+                if getattr(config, 'INTRADAY_VAR_ENABLED', True) and df_5m is not None:
+                    from intraday_var import get_var_size_multiplier
+                    _open_ct = len(getattr(self, '_open_positions', {}).keys() if hasattr(self, '_open_positions') else [])
+                    _day_cap = getattr(config, 'MAX_DAILY_CAPITAL', 50000.0)
+                    _loss_pct = getattr(config, 'DAILY_LOSS_LIMIT_PCT', 2.0)
+                    _var_mult, _var_r = get_var_size_multiplier(
+                        symbol, df_5m, float(_day_cap), float(_loss_pct), _open_ct
+                    )
+                    if _var_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _var_mult, 2)))
+                        logger.debug(f"{symbol}: VAR_SIZE {_var_r}")
+
+                # 4. Correlation crisis circuit breaker
+                if getattr(config, 'CORRELATION_CRISIS_ENABLED', True):
+                    from correlation_crisis import get_crisis_size_multiplier
+                    _watchlist_for_corr = getattr(self, '_current_watchlist', []) or []
+                    _crisis_mult, _crisis_r = get_crisis_size_multiplier(
+                        _watchlist_for_corr[:20], self.data_fetcher
+                    )
+                    if _crisis_mult < 1.0:
+                        combined_size = max(0.25, round(combined_size * _crisis_mult, 2))
+                        logger.debug(f"{symbol}: CORR_CRISIS {_crisis_r}")
+
+            except Exception as _top1_e:
+                logger.debug(f"[suppressed] top1_v29: {_top1_e}")
+
             # ── Enforce booster cap: clamp total booster contribution to +50 ────
             # Raised to +50 for v28.0 Top 0.1% modules (11 new signal sources)
             _BOOSTER_MAX_DELTA = 50.0
@@ -2719,6 +2767,9 @@ class SignalGenerator:
         """
         # Refresh FII/DII + OC + FII futures once per cycle (not per symbol)
         self.refresh_institutional_context()
+
+        # Store watchlist reference for correlation crisis + cross-sectional ranking
+        self._current_watchlist = list(symbols)
 
         # Clear daily candles cache at start of each scan cycle (30-min staleness tolerance)
         self._daily_candles_cache = {}
