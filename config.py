@@ -579,7 +579,12 @@ SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lowe
 TIER1_ELITE_ENABLED:    bool = os.getenv("TIER1_ELITE_ENABLED",     "True").lower() in ("true","1","yes")
 
 # ── TIER 2.5 UPGRADE (v11.0) ─────────────────────────────────────────────────
-VOL_TARGET_ENABLED:  bool = os.getenv("VOL_TARGET_ENABLED",  "True").lower() in ("true","1","yes")
+VOL_TARGET_ENABLED:       bool = os.getenv("VOL_TARGET_ENABLED",       "True").lower() in ("true","1","yes")
+
+# ── TIER 1.5 UPGRADE (v12.0) — highest possible with free data ───────────────
+NEURAL_PREDICTOR_ENABLED: bool = os.getenv("NEURAL_PREDICTOR_ENABLED", "True").lower() in ("true","1","yes")
+COINT_ARBIT_ENABLED:      bool = os.getenv("COINT_ARBIT_ENABLED",      "True").lower() in ("true","1","yes")
+GAP_FADE_ENABLED:         bool = os.getenv("GAP_FADE_ENABLED",         "True").lower() in ("true","1","yes")
 
 # ── PREMIUM SCANNER (v11.0) — free equivalents of paid trading tools ─────────
 SHORT_SQUEEZE_SCANNER_ENABLED: bool = os.getenv("SHORT_SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true","1","yes")

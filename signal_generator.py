@@ -2054,6 +2054,71 @@ class SignalGenerator:
                 except Exception as _vt_e:
                     logger.debug(f"[suppressed] vol_target: {_vt_e}")
 
+            # ── TIER 1.5: Neural Network MLP Predictor ────────────────────────────
+            if getattr(config, 'NEURAL_PREDICTOR_ENABLED', True):
+                try:
+                    from neural_predictor import get_neural_score_delta
+                    _ind_dict = {
+                        "rsi_14":        float(getattr(ind, 'rsi',          50.0) or 50.0),
+                        "rsi_5":         float(getattr(ind, 'rsi',          50.0) or 50.0),
+                        "macd_hist":     float(getattr(ind, 'macd_hist',     0.0) or 0.0),
+                        "ema9_21_ratio": float((getattr(ind,'ema9',ltp_now) or ltp_now) /
+                                               max(getattr(ind,'ema21',ltp_now) or ltp_now, 1e-9)),
+                        "bb_position":   float(getattr(ind, 'bb_pct',        0.5) or 0.5),
+                        "atr_pct":       float((getattr(ind,'atr',0.0) or 0.0) / max(ltp_now,1)),
+                        "hvol_20":       0.30,
+                        "vol_ratio":     float(getattr(ind, 'volume_ratio',  1.0) or 1.0),
+                        "mom_5":         0.0,
+                        "mom_10":        0.0,
+                        "mom_20":        0.0,
+                        "rs_spy":        0.0,
+                        "stoch_k":       float(getattr(ind, 'stoch_k',      50.0) or 50.0),
+                        "adx_14":        float(getattr(ind, 'adx',          25.0) or 25.0),
+                        "gap_pct":       0.0,
+                        "price_vs_52h":  0.9,
+                        "vix_level":     0.7,
+                        "tlt_5d":        0.0,
+                        "uup_5d":        0.0,
+                        "spy_rs":        0.0,
+                    }
+                    # Enrich from df_5m if available
+                    if df_5m is not None and len(df_5m) >= 21:
+                        _cl = df_5m['close'].values if 'close' in df_5m.columns else df_5m['Close'].values
+                        if len(_cl) >= 6:  _ind_dict["mom_5"]  = float(_cl[-1]/_cl[-6]-1)
+                        if len(_cl) >= 11: _ind_dict["mom_10"] = float(_cl[-1]/_cl[-11]-1)
+                        if len(_cl) >= 21: _ind_dict["mom_20"] = float(_cl[-1]/_cl[-21]-1)
+                    _nn_delta, _nn_reason = get_neural_score_delta(symbol, _ind_dict, direction)
+                    if _nn_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _nn_delta))
+                        logger.debug(f"{symbol}: {_nn_reason}")
+                except Exception as _nn_e:
+                    logger.debug(f"[suppressed] neural_predictor: {_nn_e}")
+
+            # ── TIER 1.5: Statistical Arbitrage (Engle-Granger Cointegration) ─────
+            if getattr(config, 'COINT_ARBIT_ENABLED', True):
+                try:
+                    from stat_arb_cointegration import get_cointegration_signal
+                    _ca_delta, _ca_reason = get_cointegration_signal(symbol, direction)
+                    if _ca_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _ca_delta))
+                        logger.debug(f"{symbol}: {_ca_reason}")
+                except Exception as _ca2_e:
+                    logger.debug(f"[suppressed] coint_arb: {_ca2_e}")
+
+            # ── TIER 1.5: Opening Gap Fade (documented 62%+ win-rate anomaly) ─────
+            if getattr(config, 'GAP_FADE_ENABLED', True):
+                try:
+                    from gap_fade_strategy import get_gap_fade_score
+                    _gf_delta, _gf_reason = get_gap_fade_score(symbol, direction)
+                    if _gf_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _gf_delta))
+                        logger.debug(f"{symbol}: {_gf_reason}")
+                except Exception as _gf_e:
+                    logger.debug(f"[suppressed] gap_fade: {_gf_e}")
+
             # ── Final execution gate: after ALL boosters, require ≥70 ────────────
             # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can
             # add 8–20 pts. If no booster fired, the signal is too weak to trade.

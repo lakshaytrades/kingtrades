@@ -2642,6 +2642,18 @@ class TradingBot:
                             )
                         except Exception as _ml_e:
                             logger.debug(f"[suppressed] ml_record_outcome: {_ml_e}")
+                        # Neural MLP: online fine-tuning from real trade outcomes
+                        try:
+                            from neural_predictor import record_outcome as _nn_rec
+                            _nn_ind = getattr(pos, "indicators", None)
+                            _nn_rec({
+                                "rsi_14":    getattr(_nn_ind,"rsi",50.0) if _nn_ind else 50.0,
+                                "macd_hist": getattr(_nn_ind,"macd_hist",0.0) if _nn_ind else 0.0,
+                                "vol_ratio": getattr(_nn_ind,"volume_ratio",1.0) if _nn_ind else 1.0,
+                                "adx_14":    getattr(_nn_ind,"adx",25.0) if _nn_ind else 25.0,
+                            }, was_win=int(pnl > 0))
+                        except Exception as _nne:
+                            logger.debug(f"[suppressed] neural_record: {_nne}")
 
                         # AdaptiveThreshold: record outcome for rolling WR-based score floor
                         try:
