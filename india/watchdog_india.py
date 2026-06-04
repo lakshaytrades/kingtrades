@@ -346,9 +346,9 @@ def health_check():
     if any("auth" in l.lower() and "failed" in l.lower() for l in lines):
         if _should_alert(state, "auth_fail"):
             _telegram_send(
-                "Dhan auth failure detected.\n"
-                "Action: update `DHAN_ACCESS_TOKEN` in .env\n"
-                "Dhan portal → My Profile → Access Token",
+                "🇮🇳 Dhan auth failure detected.\n"
+                "Send `/newtoken YOUR_TOKEN` here to fix without VPS.\n"
+                "Get token: https://dhanhq.co → API → Generate Token",
                 "CRIT"
             )
             _mark_alerted(state, "auth_fail")
@@ -359,6 +359,8 @@ def health_check():
 # ── Signal handler + main ─────────────────────────────────────────────────────
 
 _running = True
+_last_expiry_check_day: Optional[str] = None
+
 
 def _handle_signal(signum, frame):
     global _running
@@ -366,7 +368,20 @@ def _handle_signal(signum, frame):
     _running = False
 
 
+def _restart_from_token_update():
+    """Restart the India bot after a successful token update via Telegram."""
+    logger.info("Restarting India bot after token update")
+    try:
+        subprocess.run(["pkill", "-f", "main_india.py"], capture_output=True)
+        _time.sleep(3)
+        _restart_bot()
+    except Exception as e:
+        logger.error(f"Restart after token update failed: {e}")
+
+
 def main():
+    global _last_expiry_check_day
+
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
 
@@ -374,17 +389,43 @@ def main():
     pid_file = LOG_DIR / "india_watchdog.pid"
     pid_file.write_text(str(os.getpid()))
 
+    try:
+        from auth_dhan import get_days_until_expiry
+        days_left = get_days_until_expiry()
+        expiry_info = f" | Token expires in ~{days_left:.0f}d" if days_left >= 0 else ""
+    except Exception:
+        expiry_info = ""
+
     _telegram_send(
-        f"India watchdog started\n"
+        f"🇮🇳 India watchdog started\n"
         f"Monitoring: `main_india.py`\n"
         f"Score range: {SCORE_MIN_FLOOR:.0f}–{SCORE_MAX_CEIL:.0f}\n"
-        f"Drought threshold: {SIGNAL_DROUGHT_MINS} min",
+        f"Telegram `/newtoken TOKEN` supported{expiry_info}",
         "INFO"
     )
     logger.info(f"India watchdog running (PID {os.getpid()})")
 
+    loop_count = 0
     while _running:
         try:
+            # ── Poll Telegram for /newtoken command (every loop = 30s) ─────────
+            try:
+                from auth_dhan import poll_telegram_commands
+                poll_telegram_commands(restart_callback=_restart_from_token_update)
+            except Exception as e:
+                logger.debug(f"telegram poll: {e}")
+
+            # ── Daily token expiry check (once per day at 8 AM IST) ───────────
+            now = datetime.now(IST)
+            today_str = now.strftime("%Y-%m-%d")
+            if now.hour == 8 and now.minute < 1 and _last_expiry_check_day != today_str:
+                try:
+                    from auth_dhan import check_token_expiry_and_warn
+                    check_token_expiry_and_warn()
+                    _last_expiry_check_day = today_str
+                except Exception as e:
+                    logger.debug(f"expiry check: {e}")
+
             health_check()
         except Exception as e:
             logger.error(f"health_check error: {e}")
