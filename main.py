@@ -2641,6 +2641,13 @@ class TradingBot:
                         except Exception as _v27_ice:
                             logger.debug(f"[suppressed] ic_tracker.record: {_v27_ice}")
 
+                        # v28.0 — HAR-RV: record realized variance for volatility model ──────
+                        try:
+                            from har_rv import record_daily_rv
+                            record_daily_rv(pos.symbol, pnl_pct=_v27_pnl_pct)
+                        except Exception as _hrv_e:
+                            logger.debug(f"[suppressed] har_rv.record: {_hrv_e}")
+
                         try:
                             from ml_ensemble import record_trade_outcome_ensemble
                             _ens_feat = {

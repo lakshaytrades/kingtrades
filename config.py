@@ -747,6 +747,28 @@ ROLL_SPREAD_ENABLED:          bool = os.getenv("ROLL_SPREAD_ENABLED",          "
 KYLE_LAMBDA_ENABLED:          bool = os.getenv("KYLE_LAMBDA_ENABLED",          "true").lower() == "true"
 VOL_CLOCK_ENABLED:            bool = os.getenv("VOL_CLOCK_ENABLED",            "true").lower() == "true"
 
+# ── v28.0 Top 0.1% Modules ──────────────────────────────────────────────────────
+# HAR-RV: Heterogeneous AutoRegressive Realized Variance (Corsi 2009) — replaces GARCH
+HAR_RV_ENABLED:               bool = os.getenv("HAR_RV_ENABLED",               "true").lower() == "true"
+# Tape OFI: Lee-Ready buy/sell classification → true order flow imbalance
+TAPE_OFI_ENABLED:             bool = os.getenv("TAPE_OFI_ENABLED",             "true").lower() == "true"
+# Synthetic L2: reconstruct pseudo-Level-2 from OHLCV (free proxy for paid L2 data)
+SYNTHETIC_L2_ENABLED:         bool = os.getenv("SYNTHETIC_L2_ENABLED",         "true").lower() == "true"
+# Dark pool proxy: detect institutional accumulation from volume/price patterns
+DARK_POOL_ENABLED:            bool = os.getenv("DARK_POOL_ENABLED",             "true").lower() == "true"
+# Alt data: Google Trends + Wikipedia edit velocity + Reddit WSB (all free)
+ALT_DATA_ENABLED:             bool = os.getenv("ALT_DATA_ENABLED",             "true").lower() == "true"
+# EDGAR NLP: SEC 8-K filing sentiment via Loughran-McDonald word lists (free EDGAR API)
+EDGAR_SENTIMENT_ENABLED:      bool = os.getenv("EDGAR_SENTIMENT_ENABLED",      "true").lower() == "true"
+# CBOE data: put/call ratio + VIX term structure (free public CBOE data)
+CBOE_DATA_ENABLED:            bool = os.getenv("CBOE_DATA_ENABLED",            "true").lower() == "true"
+# Beta-neutral sizing: dynamic beta vs SPY, beta-inverse position sizing
+BETA_NEUTRAL_ENABLED:         bool = os.getenv("BETA_NEUTRAL_ENABLED",         "true").lower() == "true"
+# Covariance optimizer: Ledoit-Wolf shrinkage + correlation-aware portfolio sizing
+COV_OPTIMIZER_ENABLED:        bool = os.getenv("COV_OPTIMIZER_ENABLED",        "true").lower() == "true"
+# Cost filter: pre-entry Corwin-Schultz spread + impact check — skip unprofitable trades
+COST_FILTER_ENABLED:          bool = os.getenv("COST_FILTER_ENABLED",          "true").lower() == "true"
+
 # ── v27.0 Renaissance Medallion Strategies ──────────────────────────────────────
 # PCA factor decomposition: isolate idiosyncratic alpha from market/sector noise
 PCA_ALPHA_ENABLED:            bool = os.getenv("PCA_ALPHA_ENABLED",            "true").lower() == "true"

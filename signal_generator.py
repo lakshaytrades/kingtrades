@@ -1867,9 +1867,108 @@ class SignalGenerator:
             except Exception as _rene:
                 logger.debug(f"[suppressed] renaissance_v27: {_rene}")
 
-            # ── Enforce booster cap: clamp total booster contribution to +40 ────
-            # Raised from +35 to +40 to account for v27.0's Renaissance modules.
-            _BOOSTER_MAX_DELTA = 40.0
+            # ── TOP 0.1% SIGNALS (v28.0) ─────────────────────────────────────────
+            # HAR-RV volatility sizing, tape OFI, synthetic L2, dark pool,
+            # alt data (Google Trends/Wikipedia/Reddit), EDGAR NLP,
+            # CBOE P/C + VIX term structure, beta-neutral sizing, portfolio covariance
+            try:
+                # 1. HAR-RV volatility size adjustment (replaces/enhances GARCH)
+                if getattr(config, 'HAR_RV_ENABLED', True) and df_5m is not None:
+                    from har_rv import get_har_rv_forecast, get_har_size_multiplier
+                    _rv_sigma, _rv_regime = get_har_rv_forecast(symbol, df_5m)
+                    _rv_mult = get_har_size_multiplier(_rv_sigma)
+                    if _rv_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _rv_mult, 2)))
+                        logger.debug(f"{symbol}: HAR_RV {_rv_regime}(σ={_rv_sigma:.1f}%) → {_rv_mult:.2f}x size")
+
+                # 2. Real-time tape OFI (Lee-Ready order flow imbalance)
+                if getattr(config, 'TAPE_OFI_ENABLED', True):
+                    from tape_classifier import get_tape_classifier
+                    _tape_d, _tape_r = get_tape_classifier().get_ofi_score(symbol, direction)
+                    if _tape_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _tape_d)
+                        logger.debug(f"{symbol}: TAPE_OFI {_tape_d:+.0f} {_tape_r}")
+
+                # 3. Synthetic Level-2 depth score
+                if getattr(config, 'SYNTHETIC_L2_ENABLED', True) and df_5m is not None:
+                    from synthetic_l2 import get_synthetic_depth_score
+                    _l2_d, _l2_r = get_synthetic_depth_score(symbol, ltp_now, direction, df_5m)
+                    if _l2_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _l2_d)
+                        logger.debug(f"{symbol}: SYN_L2 {_l2_d:+.0f} {_l2_r}")
+
+                # 4. Dark pool activity proxy
+                if getattr(config, 'DARK_POOL_ENABLED', True) and df_5m is not None:
+                    from dark_pool_proxy import get_dark_pool_score
+                    _dp_d, _dp_r = get_dark_pool_score(symbol, df_5m, direction)
+                    if _dp_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _dp_d)
+                        logger.debug(f"{symbol}: DARK_POOL {_dp_d:+.0f} {_dp_r}")
+
+                # 5. Alternative data: Google Trends + Wikipedia + Reddit
+                if getattr(config, 'ALT_DATA_ENABLED', True):
+                    from alt_data_engine import get_google_trends_score, get_wikipedia_score, get_reddit_score
+                    _gt_d, _gt_r = get_google_trends_score(symbol, symbol, direction)
+                    if _gt_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gt_d)
+                        logger.debug(f"{symbol}: GTRENDS {_gt_d:+.0f} {_gt_r}")
+                    _wiki_d, _wiki_r = get_wikipedia_score(symbol, direction)
+                    if _wiki_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _wiki_d)
+                        logger.debug(f"{symbol}: WIKI {_wiki_d:+.0f} {_wiki_r}")
+                    _red_d, _red_r = get_reddit_score(symbol, direction)
+                    if _red_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _red_d)
+                        logger.debug(f"{symbol}: REDDIT {_red_d:+.0f} {_red_r}")
+
+                # 6. EDGAR 8-K sentiment (NLP on recent SEC filings)
+                if getattr(config, 'EDGAR_SENTIMENT_ENABLED', True):
+                    from edgar_sentiment import get_edgar_sentiment_score
+                    _edg_d, _edg_r = get_edgar_sentiment_score(symbol, direction)
+                    if _edg_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _edg_d)
+                        logger.debug(f"{symbol}: EDGAR {_edg_d:+.0f} {_edg_r}")
+
+                # 7. CBOE put/call ratio + VIX term structure
+                if getattr(config, 'CBOE_DATA_ENABLED', True):
+                    from cboe_data import get_pc_ratio_score, get_vix_term_structure_score
+                    _pc_d, _pc_r = get_pc_ratio_score(direction)
+                    if _pc_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pc_d)
+                        logger.debug(f"{symbol}: CBOE_PC {_pc_d:+.0f} {_pc_r}")
+                    _vts_d, _vts_r = get_vix_term_structure_score(direction)
+                    if _vts_d and abs(_vts_d) >= 2:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _vts_d)
+                        logger.debug(f"{symbol}: VIX_TERM {_vts_d:+.0f} {_vts_r}")
+
+                # 8. Beta-neutral sizing
+                if getattr(config, 'BETA_NEUTRAL_ENABLED', True):
+                    from beta_manager import get_beta_size_multiplier, get_portfolio_beta
+                    _open_pos_list = list(getattr(self, '_open_positions', {}).values()) \
+                                     if hasattr(self, '_open_positions') else []
+                    _port_beta = get_portfolio_beta(_open_pos_list)
+                    _beta_mult = get_beta_size_multiplier(symbol, df_5m, _port_beta)
+                    if _beta_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _beta_mult, 2)))
+                        logger.debug(f"{symbol}: BETA_NEUTRAL {_beta_mult:.2f}x (port_β={_port_beta:.1f})")
+
+                # 9. Portfolio covariance optimizer (Ledoit-Wolf)
+                if getattr(config, 'COV_OPTIMIZER_ENABLED', True):
+                    from covariance_optimizer import get_portfolio_size_multiplier
+                    _open_syms = list(getattr(self, '_open_positions', {}).keys()) \
+                                 if hasattr(self, '_open_positions') else []
+                    if _open_syms:
+                        _cov_mult = get_portfolio_size_multiplier(symbol, direction, _open_syms)
+                        if _cov_mult != 1.0:
+                            combined_size = max(0.25, min(3.0, round(combined_size * _cov_mult, 2)))
+                            logger.debug(f"{symbol}: COV_OPT {_cov_mult:.2f}x (corr to {len(_open_syms)} positions)")
+
+            except Exception as _top01_e:
+                logger.debug(f"[suppressed] top01_v28: {_top01_e}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +50 ────
+            # Raised to +50 for v28.0 Top 0.1% modules (11 new signal sources)
+            _BOOSTER_MAX_DELTA = 50.0
             _booster_delta = filter_result.final_score - _booster_base_score
             if _booster_delta > _BOOSTER_MAX_DELTA:
                 filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)
@@ -1889,6 +1988,27 @@ class SignalGenerator:
                     f"boosters — no conviction signal, skipping"
                 )
                 return None
+
+            # ── Pre-entry transaction cost filter (v28.0) ────────────────────────
+            # Skip if expected alpha < bid-ask spread + slippage (unprofitable after cost)
+            if getattr(config, 'COST_FILTER_ENABLED', True):
+                try:
+                    from transaction_cost_model import get_cost_filter
+                    _cost_ok, _cost_reason = get_cost_filter(
+                        symbol,
+                        filter_result.final_score,
+                        int(combined_size * 100),
+                        ltp_now,
+                        direction,
+                    )
+                    if not _cost_ok:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {symbol}: COST_FILTER blocked — {_cost_reason}"
+                        )
+                        return None
+                    logger.debug(f"{symbol}: COST_OK — {_cost_reason}")
+                except Exception as _ce:
+                    logger.debug(f"[suppressed] cost_filter: {_ce}")
 
             # ── ELITE FILTER (v11.0) — VIX adaptive + R/R enforcer ────────────
             try:
