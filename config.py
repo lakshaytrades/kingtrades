@@ -576,6 +576,7 @@ POWER_HOUR_ENABLED:     bool = os.getenv("POWER_HOUR_ENABLED",      "True").lowe
 PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lower() in ("true","1","yes")
 TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
 SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
+TIER1_ELITE_ENABLED:    bool = os.getenv("TIER1_ELITE_ENABLED",     "True").lower() in ("true","1","yes")
 
 # ── PREMIUM SCANNER (v11.0) — free equivalents of paid trading tools ─────────
 SHORT_SQUEEZE_SCANNER_ENABLED: bool = os.getenv("SHORT_SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true","1","yes")

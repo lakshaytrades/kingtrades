@@ -1218,6 +1218,21 @@ class SignalGenerator:
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
 
+            # ── TIER 1/2 ELITE STRATEGIES ─────────────────────────────────
+            try:
+                from tier1_elite import get_elite_score_boost
+                if getattr(config, 'TIER1_ELITE_ENABLED', True):
+                    _elite_delta, _elite_reasons = get_elite_score_boost(
+                        symbol, direction, ltp_now,
+                        getattr(self, '_open_position_symbols', []) or []
+                    )
+                    if _elite_delta != 0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _elite_delta)
+                        for _er in _elite_reasons:
+                            logger.debug(f"{symbol}: ELITE {_er}")
+            except Exception as _elite_e:
+                logger.debug(f"[suppressed] tier1_elite: {_elite_e}")
+
             # ── Cross-asset risk filter (v22.0) — VIX + bonds + dollar macro overlay ──
             if getattr(config, 'CROSS_ASSET_ENABLED', True):
                 try:
