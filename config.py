@@ -108,18 +108,18 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.0          # 1× ATR stop — wide enough to survive intraday noise
+ATR_SL_MULTIPLIER: float = 0.75         # 0.75× ATR stop — tighter = smaller loss if wrong
 ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book at 1.5:1 — lock partial profit fast
-ATR_TP_MULTIPLIER: float = 3.5          # T2 at 3.5:1 — was 2.5, wider target = bigger wins
-ATR_TP_RUNNER: float = 6.0             # T3 runner extended from 5.0 — catches full trend moves
-ATR_TRAIL_MULTIPLIER: float = 0.80      # wider trail after T2 (was 0.50) — runners breathe more
-BREAKEVEN_TRIGGER_PCT: float = 0.15     # move stop to breakeven after only 0.15% gain — convert near-losses to free trades
-PARTIAL_EXIT_T1_PCT: float = 40.0       # 40% at T1 (up from 30%) — lock more profit early, less at risk
+ATR_TP_MULTIPLIER: float = 4.0          # T2 at 4:1 R:R — bigger wins
+ATR_TP_RUNNER: float = 8.0             # T3 runner at 8:1 — catch full trend moves
+ATR_TRAIL_MULTIPLIER: float = 1.0       # trail at 1× ATR — runners breathe, don't get stopped early
+BREAKEVEN_TRIGGER_PCT: float = 0.10     # move to breakeven after 0.10% gain — converts losing to free fast
+PARTIAL_EXIT_T1_PCT: float = 50.0       # 50% at T1 — lock half the position in profit immediately
 PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — keep runner alive
-RUNNER_PCT: float = 40.0                # 40% runner (down from 50%) — slightly more locked in
+RUNNER_PCT: float = 30.0                # 30% runner — lean, focused on the best part of the move
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.0       # Minimum R:R measured at T2 target (2.5x SL) — previously
+MIN_RISK_REWARD: float = 2.5       # Only enter if 2.5:1 R:R minimum — skip low-quality setups
                                     # measured at T1 (1.5x) which was always exactly the minimum
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
