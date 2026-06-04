@@ -24,6 +24,7 @@ Signal pipeline:
 import logging
 import config
 import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -1744,9 +1745,59 @@ class SignalGenerator:
             except Exception as _micro_e:
                 logger.debug(f"[suppressed] microstructure_signals: {_micro_e}")
 
-            # ── Enforce booster cap: clamp total booster contribution to +30 ────
-            # Raised from +25 to +30 to account for v25.0's 8 additional modules.
-            _BOOSTER_MAX_DELTA = 30.0
+            # ── SEASONALITY + MULTI-MOMENTUM + LIQUIDITY (v26.0) ─────────────────
+            try:
+                from seasonality_signals import (
+                    get_opex_score, get_month_end_score, get_quarter_end_score,
+                    get_monday_fade_score, get_opex_pin_score,
+                )
+                if getattr(config, 'SEASONALITY_ENABLED', True):
+                    _seas_pairs = [
+                        (get_opex_score(direction), 'OPEX'),
+                        (get_month_end_score(direction), 'MONTH_END'),
+                        (get_quarter_end_score(direction), 'QTR_END'),
+                        (get_monday_fade_score(direction, ltp_now, ltp_now), 'MON_FADE'),
+                        (get_opex_pin_score(symbol, ltp_now), 'OPEX_PIN'),
+                    ]
+                    for (_d, _r), _tag in _seas_pairs:
+                        if _d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _d)
+                            logger.debug(f"{symbol}: {_tag} {_d:+.0f} {_r}")
+            except Exception as _seas_e:
+                logger.debug(f"[suppressed] seasonality: {_seas_e}")
+
+            try:
+                from momentum_multi import get_multi_momentum_score
+                if getattr(config, 'MULTI_MOMENTUM_ENABLED', True):
+                    _mm, _mmr = get_multi_momentum_score(symbol, direction)
+                    if _mm:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mm)
+                        logger.debug(f"{symbol}: MULTI_MOM {_mm:+.0f} {_mmr}")
+            except Exception as _mme:
+                logger.debug(f"[suppressed] multi_momentum: {_mme}")
+
+            try:
+                from liquidity_signals import (
+                    get_amihud_score, get_spread_score,
+                    get_kyle_lambda_score, get_volume_clock_score,
+                )
+                if getattr(config, 'LIQUIDITY_SIGNALS_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _liq_data = [
+                        (get_amihud_score(symbol, df_5m, direction), 'AMIHUD'),
+                        (get_spread_score(df_5m, ltp_now), 'SPREAD'),
+                        (get_kyle_lambda_score(df_5m, direction), 'KYLE_L'),
+                        (get_volume_clock_score(df_5m, direction), 'VOL_CLK'),
+                    ]
+                    for (_d, _r), _tag in _liq_data:
+                        if _d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _d)
+                            logger.debug(f"{symbol}: {_tag} {_d:+.0f} {_r}")
+            except Exception as _liqe:
+                logger.debug(f"[suppressed] liquidity: {_liqe}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +35 ────
+            # Raised from +30 to +35 to account for v26.0's 3 new signal modules.
+            _BOOSTER_MAX_DELTA = 35.0
             _booster_delta = filter_result.final_score - _booster_base_score
             if _booster_delta > _BOOSTER_MAX_DELTA:
                 filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)

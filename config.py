@@ -733,6 +733,20 @@ PREMARKET_VOL_ENABLED:        bool = os.getenv("PREMARKET_VOL_ENABLED",        "
 # SPY correlation filter — independent alpha vs market-driven momentum
 CORRELATION_FILTER_ENABLED:   bool = os.getenv("CORRELATION_FILTER_ENABLED",   "true").lower() == "true"
 
+# ── v26.0 Seasonality + Multi-Momentum + Liquidity ─────────────────────────────
+SEASONALITY_ENABLED:          bool = os.getenv("SEASONALITY_ENABLED",          "true").lower() == "true"
+OPEX_EFFECT_ENABLED:          bool = os.getenv("OPEX_EFFECT_ENABLED",          "true").lower() == "true"
+MONTH_END_ENABLED:            bool = os.getenv("MONTH_END_ENABLED",            "true").lower() == "true"
+QUARTER_END_ENABLED:          bool = os.getenv("QUARTER_END_ENABLED",          "true").lower() == "true"
+MONDAY_FADE_ENABLED:          bool = os.getenv("MONDAY_FADE_ENABLED",          "true").lower() == "true"
+OPEX_PIN_ENABLED:             bool = os.getenv("OPEX_PIN_ENABLED",             "true").lower() == "true"
+MULTI_MOMENTUM_ENABLED:       bool = os.getenv("MULTI_MOMENTUM_ENABLED",       "true").lower() == "true"
+LIQUIDITY_SIGNALS_ENABLED:    bool = os.getenv("LIQUIDITY_SIGNALS_ENABLED",    "true").lower() == "true"
+AMIHUD_ENABLED:               bool = os.getenv("AMIHUD_ENABLED",               "true").lower() == "true"
+ROLL_SPREAD_ENABLED:          bool = os.getenv("ROLL_SPREAD_ENABLED",          "true").lower() == "true"
+KYLE_LAMBDA_ENABLED:          bool = os.getenv("KYLE_LAMBDA_ENABLED",          "true").lower() == "true"
+VOL_CLOCK_ENABLED:            bool = os.getenv("VOL_CLOCK_ENABLED",            "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================
