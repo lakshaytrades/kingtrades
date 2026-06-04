@@ -52,16 +52,18 @@ else
     systemctl restart "$SERVICE" 2>/dev/null || true
     echo "[$TIMESTAMP] Service restarted OK" >> "$LOG"
 
-    # Telegram notification
+    # Telegram notification with commit reason
     if [ -f "$INSTALL_DIR/.env" ]; then
         BOT_TOKEN=$(grep "^TELEGRAM_BOT_TOKEN=" "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d '"'"'"' ')
         CHAT_ID=$(grep "^TELEGRAM_CHAT_ID=" "$INSTALL_DIR/.env" | cut -d= -f2 | tr -d '"'"'"' ')
         if [ -n "$BOT_TOKEN" ] && [ -n "$CHAT_ID" ]; then
-            MSG=$(printf "✅ <b>Bot auto-updated</b>\nCode: <code>%s</code>\nRestarted: %s" "$SHORT_HASH" "$TIMESTAMP")
+            COMMIT_MSG=$(git log -1 --pretty="%s" "$AFTER" 2>/dev/null | cut -c1-80 || echo "update")
+            MSG=$(printf "🔄 <b>Bot auto-updated</b>\n📦 <code>%s</code> → <code>%s</code>\n📝 %s\n🕐 %s" \
+                "$(echo "$BEFORE" | cut -c1-7)" "$SHORT_HASH" "$COMMIT_MSG" "$TIMESTAMP")
             curl -s -X POST "https://api.telegram.org/bot${BOT_TOKEN}/sendMessage" \
                 -d "chat_id=${CHAT_ID}" \
                 -d "parse_mode=HTML" \
-                -d "text=${MSG}" \
+                --data-urlencode "text=${MSG}" \
                 > /dev/null 2>&1
         fi
     fi
