@@ -130,6 +130,7 @@ class TradingBot:
         self._weekly_pnl_file.parent.mkdir(exist_ok=True)
         self._weekly_mode: str = "NORMAL"   # NORMAL / PROTECT / LOCKED
         self._day_bias_score: int = 0        # overnight bias -100 to +100 (set at market open)
+        self._day_size_factor: float = 1.0   # morning intelligence size multiplier (default 1.0 = no adjustment)
         self._mover_watchlist: List[str] = []    # dynamic top-movers added intraday
         self._last_mover_scan: float = 0.0       # timestamp of last top-movers refresh
         self._mover_scan_interval = 3600         # refresh top-movers every 60 min
@@ -771,6 +772,15 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
             self.gap_analyzer = None
+
+        # ── Pre-market gap scanner (v23.0) — classify overnight gaps ──
+        # Runs once at market open; results are cached all day for signal_generator.
+        try:
+            from premarket_gap_scanner import scan_gaps
+            _gaps = scan_gaps(watchlist)
+            logger.info(f"[{format_ist_timestamp()}] Gap scanner: {len(_gaps)} gaps identified")
+        except Exception as _gse:
+            logger.debug(f"Gap scanner init failed: {_gse}")
 
         # ── Sector rotation: score sectors and prioritize hot-sector stocks ──
         try:
@@ -3226,6 +3236,49 @@ class TradingBot:
                     logger.info(f"[{format_ist_timestamp()}] Options positions closed (EOD)")
                 except Exception as e:
                     logger.warning(f"[{format_ist_timestamp()}] Options EOD close failed: {e}")
+
+            # ── EOD orphan position cleanup (v23.0) ───────────────────────────
+            # Close any broker positions NOT tracked in self.state.positions.
+            # These are orphans from crashes/restarts and would carry into next day.
+            # square_off_all() above already sent close_all_positions to Alpaca, but
+            # we verify and explicitly close any that remain to ensure clean slate.
+            try:
+                if self.executor and getattr(self.executor, '_auth', None):
+                    _trading_client = self.executor._auth.get_trading_client()
+                    _broker_positions = _trading_client.get_all_positions()
+                    _bot_symbols = set(self.risk_manager.state.positions.keys()) if self.risk_manager else set()
+                    _orphan_count = 0
+                    for _bp in _broker_positions:
+                        _bsym = str(_bp.symbol)
+                        if _bsym not in _bot_symbols:
+                            # Orphan: broker has it, bot doesn't track it
+                            try:
+                                self.executor.close_position(_bsym, "EOD_ORPHAN_CLEANUP")
+                                _orphan_count += 1
+                                logger.warning(
+                                    f"[{format_ist_timestamp()}] EOD orphan closed: {_bsym} "
+                                    f"({'long' if float(_bp.qty) > 0 else 'short'} "
+                                    f"{abs(float(_bp.qty))}@${float(_bp.avg_entry_price or 0):.2f})"
+                                )
+                            except Exception as _oc_e:
+                                logger.warning(f"EOD orphan close failed ({_bsym}): {_oc_e}")
+                    if _orphan_count:
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] EOD orphan cleanup: {_orphan_count} orphan(s) closed"
+                        )
+                        if self.alerter:
+                            try:
+                                self.alerter.send_text(
+                                    f"⚠️ <b>EOD Orphan Cleanup</b>: {_orphan_count} broker position(s) "
+                                    f"not in bot tracker — closed at market."
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        logger.info(f"[{format_ist_timestamp()}] EOD orphan check: no orphans found")
+            except Exception as _orphan_e:
+                logger.debug(f"[suppressed] EOD orphan cleanup: {_orphan_e}")
+
             self.eod_done = True
 
     def _do_eod_shutdown(self):

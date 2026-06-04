@@ -386,6 +386,17 @@ class SignalGenerator:
             except Exception:
                 pass
 
+            # 1d. Earnings calendar protection (v23.0) — skip within 2 days of earnings
+            # Complements the EARNINGS_PROXIMITY_GATE above but uses yfinance calendar
+            # as a second, independent data source for higher coverage.
+            try:
+                from earnings_calendar import is_near_earnings
+                if getattr(config, 'EARNINGS_PROTECTION_ENABLED', True) and is_near_earnings(symbol):
+                    logger.debug(f"{symbol}: SKIP — earnings within 2 days")
+                    return None
+            except Exception:
+                pass
+
             # 2. Pattern analysis on each timeframe
             # Set df.attrs["symbol"] so pattern_recognizer can fetch daily OHLC for pivot levels
             df_5m.attrs["symbol"] = symbol
@@ -1224,6 +1235,39 @@ class SignalGenerator:
                         logger.debug(f"{symbol}: NEWS_SENTIMENT {_ns_delta:+.0f} {_ns_reason}")
                 except Exception as _ns_e:
                     logger.debug(f"[suppressed] news_sentiment: {_ns_e}")
+
+            # ── PEAD SIGNAL (v23.0) — earnings_calendar.py Post-Earnings Drift ──
+            if getattr(config, 'PEAD_SIGNAL_ENABLED', True):
+                try:
+                    from earnings_calendar import get_pead_score
+                    _pead_delta, _pead_reason = get_pead_score(symbol, direction)
+                    if _pead_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pead_delta)
+                        logger.debug(f"{symbol}: PEAD {_pead_delta:+.0f} {_pead_reason}")
+                except Exception as _pe:
+                    logger.debug(f"[suppressed] pead: {_pe}")
+
+            # ── OPTIONS INTENSITY (v23.0) — unusual options volume signal ─────
+            if getattr(config, 'OPTIONS_INTENSITY_ENABLED', True):
+                try:
+                    from options_intensity import get_options_intensity_score
+                    _oi_delta, _oi_reason = get_options_intensity_score(symbol, direction)
+                    if _oi_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _oi_delta)
+                        logger.debug(f"{symbol}: OPTIONS_INTENSITY {_oi_delta:+.0f} {_oi_reason}")
+                except Exception as _oi_e:
+                    logger.debug(f"[suppressed] options_intensity: {_oi_e}")
+
+            # ── GAP SCANNER (v23.0) — pre-market gap classification ───────────
+            if getattr(config, 'GAP_SCANNER_ENABLED', True):
+                try:
+                    from premarket_gap_scanner import get_gap_score
+                    _gap_delta, _gap_reason = get_gap_score(symbol, direction)
+                    if _gap_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gap_delta)
+                        logger.debug(f"{symbol}: GAP {_gap_delta:+.0f} {_gap_reason}")
+                except Exception as _gp_e:
+                    logger.debug(f"[suppressed] gap_scanner: {_gp_e}")
 
             # ── PREMIUM SCANNER (v11.0) — Free equivalents of paid tools ───────
             try:

@@ -693,6 +693,16 @@ FACTOR_ALPHA_ENABLED:         bool = os.getenv("FACTOR_ALPHA_ENABLED",         "
 VPIN_ENABLED:                 bool = os.getenv("VPIN_ENABLED",                 "True").lower() not in ("false", "0", "no")
 IC_TRACKER_ENABLED:           bool = os.getenv("IC_TRACKER_ENABLED",           "True").lower() not in ("false", "0", "no")
 
+# ── v23.0 Renaissance-grade alpha modules ──────────────────────────────────────
+# Earnings calendar protection: skip entries within 2 days of earnings report
+EARNINGS_PROTECTION_ENABLED:  bool = os.getenv("EARNINGS_PROTECTION_ENABLED",  "true").lower() == "true"
+# Post-Earnings Announcement Drift: boost/penalize based on earnings beat/miss 1-5 days ago
+PEAD_SIGNAL_ENABLED:          bool = os.getenv("PEAD_SIGNAL_ENABLED",          "true").lower() == "true"
+# Options intensity: unusual call/put volume as institutional positioning signal
+OPTIONS_INTENSITY_ENABLED:    bool = os.getenv("OPTIONS_INTENSITY_ENABLED",    "true").lower() == "true"
+# Pre-market gap scanner: classify overnight gaps as momentum/earnings/weak
+GAP_SCANNER_ENABLED:          bool = os.getenv("GAP_SCANNER_ENABLED",          "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================
