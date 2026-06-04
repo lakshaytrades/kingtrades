@@ -65,6 +65,16 @@ chmod +x "$RUNNER"
 
 screen -dmS "$SESSION" bash "$RUNNER"
 
+# Launch watchdog as background process (survives independently of screen)
+WATCHDOG_PID_FILE="$BOT_DIR/logs/watchdog.pid"
+if [ -f "$WATCHDOG_PID_FILE" ] && kill -0 "$(cat "$WATCHDOG_PID_FILE")" 2>/dev/null; then
+    echo "Watchdog already running (PID $(cat "$WATCHDOG_PID_FILE"))"
+else
+    nohup python3 "$BOT_DIR/watchdog.py" >> "$BOT_DIR/logs/watchdog.log" 2>&1 &
+    echo $! > "$WATCHDOG_PID_FILE"
+    echo "✅ Watchdog started (PID $!)"
+fi
+
 sleep 2
 if screen -list | grep -q "$SESSION"; then
     echo "✅ Bot is running in background (screen session: $SESSION)"
@@ -76,6 +86,8 @@ if screen -list | grep -q "$SESSION"; then
     echo "  Stop bot:       bash stop.sh"
     echo ""
     echo "Check Telegram for startup message in ~30 seconds."
+    echo ""
+    echo "  Watchdog log:   tail -f $BOT_DIR/logs/watchdog.log"
 else
     echo "❌ Failed to start. Check logs: tail -f $BOT_DIR/logs/bot_output.log"
 fi
