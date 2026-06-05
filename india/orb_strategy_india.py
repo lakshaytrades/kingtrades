@@ -107,16 +107,16 @@ def get_orb_score(symbol: str, direction: str, current_price: float,
         # Breakout above ORB high
         if direction == "LONG" and current_price > orb_high:
             extension = (current_price - orb_high) / orb_range
-            if extension > 0.5:
-                return (0.0, "")   # too far extended — chasing
+            if extension > 0.25:
+                return (0.0, "")   # >25% extended — chasing, skip
             score = 18.0 if vol_surge else 10.0
             return (score, f"ORB_LONG_NSE H={orb_high:.2f} vol_surge={vol_surge}")
 
         # Breakdown below ORB low
         if direction == "SHORT" and current_price < orb_low:
             extension = (orb_low - current_price) / orb_range
-            if extension > 0.5:
-                return (0.0, "")   # too far extended
+            if extension > 0.25:
+                return (0.0, "")   # >25% extended — chasing, skip
             score = 18.0 if vol_surge else 10.0
             return (score, f"ORB_SHORT_NSE L={orb_low:.2f} vol_surge={vol_surge}")
 

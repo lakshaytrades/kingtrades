@@ -19,6 +19,8 @@ from datetime import datetime, timedelta, time
 from pathlib import Path
 from typing import Dict, List, Optional
 
+import pandas as pd
+
 from zoneinfo import ZoneInfo
 
 # ── Path setup (import parent modules) ────────────────────────────────────────
@@ -221,21 +223,69 @@ class KingTradesIndia:
 
     # ── Signal scan ────────────────────────────────────────────────────────────
 
+    def _nifty_regime(self) -> str:
+        """
+        Check Nifty50 15m EMA trend. Returns 'BULLISH', 'BEARISH', or 'NEUTRAL'.
+        Cached 15 minutes — avoids repeated downloads in the scan loop.
+        BULLISH → only LONG signals allowed.
+        BEARISH → only SHORT signals allowed.
+        NEUTRAL → both directions allowed (ORB works on flat days too).
+        Fail-open: returns 'NEUTRAL' on any error.
+        """
+        try:
+            import yfinance as yf
+            now_ts = _time.time()
+            if not hasattr(self, "_nifty_cache"):
+                self._nifty_cache: dict = {}
+            if self._nifty_cache.get("ts", 0) > now_ts - 900:
+                return self._nifty_cache.get("regime", "NEUTRAL")
+
+            df = yf.download("^NSEI", period="5d", interval="15m",
+                             progress=False, auto_adjust=True)
+            if df is None or df.empty:
+                return "NEUTRAL"
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [str(c[0]).lower() for c in df.columns]
+            else:
+                df.columns = [str(c).lower() for c in df.columns]
+
+            if "close" not in df.columns or len(df) < 21:
+                return "NEUTRAL"
+
+            ema9  = float(df["close"].ewm(span=9,  adjust=False).mean().iloc[-1])
+            ema21 = float(df["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+            gap   = (ema9 - ema21) / (ema21 + 1e-9)
+
+            # < 0.05% gap: EMA nearly flat → choppy, allow both directions
+            if abs(gap) < 0.0005:
+                regime = "NEUTRAL"
+            elif gap > 0:
+                regime = "BULLISH"
+            else:
+                regime = "BEARISH"
+
+            self._nifty_cache = {"ts": now_ts, "regime": regime}
+            logger.info(f"Nifty regime: {regime} (EMA9={ema9:.0f} EMA21={ema21:.0f} gap={gap:.3%})")
+            return regime
+        except Exception as e:
+            logger.debug(f"nifty_regime: {e}")
+            return "NEUTRAL"
+
     def _scan_for_signals(self, current_time: Optional[time] = None):
         if len(self._positions) >= config.MAX_POSITIONS:
             return
 
         # ORB-only window: 9:15–9:30 IST — market still settling.
-        # Regular momentum signals are unreliable in first 15 min.
-        # ORB strategy intentionally trades this window so we let it through.
         _t = current_time or datetime.now(IST).time()
         _orb_only = time(9, 15) <= _t < time(9, 30)
 
-        # Loss guard: 3 consecutive losses today → skip signals for 30 min
-        # and then resume with tighter effective threshold (handled in _calculate_qty)
+        # Loss guard: 3 consecutive losses today → skip signals
         if self._stats.loss_guard_active and not self._stats.circuit_hit:
             logger.info("Loss guard active — pausing new entries")
             return
+
+        # Nifty regime: don't trade LONGs in bearish market, SHORTs in bullish market
+        regime = self._nifty_regime()
 
         ltp_map = {}
         try:
@@ -264,6 +314,14 @@ class KingTradesIndia:
                     if not has_orb:
                         logger.debug(f"{symbol}: skipped (ORB-only window 9:15–9:30)")
                         continue
+
+                # Nifty regime filter: don't fight the market
+                if regime == "BEARISH" and signal_obj.direction == "LONG":
+                    logger.debug(f"{symbol}: LONG skipped (Nifty BEARISH regime)")
+                    continue
+                if regime == "BULLISH" and signal_obj.direction == "SHORT":
+                    logger.debug(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
+                    continue
 
                 logger.info(
                     f"SIGNAL: {symbol} {signal_obj.direction} "
