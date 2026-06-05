@@ -274,6 +274,11 @@ class KingTradesIndia:
                     logger.warning(f"{symbol}: fill not confirmed — skipping stop order")
                     continue
 
+                # Guard: validate security_id before placing any order
+                if not signal_obj.security_id:
+                    logger.warning(f"{symbol}: no security_id — skipping order")
+                    continue
+
                 # Place stop-loss
                 stop_result = self._executor.place_stop_order(
                     symbol      = symbol,
@@ -282,6 +287,18 @@ class KingTradesIndia:
                     stop_price  = signal_obj.stop_loss,
                     security_id = signal_obj.security_id,
                 )
+
+                # Guard: if stop order fails, close the entry to avoid unprotected position
+                if not stop_result.success:
+                    logger.error(f"{symbol}: stop order FAILED ({stop_result.message}) — squaring off entry")
+                    _tg(f"🇮🇳 🚨 *[INDIA BOT] Stop order failed for {symbol}* — entry being reversed to avoid unprotected position")
+                    try:
+                        self._executor.square_off_all(
+                            self._executor.get_open_positions()
+                        )
+                    except Exception:
+                        pass
+                    continue
 
                 pos = OpenPosition(
                     symbol        = symbol,
@@ -372,8 +389,9 @@ class KingTradesIndia:
                     logger.info(f"{symbol}: stop hit at ₹{ltp:.2f}")
                     to_close.append(symbol)
 
-            # Daily loss circuit
-            daily_pnl_pct = self._stats.total_pnl / (config.MAX_DAILY_CAPITAL + 1)
+            # Daily loss circuit (use MAX_DAILY_CAPITAL, never divide by zero)
+            _capital = max(config.MAX_DAILY_CAPITAL, 1.0)
+            daily_pnl_pct = self._stats.total_pnl / _capital
             if daily_pnl_pct <= -config.DAILY_LOSS_LIMIT_PCT:
                 logger.warning("Daily loss limit hit — closing all positions")
                 _tg("🛑 *Daily loss limit hit* — all positions being closed")

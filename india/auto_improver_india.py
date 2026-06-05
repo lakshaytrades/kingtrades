@@ -33,6 +33,17 @@ BASE_DIR = Path(__file__).parent.parent
 LOG_DIR  = BASE_DIR / "logs"
 IST      = ZoneInfo("Asia/Kolkata")
 
+
+def _parse_ist(ts: str) -> datetime:
+    """Parse ISO timestamp string to IST-aware datetime, handling naive and aware inputs."""
+    try:
+        dt = datetime.fromisoformat(ts)
+        if dt.tzinfo is None:
+            return dt.replace(tzinfo=IST)   # assume IST if no tz info
+        return dt.astimezone(IST)
+    except Exception:
+        return datetime(2000, 1, 1, tzinfo=IST)
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [INDIA-IMPROVER] %(message)s",
@@ -102,7 +113,7 @@ def _get_performance_summary() -> Dict:
             week_trades = [
                 d for d in decisions.values()
                 if d.get("pnl") is not None and
-                   datetime.fromisoformat(d.get("time", "2000-01-01")).replace(tzinfo=IST) >= since
+                   _parse_ist(d.get("time", "2000-01-01")) >= since
             ]
             if week_trades:
                 pnls  = [d["pnl"] for d in week_trades]

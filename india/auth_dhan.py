@@ -97,14 +97,17 @@ def update_token_in_env(new_token: str) -> Tuple[bool, str]:
         return False, "Token too short — looks invalid"
 
     try:
+        # Atomic write: tmp → rename, so no partial-write corruption
+        key      = "DHAN_ACCESS_TOKEN"
         env_text = _ENV_PATH.read_text() if _ENV_PATH.exists() else ""
-        key = "DHAN_ACCESS_TOKEN"
-        if key in env_text:
-            env_text = re.sub(rf"^{key}\s*=.*$", f"{key}={new_token}",
-                              env_text, flags=re.MULTILINE)
+        pattern  = rf"^{re.escape(key)}\s*=.*$"
+        if re.search(pattern, env_text, flags=re.MULTILINE):
+            env_text = re.sub(pattern, f"{key}={new_token}", env_text, flags=re.MULTILINE)
         else:
-            env_text += f"\n{key}={new_token}\n"
-        _ENV_PATH.write_text(env_text)
+            env_text = env_text.rstrip("\n") + f"\n{key}={new_token}\n"
+        tmp = _ENV_PATH.with_suffix(".env.tmp")
+        tmp.write_text(env_text)
+        tmp.replace(_ENV_PATH)
         _record_token_set(new_token)
         os.environ["DHAN_ACCESS_TOKEN"] = new_token
         logger.info(f"DHAN_ACCESS_TOKEN updated via Telegram ({new_token[:8]}***)")
@@ -169,7 +172,25 @@ def check_token_expiry_and_warn() -> bool:
 
 # ── Telegram command polling ──────────────────────────────────────────────────
 
-_last_update_id: int = 0
+_UPDATE_ID_FILE = _TOKEN_META.parent / "dhan_tg_update_id.json"
+
+
+def _load_last_update_id() -> int:
+    """Load persisted update_id so we never reprocess commands after restart."""
+    try:
+        if _UPDATE_ID_FILE.exists():
+            return int(json.loads(_UPDATE_ID_FILE.read_text()).get("last_update_id", 0))
+    except Exception:
+        pass
+    return 0
+
+
+def _save_last_update_id(uid: int):
+    try:
+        _UPDATE_ID_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _UPDATE_ID_FILE.write_text(json.dumps({"last_update_id": uid}))
+    except Exception:
+        pass
 
 
 def poll_telegram_commands(restart_callback=None) -> Optional[str]:
@@ -178,9 +199,11 @@ def poll_telegram_commands(restart_callback=None) -> Optional[str]:
     Returns the new token string if found, else None.
     Call this in a background loop (every 30s in watchdog).
 
+    update_id is persisted to disk — survives watchdog/bot restarts,
+    so old commands are never replayed.
+
     If restart_callback is provided, calls it after successful token update.
     """
-    global _last_update_id
     try:
         from dotenv import load_dotenv
         load_dotenv(_ENV_PATH)
@@ -194,9 +217,10 @@ def poll_telegram_commands(restart_callback=None) -> Optional[str]:
 
     try:
         import requests
+        last_uid = _load_last_update_id()
         resp = requests.get(
             f"https://api.telegram.org/bot{tg_token}/getUpdates",
-            params={"offset": _last_update_id + 1, "timeout": 5, "limit": 10},
+            params={"offset": last_uid + 1, "timeout": 5, "limit": 10},
             timeout=10,
         )
         data = resp.json()
@@ -205,8 +229,9 @@ def poll_telegram_commands(restart_callback=None) -> Optional[str]:
 
         for update in data.get("result", []):
             uid = update.get("update_id", 0)
-            if uid > _last_update_id:
-                _last_update_id = uid
+            if uid > last_uid:
+                last_uid = uid
+                _save_last_update_id(uid)   # persist immediately — survives restart
 
             msg = update.get("message", {})
             if not msg:

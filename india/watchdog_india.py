@@ -169,43 +169,42 @@ def _read_current_threshold() -> float:
     return 70.0
 
 
-def _apply_threshold(new_val: float, reason: str, state: Dict):
+def _write_env_key(key: str, value: str):
+    """
+    Atomically update or append a key in .env.
+    Write to a temp file then rename to avoid partial-write corruption.
+    """
     import re
-    new_val = round(max(SCORE_MIN_FLOOR, min(SCORE_MAX_CEIL, new_val)), 1)
     env_path = BASE_DIR / ".env"
-    key = "INDIA_FINAL_EXEC_MIN_SCORE"
+    tmp_path  = env_path.with_suffix(".env.tmp")
+    content = env_path.read_text() if env_path.exists() else ""
+    pattern = rf"^{re.escape(key)}\s*=.*$"
+    if re.search(pattern, content, flags=re.MULTILINE):
+        content = re.sub(pattern, f"{key}={value}", content, flags=re.MULTILINE)
+    else:
+        content = content.rstrip("\n") + f"\n{key}={value}\n"
+    tmp_path.write_text(content)
+    tmp_path.replace(env_path)   # atomic on POSIX
+
+
+def _apply_threshold(new_val: float, reason: str, state: Dict):
+    new_val = round(max(SCORE_MIN_FLOOR, min(SCORE_MAX_CEIL, new_val)), 1)
     try:
-        if env_path.exists():
-            content = env_path.read_text()
-            if key in content:
-                content = re.sub(rf"{key}\s*=\s*[\d.]+", f"{key}={new_val}", content)
-            else:
-                content += f"\n{key}={new_val}\n"
-            env_path.write_text(content)
-        else:
-            with open(env_path, "a") as f:
-                f.write(f"\n{key}={new_val}\n")
+        _write_env_key("INDIA_FINAL_EXEC_MIN_SCORE", str(new_val))
         logger.info(f"Threshold → {new_val}: {reason}")
         state.setdefault("auto_fixes_this_week", []).append(
-            {"fix": f"{key}={new_val}", "reason": reason,
+            {"fix": f"INDIA_FINAL_EXEC_MIN_SCORE={new_val}", "reason": reason,
              "ts": datetime.now(IST).isoformat()}
         )
-        _telegram_send(f"Auto-adjusted `{key}` → `{new_val}`\n_{reason}_", "INFO")
+        _telegram_send(f"Auto-adjusted `INDIA_FINAL_EXEC_MIN_SCORE` → `{new_val}`\n_{reason}_", "INFO")
     except Exception as e:
         logger.error(f"Threshold write failed: {e}")
 
 
 def _disable_module(module_name: str, state: Dict):
-    import re
-    env_path = BASE_DIR / ".env"
     key = f"INDIA_{module_name.upper()}_ENABLED"
     try:
-        content = env_path.read_text() if env_path.exists() else ""
-        if key in content:
-            content = re.sub(rf"{key}\s*=\s*\w+", f"{key}=False", content)
-        else:
-            content += f"\n{key}=False\n"
-        env_path.write_text(content)
+        _write_env_key(key, "False")
         state.setdefault("disabled_modules", []).append(module_name)
         logger.warning(f"Disabled module: {key}")
         _telegram_send(f"Disabled `{key}` due to repeated errors\nRe-enable: remove the line from .env", "WARN")

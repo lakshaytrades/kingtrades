@@ -90,17 +90,23 @@ def is_nifty_circuit(nifty_open: float, nifty_current: float) -> bool:
 
 
 def get_nifty_open() -> float:
-    """Fetch Nifty 50 open price for today's session. Fail-open: returns 0."""
+    """
+    Fetch Nifty 50 open price for TODAY's session using intraday bars.
+    Uses 5m bars so we always get today's actual open (first bar of the day),
+    not yesterday's daily open that period='2d' + interval='1d' returns
+    before the market has opened.
+    Fail-open: returns 0.
+    """
     try:
         import yfinance as yf
-        hist = yf.download("^NSEI", period="2d", interval="1d",
+        hist = yf.download("^NSEI", period="1d", interval="5m",
                            progress=False, auto_adjust=True)
         if hist is not None and not hist.empty:
             if isinstance(hist.columns, pd.MultiIndex):
                 hist.columns = [str(c[0]).lower() for c in hist.columns]
             else:
                 hist.columns = [str(c).lower() for c in hist.columns]
-            return float(hist["open"].iloc[-1])
+            return float(hist["open"].iloc[0])   # first bar of today = today's open
     except Exception as e:
         logger.debug(f"Nifty open fetch: {e}")
     return 0.0
