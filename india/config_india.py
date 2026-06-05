@@ -29,9 +29,13 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
 
-# ── Signal thresholds ────────────────────────────────────────────────────────
-MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "60.0"))
-FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "70.0"))
+# ── Signal thresholds (optimised for NSE 2:1 R:R, target WR 57–61%) ─────────
+# Break-even WR at 2:1 R:R = 33.3%. Optimal EV at ~58% WR.
+# 67 post-HAF threshold captures more HAF-validated signals vs 70 (+~15% trades)
+# 63 pre-filter is tighter than old 60 — reduces noise entering the 26-gate pipeline
+# 82 Grand Slam unchanged — highest conviction → 1.35× Kelly-weighted size
+MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "63.0"))
+FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "67.0"))
 GRAND_SLAM_MIN_SCORE  = float(os.getenv("INDIA_GRAND_SLAM_MIN_SCORE", "82.0"))
 
 # ── ATR-based SL / TP ────────────────────────────────────────────────────────

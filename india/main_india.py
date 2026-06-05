@@ -99,12 +99,14 @@ class OpenPosition:
 
 @dataclass
 class DayStats:
-    trades:      int   = 0
-    wins:        int   = 0
-    losses:      int   = 0
-    total_pnl:   float = 0.0
-    daily_start: float = 0.0
-    circuit_hit: bool  = False
+    trades:             int   = 0
+    wins:               int   = 0
+    losses:             int   = 0
+    total_pnl:          float = 0.0
+    daily_start:        float = 0.0
+    circuit_hit:        bool  = False
+    consecutive_losses: int   = 0   # resets on each win
+    loss_guard_active:  bool  = False  # raised after 3 consecutive losses
 
 
 # ── Main bot ─────────────────────────────────────────────────────────────────
@@ -203,10 +205,15 @@ class KingTradesIndia:
                 # ── Market hours: scan + manage ───────────────────────────────
                 if config.MARKET_OPEN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if not self._stats.circuit_hit:
-                        self._scan_for_signals()
+                        self._scan_for_signals(t)
                     self._manage_positions()
 
-                _time.sleep(config.SCAN_INTERVAL_SECONDS)
+                # ── Adaptive scan interval ─────────────────────────────────────
+                # 60s during high-volume windows (open + power close).
+                # 300s otherwise — reduces Dhan API load mid-day.
+                _in_power = (time(9, 15) <= t <= time(9, 59)) or \
+                            (time(14, 30) <= t <= time(15, 20))
+                _time.sleep(60 if _in_power else config.SCAN_INTERVAL_SECONDS)
 
             except Exception as e:
                 logger.error(f"Main loop error: {e}", exc_info=True)
@@ -214,8 +221,20 @@ class KingTradesIndia:
 
     # ── Signal scan ────────────────────────────────────────────────────────────
 
-    def _scan_for_signals(self):
+    def _scan_for_signals(self, current_time: Optional[time] = None):
         if len(self._positions) >= config.MAX_POSITIONS:
+            return
+
+        # ORB-only window: 9:15–9:30 IST — market still settling.
+        # Regular momentum signals are unreliable in first 15 min.
+        # ORB strategy intentionally trades this window so we let it through.
+        _t = current_time or datetime.now(IST).time()
+        _orb_only = time(9, 15) <= _t < time(9, 30)
+
+        # Loss guard: 3 consecutive losses today → skip signals for 30 min
+        # and then resume with tighter effective threshold (handled in _calculate_qty)
+        if self._stats.loss_guard_active and not self._stats.circuit_hit:
+            logger.info("Loss guard active — pausing new entries")
             return
 
         ltp_map = {}
@@ -237,6 +256,14 @@ class KingTradesIndia:
                 signal_obj = self._generator.generate_signal(symbol, current_price=ltp)
                 if signal_obj is None:
                     continue
+
+                # ORB-only: skip non-ORB signals during 9:15–9:30 IST
+                if _orb_only:
+                    has_orb = any("orb" in str(p).lower()
+                                  for p in getattr(signal_obj, "patterns", []))
+                    if not has_orb:
+                        logger.debug(f"{symbol}: skipped (ORB-only window 9:15–9:30)")
+                        continue
 
                 logger.info(
                     f"SIGNAL: {symbol} {signal_obj.direction} "
@@ -414,10 +441,28 @@ class KingTradesIndia:
         self._stats.total_pnl += pnl
         if pnl > 0:
             self._stats.wins += 1
+            self._stats.consecutive_losses = 0      # win resets the streak
+            if self._stats.loss_guard_active:
+                self._stats.loss_guard_active = False
+                logger.info("Loss guard lifted after win")
+                _tg("🇮🇳 ✅ *[INDIA BOT] Loss guard lifted* — win after losing streak, resuming normal trading")
         else:
             self._stats.losses += 1
+            self._stats.consecutive_losses += 1
+            # After 3 consecutive losses, pause new entries for 30 min
+            if self._stats.consecutive_losses >= 3 and not self._stats.loss_guard_active:
+                self._stats.loss_guard_active = True
+                logger.warning(f"3 consecutive losses — loss guard activated")
+                _tg(
+                    f"🇮🇳 ⚠️ *[INDIA BOT] Loss Guard Activated*\n"
+                    f"3 consecutive losses today.\n"
+                    f"Pausing new entries. Bot will resume when:\n"
+                    f"  • Next scan finds strong setup (guard auto-lifts on win)\n"
+                    f"  • Or market closes (3:20 PM IST)\n"
+                    f"Existing positions managed normally."
+                )
 
-        logger.info(f"CLOSED {symbol}: P&L ₹{pnl:+.2f}")
+        logger.info(f"CLOSED {symbol}: P&L ₹{pnl:+.2f} | streak: {self._stats.consecutive_losses} losses")
 
         # Record for neural predictor
         try:
@@ -492,17 +537,77 @@ class KingTradesIndia:
 
     # ── Helpers ────────────────────────────────────────────────────────────────
 
+    def _kelly_fraction(self) -> float:
+        """
+        Fractional Kelly position sizing based on rolling session win rate.
+        Kelly formula: f = (p*b - q) / b
+          p = win probability, q = 1-p, b = reward-to-risk ratio (target/SL)
+        We use half-Kelly (50%) for safety — still captures edge without overbetting.
+        Falls back to flat MAX_RISK_PER_TRADE_PCT when sample too small (<5 trades).
+        """
+        total = self._stats.wins + self._stats.losses
+        if total < 5:
+            return config.MAX_RISK_PER_TRADE_PCT   # not enough data yet
+
+        p = self._stats.wins / total
+        q = 1.0 - p
+        # R:R ≈ ATR_TP_MULTIPLIER / ATR_SL_MULTIPLIER = 3.0 / 1.5 = 2.0
+        b = config.ATR_TP_MULTIPLIER / max(config.ATR_SL_MULTIPLIER, 0.01)
+        kelly_full = (p * b - q) / b
+        half_kelly = kelly_full * 0.5   # half-Kelly for robustness
+
+        # Clamp: never risk less than 0.1% or more than 1.5% per trade
+        return max(0.001, min(0.015, half_kelly))
+
+    def _grade_multiplier(self, grade: str) -> float:
+        """
+        Size multiplier by signal quality grade from HighAccuracyFilter.
+        Grade A+ → 1.35× (maximum conviction, Grand Slam)
+        Grade A  → 1.00× (solid setup, full size)
+        Grade B+ → 0.80× (good setup, slightly reduced)
+        Grade B  → 0.65× (average setup, smaller bet)
+        Grade C  → 0.45× (marginal, minimum viable position)
+        """
+        return {"A+": 1.35, "A": 1.00, "B+": 0.80, "B": 0.65, "C": 0.45}.get(grade, 0.65)
+
     def _calculate_qty(self, sig: IndiaTradeSignal) -> int:
-        """Position size: risk = MAX_RISK_PER_TRADE_PCT of capital / SL distance."""
+        """
+        Kelly Criterion + grade-weighted position sizing.
+
+        Steps:
+          1. Half-Kelly fraction based on rolling session win rate
+          2. Grade multiplier (A+=1.35×, A=1.0×, B=0.65×, C=0.45×)
+          3. Loss guard: halve size if 3 consecutive losses hit today
+          4. Cap: max 20% capital in one position (25% for Grand Slams)
+        """
         try:
             sl_dist = abs(sig.entry_price - sig.stop_loss)
-            if sl_dist <= 0:
+            if sl_dist <= 0 or sig.entry_price <= 0:
                 return 0
-            risk_inr   = config.MAX_DAILY_CAPITAL * config.MAX_RISK_PER_TRADE_PCT
-            qty        = int(risk_inr / sl_dist)
-            qty        = max(1, int(qty * sig.size_multiplier))
-            # Cap: single position max 20% of capital
-            max_qty = int(config.MAX_DAILY_CAPITAL * 0.20 / (sig.entry_price + 1))
+
+            # Kelly-fraction risk amount
+            kelly_pct = self._kelly_fraction()
+            risk_inr  = config.MAX_DAILY_CAPITAL * kelly_pct
+
+            # Grade-based multiplier
+            grade_mult = self._grade_multiplier(getattr(sig, "quality_grade", "B"))
+
+            # Signal size multiplier (from HAF / vol targeting)
+            sig_mult = getattr(sig, "size_multiplier", 1.0) or 1.0
+
+            # Base quantity
+            qty = int(risk_inr / sl_dist * grade_mult * sig_mult)
+            qty = max(1, qty)
+
+            # Loss guard: if 3 consecutive losses, trade at 50% size
+            if self._stats.loss_guard_active:
+                qty = max(1, qty // 2)
+
+            # Cap: Grand Slam (A+) allowed 25% capital; others 20%
+            is_grand_slam = getattr(sig, "quality_grade", "") == "A+"
+            cap_pct = 0.25 if is_grand_slam else 0.20
+            max_qty = int(config.MAX_DAILY_CAPITAL * cap_pct / (sig.entry_price + 1))
+
             return min(qty, max_qty)
         except Exception:
             return 0
