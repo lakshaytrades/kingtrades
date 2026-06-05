@@ -511,9 +511,15 @@ class MorningIntelligence:
             try:
                 events = self._calendar.get_today_events()
                 for ev in events:
-                    impact = ev.get("impact", "MEDIUM")
-                    name   = ev.get("event", "")
-                    time_s = ev.get("time_ist", "")
+                    # ev is EconomicEvent object; support both object and dict
+                    if hasattr(ev, "impact"):
+                        impact = ev.impact
+                        name   = ev.name
+                        time_s = getattr(ev, "release_time_et", "")
+                    else:
+                        impact = ev.get("impact", "MEDIUM")
+                        name   = ev.get("event", "")
+                        time_s = ev.get("time_ist", "")
                     time_suffix = f" at {time_s} IST" if time_s and time_s != "10:00" else ""
 
                     if impact == "HOLIDAY":

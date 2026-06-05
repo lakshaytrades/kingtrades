@@ -3284,7 +3284,7 @@ class TradingBot:
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile ADDED: {sym} "
                     f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@${avg:.2f}) — "
-                    f"found in Groww but not in bot tracker"
+                    f"found in Alpaca but not in bot tracker"
                 )
                 try:
                     self.alerter.send_text(
