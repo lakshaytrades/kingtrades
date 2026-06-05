@@ -2043,6 +2043,28 @@ class TradingBot:
                 except Exception as e:
                     logger.debug(f"Burst scan failed: {e}")
 
+            # 4i. Fallback scan — micro-trades when ALL primary engines found nothing
+            if not signals:
+                try:
+                    _fb_sigs = self._run_fallback_scan(watchlist, max_results=2)
+                    if _fb_sigs:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] FALLBACK MODE: "
+                            f"{len(_fb_sigs)} micro-trade(s) queued (0.3x size)"
+                        )
+                        if self.alerter:
+                            _fb_lines = "\n".join(
+                                f"  {s.symbol} {s.direction} score={s.signal_score:.0f}"
+                                for s in _fb_sigs
+                            )
+                            self.alerter.send_html(
+                                f"⚡ <b>FALLBACK MODE</b> — No primary signals\n"
+                                f"Micro-trades at 0.3x size:\n{_fb_lines}"
+                            )
+                        signals.extend(_fb_sigs)
+                except Exception as _fbe:
+                    logger.debug(f"Fallback scan: {_fbe}")
+
             # 5. Execute signals
             for signal in signals:
                 # 5a. Profit Engine gate — check if we should still be trading
@@ -2394,6 +2416,66 @@ class TradingBot:
                 f"[{format_ist_timestamp()}] Trading cycle error: {e}\n"
                 f"{traceback.format_exc()}"
             )
+
+    # --------------------------------------------------------
+    # FALLBACK SCAN — micro-trades when primary finds nothing
+    # --------------------------------------------------------
+
+    def _run_fallback_scan(self, watchlist: list, max_results: int = 2) -> list:
+        """
+        Run a lower-threshold scan when all primary engines found 0 signals.
+        Score threshold: 52+ (vs normal 65+). Size: 0.3x. Grade forced to A.
+        Ensures at least small profits on quiet/choppy days instead of 0 trades.
+        """
+        if not self.signal_gen:
+            return []
+        if not self.risk_manager:
+            return []
+
+        # Skip if already at max positions
+        open_count = len(self.risk_manager.state.positions)
+        max_pos = getattr(config, "MAX_POSITIONS", 5)
+        if open_count >= max_pos:
+            return []
+
+        # Track which symbols we're already in so we don't double-enter
+        active_syms = set(self.risk_manager.state.positions.keys())
+
+        _orig_score = self.signal_gen.min_score
+        _fallback_min = 52.0
+
+        try:
+            self.signal_gen.min_score = _fallback_min
+
+            fallback_sigs = []
+            for sym in watchlist[:25]:
+                if len(fallback_sigs) >= max_results:
+                    break
+                if sym in active_syms:
+                    continue
+                try:
+                    sig = self.signal_gen.generate_signal(sym)
+                    if sig is None:
+                        continue
+                    # Force small size + promote grade so profit engine allows it
+                    sig.quality_grade = "A"
+                    sig.size_multiplier = 0.3
+                    sig.patterns = [
+                        ("FALLBACK_" + p) if not p.startswith("FALLBACK_") else p
+                        for p in (sig.patterns or ["MOMENTUM"])
+                    ]
+                    fallback_sigs.append(sig)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] FALLBACK: {sym} {sig.direction} "
+                        f"score={sig.signal_score:.0f} → 0.3x size micro-trade"
+                    )
+                except Exception as _fe:
+                    logger.debug(f"Fallback {sym}: {_fe}")
+
+            return fallback_sigs
+
+        finally:
+            self.signal_gen.min_score = _orig_score
 
     # --------------------------------------------------------
     # POSITION MANAGEMENT
