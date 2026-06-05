@@ -81,12 +81,23 @@ else
     echo $! > "$WATCHDOG_PID_FILE"
 fi
 
+# Start AI supervisor (Claude-powered autonomous fixer)
+AI_PID_FILE="$BOT_DIR/logs/ai_supervisor.pid"
+if [ -f "$AI_PID_FILE" ] && kill -0 "$(cat "$AI_PID_FILE")" 2>/dev/null; then
+    :  # already running
+else
+    rm -f "$AI_PID_FILE"
+    nohup python3 "$BOT_DIR/ai_supervisor.py" >> "$BOT_DIR/logs/ai_supervisor.log" 2>&1 &
+    echo $! > "$AI_PID_FILE"
+fi
+
 if [ "$CRON_MODE" -eq 0 ]; then
     sleep 2
     if screen -list | grep -q "$SESSION"; then
         echo "✅ US Bot running (screen: $SESSION)"
         echo "  Live logs:  tail -f $BOT_DIR/logs/bot_output.log"
         echo "  Watchdog:   tail -f $BOT_DIR/logs/watchdog.log"
+        echo "  AI Supervisor: tail -f $BOT_DIR/logs/ai_supervisor.log"
         echo "  Attach:     screen -r $SESSION  (detach: Ctrl+A D)"
         echo "  Stop:       bash stop.sh"
     else
