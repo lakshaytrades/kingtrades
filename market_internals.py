@@ -50,10 +50,12 @@ SECTORS: List[str] = [
 ]
 
 # Thresholds
-# Wide neutral zone (45-55) was blocking ALL trades on mixed market days.
-# Fixed: LONGs allowed >= 42, SHORTs allowed <= 58. Hard stop only at extremes.
+# Thresholds tuned to avoid dead zones on mixed market days.
+# LONGs blocked only in genuine bear breadth (<42).
+# SHORTs blocked only in genuine bull breadth (>68) — raised from 58 which
+# was creating dead zones: sectors down -5% but breadth 62-68 = nothing tradeable.
 LONG_OK_THRESHOLD  = 42.0   # breadth >= 42 → longs OK (reduced size 42-54)
-SHORT_OK_THRESHOLD = 58.0   # breadth <= 58 → shorts OK (reduced size 46-58)
+SHORT_OK_THRESHOLD = 68.0   # breadth <= 68 → shorts OK (cautious size 58-68)
 SIZE_BOOST_HIGH    = 70.0   # >= 70 → 1.2x (strong bull breadth)
 SIZE_NORMAL_LOW    = 54.0   # 54–69 → 1.0x
 SIZE_NEUTRAL_LOW   = 42.0   # 42–53 → 0.75x (cautious/mixed)
@@ -195,13 +197,14 @@ class MarketInternals:
 
     def is_short_ok(self) -> Tuple[bool, str]:
         """
-        Short entries OK when breadth <= 58. Hard block only above 58
-        (was 45, which created a dead zone where no trades were possible).
+        Short entries OK when breadth <= 68.
+        58-68 = cautious size (mixed breadth, allow shorts in weak sectors).
+        >68 = hard block (genuinely strong bull breadth, don't fight tape).
         """
         data = self.get_breadth()
         score = data["breadth_score"]
         if score <= SHORT_OK_THRESHOLD:
-            caution = " (cautious size — mixed breadth)" if score > 46 else ""
+            caution = " (cautious size — mixed breadth)" if score > 58 else ""
             reason = (
                 f"Breadth {score:.1f}/100 — {data['bearish_sectors']} sectors bearish."
                 f" SHORT OK{caution}."
@@ -210,7 +213,7 @@ class MarketInternals:
         else:
             reason = (
                 f"Breadth {score:.1f}/100 above {SHORT_OK_THRESHOLD} — "
-                f"only {data['bearish_sectors']} sectors bearish. SHORT blocked."
+                f"market too bullish for shorts. SHORT blocked."
             )
             return False, reason
 
