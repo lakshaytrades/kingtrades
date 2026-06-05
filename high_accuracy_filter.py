@@ -196,6 +196,9 @@ class HighAccuracyFilter:
         self._current_symbol: str = ""
         # Score histogram: buckets of 5 (40–45, 45–50, ... 95–100)
         self._score_histogram: Dict[str, int] = {}
+        # Fallback mode: relax Gate 15 body check and Gate 27 VWAP extension threshold
+        # Set by _run_fallback_scan() in main.py; restored in finally block.
+        self._fallback_mode: bool = False
 
     # ─────────────────────────────────────────────────────────
     # MAIN FILTER — call this before every trade
@@ -763,6 +766,8 @@ class HighAccuracyFilter:
         try:
             import config as _cfg27
             _vwap_max_atr = float(getattr(_cfg27, 'VWAP_EXTENSION_MAX_ATR', 2.0))
+            if self._fallback_mode:
+                _vwap_max_atr *= 3.0  # crash days: stocks are 10-25 ATR from VWAP — allow up to 6 ATR
             if df_5m is not None and not df_5m.empty and atr and atr > 0:
                 _tp27  = (df_5m['high'] + df_5m['low'] + df_5m['close']) / 3.0
                 _cv27  = df_5m['volume'].cumsum()
@@ -1649,7 +1654,7 @@ class HighAccuracyFilter:
                 vol_prev = float(prev.get("volume", 1) or 1)
                 if vol_now < vol_prev * 0.35:
                     return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.35:.0f} — momentum dying"
-                if body < 0.05 * atr:
+                if body < 0.05 * atr and not self._fallback_mode:
                     return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.05×ATR={0.05*atr:.2f} — noise candle"
             else:  # SELL / SHORT
                 body  = float(last["open"]) - float(last["close"])
@@ -1660,7 +1665,7 @@ class HighAccuracyFilter:
                 vol_prev = float(prev.get("volume", 1) or 1)
                 if vol_now < vol_prev * 0.35:
                     return False, f"[FALSE BREAKOUT] volume fade on short signal — no conviction"
-                if body < 0.05 * atr:
+                if body < 0.05 * atr and not self._fallback_mode:
                     return False, f"[FALSE BREAKOUT] tiny body < 0.05×ATR — noise candle"
             return True, ""
         except Exception:

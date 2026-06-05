@@ -2446,6 +2446,8 @@ class TradingBot:
 
         try:
             self.signal_gen.min_score = _fallback_min
+            # Relax Gate 15 (body check) and Gate 27 (VWAP extension) for fallback
+            self.signal_gen.ha_filter._fallback_mode = True
 
             fallback_sigs = []
             for sym in watchlist[:25]:
@@ -2476,6 +2478,7 @@ class TradingBot:
 
         finally:
             self.signal_gen.min_score = _orig_score
+            self.signal_gen.ha_filter._fallback_mode = False
 
     # --------------------------------------------------------
     # POSITION MANAGEMENT
