@@ -197,7 +197,7 @@ INDICATOR_FLOOR_GATE: bool = os.getenv("INDICATOR_FLOOR_GATE", "True").lower() i
 INDICATOR_FLOOR_MIN:  int  = int(os.getenv("INDICATOR_FLOOR_MIN", "2"))  # minimum indicators that must align
 # Gate 20: Bid/Ask Volume Imbalance — buyers/sellers must be aggressive side
 BA_IMBALANCE_GATE:      bool  = os.getenv("BA_IMBALANCE_GATE", "True").lower() in ("true","1","yes")
-BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"))
+BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.48"))
 # Gate 21: Order Flow Imbalance — cumulative delta must not strongly oppose direction
 OFI_GATE_ENABLED:       bool  = os.getenv("OFI_GATE_ENABLED", "True").lower() in ("true","1","yes")
 # Gate 24: Momentum bar confirmation — require ≥3 of last 5 bars closing in signal direction
@@ -431,7 +431,7 @@ SENSITIVITY_ROBUSTNESS_MIN: float = 0.70
 # ============================================================
 # POSITION SIZING / GAP / LIQUIDITY
 # ============================================================
-MIN_DAILY_VOLUME: int = 200_000     # 200k shares/day — catches illiquid stocks, not blue chips
+MIN_DAILY_VOLUME: int = 150_000     # 150k shares/day — allows more quality stocks without slippage risk
 MAX_GAP_PCT: float = 2.0
 LARGE_GAP_PCT: float = 3.5
 EXTREME_GAP_PCT: float = 5.0
