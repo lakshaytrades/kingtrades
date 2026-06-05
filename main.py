@@ -4855,13 +4855,14 @@ def main():
     import fcntl
     _pid_path = Path(config.LOG_DIR) / "kingtrades.pid"
     _pid_path.parent.mkdir(parents=True, exist_ok=True)
+    # Read existing PID BEFORE opening for write (open "w" truncates the file)
+    _existing_pid = _pid_path.read_text().strip() if _pid_path.exists() else "unknown"
     _pid_fh = open(_pid_path, "w")
     try:
         fcntl.flock(_pid_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        existing = _pid_path.read_text().strip() if _pid_path.exists() else "unknown"
         print(
-            f"[KingTrades] Another instance is already running (PID {existing}). "
+            f"[KingTrades] Another instance is already running (PID {_existing_pid}). "
             "Stop it first with: pkill -f main.py",
             flush=True,
         )
