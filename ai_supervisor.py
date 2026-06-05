@@ -45,14 +45,12 @@ BASE_DIR = Path(__file__).parent
 LOG_DIR  = BASE_DIR / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
-logging.basicConfig(
-    level=logging.INFO,
-    format="%(asctime)s [AI-SUPERVISOR] %(levelname)s %(message)s",
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / "ai_supervisor.log", mode="a"),
-    ],
-)
+# File-only logging — nohup already redirects stdout to the same file,
+# so a StreamHandler would double every line.
+_log_handler = logging.FileHandler(LOG_DIR / "ai_supervisor.log", mode="a")
+_log_handler.setFormatter(logging.Formatter("%(asctime)s [AI-SUPERVISOR] %(levelname)s %(message)s"))
+logging.root.setLevel(logging.INFO)
+logging.root.handlers = [_log_handler]
 logger = logging.getLogger("ai_supervisor")
 
 # ── Timezone constants ────────────────────────────────────────────────────────
@@ -254,11 +252,17 @@ def _read_log_tail(log_path: Path, n_lines: int = LOG_TAIL_LINES) -> List[str]:
 
 
 def _extract_error_lines(lines: List[str]) -> List[str]:
-    """Return lines that contain ERROR/WARNING/TRACEBACK/EXCEPTION keywords."""
+    """Return lines that contain real ERROR/WARNING/TRACEBACK keywords.
+    Use bracketed or space-bounded matches to avoid false positives like
+    'warnings=0', 'SCORE_GATE', or 'HEALTH OK — checks=[...]'.
+    """
     out = []
     for line in lines:
         u = line.upper()
-        if "ERROR" in u or "WARNING" in u or "TRACEBACK" in u or "EXCEPTION" in u:
+        if ("[ERROR]" in u or " ERROR " in u or
+                "[WARNING]" in u or " WARNING " in u or
+                "TRACEBACK" in u or "EXCEPTION" in u or
+                "CRITICAL" in u):
             out.append(line.strip())
     return out
 
