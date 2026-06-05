@@ -1178,7 +1178,12 @@ class SignalGenerator:
                         logger.debug(f"{symbol}: CSM {_csm_delta:+.0f} {_csm_reason}")
 
                 # 2. VWAP reclaim (prop desk / CME market makers)
-                if getattr(config, 'VWAP_RECLAIM_ENABLED', True) and ind.vwap > 0:
+                # Skip if HAF Bonus 10 already scored this pattern — prevents +24 double-count.
+                _haf_vwap_scored = any(
+                    "VWAP_RECLAIM" in b or "VWAP_BREAKDOWN" in b
+                    for b in getattr(filter_result, 'bonuses', [])
+                )
+                if getattr(config, 'VWAP_RECLAIM_ENABLED', True) and ind.vwap > 0 and not _haf_vwap_scored:
                     _vr_delta, _vr_reason = get_vwap_reclaim_score(df_5m, ltp_now, direction, ind.vwap)
                     if _vr_delta:
                         filter_result.final_score = min(100.0, filter_result.final_score + _vr_delta)

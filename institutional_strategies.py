@@ -29,6 +29,7 @@ Strategy 6: Sortino-Based Dynamic Sizing (Bridgewater, Citadel)
 """
 
 import logging
+import threading
 import time as _time
 from datetime import datetime
 from typing import Dict, List, Optional, Tuple
@@ -38,6 +39,8 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
+_csm_lock = threading.Lock()    # prevent cache stampede on the hour
+_pairs_lock = threading.Lock()  # same for pairs cache
 
 
 # ── Strategy 1: Cross-Sectional Momentum ─────────────────────────────────────
@@ -58,40 +61,41 @@ def get_cross_sectional_rank(symbol: str, watchlist: List[str]) -> Tuple[float, 
         now = _time.monotonic()
         peers = list(dict.fromkeys([symbol] + [s for s in watchlist if s]))
         cache_key = ",".join(sorted(peers[:30]))   # cap to avoid giant keys
-        cached = _csm_cache.get(cache_key)
-        if cached and now - cached["ts"] < _CSM_TTL:
-            ranks = cached["ranks"]
-        else:
-            # Batch download 22 days to get 20 trading-day returns (weekends add ~2 days)
-            raw = yf.download(
-                peers[:30], period="22d", interval="1d",
-                auto_adjust=True, threads=True, progress=False, timeout=20,
-                group_by="ticker",
-            )
-            if raw is None or raw.empty:
-                return 0.0, ""
-            returns: Dict[str, float] = {}
-            for sym in peers[:30]:
-                try:
-                    if len(peers) == 1:
-                        closes = raw["Close"] if "Close" in raw.columns else None
-                    else:
-                        closes = raw[sym]["Close"] if sym in raw.columns.get_level_values(0) else None
-                    if closes is None or len(closes) < 2:
+        with _csm_lock:
+            cached = _csm_cache.get(cache_key)
+            if cached and now - cached["ts"] < _CSM_TTL:
+                ranks = cached["ranks"]
+            else:
+                # Batch download 22 days to get 20 trading-day returns (weekends add ~2 days)
+                raw = yf.download(
+                    peers[:30], period="22d", interval="1d",
+                    auto_adjust=True, threads=True, progress=False, timeout=20,
+                    group_by="ticker",
+                )
+                if raw is None or raw.empty:
+                    return 0.0, ""
+                returns: Dict[str, float] = {}
+                for sym in peers[:30]:
+                    try:
+                        if len(peers) == 1:
+                            closes = raw["Close"] if "Close" in raw.columns else None
+                        else:
+                            closes = raw[sym]["Close"] if sym in raw.columns.get_level_values(0) else None
+                        if closes is None or len(closes) < 2:
+                            continue
+                        ret = float(closes.iloc[-1] / closes.iloc[0] - 1)
+                        returns[sym] = ret
+                    except Exception:
                         continue
-                    ret = float(closes.iloc[-1] / closes.iloc[0] - 1)
-                    returns[sym] = ret
-                except Exception:
-                    continue
-            if not returns:
-                return 0.0, ""
-            vals = list(returns.values())
-            sorted_vals = sorted(vals)
-            ranks = {}
-            for s, r in returns.items():
-                pos = sorted_vals.index(r)
-                ranks[s] = pos / max(len(sorted_vals) - 1, 1)
-            _csm_cache[cache_key] = {"ts": now, "ranks": ranks}
+                if not returns:
+                    return 0.0, ""
+                vals = list(returns.values())
+                sorted_vals = sorted(vals)
+                ranks = {}
+                for s, r in returns.items():
+                    pos = sorted_vals.index(r)
+                    ranks[s] = pos / max(len(sorted_vals) - 1, 1)
+                _csm_cache[cache_key] = {"ts": now, "ranks": ranks}
 
         rank_pct = ranks.get(symbol)
         if rank_pct is None:
@@ -237,13 +241,14 @@ def get_pairs_signal(symbol: str, direction: str) -> Tuple[float, str]:
             if symbol not in (sym_a, sym_b):
                 continue
             pair_key = f"{sym_a}_{sym_b}"
-            cached = _pairs_cache.get(pair_key)
-            if cached and now - cached["ts"] < _PAIRS_TTL:
-                z_score = cached["z_score"]
-                laggard = cached["laggard"]
-            else:
-                z_score, laggard = _fetch_pair_zscore(sym_a, sym_b)
-                _pairs_cache[pair_key] = {"ts": now, "z_score": z_score, "laggard": laggard}
+            with _pairs_lock:
+                cached = _pairs_cache.get(pair_key)
+                if cached and now - cached["ts"] < _PAIRS_TTL:
+                    z_score = cached["z_score"]
+                    laggard = cached["laggard"]
+                else:
+                    z_score, laggard = _fetch_pair_zscore(sym_a, sym_b)
+                    _pairs_cache[pair_key] = {"ts": now, "z_score": z_score, "laggard": laggard}
 
             if not laggard or abs(z_score) < 2.0:
                 continue   # spread not extreme enough

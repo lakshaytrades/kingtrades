@@ -503,6 +503,7 @@ class AlpacaExecutor:
             result = OrderResult(True, message="Bracket order filled")
             result.order_id   = order_id
             result.fill_price = fill_p
+            result.quantity   = float(quantity)  # must be set; stays 0.0 otherwise → 1-share fallback
             result.order_type = "BRACKET"
             return result
 
@@ -867,20 +868,23 @@ class AlpacaExecutor:
         while _time.monotonic() < deadline:
             status = fetcher.get_order_status(order_id)
             _status_str = str(status.get("status", "")).lower()
-            if _status_str in ("filled", "partially_filled"):
+            if _status_str == "filled":
+                price   = float(status.get("filled_avg_price", 0.0) or 0.0)
+                qty_raw = status.get("filled_qty") or status.get("qty") or 0
+                qty     = int(float(qty_raw or 0))
+                return (price, qty) if price > 0 else (price, 0)
+            if _status_str == "partially_filled":
+                # Keep polling until fully filled or timeout — returning early leaves
+                # remaining shares without a broker-side stop order.
                 price   = float(status.get("filled_avg_price", 0.0) or 0.0)
                 qty_raw = status.get("filled_qty") or status.get("qty") or 0
                 qty     = int(float(qty_raw or 0))
                 if price > 0 and qty > 0:
-                    if _status_str == "partially_filled":
-                        logger.info(
-                            f"[{format_ist_timestamp()}] Partial fill {order_id}: "
-                            f"qty={qty} @ ${price:.2f}"
-                        )
-                    return (price, qty)
-                if price > 0 and _status_str == "filled":
-                    # filled but qty field missing — treat qty as 0 (caller handles)
-                    return (price, 0)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Partial fill {order_id}: "
+                        f"qty={qty} @ ${price:.2f} — polling for full fill"
+                    )
+                # fall through: sleep and poll again
             if status.get("status") in ("canceled", "expired", "rejected"):
                 return (0.0, 0)
             _time.sleep(self.POLL_INTERVAL)

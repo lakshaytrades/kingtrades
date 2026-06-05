@@ -1117,9 +1117,9 @@ class TradingBot:
             )
             # Store entry hour (ET) for ML outcome recording
             try:
-                from utils import get_current_ist_time as _gist
-                _et_now_entry = _gist()
-                position._entry_hour_et = (_et_now_entry.hour - 4) % 24
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _ZI
+                position._entry_hour_et = _dt.now(_ZI("America/New_York")).hour
                 position.signal_score   = getattr(signal, "signal_score", 0.0)
                 position.indicators     = getattr(signal, "indicators", None)
             except Exception:

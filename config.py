@@ -659,7 +659,7 @@ PREMIUM_PROXIES_ENABLED: bool = os.getenv("PREMIUM_PROXIES_ENABLED", "True").low
 L2_PROXY_ENABLED:        bool = os.getenv("L2_PROXY_ENABLED",        "True").lower() not in ("false", "0", "no")
 DARK_POOL_PROXY_ENABLED: bool = os.getenv("DARK_POOL_PROXY_ENABLED", "True").lower() not in ("false", "0", "no")
 OPTIONS_PROXY_ENABLED:   bool = os.getenv("OPTIONS_PROXY_ENABLED",   "True").lower() not in ("false", "0", "no")
-TICK_PROXY_ENABLED:      bool = os.getenv("TICK_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
+# TICK_PROXY_ENABLED: duplicate removed — first definition at line ~559 uses correct in-true-set semantics
 EARNINGS_PROXY_ENABLED:  bool = os.getenv("EARNINGS_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
 ALT_DATA_PROXY_ENABLED:  bool = os.getenv("ALT_DATA_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
 NEWS_PROXY_ENABLED:      bool = os.getenv("NEWS_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")

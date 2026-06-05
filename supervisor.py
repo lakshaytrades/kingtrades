@@ -179,6 +179,17 @@ class ProcessWatcher:
                 except Exception:
                     pass
 
+            # Verify the process is actually dead before starting a new one.
+            # If kill() was swallowed (e.g. PermissionError on an adopted process),
+            # starting a new instance causes duplicate live orders.
+            if self.proc.poll() is None:
+                logger.error(
+                    "Cannot kill existing bot process — NOT starting a new instance "
+                    "to prevent duplicate live orders. Manual intervention required."
+                )
+                tg("❌ Bot restart ABORTED — old process still alive. Manual kill required.", "🚨")
+                return False
+
         logger.info(f"Restarting bot in {RESTART_COOLDOWN_S}s — reason: {reason}")
         tg(
             f"🔄 Bot restarting in {RESTART_COOLDOWN_S}s\n"

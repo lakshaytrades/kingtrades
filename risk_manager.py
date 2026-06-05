@@ -1114,6 +1114,7 @@ class RiskManager:
                     and position.stop_loss > position.entry_price):
                 position.stop_loss = position.entry_price
                 position.breakeven_done = True
+                _persist_sl(position.symbol, position.entry_price)
                 logger.info(
                     f"[TRAILING STOP] {position.symbol} SHORT: "
                     f"🛡 Breakeven — price reached entry-{be_atr_mult}×ATR (${be_price_short:.2f}), "
@@ -1133,6 +1134,7 @@ class RiskManager:
                 locked_sl = position.entry_price - t1_lock_mult * atr
                 locked_sl = min(position.stop_loss, locked_sl)
                 position.stop_loss = locked_sl
+                _persist_sl(position.symbol, locked_sl)
                 logger.info(
                     f"[TRAILING STOP] {position.symbol} SHORT: "
                     f"T1 hit ${position.target_1:.2f} — SL locked to entry-{t1_lock_mult}×ATR=${locked_sl:.2f}"
@@ -1178,6 +1180,7 @@ class RiskManager:
                 new_trail = position.min_price + runner_trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
+                    _persist_sl(position.symbol, new_trail)
                     # Check if price already hit the newly-lowered stop on this same bar
                     if current_price >= new_trail:
                         return {
