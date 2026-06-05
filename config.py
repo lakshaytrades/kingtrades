@@ -594,6 +594,9 @@ FLOAT_SQUEEZE_ENABLED:         bool = os.getenv("FLOAT_SQUEEZE_ENABLED",        
 EARNINGS_EDGE_ENABLED:         bool = os.getenv("EARNINGS_EDGE_ENABLED",         "True").lower() in ("true","1","yes")
 DARK_POOL_SCANNER_ENABLED:     bool = os.getenv("DARK_POOL_SCANNER_ENABLED",     "True").lower() in ("true","1","yes")
 
+# ── God Mode Elite Strategies v25.0 — CVD + TICK proxy + DOW bias + multi-day momentum + experience gates
+GOD_MODE_ENABLED: bool = os.getenv("GOD_MODE_ENABLED", "True").lower() in ("true","1","yes")
+
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")
 FILL_QUALITY_MIN: float            = float(os.getenv("FILL_QUALITY_MIN", "0.6"))

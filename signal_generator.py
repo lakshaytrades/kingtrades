@@ -1457,6 +1457,22 @@ class SignalGenerator:
             except Exception as _quantum_e:
                 logger.debug(f"[suppressed] quantum_strategies: {_quantum_e}")
 
+            # ── GOD MODE ELITE STRATEGIES (v25.0) — CVD + TICK + DOW + MultiDay ──
+            if getattr(config, 'GOD_MODE_ENABLED', True):
+                try:
+                    from elite_strategies import get_elite_god_mode_boost
+                    _gm_block, _gm_delta, _gm_reason = get_elite_god_mode_boost(
+                        symbol, direction, df_5m
+                    )
+                    if _gm_block:
+                        logger.debug(f"{symbol}: GOD_MODE HARD_BLOCK — {_gm_reason}")
+                        return None
+                    if _gm_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gm_delta))
+                        logger.debug(f"{symbol}: GOD_MODE {_gm_delta:+.1f} | {_gm_reason}")
+                except Exception as _gm_e:
+                    logger.debug(f"[suppressed] elite_strategies: {_gm_e}")
+
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
                 if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
