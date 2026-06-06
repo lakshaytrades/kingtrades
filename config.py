@@ -109,8 +109,8 @@ MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
 ATR_SL_MULTIPLIER: float = 0.75         # 0.75× ATR stop — tighter = smaller loss if wrong
-ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book at 1.5:1 — lock partial profit fast
-ATR_TP_MULTIPLIER: float = 4.0          # T2 at 4:1 R:R — bigger wins
+ATR_T1_MULTIPLIER: float = 1.0          # T1 at 1:1 — fast partial exit, converts to free trade quickly
+ATR_TP_MULTIPLIER: float = 2.0          # T2 at 2:1 R:R — realistic daily target
 ATR_TP_RUNNER: float = 8.0             # T3 runner at 8:1 — catch full trend moves
 ATR_TRAIL_MULTIPLIER: float = 1.0       # trail at 1× ATR — runners breathe, don't get stopped early
 BREAKEVEN_TRIGGER_PCT: float = 0.10     # move to breakeven after 0.10% gain — converts losing to free fast
@@ -119,7 +119,7 @@ PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — keep runner alive
 RUNNER_PCT: float = 30.0                # 30% runner — lean, focused on the best part of the move
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.5       # Only enter if 2.5:1 R:R minimum — skip low-quality setups
+MIN_RISK_REWARD: float = 2.0       # Only enter if 2.0:1 R:R minimum — skip low-quality setups
                                     # measured at T1 (1.5x) which was always exactly the minimum
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
@@ -306,7 +306,7 @@ DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.0
 # 1.0%/day — realistic achievable target: one clean A+ trade hits it
 # At 1%: switch to PROTECTION (A-grade only), at 1.5%: LOCK (A+ only, 60% size), at 2%: STOP
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "20.0"))
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "10.0"))
 # 1.0%/day × 22 trading days = ~22% monthly (realistic top-decile retail)
 
 # ============================================================
@@ -832,6 +832,14 @@ ITCH_L3_PROXY_ENABLED:    bool = os.getenv("ITCH_L3_PROXY_ENABLED",    "true").l
 LIVEVOL_PROXY_ENABLED:    bool = os.getenv("LIVEVOL_PROXY_ENABLED",    "true").lower() == "true"
 GARCH_SIZING_ENABLED:     bool = os.getenv("GARCH_SIZING_ENABLED",     "true").lower() == "true"
 ANALYST_CONSENSUS_ENABLED: bool = os.getenv("ANALYST_CONSENSUS_ENABLED","true").lower() == "true"
+
+# ── v33.1 Idle Scalp Mode — take small trades when idle > 30 min ─────────────
+IDLE_SCALP_ENABLED:           bool  = os.getenv("IDLE_SCALP_ENABLED",  "true").lower() == "true"
+IDLE_SCALP_THRESHOLD_MIN:     int   = int(os.getenv("IDLE_SCALP_THRESHOLD_MIN", "30"))  # minutes idle before activating
+IDLE_SCALP_MIN_SCORE:         float = float(os.getenv("IDLE_SCALP_MIN_SCORE", "55.0"))
+IDLE_SCALP_MIN_RR:            float = float(os.getenv("IDLE_SCALP_MIN_RR",    "1.5"))
+IDLE_SCALP_SIZE_MULT:         float = float(os.getenv("IDLE_SCALP_SIZE_MULT", "0.40"))
+IDLE_SCALP_TIME_STOP_MIN:     int   = int(os.getenv("IDLE_SCALP_TIME_STOP_MIN", "10"))
 
 # ============================================================
 # VALIDATION

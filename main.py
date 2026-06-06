@@ -114,6 +114,7 @@ class TradingBot:
         self.burst_detector = None      # Explosive momentum burst scanner
         self.options_scalper = None     # US options scalping engine (Alpaca only)
         self._last_trade_date = ""
+        self._last_executed_trade_ts: float = 0.0   # monotonic timestamp of last confirmed execution
         self._overnight_run_today = False
 
         # Automation state
@@ -1611,6 +1612,21 @@ class TradingBot:
                 if hasattr(self.signal_gen, "ha_filter"):
                     self.signal_gen.ha_filter.min_score = self.signal_gen.min_score
 
+                # ── Update idle scalp mode state ─────────────────────────
+                try:
+                    if getattr(config, 'IDLE_SCALP_ENABLED', True):
+                        from idle_scalp_mode import update_state as _ism_update
+                        _rm_state = self.risk_manager.state
+                        _daily_cap = max(_rm_state.daily_capital, 1.0)
+                        _daily_pnl_pct = (_rm_state.daily_pnl / _daily_cap) * 100
+                        _ism_update(
+                            last_trade_ts    = self._last_executed_trade_ts,
+                            daily_pnl_pct    = _daily_pnl_pct,
+                            daily_target_pct = getattr(config, 'DAILY_PROFIT_TARGET_PCT', 1.0),
+                        )
+                except Exception as _ism_err:
+                    logger.debug(f"[suppressed] idle_scalp_update: {_ism_err}")
+
                 # ── Dynamic score relaxation: never sit idle all day ──────
                 # If no trades by key times, gently lower the bar.
                 # Floor = MIN_SIGNAL_SCORE (63) — don't raise above base when already at base
@@ -1742,6 +1758,8 @@ class TradingBot:
 
             # Expose current open positions to signal_gen for Gate 14 correlation check
             self.signal_gen._open_position_symbols = list(self.risk_manager.state.positions.keys())
+            # Expose full scan watchlist so CSM uses a statistically meaningful universe
+            self.signal_gen._scan_watchlist = list(combined_watchlist)
 
             # Expose session equity/peak for Renaissance drawdown-aware sizing
             _rm_state = self.risk_manager.state
@@ -2289,6 +2307,8 @@ class TradingBot:
                     except Exception:
                         pass
                 if result.success:
+                    import time as _trade_time
+                    self._last_executed_trade_ts = _trade_time.monotonic()
                     try:
                         from decision_log import log_trade_taken
                         log_trade_taken(signal)

@@ -328,6 +328,22 @@ class SignalGenerator:
             except Exception:
                 pass
 
+            # Idle scalp mode — check if we should use lower thresholds
+            _idle_scalp_active = False
+            _idle_scalp_params: dict = {}
+            try:
+                if getattr(config, 'IDLE_SCALP_ENABLED', True):
+                    from idle_scalp_mode import is_active as _ism_active, get_params as _ism_params
+                    _idle_scalp_active = _ism_active()
+                    if _idle_scalp_active:
+                        _idle_scalp_params = _ism_params()
+                        # Lower the score threshold for this signal
+                        _scalp_score_min = _idle_scalp_params["score_min"]
+                        self.ha_filter.min_score = min(self.ha_filter.min_score, _scalp_score_min)
+                        logger.debug(f"{symbol}: IDLE_SCALP active — threshold lowered to {_scalp_score_min:.0f}")
+            except Exception as _ism_e:
+                logger.debug(f"[suppressed] idle_scalp_mode: {_ism_e}")
+
             # Skip symbols that have repeatedly returned no data this session
             if symbol in self._session_skip:
                 logger.debug(f"{symbol}: skipped — no data available (session blacklist)")
@@ -1168,11 +1184,18 @@ class SignalGenerator:
                     get_tod_rvol_score,
                     get_sortino_size_multiplier,
                 )
-                _watchlist = list(getattr(self, '_open_position_symbols', None) or [])
+                # CSM requires the full scan watchlist for meaningful percentile ranking.
+                # Using only open-position symbols (typically 0-8) gives statistically
+                # meaningless ranks; we need the full 75-symbol universe.
+                _full_wl = getattr(self, '_scan_watchlist', None) or []
+                _open_syms_csm = list(getattr(self, '_open_position_symbols', None) or [])
+                # Merge: full watchlist first (broadest universe), open positions included
+                _csm_peers = list(dict.fromkeys(_full_wl + _open_syms_csm))
+                _watchlist = _open_syms_csm  # keep for non-CSM strategies (need open positions only)
 
                 # 1. Cross-sectional momentum rank (AQR/Renaissance)
                 if getattr(config, 'CSM_ENABLED', True):
-                    _csm_delta, _csm_reason = get_cross_sectional_rank(symbol, _watchlist or [symbol])
+                    _csm_delta, _csm_reason = get_cross_sectional_rank(symbol, _csm_peers or [symbol])
                     if _csm_delta:
                         filter_result.final_score = min(100.0, filter_result.final_score + _csm_delta)
                         logger.debug(f"{symbol}: CSM {_csm_delta:+.0f} {_csm_reason}")
@@ -2240,10 +2263,11 @@ class SignalGenerator:
                 except Exception as _gf_e:
                     logger.debug(f"[suppressed] gap_fade: {_gf_e}")
 
-            # ── Final execution gate: after ALL boosters, require ≥70 ────────────
-            # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can
-            # add 8–20 pts. If no booster fired, the signal is too weak to trade.
+            # ── Final execution gate: after ALL boosters ───────────────────────
             _FINAL_EXEC_MIN = getattr(config, "FINAL_EXEC_MIN_SCORE", 70.0)
+            if _idle_scalp_active and _idle_scalp_params:
+                # Scalp mode: accept lower scores since we're taking smaller positions
+                _FINAL_EXEC_MIN = min(_FINAL_EXEC_MIN, _idle_scalp_params.get("score_min", 55.0))
             if filter_result.final_score < _FINAL_EXEC_MIN:
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: Final score "
@@ -2960,8 +2984,37 @@ class SignalGenerator:
                 pm_score=pm_score,
             )
 
-            # Hard R:R gate — top-3% rule: never trade below 2:1 reward-to-risk
-            min_rr = getattr(config, "MIN_RISK_REWARD", 2.0)
+            # Idle scalp post-processing: override T1/T2/size/time-stop for scalp trades
+            if _idle_scalp_active and _idle_scalp_params:
+                try:
+                    sl_dist = abs(signal.entry_price - signal.stop_loss)
+                    if sl_dist > 0:
+                        _t1_rr = _idle_scalp_params.get("t1_rr", 0.8)
+                        _t2_rr = _idle_scalp_params.get("t2_rr", 1.5)
+                        if direction == "LONG":
+                            signal.target_1 = round(signal.entry_price + _t1_rr * sl_dist, 4)
+                            signal.target_2 = round(signal.entry_price + _t2_rr * sl_dist, 4)
+                        else:
+                            signal.target_1 = round(signal.entry_price - _t1_rr * sl_dist, 4)
+                            signal.target_2 = round(signal.entry_price - _t2_rr * sl_dist, 4)
+                        signal.risk_reward = round(_t2_rr, 2)
+                        signal.size_multiplier = round(
+                            signal.size_multiplier * _idle_scalp_params.get("size_mult", 0.40), 3)
+                        signal.time_stop_minutes = _idle_scalp_params.get("time_stop_min", 10)
+                        # Never grade up scalps — keep B so size doesn't multiply further
+                        if signal.quality_grade == "A+":
+                            signal.quality_grade = "A"
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {symbol}: SCALP_MODE — "
+                            f"T2={signal.target_2:.2f} ({_t2_rr}R) size={signal.size_multiplier:.2f}x "
+                            f"time_stop={signal.time_stop_minutes}min"
+                        )
+                except Exception as _scalp_patch_e:
+                    logger.debug(f"[suppressed] scalp_patch: {_scalp_patch_e}")
+
+            # Hard R:R gate — never trade below required minimum
+            _scalp_min_rr = _idle_scalp_params.get("min_rr", 2.0) if _idle_scalp_active else None
+            min_rr = _scalp_min_rr if (_idle_scalp_active and _scalp_min_rr) else getattr(config, "MIN_RISK_REWARD", 2.0)
             if signal.risk_reward < min_rr:
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: R:R {signal.risk_reward:.1f}:1 < "
