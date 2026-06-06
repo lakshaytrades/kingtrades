@@ -1743,6 +1743,15 @@ class TradingBot:
             # Expose current open positions to signal_gen for Gate 14 correlation check
             self.signal_gen._open_position_symbols = list(self.risk_manager.state.positions.keys())
 
+            # Expose session equity/peak for Renaissance drawdown-aware sizing
+            _rm_state = self.risk_manager.state
+            self.signal_gen._session_equity = (
+                _rm_state.daily_capital + _rm_state.daily_pnl
+            )
+            self.signal_gen._session_peak_equity = (
+                _rm_state.daily_capital + max(_rm_state.peak_pnl, 0.0)
+            )
+
             signals = self.signal_gen.scan_watchlist(
                 symbols=combined_watchlist,
                 max_signals=min(max_new, 4)  # up to 4 signals per cycle (was 3)
@@ -2448,6 +2457,14 @@ class TradingBot:
             self.signal_gen.min_score = _fallback_min
             # Relax Gate 15 (body check) and Gate 27 (VWAP extension) for fallback
             self.signal_gen.ha_filter._fallback_mode = True
+
+            # Wire session equity for Renaissance drawdown-aware sizing
+            _rm_st = self.risk_manager.state
+            self.signal_gen._open_position_symbols = list(_rm_st.positions.keys())
+            self.signal_gen._session_equity = _rm_st.daily_capital + _rm_st.daily_pnl
+            self.signal_gen._session_peak_equity = (
+                _rm_st.daily_capital + max(_rm_st.peak_pnl, 0.0)
+            )
 
             fallback_sigs = []
             for sym in watchlist[:25]:

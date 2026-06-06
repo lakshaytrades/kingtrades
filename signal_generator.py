@@ -1512,7 +1512,7 @@ class SignalGenerator:
             if getattr(config, 'RENAISSANCE_MODE_ENABLED', True):
                 try:
                     from renaissance_mode import get_renaissance_adjustment
-                    _open_syms = list(getattr(self, '_open_positions', {}).keys())
+                    _open_syms = list(getattr(self, '_open_position_symbols', []))
                     _hurst_h   = getattr(self, '_last_hurst', {}).get(symbol, 0.5)
                     _atr_ratio = float(getattr(ind, 'atr', 0) or 0) / max(float(ltp_now or 1), 1)
                     _n_conf    = sum([
@@ -2066,8 +2066,7 @@ class SignalGenerator:
                 # 8. Beta-neutral sizing
                 if getattr(config, 'BETA_NEUTRAL_ENABLED', True):
                     from beta_manager import get_beta_size_multiplier, get_portfolio_beta
-                    _open_pos_list = list(getattr(self, '_open_positions', {}).values()) \
-                                     if hasattr(self, '_open_positions') else []
+                    _open_pos_list = list(getattr(self, '_open_position_symbols', []))
                     _port_beta = get_portfolio_beta(_open_pos_list)
                     _beta_mult = get_beta_size_multiplier(symbol, df_5m, _port_beta)
                     if _beta_mult != 1.0:
@@ -2077,8 +2076,7 @@ class SignalGenerator:
                 # 9. Portfolio covariance optimizer (Ledoit-Wolf)
                 if getattr(config, 'COV_OPTIMIZER_ENABLED', True):
                     from covariance_optimizer import get_portfolio_size_multiplier
-                    _open_syms = list(getattr(self, '_open_positions', {}).keys()) \
-                                 if hasattr(self, '_open_positions') else []
+                    _open_syms = list(getattr(self, '_open_position_symbols', []))
                     if _open_syms:
                         _cov_mult = get_portfolio_size_multiplier(symbol, direction, _open_syms)
                         if _cov_mult != 1.0:
@@ -2112,7 +2110,7 @@ class SignalGenerator:
                 # 3. VaR-based position sizing (Historical Simulation)
                 if getattr(config, 'INTRADAY_VAR_ENABLED', True) and df_5m is not None:
                     from intraday_var import get_var_size_multiplier
-                    _open_ct = len(getattr(self, '_open_positions', {}).keys() if hasattr(self, '_open_positions') else [])
+                    _open_ct = len(getattr(self, '_open_position_symbols', []))
                     _day_cap = getattr(config, 'MAX_DAILY_CAPITAL', 50000.0)
                     _loss_pct = getattr(config, 'DAILY_LOSS_LIMIT_PCT', 2.0)
                     _var_mult, _var_r = get_var_size_multiplier(
@@ -2127,7 +2125,7 @@ class SignalGenerator:
                     from correlation_crisis import get_crisis_size_multiplier
                     _watchlist_for_corr = getattr(self, '_current_watchlist', []) or []
                     _crisis_mult, _crisis_r = get_crisis_size_multiplier(
-                        _watchlist_for_corr[:20], self.data_fetcher
+                        _watchlist_for_corr[:20], self.fetcher
                     )
                     if _crisis_mult < 1.0:
                         combined_size = max(0.25, round(combined_size * _crisis_mult, 2))
@@ -3026,7 +3024,7 @@ class SignalGenerator:
         if getattr(config, 'CROSS_SECTIONAL_RANKING_ENABLED', True) and len(symbols) > 15:
             try:
                 from cross_sectional_ranker import rank_symbols
-                symbols = rank_symbols(symbols, self.data_fetcher, top_pct=0.40)
+                symbols = rank_symbols(symbols, self.fetcher, top_pct=0.40)
                 logger.info(
                     f"[{format_ist_timestamp()}] Cross-sectional pre-rank: "
                     f"{len(symbols)} symbols selected"
