@@ -2051,9 +2051,9 @@ class SignalGenerator:
                         filter_result.final_score = min(100.0, filter_result.final_score + _edg_d)
                         logger.debug(f"{symbol}: EDGAR {_edg_d:+.0f} {_edg_r}")
 
-                # 7. CBOE put/call ratio + VIX term structure
+                # 7. CBOE put/call ratio + VIX term structure + SKEW index
                 if getattr(config, 'CBOE_DATA_ENABLED', True):
-                    from cboe_data import get_pc_ratio_score, get_vix_term_structure_score
+                    from cboe_data import get_pc_ratio_score, get_vix_term_structure_score, get_skew_score
                     _pc_d, _pc_r = get_pc_ratio_score(direction)
                     if _pc_d:
                         filter_result.final_score = min(100.0, filter_result.final_score + _pc_d)
@@ -2062,6 +2062,10 @@ class SignalGenerator:
                     if _vts_d and abs(_vts_d) >= 2:
                         filter_result.final_score = min(100.0, filter_result.final_score + _vts_d)
                         logger.debug(f"{symbol}: VIX_TERM {_vts_d:+.0f} {_vts_r}")
+                    _skew_d, _skew_r = get_skew_score(direction)
+                    if _skew_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _skew_d)
+                        logger.debug(f"{symbol}: CBOE_SKEW {_skew_d:+.0f} {_skew_r}")
 
                 # 8. Beta-neutral sizing
                 if getattr(config, 'BETA_NEUTRAL_ENABLED', True):
@@ -2155,6 +2159,21 @@ class SignalGenerator:
                         logger.debug(f"{symbol}: {_vt_reason}")
                 except Exception as _vt_e:
                     logger.debug(f"[suppressed] vol_target: {_vt_e}")
+
+            # ── GARCH/EWMA Volatility Sizing (RiskMetrics — λ=0.94) ──────────────
+            if getattr(config, 'GARCH_SIZING_ENABLED', True):
+                try:
+                    from garch_sizing import get_size_multiplier as _garch_size_mult
+                    if df_5m is not None and len(df_5m) >= 10:
+                        _cl_col = 'close' if 'close' in df_5m.columns else 'Close'
+                        _cl_arr = df_5m[_cl_col].values
+                        _rets   = list(np.diff(_cl_arr) / np.maximum(_cl_arr[:-1], 1e-9))
+                        _garch_sz = _garch_size_mult(symbol, _rets)
+                        if _garch_sz != 1.0:
+                            combined_size = max(0.1, round(combined_size * _garch_sz, 3))
+                            logger.debug(f"{symbol}: GARCH_SIZE {_garch_sz:.2f}x (ewma-vol)")
+                except Exception as _garch_e:
+                    logger.debug(f"[suppressed] garch_sizing: {_garch_e}")
 
             # ── TIER 1.5: Neural Network MLP Predictor ────────────────────────────
             if getattr(config, 'NEURAL_PREDICTOR_ENABLED', True):
@@ -2794,10 +2813,10 @@ class SignalGenerator:
                     _hub_delta, _hub_sz, _hub_reason = get_intelligence_hub_boost(
                         symbol    = symbol,
                         df_5m     = df_5m,
-                        df_1h     = df_1h if 'df_1h' in dir() else None,
+                        df_1h     = df_1h if 'df_1h' in locals() else None,
                         direction = direction,
                         ltp       = ltp_now,
-                        atr       = atr if 'atr' in dir() else float(getattr(ind, 'atr', 0.0) or 0.0),
+                        atr       = atr if 'atr' in locals() else float(getattr(ind, 'atr', 0.0) or 0.0),
                         watchlist = _wl,
                     )
                     if _hub_delta != 0.0:

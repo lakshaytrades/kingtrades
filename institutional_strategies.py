@@ -60,6 +60,11 @@ def get_cross_sectional_rank(symbol: str, watchlist: List[str]) -> Tuple[float, 
         import yfinance as yf
         now = _time.monotonic()
         peers = list(dict.fromkeys([symbol] + [s for s in watchlist if s]))
+        # Require at least 5 peers for percentile ranking to be statistically meaningful.
+        # With fewer peers, quintile boundaries have no resolution (e.g., 3 peers → only
+        # 3 possible rank values: 0%, 50%, 100%).
+        if len(peers) < 5:
+            return 0.0, "csm:too-few-peers"
         cache_key = ",".join(sorted(peers[:30]))   # cap to avoid giant keys
         with _csm_lock:
             cached = _csm_cache.get(cache_key)

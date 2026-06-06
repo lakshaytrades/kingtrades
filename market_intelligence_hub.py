@@ -420,6 +420,13 @@ def get_intelligence_hub_boost(
     except ImportError:
         pass
 
+    # ── P7. Analyst Recommendation Consensus ────────────────────────────────
+    try:
+        from analyst_consensus import get_analyst_consensus_score as _ac
+        tasks["analyst_consensus"] = lambda: _safe(_ac, symbol, direction)
+    except ImportError:
+        pass
+
     # ── Execute all tasks in parallel ────────────────────────────────────────
     results: Dict[str, Tuple[float, str]] = {}
     if not tasks:

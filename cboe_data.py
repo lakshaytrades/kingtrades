@@ -210,3 +210,50 @@ def _get_vix_data() -> Optional[Tuple[float, float]]:
         logger.debug(f"[cboe] _get_vix_data: {e}")
 
     return None
+
+
+# ── CBOE SKEW Index ───────────────────────────────────────────────────────────
+
+_skew_cache: Optional[Tuple[float, float]] = None  # (skew_val, ts)
+
+def get_skew_score(direction: str) -> Tuple[float, str]:
+    """
+    CBOE SKEW index signal.
+    SKEW measures demand for OTM protection vs ATM — tail-risk hedge buying.
+    SKEW > 145: institutions paying up for crash protection → reduce longs.
+    SKEW < 115: complacency, low tail risk → longs favoured.
+    Free via yfinance ^SKEW. Cached 30 min.
+    """
+    global _skew_cache
+    try:
+        now = _time.monotonic()
+        if _skew_cache and (now - _skew_cache[1]) < _CACHE_TTL:
+            skew = _skew_cache[0]
+        else:
+            import yfinance as yf
+            data = yf.download("^SKEW", period="5d", interval="1d",
+                               auto_adjust=True, progress=False)
+            if data is None or data.empty:
+                return 0.0, "cboe:no-skew-data"
+            cl = data["Close"] if "Close" in data.columns else data.iloc[:, 0]
+            skew = float(cl.dropna().iloc[-1])
+            _skew_cache = (skew, now)
+
+        if skew >= 150:
+            d = -5.0 if direction == "LONG" else 4.0
+            return d, f"cboe:SKEW_EXTREME({skew:.0f})→tail-hedge-buying"
+        elif skew >= 140:
+            d = -3.0 if direction == "LONG" else 2.0
+            return d, f"cboe:SKEW_HIGH({skew:.0f})→hedging"
+        elif skew <= 110:
+            d = 3.0 if direction == "LONG" else -2.0
+            return d, f"cboe:SKEW_LOW({skew:.0f})→complacency"
+        elif skew <= 120:
+            d = 1.5 if direction == "LONG" else -1.0
+            return d, f"cboe:SKEW_CALM({skew:.0f})"
+
+        return 0.0, f"cboe:skew-neutral({skew:.0f})"
+
+    except Exception as e:
+        logger.debug(f"[cboe] get_skew_score: {e}")
+        return 0.0, "cboe:skew-error"

@@ -2331,16 +2331,22 @@ class TradingBot:
                     # Place broker-side stop order only when NOT using bracket order
                     # (bracket orders already contain the stop loss and take profit)
                     if not use_bracket:
-                        try:
-                            sl_order_id = self.executor.place_stop_order(
-                                signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                        if result.quantity > 0 and result.fill_price > 0:
+                            try:
+                                sl_order_id = self.executor.place_stop_order(
+                                    signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                                )
+                                if sl_order_id:
+                                    pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                                    if pos_ref:
+                                        pos_ref.sl_order_id = sl_order_id
+                            except Exception as _se:
+                                logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
+                        else:
+                            logger.warning(
+                                f"place_stop_order SKIPPED for {signal.symbol}: "
+                                f"fill not confirmed (qty={result.quantity}, price={result.fill_price})"
                             )
-                            if sl_order_id:
-                                pos_ref = self.risk_manager.state.positions.get(signal.symbol)
-                                if pos_ref:
-                                    pos_ref.sl_order_id = sl_order_id
-                        except Exception as _se:
-                            logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
                     # Send Telegram alert with chart + trade fill notification
                     try:
@@ -3378,13 +3384,26 @@ class TradingBot:
                 avg = float(raw.get("avg_price", 0))
                 if qty == 0 or avg == 0:
                     continue
-                from risk_manager import Position
+                from risk_manager import Position, _load_persisted_sl
+                _direction = "LONG" if qty > 0 else "SHORT"
+                # Use persisted (trailed) SL if available — crash-restart safe
+                _persisted_sl = _load_persisted_sl(sym)
+                _fallback_sl  = avg * (0.98 if _direction == "LONG" else 1.02)
+                if _persisted_sl is not None:
+                    # Only use persisted SL if it's MORE protective than fallback
+                    if _direction == "LONG":
+                        _stop_loss = max(_persisted_sl, _fallback_sl)
+                    else:
+                        _stop_loss = min(_persisted_sl, _fallback_sl)
+                    logger.info(f"Reconcile {sym}: using persisted SL={_stop_loss:.4f} (vs fallback={_fallback_sl:.4f})")
+                else:
+                    _stop_loss = _fallback_sl
                 pos = Position(
                     symbol=sym,
-                    direction="LONG" if qty > 0 else "SHORT",
+                    direction=_direction,
                     quantity=abs(qty),
                     entry_price=avg,
-                    stop_loss=avg * 0.98,   # 2% fallback SL until ATR calc
+                    stop_loss=_stop_loss,
                     target_1=avg * 1.02,
                     target_2=avg * 1.04,
                     atr=avg * 0.02,

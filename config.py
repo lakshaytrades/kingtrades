@@ -830,6 +830,8 @@ SATELLITE_PROXY_ENABLED:  bool = os.getenv("SATELLITE_PROXY_ENABLED",  "true").l
 ENIGMA_PROXY_ENABLED:     bool = os.getenv("ENIGMA_PROXY_ENABLED",     "true").lower() == "true"
 ITCH_L3_PROXY_ENABLED:    bool = os.getenv("ITCH_L3_PROXY_ENABLED",    "true").lower() == "true"
 LIVEVOL_PROXY_ENABLED:    bool = os.getenv("LIVEVOL_PROXY_ENABLED",    "true").lower() == "true"
+GARCH_SIZING_ENABLED:     bool = os.getenv("GARCH_SIZING_ENABLED",     "true").lower() == "true"
+ANALYST_CONSENSUS_ENABLED: bool = os.getenv("ANALYST_CONSENSUS_ENABLED","true").lower() == "true"
 
 # ============================================================
 # VALIDATION
