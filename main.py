@@ -728,6 +728,13 @@ class TradingBot:
         # ── Step 5: Initialize risk manager for the day ──────────────────────
         self.risk_manager.initialize_day(available, spy_open)
 
+        # ── Step 5a: Apply nightly adaptive params (feedback loop) ───────────
+        # Must run AFTER risk_manager.initialize_day() so the new day's state
+        # is set before we overwrite max_risk_pct / min_score.
+        # Must run BEFORE the first trading scan so every signal today uses
+        # the walk-forward-optimised thresholds.
+        self._apply_adaptive_params()
+
         # ── Step 6: Initialize Profit Engine with plan's daily target ────────
         try:
             if self.profit_engine:
@@ -4523,6 +4530,83 @@ class TradingBot:
         )
 
     # --------------------------------------------------------
+    # ADAPTIVE FEEDBACK LOOP
+    # --------------------------------------------------------
+
+    def _apply_adaptive_params(self) -> None:
+        """
+        Load EOD self-trainer params (data/adaptive_params.json) and apply them
+        to live trading without requiring a restart.
+
+        Called every morning in initialize_market_day() right after risk_manager
+        .initialize_day() so nightly walk-forward optimisation takes effect each
+        session automatically.
+
+        Unlike _apply_eod_trained_params(), this method does NOT require the
+        `improved` flag to be set — it always applies whatever valid params exist,
+        so the feedback loop fires even when trainer found a lateral-improvement
+        solution.
+
+        Updates:
+          config.ATR_SL_MULTIPLIER     ← params["atr_sl"]
+          config.ATR_T1_MULTIPLIER     ← params["atr_t1"]
+          config.ATR_TP_MULTIPLIER     ← params["atr_t2"]
+          risk_manager.max_risk_pct    ← params["risk_pct"]
+          signal_gen.min_score         ← params["min_score"]  (clamped to floor+20)
+          signal_gen.ha_filter.min_score ← same clamped value (if attr exists)
+        """
+        try:
+            from trainer import EODSelfTrainer
+            params = EODSelfTrainer.load_params()
+            if not params:
+                logger.debug("[ADAPTIVE] No adaptive params found — using config defaults")
+                return
+
+            applied: dict = {}
+
+            if "atr_sl" in params:
+                config.ATR_SL_MULTIPLIER = float(params["atr_sl"])
+                applied["ATR_SL"] = config.ATR_SL_MULTIPLIER
+
+            if "atr_t1" in params:
+                config.ATR_T1_MULTIPLIER = float(params["atr_t1"])
+                applied["ATR_T1"] = config.ATR_T1_MULTIPLIER
+
+            if "atr_t2" in params:
+                config.ATR_TP_MULTIPLIER = float(params["atr_t2"])
+                applied["ATR_TP"] = config.ATR_TP_MULTIPLIER
+
+            if "risk_pct" in params and self.risk_manager is not None:
+                self.risk_manager.max_risk_pct = float(params["risk_pct"])
+                applied["risk"] = self.risk_manager.max_risk_pct
+
+            if "min_score" in params and self.signal_gen is not None:
+                trained_score = float(params["min_score"])
+                clamped_score = max(
+                    config.MIN_SIGNAL_SCORE,
+                    min(trained_score, config.MIN_SIGNAL_SCORE + 20.0),
+                )
+                self.signal_gen.min_score = clamped_score
+                applied["min_score"] = clamped_score
+                # Keep ha_filter in sync so it doesn't silently override signal_gen
+                if hasattr(self.signal_gen, "ha_filter") and self.signal_gen.ha_filter is not None:
+                    self.signal_gen.ha_filter.min_score = clamped_score
+
+            if applied:
+                logger.info(
+                    f"[ADAPTIVE] Applied params (date={params.get('date', '?')}): "
+                    f"ATR_SL={applied.get('ATR_SL', '—')} "
+                    f"ATR_T1={applied.get('ATR_T1', '—')} "
+                    f"ATR_TP={applied.get('ATR_TP', '—')} "
+                    f"min_score={applied.get('min_score', '—')} "
+                    f"risk={applied.get('risk', '—')}%"
+                )
+            else:
+                logger.debug("[ADAPTIVE] Params loaded but no known keys to apply")
+
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] _apply_adaptive_params failed (non-fatal): {e}")
+
     # EOD-TRAINED ADAPTIVE PARAMETERS
     # --------------------------------------------------------
 

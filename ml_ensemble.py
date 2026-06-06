@@ -40,6 +40,9 @@ _RETRAIN_AT  = 10   # retrain when live buffer reaches this size
 _ROLL_WINDOW = 20   # rolling window for weight updates
 _REGIME_CHECK_INTERVAL = 3600.0  # seconds between regime re-checks (60 min)
 
+# Warn once (not every call) when no pretrained models exist
+_WARNED_NO_MODELS: bool = False
+
 FEATURE_NAMES = [
     "rsi", "macd_hist_norm", "volume_ratio", "atr_pct", "signal_score",
     "adx", "ema_slope_pct", "vwap_dist_pct", "bb_pct", "hour_et",
@@ -408,6 +411,19 @@ class MLEnsemble:
             # Regime re-check every 60 min (non-blocking — swaps model set in-place)
             self._check_and_swap_regime()
             x = _build_x(features)
+
+            # Warn once if no models are loaded (pretrain_if_needed() hasn't run yet
+            # or failed) — avoids spamming logs on every call.
+            if not self._models:
+                global _WARNED_NO_MODELS
+                if not _WARNED_NO_MODELS:
+                    _WARNED_NO_MODELS = True
+                    logger.warning(
+                        "[ML_ENSEMBLE] No models loaded — returning neutral 0.5. "
+                        "Run pretrain_if_needed() or pretrain_ml.py to fix."
+                    )
+                return EnsemblePrediction(0.5, 0.0, 0, 0.0, "no_models")
+
             probs: Dict[str, float] = {}
             for name, model in self._models.items():
                 try:
@@ -546,3 +562,303 @@ def record_trade_outcome_ensemble(features: dict, was_win: bool) -> None:
         _get_ensemble().record_outcome(features, was_win)
     except Exception as e:
         logger.debug(f"record_trade_outcome_ensemble suppressed: {e}")
+
+
+# ── Cold-start pretrain ───────────────────────────────────────────────────────
+
+def pretrain_if_needed() -> None:
+    """
+    Cold-start pretrain: if no pretrained .pkl files exist in data/ml_pretrained/,
+    fetch 6 months of SPY daily OHLCV via yfinance and train 4 classifiers.
+
+    Saves each model as data/ml_pretrained/{name}.pkl so _load_pretrained() will
+    find them on the next MLEnsemble initialisation.
+
+    Fail-open: if yfinance or sklearn are unavailable, logs a warning and returns
+    without raising.  Never crashes the bot.
+    """
+    try:
+        # Check if pretrain has already been done (gbm.pkl is the sentinel)
+        sentinel = os.path.join(_PRETRAINED_DIR, "gbm.pkl")
+        if os.path.exists(sentinel):
+            logger.debug("ml_ensemble.pretrain_if_needed: already done — skipping")
+            return
+
+        logger.info("[ML_ENSEMBLE] Cold-start pretrain starting (no pretrained models found) ...")
+
+        try:
+            import yfinance as yf
+        except ImportError:
+            logger.warning("[ML_ENSEMBLE] yfinance not available — cold-start pretrain skipped")
+            return
+
+        try:
+            from sklearn.ensemble import (
+                GradientBoostingClassifier, RandomForestClassifier, ExtraTreesClassifier,
+            )
+            from sklearn.linear_model import LogisticRegression
+            import joblib
+        except ImportError:
+            logger.warning("[ML_ENSEMBLE] sklearn/joblib not available — cold-start pretrain skipped")
+            return
+
+        # ── Fetch SPY daily OHLCV for 6 months ──────────────────────────────
+        hist = yf.download("SPY", period="6mo", interval="1d", progress=False, auto_adjust=True)
+        if hist.empty or len(hist) < 30:
+            logger.warning("[ML_ENSEMBLE] SPY history too short for cold-start pretrain — skipped")
+            return
+
+        # Flatten MultiIndex columns if yfinance returns them
+        if isinstance(hist.columns, type(hist.columns)) and hasattr(hist.columns, "get_level_values"):
+            try:
+                hist.columns = hist.columns.get_level_values(0)
+            except Exception:
+                pass
+
+        close  = hist["Close"].values.astype(float)
+        high   = hist["High"].values.astype(float)
+        low    = hist["Low"].values.astype(float)
+        volume = hist["Volume"].values.astype(float)
+        n      = len(close)
+
+        # ── Build simple feature set ─────────────────────────────────────────
+        # rsi_like:     close vs 14-day mean (normalised)
+        # momentum:     5d vs 20d return ratio
+        # volume_ratio: vol vs 20d avg
+        # atr_pct:      (high - low) / close  (daily range %)
+        # vwap_dist:    close vs 5d mean / close
+
+        rows   = []
+        labels = []
+        window = 20  # minimum lookback needed for all features
+
+        for i in range(window, n - 1):
+            c_14  = close[max(0, i - 14):i + 1]
+            rsi_like   = (close[i] - float(np.mean(c_14))) / (float(np.std(c_14)) + 1e-9)
+
+            ret_5d  = (close[i] - close[i - 5])  / (close[i - 5]  + 1e-9)
+            ret_20d = (close[i] - close[i - 20]) / (close[i - 20] + 1e-9)
+            momentum = ret_5d / (abs(ret_20d) + 1e-9)
+
+            vol_20 = float(np.mean(volume[i - 20:i + 1]))
+            volume_ratio = volume[i] / (vol_20 + 1e-9)
+
+            atr_pct = (high[i] - low[i]) / (close[i] + 1e-9)
+
+            c_5   = close[i - 5:i + 1]
+            vwap_dist = (close[i] - float(np.mean(c_5))) / (close[i] + 1e-9)
+
+            feat = [
+                float(rsi_like),
+                float(momentum),
+                float(volume_ratio),
+                float(atr_pct),
+                float(vwap_dist),
+            ]
+            # Clip to reasonable range to avoid outlier-poisoning
+            feat = [max(-10.0, min(10.0, v)) for v in feat]
+            rows.append(feat)
+
+            # Label: was next-day close higher than today?
+            was_win = int(close[i + 1] > close[i])
+            labels.append(was_win)
+
+        X = np.array(rows, dtype=np.float32)
+        y = np.array(labels, dtype=np.int32)
+        n_samples, n_features = X.shape
+
+        if n_samples < 20:
+            logger.warning(f"[ML_ENSEMBLE] Too few cold-start samples ({n_samples}) — skipped")
+            return
+
+        # ── Train 4 classifiers ──────────────────────────────────────────────
+        models = {
+            "gbm": GradientBoostingClassifier(
+                n_estimators=80, max_depth=3, learning_rate=0.05,
+                subsample=0.8, random_state=42,
+            ),
+            "rf": RandomForestClassifier(
+                n_estimators=80, max_depth=5, random_state=42, n_jobs=-1,
+            ),
+            "et": ExtraTreesClassifier(
+                n_estimators=80, max_depth=5, random_state=43, n_jobs=-1,
+            ),
+            "lr": LogisticRegression(max_iter=400, C=1.0, random_state=42),
+        }
+
+        os.makedirs(_PRETRAINED_DIR, exist_ok=True)
+
+        for name, model in models.items():
+            try:
+                model.fit(X, y)
+                out_path = os.path.join(_PRETRAINED_DIR, f"{name}.pkl")
+                joblib.dump({"model": model, "source": "cold_start_spy_6mo"}, out_path)
+                logger.debug(f"[ML_ENSEMBLE] Saved cold-start model: {out_path}")
+            except Exception as _me:
+                logger.warning(f"[ML_ENSEMBLE] Cold-start train failed for {name}: {_me}")
+
+        logger.info(
+            f"[ML_ENSEMBLE] Cold-start pretrain complete: "
+            f"{n_samples} samples, {n_features} features — "
+            f"saved to {_PRETRAINED_DIR}"
+        )
+
+    except Exception as e:
+        logger.warning(f"[ML_ENSEMBLE] pretrain_if_needed failed (non-fatal): {e}")
+
+
+# Run cold-start pretrain at import time if pretrained models are absent.
+# Wrapped in try-except so a missing yfinance / sklearn never breaks the import.
+try:
+    pretrain_if_needed()
+except Exception as _pretrain_exc:
+    logger.debug(f"ml_ensemble: import-time pretrain suppressed: {_pretrain_exc}")
+
+
+# ── Cold-start pretrain ───────────────────────────────────────────────────────
+
+def pretrain_if_needed() -> None:
+    """
+    Cold-start pretrain: if regime-specific .pkl files don't exist, fetch
+    6 months of SPY daily OHLCV via yfinance and train GBM / RF / ET / LR
+    for both BULL and BEAR regimes, saving results to data/ml_pretrained/.
+
+    This is called once at module import time (fail-open — never raises).
+    When real pretrain_ml.py output is present this is a no-op.
+    """
+    global _WARNED_NO_MODELS
+
+    # Check if any pretrained model already exists — if so, skip cold-start
+    sentinel = os.path.join(_PRETRAINED_DIR, "gbm_bull.pkl")
+    legacy_sentinel = os.path.join(_PRETRAINED_DIR, "gbm.pkl")
+    if os.path.exists(sentinel) or os.path.exists(legacy_sentinel):
+        return  # pretrained models already present — nothing to do
+
+    if not _WARNED_NO_MODELS:
+        logger.warning(
+            "[ML_ENSEMBLE] No pretrained models found in data/ml_pretrained/ — "
+            "running cold-start pretrain from SPY history. "
+            "Run pretrain_ml.py for full 10yr regime-aware training."
+        )
+        _WARNED_NO_MODELS = True
+
+    try:
+        import yfinance as yf
+        from sklearn.ensemble import (
+            GradientBoostingClassifier, RandomForestClassifier, ExtraTreesClassifier,
+        )
+        from sklearn.linear_model import LogisticRegression
+        import joblib
+
+        # Fetch 6 months of SPY daily OHLCV
+        spy = yf.download("SPY", period="6mo", interval="1d", auto_adjust=True, progress=False)
+        if spy.empty or len(spy) < 30:
+            logger.warning("[ML_ENSEMBLE] Cold-start pretrain: insufficient SPY data — skipping")
+            return
+
+        close  = spy["Close"].values.astype(float).flatten()
+        high   = spy["High"].values.astype(float).flatten()
+        low    = spy["Low"].values.astype(float).flatten()
+        volume = spy["Volume"].values.astype(float).flatten()
+        n      = len(close)
+
+        # ── Build simple feature set ────────────────────────────────────────
+        # rsi_proxy: close vs 14-day rolling mean (normalised)
+        def _roll_mean(arr, w):
+            out = np.full(len(arr), np.nan)
+            for i in range(w - 1, len(arr)):
+                out[i] = arr[i - w + 1 : i + 1].mean()
+            return out
+
+        mean14  = _roll_mean(close, 14)
+        mean20  = _roll_mean(close, 20)
+        mean5   = _roll_mean(close, 5)
+        vol20   = _roll_mean(volume, 20)
+
+        rsi_proxy     = np.where(mean14 > 0, (close - mean14) / mean14, 0.0)
+        momentum      = np.where(mean20 > 0, mean5 / mean20 - 1.0, 0.0)
+        volume_ratio  = np.where(vol20 > 0, volume / vol20, 1.0)
+        atr_pct       = np.where(close > 0, (high - low) / close, 0.0)
+        vwap_dist     = np.where(close > 0, (close - mean5) / close, 0.0)
+
+        features_mat = np.column_stack([
+            rsi_proxy, momentum, volume_ratio, atr_pct, vwap_dist
+        ])
+        n_features = features_mat.shape[1]
+
+        # Label: was_win = next-day close > today's close
+        labels = np.zeros(n, dtype=np.int32)
+        labels[:-1] = (close[1:] > close[:-1]).astype(np.int32)
+
+        # Drop rows with NaN (first ~20 days due to rolling windows) and last (no label)
+        valid = np.isfinite(features_mat).all(axis=1)
+        valid[-1] = False   # last row has no next-day label
+        X = features_mat[valid]
+        y = labels[valid]
+
+        if len(y) < 20:
+            logger.warning("[ML_ENSEMBLE] Cold-start pretrain: too few valid samples — skipping")
+            return
+
+        os.makedirs(_PRETRAINED_DIR, exist_ok=True)
+
+        # Use simple regime split: top half of close prices → BULL, bottom half → BEAR
+        sma_200 = _roll_mean(close, min(200, n))
+        full_valid_idx = np.where(valid)[0]
+
+        def _regime_mask(regime: str) -> np.ndarray:
+            """Return boolean mask over X/y for given regime."""
+            spy_prices = close[full_valid_idx]
+            sma_vals   = sma_200[full_valid_idx]
+            is_bull    = spy_prices >= sma_vals
+            return is_bull if regime == "BULL" else ~is_bull
+
+        model_defs = {
+            "gbm": GradientBoostingClassifier(
+                n_estimators=80, max_depth=3, learning_rate=0.08, random_state=42
+            ),
+            "rf": RandomForestClassifier(
+                n_estimators=80, max_depth=6, random_state=42, n_jobs=-1
+            ),
+            "et": ExtraTreesClassifier(
+                n_estimators=80, max_depth=7, random_state=43, n_jobs=-1
+            ),
+            "lr": LogisticRegression(max_iter=400, C=1.0, random_state=42),
+        }
+
+        saved = 0
+        for regime in ("BULL", "BEAR"):
+            mask = _regime_mask(regime)
+            X_r = X[mask]
+            y_r = y[mask]
+            # Fall back to full set if regime has fewer than 10 samples
+            if len(y_r) < 10:
+                X_r, y_r = X, y
+            for name, clf in model_defs.items():
+                try:
+                    clf.fit(X_r, y_r)
+                    path = os.path.join(_PRETRAINED_DIR, f"{name}_{regime.lower()}.pkl")
+                    joblib.dump({"model": clf, "source": "cold_start_spy_6mo"}, path)
+                    saved += 1
+                except Exception as _fit_e:
+                    logger.warning(f"[ML_ENSEMBLE] Cold-start fit {name}/{regime} failed: {_fit_e}")
+
+        logger.info(
+            f"[ML_ENSEMBLE] Cold-start pretrain complete: "
+            f"{len(y)} samples, {n_features} features, {saved} models saved to {_PRETRAINED_DIR}"
+        )
+
+    except ImportError as ie:
+        logger.warning(
+            f"[ML_ENSEMBLE] Cold-start pretrain skipped — missing dependency ({ie}). "
+            "Install yfinance, scikit-learn, and joblib to enable."
+        )
+    except Exception as e:
+        logger.warning(f"[ML_ENSEMBLE] Cold-start pretrain failed (non-fatal): {e}")
+
+
+# Run cold-start pretrain at import time if needed (fail-open)
+try:
+    pretrain_if_needed()
+except Exception:
+    pass
