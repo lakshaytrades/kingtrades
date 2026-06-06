@@ -226,6 +226,55 @@ def get_ohlcv_multi_tf(symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
     }
 
 
+# ── India VIX ────────────────────────────────────────────────────────────────
+
+_vix_cache: dict = {}
+_VIX_TTL = 1800.0  # 30 min
+
+
+def get_india_vix() -> float:
+    """Fetch current India VIX value. Returns 0.0 on failure."""
+    now = _time.monotonic()
+    if _vix_cache.get("ts", 0) > now - _VIX_TTL:
+        return _vix_cache.get("vix", 0.0)
+    try:
+        import yfinance as yf
+        df = yf.download("^INDIAVIX", period="1d", interval="5m",
+                         progress=False, auto_adjust=True)
+        if df is not None and not df.empty:
+            if isinstance(df.columns, pd.MultiIndex):
+                df.columns = [str(c[0]).lower() for c in df.columns]
+            else:
+                df.columns = [str(c).lower() for c in df.columns]
+            vix = float(df["close"].iloc[-1])
+            _vix_cache["vix"] = vix
+            _vix_cache["ts"]  = now
+            return vix
+    except Exception as e:
+        logger.debug(f"India VIX fetch: {e}")
+    return 0.0
+
+
+# ── Nifty 50 intraday data ────────────────────────────────────────────────────
+
+def get_nifty_intraday(interval: str = "5m") -> Optional[pd.DataFrame]:
+    """Fetch Nifty50 intraday data (^NSEI) for regime detection."""
+    try:
+        import yfinance as yf
+        df = yf.download("^NSEI", period="5d", interval=interval,
+                         progress=False, auto_adjust=True)
+        if df is None or df.empty:
+            return None
+        if isinstance(df.columns, pd.MultiIndex):
+            df.columns = [str(c[0]).lower() for c in df.columns]
+        else:
+            df.columns = [str(c).lower() for c in df.columns]
+        return df[["open", "high", "low", "close", "volume"]].dropna()
+    except Exception as e:
+        logger.debug(f"Nifty intraday: {e}")
+        return None
+
+
 # ── Fallback security_id map (top 30 NSE stocks) ─────────────────────────────
 # Used only if scrip master download fails. Dhan security IDs as of 2024.
 _FALLBACK_MAP: Dict[str, str] = {
