@@ -1,8 +1,8 @@
 """
-main_india.py — KingTrades India Bot
+main_india.py -- KingTrades India Bot
 Dhan broker | NSE equity | IST timezone | INR capital
 
-Architecture: parallel to US bot — zero shared state.
+Architecture: parallel to US bot -- zero shared state.
 Reuses: pattern_recognition, high_accuracy_filter, neural_predictor,
         volatility_targeting, institutional_strategies (IST-adapted)
 India-specific: auth_dhan, data_fetch_dhan, execution_dhan,
@@ -23,19 +23,19 @@ import pandas as pd
 
 from zoneinfo import ZoneInfo
 
-# ── Path setup (import parent modules) ────────────────────────────────────────
+# -- Path setup (import parent modules) ---------------------------------------
 _BASE = Path(__file__).parent.parent
 sys.path.insert(0, str(_BASE))
 sys.path.insert(0, str(Path(__file__).parent))
 
-# ── Load env from .env (parent directory) ────────────────────────────────────
+# -- Load env from .env (parent directory) ------------------------------------
 try:
     from dotenv import load_dotenv
     load_dotenv(_BASE / ".env")
 except ImportError:
     pass
 
-# ── Local imports ─────────────────────────────────────────────────────────────
+# -- Local imports ------------------------------------------------------------
 import config_india as config
 from auth_dhan              import get_dhan_client, verify_connection
 from data_fetch_dhan        import get_ohlcv, get_multiple_ltp
@@ -43,7 +43,7 @@ from execution_dhan         import DhanExecutor, get_executor
 from watchlist_india        import get_active_watchlist, get_sector
 from signal_generator_india import IndiaSignalGenerator, IndiaTradeSignal
 
-# ── Logging ───────────────────────────────────────────────────────────────────
+# -- Logging ------------------------------------------------------------------
 LOG_DIR = _BASE / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
@@ -60,7 +60,7 @@ logger = logging.getLogger("main_india")
 IST = ZoneInfo("Asia/Kolkata")
 
 
-# ── Telegram helper ───────────────────────────────────────────────────────────
+# -- Telegram helper ----------------------------------------------------------
 
 def _tg(msg: str, parse_mode: str = "Markdown"):
     try:
@@ -79,7 +79,7 @@ def _tg(msg: str, parse_mode: str = "Markdown"):
         logger.debug(f"telegram: {e}")
 
 
-# ── Open position tracking ────────────────────────────────────────────────────
+# -- Open position tracking ---------------------------------------------------
 
 @dataclass
 class OpenPosition:
@@ -95,12 +95,13 @@ class OpenPosition:
     stop_order_id: str     = ""
     breakeven_moved: bool  = False
     atr:          float    = 0.0
-    t1_exited:    bool     = False
-    is_scalp:     bool     = False
-    time_stop_min: int     = 0
+    t1_exited:     bool  = False
+    is_scalp:      bool  = False
+    time_stop_min: int   = 0
+    signal_contributions: dict = field(default_factory=dict)
 
 
-# ── Daily stats ───────────────────────────────────────────────────────────────
+# -- Daily stats --------------------------------------------------------------
 
 @dataclass
 class DayStats:
@@ -114,7 +115,7 @@ class DayStats:
     loss_guard_active:  bool  = False  # raised after 3 consecutive losses
 
 
-# ── Main bot ─────────────────────────────────────────────────────────────────
+# -- Main bot -----------------------------------------------------------------
 
 class KingTradesIndia:
 
@@ -128,24 +129,24 @@ class KingTradesIndia:
         self._stats     = DayStats()
         self._running   = True
         self._last_trade_ts: float = 0.0
-        self._daily_target_pct: float = getattr(config, 'DAILY_TARGET_PCT', 0.5) / 100
+        self._daily_target_pct: float = 0.005  # 0.5%
 
-    # ── Startup ────────────────────────────────────────────────────────────────
+    # -- Startup ---------------------------------------------------------------
 
     def initialize(self) -> bool:
         logger.info("=" * 60)
-        logger.info(f"KingTrades India Bot starting — {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
+        logger.info(f"KingTrades India Bot starting -- {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
         logger.info(f"Live trading: {config.LIVE_TRADING_ENABLED}")
-        logger.info(f"Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f} | Max positions: {config.MAX_POSITIONS}")
+        logger.info(f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max positions: {config.MAX_POSITIONS}")
 
         # Dhan connection
         self._dhan = get_dhan_client()
         if not verify_connection(self._dhan):
             if config.LIVE_TRADING_ENABLED:
-                logger.error("Dhan connection failed — cannot start in live mode")
-                _tg("❌ *India Bot failed to connect to Dhan* — check DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN")
+                logger.error("Dhan connection failed -- cannot start in live mode")
+                _tg("India Bot failed to connect to Dhan -- check DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN")
                 return False
-            logger.warning("Dhan not connected — running in paper mode")
+            logger.warning("Dhan not connected -- running in paper mode")
 
         self._executor = get_executor(self._dhan, config.LIVE_TRADING_ENABLED)
 
@@ -156,48 +157,49 @@ class KingTradesIndia:
         # Signal generator
         self._generator = IndiaSignalGenerator(config, self._watchlist)
 
-        # Check India VIX before starting
-        try:
-            import yfinance as yf
-            vix_df = yf.download("^INDIAVIX", period="1d", interval="1m", progress=False)
-            if vix_df is not None and not vix_df.empty:
-                vix_val = float(vix_df["Close"].iloc[-1])
-                extreme = getattr(config, 'INDIA_VIX_EXTREME_THRESHOLD', 28.0)
-                high    = getattr(config, 'INDIA_VIX_HIGH_THRESHOLD', 22.0)
-                vix_msg = f"India VIX: {vix_val:.1f}"
-                if vix_val >= extreme:
-                    vix_msg += " ⚠️ EXTREME — no new entries today"
-                    self._stats.circuit_hit = True
-                elif vix_val >= high:
-                    vix_msg += " ⚠️ HIGH — size reduced 30%"
-                logger.info(vix_msg)
-                _tg(f"🇮🇳 India VIX: {vix_val:.1f}")
-        except Exception:
-            pass
+        # Balance
+        balance = self._get_balance()
+        self._stats.daily_start = balance
+        logger.info(f"Available balance: Rs.{balance:,.2f}")
+
+        # India VIX circuit breaker
+        if getattr(config, 'INDIA_VIX_ENABLED', True):
+            try:
+                import yfinance as yf
+                _vdf = yf.download("^INDIAVIX", period="1d", interval="5m", progress=False)
+                if _vdf is not None and not _vdf.empty:
+                    if isinstance(_vdf.columns, pd.MultiIndex):
+                        _vdf.columns = [str(c[0]).lower() for c in _vdf.columns]
+                    else:
+                        _vdf.columns = [str(c).lower() for c in _vdf.columns]
+                    _vix = float(_vdf["close"].iloc[-1])
+                    logger.info(f"India VIX: {_vix:.1f}")
+                    if _vix >= getattr(config, 'INDIA_VIX_EXTREME_THRESHOLD', 28.0):
+                        self._stats.circuit_hit = True
+                        _tg(f"India VIX {_vix:.1f} EXTREME -- no new trades today")
+                    elif _vix >= getattr(config, 'INDIA_VIX_HIGH_THRESHOLD', 22.0):
+                        _tg(f"India VIX {_vix:.1f} HIGH -- sizes reduced")
+            except Exception:
+                pass
 
         # Start Telegram command listener
         self._start_telegram_listener()
 
-        # Balance
-        balance = self._get_balance()
-        self._stats.daily_start = balance
-        logger.info(f"Available balance: ₹{balance:,.2f}")
-
-        mode = "🔴 LIVE TRADING" if config.LIVE_TRADING_ENABLED else "📄 PAPER MODE"
+        mode = "LIVE TRADING" if config.LIVE_TRADING_ENABLED else "PAPER MODE"
         _tg(
-            f"🇮🇳 *INDIA BOT — Session Started*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"🕐 {datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
+            f"INDIA BOT -- Session Started\n"
+            f"--------------------------------\n"
+            f"{datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
             f"Mode: {mode}\n"
-            f"Capital: ₹{config.MAX_DAILY_CAPITAL:,.0f} | Max pos: {config.MAX_POSITIONS}\n"
+            f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max pos: {config.MAX_POSITIONS}\n"
             f"Watchlist: {len(self._watchlist)} NSE symbols\n"
             f"Engine: 12 sources | 26 gates | ML-scored | ORB\n"
             f"Broker: Dhan | Market: NSE | Opens 9:15 AM IST\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"--------------------------------"
         )
         return True
 
-    # ── Main loop ──────────────────────────────────────────────────────────────
+    # -- Main loop -------------------------------------------------------------
 
     def run(self):
         if not self.initialize():
@@ -211,35 +213,35 @@ class KingTradesIndia:
                 now = datetime.now(IST)
                 t   = now.time()
 
-                # ── Pre-market: wait ──────────────────────────────────────────
+                # -- Pre-market: wait -----------------------------------------
                 if t < config.PRE_MARKET_START_IST:
                     _time.sleep(60)
                     continue
 
-                # ── Square-off warning ────────────────────────────────────────
+                # -- Square-off warning ---------------------------------------
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if self._positions:
                         syms = ", ".join(self._positions.keys())
-                        _tg(f"🇮🇳 ⚠️ *[INDIA BOT] Square-off Warning*\n"
-                            f"3:15 PM IST — {len(self._positions)} open: {syms}\n"
+                        _tg(f"INDIA BOT Square-off Warning\n"
+                            f"3:15 PM IST -- {len(self._positions)} open: {syms}\n"
                             f"Auto-closing at 3:20 PM IST")
 
-                # ── Force square-off ──────────────────────────────────────────
+                # -- Force square-off -----------------------------------------
                 if t >= config.SQUAREOFF_TIME_IST:
                     self._force_square_off()
                     self._send_eod_report()
                     logger.info("Square-off complete. Shutting down for the day.")
                     break
 
-                # ── Market hours: scan + manage ───────────────────────────────
+                # -- Market hours: scan + manage -------------------------------
                 if config.MARKET_OPEN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if not self._stats.circuit_hit:
                         self._scan_for_signals(t)
                     self._manage_positions()
 
-                # ── Adaptive scan interval ─────────────────────────────────────
+                # -- Adaptive scan interval ------------------------------------
                 # 60s during high-volume windows (open + power close).
-                # 300s otherwise — reduces Dhan API load mid-day.
+                # 300s otherwise -- reduces Dhan API load mid-day.
                 _in_power = (time(9, 15) <= t <= time(9, 59)) or \
                             (time(14, 30) <= t <= time(15, 20))
                 _time.sleep(60 if _in_power else config.SCAN_INTERVAL_SECONDS)
@@ -248,15 +250,15 @@ class KingTradesIndia:
                 logger.error(f"Main loop error: {e}", exc_info=True)
                 _time.sleep(30)
 
-    # ── Signal scan ────────────────────────────────────────────────────────────
+    # -- Signal scan ----------------------------------------------------------
 
     def _nifty_regime(self) -> str:
         """
         Check Nifty50 15m EMA trend. Returns 'BULLISH', 'BEARISH', or 'NEUTRAL'.
-        Cached 15 minutes — avoids repeated downloads in the scan loop.
-        BULLISH → only LONG signals allowed.
-        BEARISH → only SHORT signals allowed.
-        NEUTRAL → both directions allowed (ORB works on flat days too).
+        Cached 15 minutes -- avoids repeated downloads in the scan loop.
+        BULLISH -> only LONG signals allowed.
+        BEARISH -> only SHORT signals allowed.
+        NEUTRAL -> both directions allowed (ORB works on flat days too).
         Fail-open: returns 'NEUTRAL' on any error.
         """
         try:
@@ -283,7 +285,7 @@ class KingTradesIndia:
             ema21 = float(df["close"].ewm(span=21, adjust=False).mean().iloc[-1])
             gap   = (ema9 - ema21) / (ema21 + 1e-9)
 
-            # < 0.05% gap: EMA nearly flat → choppy, allow both directions
+            # < 0.05% gap: EMA nearly flat -> choppy, allow both directions
             if abs(gap) < 0.0005:
                 regime = "NEUTRAL"
             elif gap > 0:
@@ -302,28 +304,26 @@ class KingTradesIndia:
         if len(self._positions) >= config.MAX_POSITIONS:
             return
 
-        # ORB-only window: 9:15–9:30 IST — market still settling.
+        # -- Idle scalp state -------------------------------------------------
+        _now_mono = _time.monotonic()
+        _idle_min = (_now_mono - self._last_trade_ts) / 60 if self._last_trade_ts > 0 else 999
+        _pnl_pct  = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
+        _scalp    = (getattr(config, 'IDLE_SCALP_ENABLED', True) and
+                     _idle_min >= getattr(config, 'IDLE_SCALP_THRESHOLD_MIN', 30) and
+                     _pnl_pct  <  getattr(config, 'DAILY_TARGET_PCT', 0.005) * 0.7)
+        if self._generator:
+            self._generator._session_wins   = self._stats.wins
+            self._generator._session_losses = self._stats.losses
+            self._generator._idle_scalp_active = _scalp
+
+        # ORB-only window: 9:15-9:30 IST -- market still settling.
         _t = current_time or datetime.now(IST).time()
         _orb_only = time(9, 15) <= _t < time(9, 30)
 
-        # Loss guard: 3 consecutive losses today → skip signals
+        # Loss guard: 3 consecutive losses today -> skip signals
         if self._stats.loss_guard_active and not self._stats.circuit_hit:
-            logger.info("Loss guard active — pausing new entries")
+            logger.info("Loss guard active -- pausing new entries")
             return
-
-        # Activate idle scalp mode if 30+ min since last trade
-        _now_mono = _time.monotonic()
-        _idle_min = (_now_mono - self._last_trade_ts) / 60 if self._last_trade_ts > 0 else 999
-        _daily_pnl_pct = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
-        _scalp_active = (
-            getattr(config, 'IDLE_SCALP_ENABLED', True) and
-            _idle_min >= getattr(config, 'IDLE_SCALP_THRESHOLD_MIN', 30) and
-            _daily_pnl_pct < self._daily_target_pct * 0.7  # below 70% of daily target
-        )
-        if self._generator:
-            self._generator._idle_scalp_active = _scalp_active
-        if _scalp_active:
-            logger.debug(f"Idle scalp mode active ({_idle_min:.0f} min idle, pnl={_daily_pnl_pct:.2%})")
 
         # Nifty regime: don't trade LONGs in bearish market, SHORTs in bullish market
         regime = self._nifty_regime()
@@ -348,12 +348,12 @@ class KingTradesIndia:
                 if signal_obj is None:
                     continue
 
-                # ORB-only: skip non-ORB signals during 9:15–9:30 IST
+                # ORB-only: skip non-ORB signals during 9:15-9:30 IST
                 if _orb_only:
                     has_orb = any("orb" in str(p).lower()
                                   for p in getattr(signal_obj, "patterns", []))
                     if not has_orb:
-                        logger.debug(f"{symbol}: skipped (ORB-only window 9:15–9:30)")
+                        logger.debug(f"{symbol}: skipped (ORB-only window 9:15-9:30)")
                         continue
 
                 # Nifty regime filter: don't fight the market
@@ -364,30 +364,19 @@ class KingTradesIndia:
                     logger.debug(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
                     continue
 
-                # Portfolio intelligence gate (sector/correlation/heat)
-                if getattr(config, 'PORTFOLIO_INTEL_ENABLED', True):
-                    try:
-                        from portfolio_intelligence_india import check_new_position_allowed
-                        _ok, _reason = check_new_position_allowed(symbol, signal_obj.direction, self._positions, config)
-                        if not _ok:
-                            logger.debug(f"{symbol}: portfolio gate — {_reason}")
-                            continue
-                    except Exception:
-                        pass
-
                 logger.info(
                     f"SIGNAL: {symbol} {signal_obj.direction} "
                     f"score={signal_obj.signal_score:.1f} "
                     f"grade={signal_obj.quality_grade} "
-                    f"entry=₹{signal_obj.entry_price:.2f} "
-                    f"sl=₹{signal_obj.stop_loss:.2f} "
-                    f"tp=₹{signal_obj.target_1:.2f}"
+                    f"entry=Rs.{signal_obj.entry_price:.2f} "
+                    f"sl=Rs.{signal_obj.stop_loss:.2f} "
+                    f"tp=Rs.{signal_obj.target_1:.2f}"
                 )
 
                 # Position sizing
                 qty = self._calculate_qty(signal_obj)
                 if qty <= 0:
-                    logger.info(f"{symbol}: qty=0 — insufficient capital or risk")
+                    logger.info(f"{symbol}: qty=0 -- insufficient capital or risk")
                     continue
 
                 # Execute entry
@@ -400,7 +389,7 @@ class KingTradesIndia:
                 )
 
                 if not result.success:
-                    logger.warning(f"{symbol}: entry failed — {result.message}")
+                    logger.warning(f"{symbol}: entry failed -- {result.message}")
                     continue
 
                 fill_price = result.fill_price or signal_obj.entry_price
@@ -408,12 +397,12 @@ class KingTradesIndia:
 
                 # Guard: only place stop if fill confirmed
                 if fill_qty <= 0 or fill_price <= 0:
-                    logger.warning(f"{symbol}: fill not confirmed — skipping stop order")
+                    logger.warning(f"{symbol}: fill not confirmed -- skipping stop order")
                     continue
 
                 # Guard: validate security_id before placing any order
                 if not signal_obj.security_id:
-                    logger.warning(f"{symbol}: no security_id — skipping order")
+                    logger.warning(f"{symbol}: no security_id -- skipping order")
                     continue
 
                 # Place stop-loss
@@ -427,8 +416,8 @@ class KingTradesIndia:
 
                 # Guard: if stop order fails, close the entry to avoid unprotected position
                 if not stop_result.success:
-                    logger.error(f"{symbol}: stop order FAILED ({stop_result.message}) — squaring off entry")
-                    _tg(f"🇮🇳 🚨 *[INDIA BOT] Stop order failed for {symbol}* — entry being reversed to avoid unprotected position")
+                    logger.error(f"{symbol}: stop order FAILED ({stop_result.message}) -- squaring off entry")
+                    _tg(f"INDIA BOT Stop order failed for {symbol} -- entry being reversed to avoid unprotected position")
                     try:
                         self._executor.square_off_all(
                             self._executor.get_open_positions()
@@ -456,11 +445,11 @@ class KingTradesIndia:
                 self._last_trade_ts = _time.monotonic()
 
                 _tg(
-                    f"🇮🇳 ✅ *[INDIA BOT] Trade Entered* — {symbol}\n"
-                    f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    f"INDIA BOT Trade Entered -- {symbol}\n"
+                    f"--------------------------------\n"
                     f"Direction: {signal_obj.direction} | Grade: {signal_obj.quality_grade}\n"
-                    f"Entry: ₹{fill_price:.2f} | Qty: {fill_qty}\n"
-                    f"Stop:  ₹{signal_obj.stop_loss:.2f}  Target: ₹{signal_obj.target_1:.2f}\n"
+                    f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
+                    f"Stop:  Rs.{signal_obj.stop_loss:.2f}  Target: Rs.{signal_obj.target_1:.2f}\n"
                     f"R:R: {abs(signal_obj.target_1-fill_price)/max(abs(fill_price-signal_obj.stop_loss),0.01):.1f}:1 | "
                     f"Score: {signal_obj.signal_score:.0f}/100\n"
                     f"Sector: {get_sector(symbol)} | NSE/Dhan | IST"
@@ -485,7 +474,7 @@ class KingTradesIndia:
             except Exception as e:
                 logger.error(f"Signal scan {symbol}: {e}")
 
-    # ── Position management ────────────────────────────────────────────────────
+    # -- Position management --------------------------------------------------
 
     def _manage_positions(self):
         ltp_map = {}
@@ -504,89 +493,76 @@ class KingTradesIndia:
 
             pnl_pct = self._pnl_pct(pos, ltp)
 
-            # ── Stage 1: Breakeven at 0.3% profit ──────────────────────────────
+            # Breakeven move
             if not pos.breakeven_moved and pnl_pct >= config.BREAKEVEN_TRIGGER_PCT:
                 pos.stop_loss        = pos.entry_price
                 pos.breakeven_moved  = True
                 self._executor.modify_stop_loss(symbol, pos.entry_price)
-                logger.info(f"{symbol}: moved stop to breakeven ₹{pos.entry_price:.2f}")
+                logger.info(f"{symbol}: moved stop to breakeven Rs.{pos.entry_price:.2f}")
 
-            # ── Stage 2: T1 partial exit (50% of position) ─────────────────────
-            if not pos.t1_exited:
-                if (pos.direction == "LONG" and ltp >= pos.target_1) or \
-                   (pos.direction == "SHORT" and ltp <= pos.target_1):
+            # Stage 2: Partial exit at T1 (50% -> runner)
+            if not pos.t1_exited and getattr(config, 'PARTIAL_EXIT_ENABLED', True):
+                t1_hit = (pos.direction == "LONG" and ltp >= pos.target_1) or \
+                          (pos.direction == "SHORT" and ltp <= pos.target_1)
+                if t1_hit:
                     partial_qty = pos.quantity // 2
-                    if partial_qty > 0 and getattr(config, 'PARTIAL_EXIT_ENABLED', True):
-                        result = self._executor.place_entry_order(
-                            symbol      = symbol,
-                            direction   = "SHORT" if pos.direction == "LONG" else "LONG",
-                            qty         = partial_qty,
-                            price       = ltp,
-                            security_id = pos.security_id,
-                        )
-                        if result.success:
+                    if partial_qty > 0:
+                        close_dir = "SHORT" if pos.direction == "LONG" else "LONG"
+                        r = self._executor.place_entry_order(symbol, close_dir, partial_qty, ltp, pos.security_id)
+                        if r.success:
                             pos.t1_exited = True
-                            pos.quantity -= partial_qty  # runner stays
-                            partial_pnl = (
-                                (ltp - pos.entry_price) * partial_qty
-                                if pos.direction == "LONG"
-                                else (pos.entry_price - ltp) * partial_qty
-                            )
+                            pos.quantity -= partial_qty
+                            partial_pnl = (ltp - pos.entry_price) * partial_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * partial_qty
                             self._stats.total_pnl += partial_pnl
-                            self._executor.modify_stop_loss(symbol, pos.entry_price)  # trail to entry for runner
-                            _tg(
-                                f"🇮🇳 🎯 *[INDIA BOT] T1 Partial Exit* — {symbol}\n"
-                                f"Exited {partial_qty}/{pos.quantity + partial_qty} shares at ₹{ltp:.2f}\n"
-                                f"Runner continues to T2=₹{pos.target_2:.2f}"
-                            )
-                            logger.info(f"{symbol}: T1 partial exit {partial_qty} @ ₹{ltp:.2f}")
+                            pos.stop_loss = pos.entry_price  # trail runner to breakeven
+                            _tg(f"INDIA T1 Partial Exit -- {symbol}\n{partial_qty} shares @ Rs.{ltp:.2f} | Runner to T2=Rs.{pos.target_2:.2f}")
 
-            # ── Stage 3: Runner trailing stop at 0.3 ATR after T1 ──────────────
-            if pos.t1_exited and pos.atr > 0:
-                trail_dist = pos.atr * 0.3
+            # Stage 3: Trail runner at 0.3 ATR after T1 exit
+            if pos.t1_exited and pos.atr > 0 and getattr(config, 'TRAILING_STOP_ENABLED', True):
+                trail = pos.atr * getattr(config, 'TRAILING_TIGHT_ATR', 0.3)
                 if pos.direction == "LONG":
-                    new_trail = ltp - trail_dist
-                    if new_trail > pos.stop_loss:
-                        pos.stop_loss = new_trail
-                        self._executor.modify_stop_loss(symbol, new_trail)
+                    new_sl = ltp - trail
+                    if new_sl > pos.stop_loss:
+                        pos.stop_loss = new_sl
+                        self._executor.modify_stop_loss(symbol, new_sl)
                 else:
-                    new_trail = ltp + trail_dist
-                    if new_trail < pos.stop_loss:
-                        pos.stop_loss = new_trail
-                        self._executor.modify_stop_loss(symbol, new_trail)
+                    new_sl = ltp + trail
+                    if new_sl < pos.stop_loss:
+                        pos.stop_loss = new_sl
+                        self._executor.modify_stop_loss(symbol, new_sl)
 
-            # ── Time stop for scalp trades ──────────────────────────────────────
-            if getattr(pos, 'is_scalp', False) and pos.time_stop_min > 0:
-                elapsed_min = (datetime.now(IST) - pos.entry_time).total_seconds() / 60
-                if elapsed_min >= pos.time_stop_min:
-                    logger.info(f"{symbol}: scalp time stop at {elapsed_min:.0f} min")
-                    to_close.append(symbol)
-                    continue
-
-            # ── Target 2 hit (full close — runner reaches T2) ──────────────────
+            # Target 2 hit -- close runner
             if pos.direction == "LONG" and ltp >= pos.target_2:
-                logger.info(f"{symbol}: TP2 hit at ₹{ltp:.2f}")
+                logger.info(f"{symbol}: TP2 hit at Rs.{ltp:.2f}")
                 to_close.append(symbol)
 
             elif pos.direction == "SHORT" and ltp <= pos.target_2:
-                logger.info(f"{symbol}: TP2 hit at ₹{ltp:.2f}")
+                logger.info(f"{symbol}: TP2 hit at Rs.{ltp:.2f}")
                 to_close.append(symbol)
 
-            # ── Stop hit (live mode — Dhan SLM handles it; paper mode: check manually) ──
+            # Scalp time stop
+            elif getattr(pos, 'is_scalp', False) and pos.time_stop_min > 0:
+                elapsed = (datetime.now(IST) - pos.entry_time).total_seconds() / 60
+                if elapsed >= pos.time_stop_min:
+                    logger.info(f"{symbol}: scalp time stop hit ({elapsed:.0f}m >= {pos.time_stop_min}m)")
+                    to_close.append(symbol)
+                    continue
+
+            # Stop hit (live mode -- Dhan SLM handles it; paper mode: check manually)
             elif not config.LIVE_TRADING_ENABLED:
                 if pos.direction == "LONG" and ltp <= pos.stop_loss:
-                    logger.info(f"{symbol}: stop hit at ₹{ltp:.2f}")
+                    logger.info(f"{symbol}: stop hit at Rs.{ltp:.2f}")
                     to_close.append(symbol)
                 elif pos.direction == "SHORT" and ltp >= pos.stop_loss:
-                    logger.info(f"{symbol}: stop hit at ₹{ltp:.2f}")
+                    logger.info(f"{symbol}: stop hit at Rs.{ltp:.2f}")
                     to_close.append(symbol)
 
-            # ── Daily loss circuit (use MAX_DAILY_CAPITAL, never divide by zero) ──
+            # Daily loss circuit (use MAX_DAILY_CAPITAL, never divide by zero)
             _capital = max(config.MAX_DAILY_CAPITAL, 1.0)
             daily_pnl_pct = self._stats.total_pnl / _capital
             if daily_pnl_pct <= -config.DAILY_LOSS_LIMIT_PCT:
-                logger.warning("Daily loss limit hit — closing all positions")
-                _tg("🛑 *Daily loss limit hit* — all positions being closed")
+                logger.warning("Daily loss limit hit -- closing all positions")
+                _tg("Daily loss limit hit -- all positions being closed")
                 self._stats.circuit_hit = True
                 to_close = list(self._positions.keys())
                 break
@@ -610,24 +586,24 @@ class KingTradesIndia:
             if self._stats.loss_guard_active:
                 self._stats.loss_guard_active = False
                 logger.info("Loss guard lifted after win")
-                _tg("🇮🇳 ✅ *[INDIA BOT] Loss guard lifted* — win after losing streak, resuming normal trading")
+                _tg("INDIA BOT Loss guard lifted -- win after losing streak, resuming normal trading")
         else:
             self._stats.losses += 1
             self._stats.consecutive_losses += 1
             # After 3 consecutive losses, pause new entries for 30 min
             if self._stats.consecutive_losses >= 3 and not self._stats.loss_guard_active:
                 self._stats.loss_guard_active = True
-                logger.warning(f"3 consecutive losses — loss guard activated")
+                logger.warning(f"3 consecutive losses -- loss guard activated")
                 _tg(
-                    f"🇮🇳 ⚠️ *[INDIA BOT] Loss Guard Activated*\n"
+                    f"INDIA BOT Loss Guard Activated\n"
                     f"3 consecutive losses today.\n"
                     f"Pausing new entries. Bot will resume when:\n"
-                    f"  • Next scan finds strong setup (guard auto-lifts on win)\n"
-                    f"  • Or market closes (3:20 PM IST)\n"
+                    f"  * Next scan finds strong setup (guard auto-lifts on win)\n"
+                    f"  * Or market closes (3:20 PM IST)\n"
                     f"Existing positions managed normally."
                 )
 
-        logger.info(f"CLOSED {symbol}: P&L ₹{pnl:+.2f} | streak: {self._stats.consecutive_losses} losses")
+        logger.info(f"CLOSED {symbol}: P&L Rs.{pnl:+.2f} | streak: {self._stats.consecutive_losses} losses")
 
         # Record for neural predictor
         try:
@@ -653,21 +629,21 @@ class KingTradesIndia:
             pass
 
         _tg(
-            f"🇮🇳 {'🟢' if pnl > 0 else '🔴'} *[INDIA BOT] Position Closed* — {symbol}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"Entry: ₹{pos.entry_price:.2f} → Exit: ₹{exit_price:.2f}\n"
-            f"P&L: `₹{pnl:+,.2f}` | Qty: {pos.quantity}\n"
-            f"Day P&L: ₹{self._stats.total_pnl:+,.2f} | "
+            f"INDIA BOT Position Closed -- {symbol}\n"
+            f"--------------------------------\n"
+            f"Entry: Rs.{pos.entry_price:.2f} -> Exit: Rs.{exit_price:.2f}\n"
+            f"P&L: Rs.{pnl:+,.2f} | Qty: {pos.quantity}\n"
+            f"Day P&L: Rs.{self._stats.total_pnl:+,.2f} | "
             f"W:{self._stats.wins} L:{self._stats.losses}"
         )
 
-    # ── Force square-off ────────────────────────────────────────────────────────
+    # -- Force square-off -----------------------------------------------------
 
     def _force_square_off(self):
         if not self._positions:
             return
         logger.info(f"Force square-off: {len(self._positions)} positions")
-        _tg(f"🇮🇳 🔔 *[INDIA BOT] Force Square-off* — {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
+        _tg(f"INDIA BOT Force Square-off -- {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
 
         open_pos_dhan = self._executor.get_open_positions()
         self._executor.square_off_all(open_pos_dhan)
@@ -676,22 +652,22 @@ class KingTradesIndia:
         for symbol in list(self._positions.keys()):
             self._close_position(symbol, 0.0)
 
-    # ── EOD report ────────────────────────────────────────────────────────────
+    # -- EOD report -----------------------------------------------------------
 
     def _send_eod_report(self):
         s = self._stats
         win_rate = s.wins / s.trades if s.trades else 0
         filled = max(0, min(10, int(round(win_rate * 10))))
-        bar = "█" * filled + "░" * (10 - filled)
+        bar = "X" * filled + "." * (10 - filled)
         _tg(
-            f"🇮🇳 📊 *INDIA BOT — EOD Report*\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
+            f"INDIA BOT -- EOD Report\n"
+            f"--------------------------------\n"
+            f"{datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
             f"Trades: {s.trades}  Wins: {s.wins}  Losses: {s.losses}\n"
-            f"Win rate: `{win_rate:.0%}` [{bar}]\n"
-            f"Day P&L: `₹{s.total_pnl:+,.2f}`\n\n"
-            f"{'✅ Profitable session!' if s.total_pnl > 0 else ('🔴 Loss day — watchdog reviewing' if s.trades else '⏸ No trades — filters held')}\n"
-            f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━"
+            f"Win rate: {win_rate:.0%} [{bar}]\n"
+            f"Day P&L: Rs.{s.total_pnl:+,.2f}\n\n"
+            f"{'Profitable session!' if s.total_pnl > 0 else ('Loss day -- watchdog reviewing' if s.trades else 'No trades -- filters held')}\n"
+            f"--------------------------------"
         )
         # Also trigger the full detailed EOD from daily intelligence
         try:
@@ -700,14 +676,14 @@ class KingTradesIndia:
         except Exception:
             pass
 
-    # ── Helpers ────────────────────────────────────────────────────────────────
+    # -- Helpers --------------------------------------------------------------
 
     def _kelly_fraction(self) -> float:
         """
         Fractional Kelly position sizing based on rolling session win rate.
         Kelly formula: f = (p*b - q) / b
           p = win probability, q = 1-p, b = reward-to-risk ratio (target/SL)
-        We use half-Kelly (50%) for safety — still captures edge without overbetting.
+        We use half-Kelly (50%) for safety -- still captures edge without overbetting.
         Falls back to flat MAX_RISK_PER_TRADE_PCT when sample too small (<5 trades).
         """
         total = self._stats.wins + self._stats.losses
@@ -716,7 +692,7 @@ class KingTradesIndia:
 
         p = self._stats.wins / total
         q = 1.0 - p
-        # R:R ≈ ATR_TP_MULTIPLIER / ATR_SL_MULTIPLIER = 3.0 / 1.5 = 2.0
+        # R:R ~= ATR_TP_MULTIPLIER / ATR_SL_MULTIPLIER = 3.0 / 1.5 = 2.0
         b = config.ATR_TP_MULTIPLIER / max(config.ATR_SL_MULTIPLIER, 0.01)
         kelly_full = (p * b - q) / b
         half_kelly = kelly_full * 0.5   # half-Kelly for robustness
@@ -727,11 +703,11 @@ class KingTradesIndia:
     def _grade_multiplier(self, grade: str) -> float:
         """
         Size multiplier by signal quality grade from HighAccuracyFilter.
-        Grade A+ → 1.35× (maximum conviction, Grand Slam)
-        Grade A  → 1.00× (solid setup, full size)
-        Grade B+ → 0.80× (good setup, slightly reduced)
-        Grade B  → 0.65× (average setup, smaller bet)
-        Grade C  → 0.45× (marginal, minimum viable position)
+        Grade A+ -> 1.35x (maximum conviction, Grand Slam)
+        Grade A  -> 1.00x (solid setup, full size)
+        Grade B+ -> 0.80x (good setup, slightly reduced)
+        Grade B  -> 0.65x (average setup, smaller bet)
+        Grade C  -> 0.45x (marginal, minimum viable position)
         """
         return {"A+": 1.35, "A": 1.00, "B+": 0.80, "B": 0.65, "C": 0.45}.get(grade, 0.65)
 
@@ -741,7 +717,7 @@ class KingTradesIndia:
 
         Steps:
           1. Half-Kelly fraction based on rolling session win rate
-          2. Grade multiplier (A+=1.35×, A=1.0×, B=0.65×, C=0.45×)
+          2. Grade multiplier (A+=1.35x, A=1.0x, B=0.65x, C=0.45x)
           3. Loss guard: halve size if 3 consecutive losses hit today
           4. Cap: max 20% capital in one position (25% for Grand Slams)
         """
@@ -802,60 +778,54 @@ class KingTradesIndia:
             return (exit_price - pos.entry_price) * pos.quantity
         return (pos.entry_price - exit_price) * pos.quantity
 
+    # -- Telegram command listener --------------------------------------------
+
     def _start_telegram_listener(self):
-        """Poll Telegram for /kill /pause /resume /status commands."""
+        if not getattr(config, 'TELEGRAM_COMMANDS_ENABLED', True):
+            return
         import threading
         threading.Thread(target=self._telegram_loop, daemon=True).start()
 
     def _telegram_loop(self):
         token = config.TELEGRAM_BOT_TOKEN
         chat  = config.TELEGRAM_CHAT_ID
-        if not token or not chat or not getattr(config, 'TELEGRAM_COMMANDS_ENABLED', True):
+        if not token or not chat:
             return
-        last_update_id = 0
+        last_id = 0
         while self._running:
             try:
                 import requests
-                resp = requests.get(
-                    f"https://api.telegram.org/bot{token}/getUpdates",
-                    params={"offset": last_update_id + 1, "timeout": 10},
-                    timeout=15,
-                )
-                updates = resp.json().get("result", [])
-                for upd in updates:
-                    last_update_id = upd["update_id"]
-                    text = upd.get("message", {}).get("text", "").strip().lower()
-                    if text == "/kill":
-                        _tg("🛑 /kill received — force squaring off all India positions")
+                r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
+                                 params={"offset": last_id+1, "timeout": 10}, timeout=15)
+                for upd in r.json().get("result", []):
+                    last_id = upd["update_id"]
+                    txt = upd.get("message", {}).get("text", "").strip().lower()
+                    if txt == "/kill":
+                        _tg("INDIA BOT /kill -- squaring off all India positions")
                         self._handle_shutdown()
-                    elif text == "/pause":
+                    elif txt == "/pause":
                         self._stats.circuit_hit = True
-                        _tg("⏸ /pause — India bot paused. Send /resume to continue.")
-                    elif text == "/resume":
+                        _tg("India bot paused. /resume to continue.")
+                    elif txt == "/resume":
                         self._stats.circuit_hit = False
-                        _tg("▶️ /resume — India bot resuming new entries.")
-                    elif text == "/status":
-                        s = self._stats
-                        pnl_pct = s.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
-                        _tg(
-                            f"🇮🇳 📊 *India Bot Status*\n"
-                            f"P&L: ₹{s.total_pnl:+,.2f} ({pnl_pct:.2%})\n"
-                            f"Trades: {s.trades} W:{s.wins} L:{s.losses}\n"
-                            f"Positions: {len(self._positions)}/{config.MAX_POSITIONS}\n"
-                            f"Running: {self._running} | Circuit: {s.circuit_hit}"
-                        )
+                        _tg("India bot resumed.")
+                    elif txt == "/status":
+                        p = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
+                        _tg(f"INDIA P&L: Rs.{self._stats.total_pnl:+,.0f} ({p:.2%}) | "
+                            f"W:{self._stats.wins} L:{self._stats.losses} | "
+                            f"Pos:{len(self._positions)}/{config.MAX_POSITIONS}")
             except Exception as e:
-                logger.debug(f"telegram_loop: {e}")
+                logger.debug(f"tg_loop: {e}")
             _time.sleep(30)
 
     def _handle_shutdown(self, *_):
-        logger.info("Shutdown signal received — squaring off")
-        _tg("🇮🇳 ⚠️ *[INDIA BOT] Emergency Shutdown* — squaring off all NSE positions now")
+        logger.info("Shutdown signal received -- squaring off")
+        _tg("INDIA BOT Emergency Shutdown -- squaring off all NSE positions now")
         self._force_square_off()
         self._running = False
 
 
-# ── Entry point ────────────────────────────────────────────────────────────────
+# -- Entry point --------------------------------------------------------------
 
 def main():
     # Check for duplicate instance
