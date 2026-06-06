@@ -598,6 +598,8 @@ DARK_POOL_SCANNER_ENABLED:     bool = os.getenv("DARK_POOL_SCANNER_ENABLED",    
 GOD_MODE_ENABLED:    bool = os.getenv("GOD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
 # ── Genius Mode v27.0 — Hurst exponent + Kalman filter + OB pressure + Kelly sizing + Vol regime gate
 GENIUS_MODE_ENABLED: bool = os.getenv("GENIUS_MODE_ENABLED", "True").lower() in ("true","1","yes")
+# ── PhD Mode v28.0 — 52W Proximity + Amihud + CMF + ER + VWMS + Noise Ratio
+PHD_MODE_ENABLED:    bool = os.getenv("PHD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
 
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")

@@ -1494,6 +1494,20 @@ class SignalGenerator:
                 except Exception as _gen_e:
                     logger.debug(f"[suppressed] genius_strategies: {_gen_e}")
 
+            # ── PHD STRATEGIES (v28.0) — 6 Nobel-grade academic finance signals ──────
+            if getattr(config, 'PHD_MODE_ENABLED', True):
+                try:
+                    from phd_strategies import get_phd_score_boost
+                    _df_daily_phd = self._daily_candles_cache.get(symbol) if hasattr(self, '_daily_candles_cache') else None
+                    _phd_delta, _phd_reason = get_phd_score_boost(
+                        df_5m, df_1h, _df_daily_phd, direction, float(ltp_now or 0)
+                    )
+                    if _phd_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _phd_delta))
+                        logger.debug(f"{symbol}: PHD {_phd_delta:+.1f} | {_phd_reason}")
+                except Exception as _phd_e:
+                    logger.debug(f"[suppressed] phd_strategies: {_phd_e}")
+
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
                 if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
