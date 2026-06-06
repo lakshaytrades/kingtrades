@@ -1457,7 +1457,7 @@ class SignalGenerator:
             except Exception as _quantum_e:
                 logger.debug(f"[suppressed] quantum_strategies: {_quantum_e}")
 
-            # ── GOD MODE ELITE STRATEGIES (v25.0) — CVD + TICK + DOW + MultiDay ──
+            # ── GOD MODE ELITE STRATEGIES (v26.0) — CVD+TICK+DOW+MultiDay+TrueRS+Exhaust ─
             if getattr(config, 'GOD_MODE_ENABLED', True):
                 try:
                     from elite_strategies import get_elite_god_mode_boost
@@ -1465,13 +1465,34 @@ class SignalGenerator:
                         symbol, direction, df_5m
                     )
                     if _gm_block:
-                        logger.debug(f"{symbol}: GOD_MODE HARD_BLOCK — {_gm_reason}")
+                        logger.debug(f"{symbol}: GOD_MODE BLOCK — {_gm_reason}")
                         return None
                     if _gm_delta != 0.0:
                         filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gm_delta))
                         logger.debug(f"{symbol}: GOD_MODE {_gm_delta:+.1f} | {_gm_reason}")
                 except Exception as _gm_e:
                     logger.debug(f"[suppressed] elite_strategies: {_gm_e}")
+
+            # ── GENIUS STRATEGIES (v27.0) — Hurst + Kalman + OB Pressure + Kelly sizing ─
+            if getattr(config, 'GENIUS_MODE_ENABLED', True):
+                try:
+                    from genius_strategies import get_genius_score_boost, get_genius_size_multiplier
+                    _gen_block, _gen_delta, _gen_reason = get_genius_score_boost(
+                        df_5m, direction, filter_result.final_score,
+                        float(getattr(ind, 'atr', 0) or 0), float(ltp_now or 0)
+                    )
+                    if _gen_block:
+                        logger.debug(f"{symbol}: GENIUS BLOCK — {_gen_reason}")
+                        return None
+                    if _gen_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gen_delta))
+                        logger.debug(f"{symbol}: GENIUS {_gen_delta:+.1f} | {_gen_reason}")
+                    _genius_mult = get_genius_size_multiplier(filter_result.final_score)
+                    if _genius_mult != 1.0:
+                        combined_size = round(combined_size * _genius_mult, 3)
+                        logger.debug(f"{symbol}: GENIUS_KELLY size {_genius_mult:.2f}x")
+                except Exception as _gen_e:
+                    logger.debug(f"[suppressed] genius_strategies: {_gen_e}")
 
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
