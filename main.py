@@ -2492,6 +2492,8 @@ class TradingBot:
                 _rm_st.daily_capital + max(_rm_st.peak_pnl, 0.0)
             )
 
+            self.signal_gen._scan_watchlist = list(watchlist)
+
             fallback_sigs = []
             for sym in watchlist[:25]:
                 if len(fallback_sigs) >= max_results:
