@@ -602,6 +602,8 @@ GENIUS_MODE_ENABLED: bool = os.getenv("GENIUS_MODE_ENABLED", "True").lower() in 
 PHD_MODE_ENABLED:    bool = os.getenv("PHD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
 # ── Renaissance Mode v29.0 — IC tracking + Bayes + Regime + Decay + Sector limits + DD sizing
 RENAISSANCE_MODE_ENABLED: bool = os.getenv("RENAISSANCE_MODE_ENABLED", "True").lower() in ("true","1","yes")
+# ── Citadel Mode v30.0 — YZ volatility + entropy + volume profile + autocorrelation + VRP + risk parity
+CITADEL_MODE_ENABLED:    bool = os.getenv("CITADEL_MODE_ENABLED",    "True").lower() in ("true","1","yes")
 
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")

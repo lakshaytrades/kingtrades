@@ -1538,6 +1538,24 @@ class SignalGenerator:
                 except Exception as _ren_e:
                     logger.debug(f"[suppressed] renaissance_mode: {_ren_e}")
 
+            # ── CITADEL MODE (v30.0) — YZ Vol + Entropy + Volume Profile + AC + VRP + Risk Parity ──
+            if getattr(config, 'CITADEL_MODE_ENABLED', True):
+                try:
+                    from citadel_mode import get_citadel_boost
+                    _cit_delta, _cit_size, _cit_reason = get_citadel_boost(
+                        df_5m, direction,
+                        float(getattr(ind, 'atr', 0) or 0),
+                        float(ltp_now or 0),
+                    )
+                    if _cit_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _cit_delta))
+                        logger.debug(f"{symbol}: CITADEL {_cit_delta:+.1f} | {_cit_reason}")
+                    if _cit_size != 1.0:
+                        combined_size = round(combined_size * _cit_size, 3)
+                        logger.debug(f"{symbol}: CITADEL_RPARITY size {_cit_size:.2f}x")
+                except Exception as _cit_e:
+                    logger.debug(f"[suppressed] citadel_mode: {_cit_e}")
+
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
                 if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
