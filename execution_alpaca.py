@@ -152,6 +152,39 @@ class AlpacaExecutor:
         self._auth        = get_auth_manager()
         self._day_trade_count = 0
         self._day_trade_date  = ""   # "YYYY-MM-DD" — resets each trading day
+        self._rl_agent        = None  # set via set_learning_callbacks()
+        self._ml_ensemble_mod = None  # module ref for record_trade_outcome_ensemble
+
+    def set_learning_callbacks(self, rl_agent=None, ml_ensemble_mod=None):
+        """Wire RL agent and ML ensemble for post-trade learning."""
+        self._rl_agent        = rl_agent
+        self._ml_ensemble_mod = ml_ensemble_mod
+
+    def _fire_learning_callbacks(self, symbol: str, pnl: float, exit_reason: str,
+                                  entry_price: float = 0.0, exit_price: float = 0.0):
+        """Call RL and ML learning callbacks after a trade closes. Fail-open."""
+        try:
+            if self._rl_agent is not None:
+                self._rl_agent.on_trade_closed(
+                    symbol=symbol,
+                    pnl=pnl,
+                    exit_reason=exit_reason,
+                    next_market_data={"price": exit_price, "pnl": pnl}
+                )
+        except Exception as _e:
+            logger.debug(f"[RL] callback error for {symbol}: {_e}")
+        try:
+            if self._ml_ensemble_mod is not None:
+                record_fn = getattr(self._ml_ensemble_mod, "record_trade_outcome_ensemble", None)
+                if record_fn:
+                    was_win = pnl > 0
+                    features = {
+                        "pnl_pct": (exit_price - entry_price) / max(entry_price, 0.01),
+                        "exit_reason": exit_reason,
+                    }
+                    record_fn(features, was_win)
+        except Exception as _e:
+            logger.debug(f"[ML] callback error for {symbol}: {_e}")
 
     # ─────────────────────────────────────────────────────────────────────
     # ENTRY
@@ -604,9 +637,31 @@ class AlpacaExecutor:
             return OrderResult(True, message=f"Paper close {symbol}")
         try:
             trading_client = self._auth.get_trading_client()
+            # Capture position details before closing for learning callbacks
+            _entry_price = 0.0
+            _exit_price  = 0.0
+            _pnl         = 0.0
+            try:
+                _all_positions = trading_client.get_all_positions()
+                for _p in _all_positions:
+                    if _p.symbol == symbol:
+                        _entry_price = float(_p.avg_entry_price or 0)
+                        _exit_price  = float(_p.current_price or 0)
+                        _unrealized  = float(_p.unrealized_pl or 0)
+                        _pnl         = _unrealized
+                        break
+            except Exception as _pre:
+                logger.debug(f"close_position: pre-close position lookup failed for {symbol}: {_pre}")
             # Alpaca close_position endpoint: atomically closes the entire position
             trading_client.close_position(symbol)
             logger.info(f"[{format_ist_timestamp()}] CLOSED POSITION: {symbol} ({reason})")
+            self._fire_learning_callbacks(
+                symbol=symbol,
+                pnl=_pnl,
+                exit_reason=reason,
+                entry_price=_entry_price,
+                exit_price=_exit_price,
+            )
             return OrderResult(True, message=f"Position {symbol} closed")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] close_position({symbol}) failed: {e}")

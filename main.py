@@ -192,6 +192,20 @@ class TradingBot:
             live_enabled=config.LIVE_TRADING_ENABLED,
         )
 
+        # Wire RL agent and ML ensemble learning callbacks into executor
+        # so close_position() triggers post-trade learning even when called directly.
+        if hasattr(self.executor, "set_learning_callbacks"):
+            try:
+                import ml_ensemble as _ml_mod
+                from rl_agent import get_rl_agent as _get_rl
+                self.executor.set_learning_callbacks(
+                    rl_agent=_get_rl(),
+                    ml_ensemble_mod=_ml_mod,
+                )
+                logger.info(f"[{format_ist_timestamp()}] Executor learning callbacks wired (RL + ML ensemble)")
+            except Exception as _lcb_e:
+                logger.warning(f"[{format_ist_timestamp()}] Learning callbacks wiring failed: {_lcb_e}")
+
         # Initialize news filter
         from news_filter import NewsFilter
         self.news_filter = NewsFilter(
