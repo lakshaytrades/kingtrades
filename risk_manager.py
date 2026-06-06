@@ -670,6 +670,25 @@ class RiskManager:
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
         current_heat       = self.state.portfolio_heat
+
+        # Dynamic heat-based position scaling (runs BEFORE the hard gate)
+        # portfolio_heat is % of capital at risk via SL across all open positions.
+        # Scale down proportionally once heat exceeds 60% of the configured max,
+        # so partial positions are still taken rather than binary nothing-or-full.
+        _heat_pct = current_heat
+        _heat_scale_start = max_portfolio_heat * 0.60  # scale begins at 60% of max
+        _heat_scale_end   = max_portfolio_heat          # hard gate at 100% of max
+        if _heat_pct >= _heat_scale_start:
+            _heat_range = _heat_scale_end - _heat_scale_start   # width of scaling band
+            _heat_scale = max(0.2, 1.0 - ((_heat_pct - _heat_scale_start) / max(_heat_range, 1e-9)) * 0.8)
+            # At 60% of max heat → 1.0x scale; at 80% of max heat → 0.6x; at 100% of max heat → 0.2x
+            quantity = max(1, int(quantity * _heat_scale))
+            risk_amount = quantity * sl_distance  # recalculate after scaling
+            logger.debug(
+                f"[RISK] Heat={_heat_pct:.2f}% ({_heat_pct / max_portfolio_heat * 100:.0f}% of max) "
+                f"→ size scaled to {_heat_scale:.1%} ({quantity} shares)"
+            )
+
         if current_heat >= max_portfolio_heat:
             return {
                 "quantity": 0,
@@ -1608,6 +1627,17 @@ class RiskManager:
         """Kill switch — called by /kill Telegram command."""
         self._trigger_circuit_breaker("MANUAL KILL SWITCH")
         logger.critical(f"[{format_ist_timestamp()}] 🛑 EMERGENCY STOP ACTIVATED")
+
+    def apply_adaptive_params(self, params: dict) -> None:
+        """Hot-reload params from nightly optimizer. Called at morning init."""
+        try:
+            if "risk_pct" in params:
+                new_risk = float(params["risk_pct"])
+                lo, hi = 0.3, 1.5  # safe bounds
+                self.max_risk_pct = max(lo, min(new_risk, hi))
+                logger.info(f"[ADAPTIVE] max_risk_pct updated → {self.max_risk_pct:.2f}%")
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] apply_adaptive_params failed: {e}")
 
     # --------------------------------------------------------
     # STATUS

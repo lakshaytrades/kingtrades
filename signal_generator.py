@@ -262,6 +262,18 @@ class SignalGenerator:
         """Update Nifty % change vs previous close (called each scan cycle)."""
         self._nifty_change_pct = nifty_change_pct
 
+    def apply_adaptive_params(self, params: dict) -> None:
+        """Hot-reload params from nightly optimizer."""
+        try:
+            if "min_score" in params:
+                new_score = float(params["min_score"])
+                lo, hi = 55.0, 95.0  # never strangle or open floodgates
+                self.min_score = max(lo, min(new_score, hi))
+                self.ha_filter.min_score = self.min_score
+                logger.info(f"[ADAPTIVE] min_score updated → {self.min_score:.1f}")
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] SignalGenerator.apply_adaptive_params failed: {e}")
+
     def refresh_institutional_context(self) -> None:
         """
         Refresh FII/DII flow, global market context, and economic calendar
@@ -325,8 +337,8 @@ class SignalGenerator:
                 if _effective_min != self.min_score:
                     self.ha_filter.min_score = _effective_min
                     logger.debug(f"{symbol}: adaptive threshold {_thresh_label} → min={_effective_min:.0f}")
-            except Exception:
-                pass
+            except Exception as _at_e:
+                logger.debug(f"{symbol}: adaptive_threshold skipped: {_at_e}")
 
             # Idle scalp mode — check if we should use lower thresholds
             _idle_scalp_active = False
@@ -725,8 +737,8 @@ class SignalGenerator:
                 elif direction == "SHORT" and len(ict_bear & pat_names_all) >= 2:
                     ai_score = min(100.0, ai_score + config.ICT_CONFLUENCE_BOOST)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: ICT confluence +{config.ICT_CONFLUENCE_BOOST:.0f} ({ict_bear & pat_names_all})")
-            except Exception:
-                pass
+            except Exception as _ict_e:
+                logger.debug(f"ICT confluence skipped for {symbol}: {_ict_e}")
 
             # 6g. Sector ETF leading indicator boost (top-1%: trade with sector flow)
             try:
@@ -734,8 +746,8 @@ class SignalGenerator:
                 if sector_boost > 0:
                     ai_score = min(100.0, ai_score + sector_boost)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: sector ETF boost +{sector_boost:.1f}")
-            except Exception:
-                pass
+            except Exception as _setf_e:
+                logger.debug(f"Sector ETF boost skipped for {symbol}: {_setf_e}")
 
             # 6h. RVOL mega-boost — >5x volume = explosive move, size conviction up
             try:
@@ -747,8 +759,8 @@ class SignalGenerator:
                         f"[{format_ist_timestamp()}] {symbol}: RVOL mega-boost "
                         f"+{rvol_bonus_pts:.0f} (RVOL={ind.volume_ratio:.1f}x)"
                     )
-            except Exception:
-                pass
+            except Exception as _rvol_e:
+                logger.debug(f"RVOL mega-boost skipped for {symbol}: {_rvol_e}")
 
             # Per-symbol adaptive score floor: proven symbols get -5 pts relief,
             # serial losers get +5 pts harder bar. Falls back to self.min_score.
@@ -3258,7 +3270,7 @@ class SignalGenerator:
         try:
             return self.generate_signal(symbol)
         except Exception as e:
-            logger.debug(f"_scan_one({symbol}): {e}")
+            logger.warning(f"[SCAN] {symbol}: generate_signal raised unhandled exception — {e}")
             return None
 
     # --------------------------------------------------------
