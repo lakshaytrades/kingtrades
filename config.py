@@ -600,6 +600,8 @@ GOD_MODE_ENABLED:    bool = os.getenv("GOD_MODE_ENABLED",    "True").lower() in 
 GENIUS_MODE_ENABLED: bool = os.getenv("GENIUS_MODE_ENABLED", "True").lower() in ("true","1","yes")
 # ── PhD Mode v28.0 — 52W Proximity + Amihud + CMF + ER + VWMS + Noise Ratio
 PHD_MODE_ENABLED:    bool = os.getenv("PHD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
+# ── Renaissance Mode v29.0 — IC tracking + Bayes + Regime + Decay + Sector limits + DD sizing
+RENAISSANCE_MODE_ENABLED: bool = os.getenv("RENAISSANCE_MODE_ENABLED", "True").lower() in ("true","1","yes")
 
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")

@@ -1508,6 +1508,36 @@ class SignalGenerator:
                 except Exception as _phd_e:
                     logger.debug(f"[suppressed] phd_strategies: {_phd_e}")
 
+            # ── RENAISSANCE META-LAYER (v29.0) — IC + Bayes + Regime + Decay + Sizing ──
+            if getattr(config, 'RENAISSANCE_MODE_ENABLED', True):
+                try:
+                    from renaissance_mode import get_renaissance_adjustment
+                    _open_syms = list(getattr(self, '_open_positions', {}).keys())
+                    _hurst_h   = getattr(self, '_last_hurst', {}).get(symbol, 0.5)
+                    _atr_ratio = float(getattr(ind, 'atr', 0) or 0) / max(float(ltp_now or 1), 1)
+                    _n_conf    = sum([
+                        1 for _v in [
+                            getattr(ind, 'rsi',          0) or 0,
+                            getattr(ind, 'macd_hist',    0) or 0,
+                            getattr(ind, 'volume_ratio', 0) or 0,
+                        ] if _v != 0
+                    ])
+                    _eq_now  = float(getattr(self, '_session_equity',      0) or 0)
+                    _eq_peak = float(getattr(self, '_session_peak_equity', 0) or 0)
+                    _r_score, _r_size, _r_reason = get_renaissance_adjustment(
+                        symbol, direction, filter_result.final_score,
+                        _n_conf, _hurst_h, _atr_ratio,
+                        _open_syms, _eq_now, _eq_peak,
+                    )
+                    if abs(_r_score - filter_result.final_score) > 0.5:
+                        filter_result.final_score = max(0.0, min(100.0, _r_score))
+                        logger.debug(f"{symbol}: RENAISSANCE score→{_r_score:.1f} | {_r_reason}")
+                    if _r_size != 1.0:
+                        combined_size = round(combined_size * _r_size, 3)
+                        logger.debug(f"{symbol}: RENAISSANCE size {_r_size:.2f}x | {_r_reason}")
+                except Exception as _ren_e:
+                    logger.debug(f"[suppressed] renaissance_mode: {_ren_e}")
+
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
                 if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:
