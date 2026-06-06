@@ -734,6 +734,14 @@ FF_FACTORS_ENABLED:           bool = os.getenv("FF_FACTORS_ENABLED",           "
 # Congressional trading signal — politicians beat market 6-12% annually
 CONGRESSIONAL_ALPHA_ENABLED:  bool = os.getenv("CONGRESSIONAL_ALPHA_ENABLED",  "true").lower() == "true"
 
+# ── v36.0 US God Mode Signals ────────────────────────────────────────────────
+# Congressional trades alpha (god mode) — dedicated module with disk cache + Senate eFD fallback
+CONGRESSIONAL_TRADES_ALPHA_ENABLED: bool = bool(int(os.getenv("CONGRESSIONAL_ALPHA_ENABLED", "1")))
+# SEC Form 4 insider buying — cluster buy +10, large single buy +6, seller -5
+INSIDER_ALPHA_ENABLED:              bool = bool(int(os.getenv("INSIDER_ALPHA_ENABLED", "1")))
+# Earnings & FOMC calendar gate — blocks entries before earnings, halves size on FOMC day
+EARNINGS_CALENDAR_ENABLED:          bool = bool(int(os.getenv("EARNINGS_CALENDAR_ENABLED", "1")))
+
 # ── v25.0 Market Microstructure Signals ────────────────────────────────────────
 # ORB quality check — institutional commitment at open
 ORB_QUALITY_ENABLED:          bool = os.getenv("ORB_QUALITY_ENABLED",          "true").lower() == "true"

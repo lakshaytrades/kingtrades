@@ -2871,6 +2871,47 @@ class SignalGenerator:
             except Exception as _ic_e:
                 logger.debug(f"[suppressed] signal_ic_tracker: {_ic_e}")
 
+            # ── US GOD MODE SIGNALS (v36.0) — Congressional + Insider + Earnings/FOMC ──
+            _skip_earnings = False
+            try:
+                # Congressional trades alpha — policy-maker informed buying/selling
+                if getattr(config, 'CONGRESSIONAL_TRADES_ALPHA_ENABLED', True):
+                    from congressional_trades_alpha import get_congressional_score
+                    _cong_d, _cong_r = get_congressional_score(symbol, direction)
+                    if _cong_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cong_d)
+                        logger.debug(f"{symbol}: CONGRESSIONAL {_cong_d:+.0f} {_cong_r}")
+
+                # SEC Form 4 insider buying — cluster buy = management conviction
+                if getattr(config, 'INSIDER_ALPHA_ENABLED', True):
+                    from insider_buying_alpha import get_insider_score
+                    _ins_d, _ins_r = get_insider_score(symbol, direction)
+                    if _ins_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ins_d)
+                        logger.debug(f"{symbol}: INSIDER {_ins_d:+.0f} {_ins_r}")
+
+                # Earnings & FOMC calendar gate — block before earnings, halve size on FOMC
+                if getattr(config, 'EARNINGS_CALENDAR_ENABLED', True):
+                    from us_earnings_calendar import should_avoid_earnings, get_earnings_drift_score, is_fomc_day
+                    if is_fomc_day():
+                        combined_size = round(combined_size * 0.50, 2)  # half size on FOMC day
+                        logger.debug(f"{symbol}: FOMC_DAY half-size")
+                    _avoid_earn, _earn_r = should_avoid_earnings(symbol)
+                    if _avoid_earn:
+                        _skip_earnings = True
+                        logger.debug(f"{symbol}: earnings gate — {_earn_r} — skipping")
+                    else:
+                        _ed_d, _ed_r = get_earnings_drift_score(symbol, direction)
+                        if _ed_d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _ed_d)
+                            logger.debug(f"{symbol}: EARNINGS_DRIFT {_ed_d:+.0f} {_ed_r}")
+
+            except Exception as _us_god_e:
+                logger.debug(f"[suppressed] us_god_mode: {_us_god_e}")
+
+            if _skip_earnings:
+                return None
+
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
             try:
                 if getattr(config, 'MASTER_CONFLUENCE_ENABLED', True):
