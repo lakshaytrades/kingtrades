@@ -17,7 +17,7 @@ Signal pipeline:
 import logging
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 from zoneinfo import ZoneInfo
@@ -53,6 +53,9 @@ class IndiaTradeSignal:
     size_multiplier: float      = 1.0
     signal_time:  str           = ""
     is_high_confidence: bool    = False
+    time_stop_min: int          = 0      # for scalp mode: auto-close after N minutes
+    is_scalp:     bool          = False  # flagged for idle scalp mode
+    vix_level:    float         = 0.0   # India VIX at signal time
 
     def __post_init__(self):
         if not self.signal_time:
@@ -98,6 +101,15 @@ class IndiaSignalGenerator:
             if ind is None:
                 return None
 
+            # ── Check idle scalp mode ──────────────────────────────────────────
+            _is_scalp_mode = False
+            try:
+                _cfg_scalp = getattr(self._config, 'IDLE_SCALP_ENABLED', False)
+                if _cfg_scalp and hasattr(self, '_idle_scalp_active') and self._idle_scalp_active:
+                    _is_scalp_mode = True
+            except Exception:
+                pass
+
             # ── Gate 1: Direction (VWAP mandatory + EMA mandatory + 1 confirmer) ──
             direction = self._get_direction(ind, df_5m)
             if direction is None:
@@ -131,8 +143,13 @@ class IndiaSignalGenerator:
                 logger.debug(f"{symbol}: choppy price action — skipped")
                 return None
 
-            # Base score
-            score = self._compute_base_score(ind, direction, df_5m)
+            # ── Gate 7: India VIX gate (don't trade in panic markets) ─────────
+            if not self._check_india_vix(direction):
+                logger.debug(f"{symbol}: India VIX too high — skipped")
+                return None
+
+            # Base score — pass df_1h for 1h alignment scoring
+            score = self._compute_base_score(ind, direction, df_5m, df_1h=df_1h)
             if score < self._config.MIN_SIGNAL_SCORE:
                 return None
 
@@ -155,9 +172,14 @@ class IndiaSignalGenerator:
                 symbol, direction, score, df_5m, ltp, ind, current_price
             )
 
-            # ── Gate 7: Final score threshold ─────────────────────────────────
-            if score < self._config.FINAL_EXEC_MIN_SCORE:
-                logger.debug(f"{symbol}: final score {score:.1f} < {self._config.FINAL_EXEC_MIN_SCORE}")
+            # ── Gate 8: Final score threshold ─────────────────────────────────
+            _final_min = (
+                getattr(self._config, 'IDLE_SCALP_MIN_SCORE', 55.0)
+                if _is_scalp_mode
+                else self._config.FINAL_EXEC_MIN_SCORE
+            )
+            if score < _final_min:
+                logger.debug(f"{symbol}: final score {score:.1f} < {_final_min}")
                 return None
 
             # ── Score-based quality grading (replaces HAF — wrong method name for India) ──
@@ -179,8 +201,9 @@ class IndiaSignalGenerator:
                 size_mult     = 0.65
 
             security_id = get_security_id(symbol) or ""
+            _vix_now = getattr(self, '_last_india_vix', 0.0)
 
-            return IndiaTradeSignal(
+            sig = IndiaTradeSignal(
                 symbol        = symbol,
                 direction     = direction,
                 signal_score  = round(score, 1),
@@ -195,7 +218,23 @@ class IndiaSignalGenerator:
                 quality_grade = quality_grade,
                 size_multiplier = size_mult,
                 rationale     = f"Score {score:.0f} | {direction} | RR {rr:.1f} | Grade {quality_grade}",
+                vix_level     = _vix_now,
             )
+
+            # ── Idle scalp mode adjustments ───────────────────────────────────
+            if _is_scalp_mode:
+                _scalp_min = getattr(self._config, 'IDLE_SCALP_MIN_SCORE', 55.0)
+                if score >= _scalp_min:
+                    sig.time_stop_min = getattr(self._config, 'IDLE_SCALP_TIME_STOP_MIN', 10)
+                    sig.is_scalp      = True
+                    sig.size_multiplier = sig.size_multiplier * getattr(
+                        self._config, 'IDLE_SCALP_SIZE_MULT', 0.40
+                    )
+                else:
+                    # Score too low even for scalp mode threshold
+                    return None
+
+            return sig
 
         except Exception as e:
             logger.debug(f"generate_signal {symbol}: {e}")
@@ -249,6 +288,16 @@ class IndiaSignalGenerator:
                 if float(rsi) > 52:
                     confirm_long  += 1
                 elif float(rsi) < 48:
+                    confirm_short += 1
+
+            # Stochastic momentum confirmer
+            stoch_k = getattr(ind, "stoch_k", None)
+            stoch_d = getattr(ind, "stoch_d", None)
+            if stoch_k is not None and stoch_d is not None:
+                sk = float(stoch_k); sd = float(stoch_d)
+                if sk < 80 and sk > sd:   # not overbought + bullish cross
+                    confirm_long  += 1
+                if sk > 20 and sk < sd:   # not oversold + bearish cross
                     confirm_short += 1
 
             # VWAP + EMA required, at least 1 confirmer
@@ -358,10 +407,66 @@ class IndiaSignalGenerator:
         except Exception:
             return True
 
+    # ── Gate 7: India VIX gate ────────────────────────────────────────────────
+
+    def _check_india_vix(self, direction: str) -> bool:
+        """
+        Fetch ^INDIAVIX via yfinance (cached 30 min).
+        VIX >= 28.0 (EXTREME): block all signals.
+        VIX >= 22.0 (HIGH): allow but flag for size reduction.
+        Stores self._last_india_vix for downstream sizing.
+        Fail-open: returns True on any error.
+        """
+        try:
+            now = datetime.now(IST)
+            cache_valid = (
+                hasattr(self, "_vix_cache_value")
+                and hasattr(self, "_vix_cache_time")
+                and (now - self._vix_cache_time) < timedelta(minutes=30)
+            )
+            if cache_valid:
+                vix = self._vix_cache_value
+            else:
+                import yfinance as yf
+                _vix_tick = yf.Ticker("^INDIAVIX")
+                _hist = _vix_tick.history(period="2d", interval="5m")
+                if _hist is None or _hist.empty:
+                    self._last_india_vix = 0.0
+                    self._vix_size_mult = 1.0
+                    return True
+                vix = float(_hist["Close"].iloc[-1])
+                self._vix_cache_value = vix
+                self._vix_cache_time = now
+
+            self._last_india_vix = vix
+
+            # Determine size multiplier based on VIX level
+            if vix < 12.0:
+                self._vix_size_mult = 1.1   # low volatility — good for momentum
+            elif vix < 22.0:
+                self._vix_size_mult = 1.0
+            elif vix < 28.0:
+                self._vix_size_mult = 0.7   # high VIX — reduce size
+            else:
+                self._vix_size_mult = 0.0   # blocked — never reached (gate filters)
+
+            if vix >= 28.0:
+                logger.debug(f"India VIX {vix:.1f} >= 28.0 EXTREME — all signals blocked")
+                return False   # EXTREME: block all
+
+            # VIX >= 22.0: allow but flag for size reduction (handled in boosters)
+            return True
+
+        except Exception as e:
+            logger.debug(f"_check_india_vix error (fail-open): {e}")
+            self._last_india_vix = 0.0
+            self._vix_size_mult = 1.0
+            return True
+
     # ── Base score ────────────────────────────────────────────────────────────
 
     def _compute_base_score(self, ind: IndicatorSet, direction: str,
-                            df: pd.DataFrame) -> float:
+                            df: pd.DataFrame, df_1h: Optional[pd.DataFrame] = None) -> float:
         """Compute base confidence score 0–100 from indicator alignment."""
         score = 50.0
         try:
@@ -400,6 +505,26 @@ class IndiaSignalGenerator:
                     elif rvol >= 1.5:
                         score += 4
 
+            # Engulfing candle detection (last 2 bars)
+            if len(df) >= 2:
+                prev = df.iloc[-2]
+                curr = df.iloc[-1]
+                prev_op = float(prev["open"]); prev_cl = float(prev["close"])
+                curr_op = float(curr["open"]); curr_cl = float(curr["close"])
+                prev_body = abs(prev_cl - prev_op)
+                curr_body = abs(curr_cl - curr_op)
+                if prev_body > 1e-9 and curr_body > prev_body * 1.2:
+                    prev_bearish = prev_cl < prev_op
+                    curr_bullish = curr_cl > curr_op
+                    prev_bullish = prev_cl > prev_op
+                    curr_bearish = curr_cl < curr_op
+                    if direction == "LONG" and prev_bearish and curr_bullish:
+                        score += 7   # bullish engulfing
+                        logger.debug("engulfing: bullish +7")
+                    elif direction == "SHORT" and prev_bullish and curr_bearish:
+                        score += 7   # bearish engulfing
+                        logger.debug("engulfing: bearish +7")
+
             # Bollinger squeeze
             if hasattr(ind, "bb_upper") and hasattr(ind, "bb_lower") and ind.bb_upper and ind.bb_lower:
                 bb_width = (ind.bb_upper - ind.bb_lower) / (close + 1e-9)
@@ -413,9 +538,28 @@ class IndiaSignalGenerator:
                 elif ind.adx >= 20:
                     score += 4
 
-            # 1h alignment bonus
-            # (gates already checked 15m; 1h bonus added here for extra conviction)
-            # handled in MTF check implicitly
+            # 1h trend alignment (+8 if aligned, -4 if conflicting)
+            if df_1h is not None and not df_1h.empty and len(df_1h) >= 21:
+                try:
+                    ema9_1h  = float(df_1h["close"].ewm(span=9,  adjust=False).mean().iloc[-1])
+                    ema21_1h = float(df_1h["close"].ewm(span=21, adjust=False).mean().iloc[-1])
+                    gap_1h   = (ema9_1h - ema21_1h) / (ema21_1h + 1e-9)
+                    if direction == "LONG":
+                        if gap_1h >= 0.001:    # EMA9 > EMA21 by 0.1%+
+                            score += 8
+                            logger.debug("1h EMA aligned LONG +8")
+                        elif gap_1h <= -0.001:  # 1h conflicts
+                            score -= 4
+                            logger.debug("1h EMA conflicts LONG -4")
+                    else:  # SHORT
+                        if gap_1h <= -0.001:   # EMA9 < EMA21 by 0.1%+
+                            score += 8
+                            logger.debug("1h EMA aligned SHORT +8")
+                        elif gap_1h >= 0.001:   # 1h conflicts
+                            score -= 4
+                            logger.debug("1h EMA conflicts SHORT -4")
+                except Exception as _e1h:
+                    logger.debug(f"1h scoring error: {_e1h}")
 
         except Exception as e:
             logger.debug(f"base_score error: {e}")
@@ -428,6 +572,12 @@ class IndiaSignalGenerator:
                                       score: float, df_5m: pd.DataFrame,
                                       ltp: float, ind: IndicatorSet,
                                       current_price: float) -> float:
+        # India VIX size adjustment — dampen score in high-VIX environments
+        _vix = getattr(self, '_last_india_vix', 0.0)
+        if _vix >= 22.0:
+            score = score * 0.85   # don't boost to false confidence in high-VIX
+            logger.debug(f"{symbol}: VIX {_vix:.1f} >= 22 — score dampened to {score:.1f}")
+
         try:
             from institutional_strategies_india import (
                 get_power_hour_score_india,
@@ -511,6 +661,17 @@ class IndiaSignalGenerator:
                 logger.debug(f"{symbol}: ORB_NSE {d:+.0f} {r}")
         except Exception:
             pass
+
+        # NSE Sector rotation momentum
+        if getattr(self._config, 'SECTOR_ROTATION_ENABLED', True):
+            try:
+                from nse_sector_momentum import get_sector_momentum_score
+                _sm_delta, _sm_reason = get_sector_momentum_score(symbol, direction)
+                if _sm_delta:
+                    score = min(100.0, score + _sm_delta)
+                    logger.debug(f"{symbol}: SECTOR_MOMENTUM {_sm_delta:+.0f} {_sm_reason}")
+            except Exception:
+                pass
 
         # NSE Option Chain
         if self._config.OPTION_CHAIN_ENABLED:
