@@ -814,6 +814,10 @@ MARKET_IMPACT_ENABLED:        bool = os.getenv("MARKET_IMPACT_ENABLED",        "
 # Cross-sectional pre-ranking: only scan top 40% of watchlist by momentum rank
 CROSS_SECTIONAL_RANKING_ENABLED: bool = os.getenv("CROSS_SECTIONAL_RANKING_ENABLED", "true").lower() == "true"
 
+# ── v32.0 Market Intelligence Hub — 25 modules in parallel ───────────────────
+# Single flag to enable/disable all hub modules at once (each fails open)
+INTELLIGENCE_HUB_ENABLED:    bool = os.getenv("INTELLIGENCE_HUB_ENABLED",    "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================

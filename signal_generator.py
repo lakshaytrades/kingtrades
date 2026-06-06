@@ -2788,6 +2788,30 @@ class SignalGenerator:
             except Exception as _vp_e:
                 logger.debug(f"[suppressed] vpin: {_vp_e}")
 
+            # ── MARKET INTELLIGENCE HUB v32.0 — 25 modules, all free data, parallel ──
+            try:
+                if getattr(config, 'INTELLIGENCE_HUB_ENABLED', True):
+                    from market_intelligence_hub import get_intelligence_hub_boost
+                    _wl = getattr(self, '_open_position_symbols', []) or [symbol]
+                    _hub_delta, _hub_sz, _hub_reason = get_intelligence_hub_boost(
+                        symbol    = symbol,
+                        df_5m     = df_5m,
+                        df_1h     = df_1h if 'df_1h' in dir() else None,
+                        direction = direction,
+                        ltp       = ltp_now,
+                        atr       = atr if 'atr' in dir() else float(getattr(ind, 'atr', 0.0) or 0.0),
+                        watchlist = _wl,
+                    )
+                    if _hub_delta != 0.0:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _hub_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: HUB {_hub_delta:+.0f} {_hub_reason}")
+                    if _hub_sz != 1.0:
+                        combined_size = round(combined_size * _hub_sz, 3)
+                        logger.debug(f"{symbol}: HUB_SIZE {_hub_sz:.2f}x")
+            except Exception as _hub_e:
+                logger.debug(f"[suppressed] intelligence_hub: {_hub_e}")
+
             try:
                 # 5. IC-Weighted Bayesian boost — weight signals by rolling Spearman IC
                 if getattr(config, 'IC_TRACKER_ENABLED', True) and _v20_signal_deltas:
