@@ -172,6 +172,9 @@ class IndiaSignalGenerator:
                 symbol, direction, score, df_5m, ltp, ind, current_price
             )
 
+            if score <= -990:  # shock event flag from NLP god mode
+                return None
+
             # ── Gate 8: Final score threshold ─────────────────────────────────
             _final_min = (
                 getattr(self._config, 'IDLE_SCALP_MIN_SCORE', 55.0)
@@ -673,6 +676,17 @@ class IndiaSignalGenerator:
             except Exception:
                 pass
 
+        # NSE Option Chain God Mode
+        if getattr(self._config, 'OPTION_CHAIN_GODMODE', True):
+            try:
+                from nse_option_chain import get_option_chain_score
+                _oc_d, _oc_r = get_option_chain_score(symbol, direction, ltp)
+                if _oc_d:
+                    score = min(100.0, score + _oc_d)
+                    logger.debug(f"{symbol}: OC_GODMODE {_oc_d:+.0f} {_oc_r}")
+            except Exception:
+                pass
+
         # NSE Option Chain
         if self._config.OPTION_CHAIN_ENABLED:
             try:
@@ -728,6 +742,17 @@ class IndiaSignalGenerator:
             except Exception:
                 pass
 
+        # FII/DII India Live (God Mode)
+        if getattr(self._config, 'FII_DII_ENABLED', True):
+            try:
+                from fii_dii_india import get_fii_dii_score as _fii_live
+                _fd_d, _fd_r = _fii_live(symbol, direction)
+                if _fd_d:
+                    score = min(100.0, score + _fd_d)
+                    logger.debug(f"{symbol}: FII_DII_LIVE {_fd_d:+.0f} {_fd_r}")
+            except Exception:
+                pass
+
         # Delivery volume
         if self._config.DELIVERY_VOL_ENABLED:
             try:
@@ -759,19 +784,37 @@ class IndiaSignalGenerator:
             except Exception as e:
                 logger.debug(f"{symbol}: vol_profile {e}")
 
-        # News sentiment
-        if self._config.NEWS_SENTIMENT_ENABLED:
+        # News NLP God Mode
+        if getattr(self._config, 'NEWS_NLP_GODMODE', True):
             try:
-                from news_sentiment import get_news_sentiment
-                sent_score, sent_reason = get_news_sentiment(symbol)
-                if sent_score and sent_score != 0:
-                    if (sent_score > 0 and direction == "LONG") or \
-                       (sent_score < 0 and direction == "SHORT"):
-                        score = min(100.0, score + min(6.0, abs(sent_score)))
-                    else:
-                        score = max(0.0, score - 3.0)
-            except Exception as e:
-                logger.debug(f"{symbol}: news_sentiment {e}")
+                from nse_news_sentiment import get_news_sentiment_score, is_shock_event_active
+                _shock, _shock_r = is_shock_event_active()
+                if _shock:
+                    logger.info(f"{symbol}: shock event {_shock_r} — skipping")
+                    return -999.0  # caller checks for this
+                _ns_d, _ns_r = get_news_sentiment_score(symbol, direction)
+                if _ns_d:
+                    score = min(100.0, score + _ns_d)
+                    logger.debug(f"{symbol}: NEWS_NLP {_ns_d:+.0f} {_ns_r}")
+            except Exception as _nse:
+                logger.debug(f"[suppressed] nse_news: {_nse}")
+
+        # Corporate Events
+        if getattr(self._config, 'CORP_EVENTS_ENABLED', True):
+            try:
+                from corporate_events_india import should_avoid_trading, get_event_score_modifier, get_bulk_deal_signal
+                _avoid, _ar = should_avoid_trading(symbol)
+                if _avoid:
+                    logger.debug(f"{symbol}: corp event avoid — {_ar}")
+                    return score  # return current score unchanged
+                _ev_d, _ev_r = get_event_score_modifier(symbol, direction)
+                if _ev_d:
+                    score = min(100.0, score + _ev_d)
+                _bd_d, _bd_r = get_bulk_deal_signal(symbol, direction)
+                if _bd_d:
+                    score = min(100.0, score + _bd_d)
+            except Exception:
+                pass
 
         # Neural predictor
         try:
@@ -804,6 +847,33 @@ class IndiaSignalGenerator:
                 self._last_size_mult[symbol] = mult
             except Exception:
                 pass
+
+        # Regime alignment + ML Ensemble (God Mode)
+
+        # Regime size multiplier
+        try:
+            from regime_classifier_india import get_regime_size_multiplier, is_direction_aligned_with_regime
+            if not is_direction_aligned_with_regime(direction):
+                score = score * 0.80  # penalize regime-opposing trades
+            _rsz = get_regime_size_multiplier()
+            if not hasattr(self, '_regime_size_mult'):
+                self._regime_size_mult = {}
+            self._regime_size_mult[symbol] = _rsz
+        except Exception:
+            pass
+
+        # ML Ensemble
+        if getattr(self._config, 'ML_ENSEMBLE_ENABLED', True):
+            try:
+                from ml_signal_india import get_ml_score_delta
+                _wins   = getattr(self, '_session_wins', 0)
+                _losses = getattr(self, '_session_losses', 0)
+                _ml_d, _ml_r = get_ml_score_delta(symbol, ind, df_5m, direction, _wins, _losses)
+                if _ml_d:
+                    score = min(100.0, score + _ml_d)
+                    logger.debug(f"{symbol}: ML_GODMODE {_ml_d:+.0f} {_ml_r}")
+            except Exception as _mle:
+                logger.debug(f"[suppressed] ml_signal_india: {_mle}")
 
         return score
 

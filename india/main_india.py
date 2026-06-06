@@ -364,6 +364,17 @@ class KingTradesIndia:
                     logger.debug(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
                     continue
 
+                # Portfolio intelligence gate (sector/correlation/heat)
+                if getattr(config, 'PORTFOLIO_INTEL_ENABLED', True):
+                    try:
+                        from portfolio_intelligence_india import check_new_position_allowed
+                        _ok, _reason = check_new_position_allowed(symbol, signal_obj.direction, self._positions, config)
+                        if not _ok:
+                            logger.debug(f"{symbol}: portfolio gate — {_reason}")
+                            continue
+                    except Exception:
+                        pass
+
                 logger.info(
                     f"SIGNAL: {symbol} {signal_obj.direction} "
                     f"score={signal_obj.signal_score:.1f} "
