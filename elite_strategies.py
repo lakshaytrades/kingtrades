@@ -373,6 +373,144 @@ def check_experience_gates(direction: str) -> Tuple[bool, float, str]:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
+# Strategy 6 — True Relative Strength vs SPY (Minervini RS Rating)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_true_rs_score(symbol: str, direction: str) -> Tuple[float, str]:
+    """
+    True RS: symbol 1-month return ÷ SPY 1-month return.
+    Minervini's #1 factor — trade leaders not laggards.
+    RS >2x: +12 LONG. RS <0.5x: +12 SHORT, -12 LONG. Cached 30 min.
+    """
+    if symbol in ("SPY", "QQQ", "IWM", "DIA"):
+        return 0.0, ""
+
+    cache_key = f"true_rs:{symbol}"
+    cached = _cget(cache_key)
+    if cached is not None:
+        rs_ratio = cached
+    else:
+        try:
+            import yfinance as yf
+            sym_h = yf.Ticker(symbol).history(period="35d", auto_adjust=True)
+            spy_h = yf.Ticker("SPY").history(period="35d", auto_adjust=True)
+            if sym_h is None or spy_h is None or len(sym_h) < 20 or len(spy_h) < 20:
+                _cset(cache_key, 1.0, 1800)
+                return 0.0, ""
+            sc  = "Close" if "Close" in sym_h.columns else "close"
+            sc2 = "Close" if "Close" in spy_h.columns else "close"
+            sym_ret = float(sym_h[sc].iloc[-1] / sym_h[sc].iloc[-20] - 1)
+            spy_ret = float(spy_h[sc2].iloc[-1] / spy_h[sc2].iloc[-20] - 1)
+            if abs(spy_ret) < 0.001:
+                _cset(cache_key, 1.0, 1800)
+                return 0.0, ""
+            rs_ratio = sym_ret / spy_ret
+            _cset(cache_key, rs_ratio, 1800)
+        except Exception as e:
+            logger.debug(f"[suppressed] true_rs {symbol}: {e}")
+            _cset(cache_key, 1.0, 300)
+            return 0.0, ""
+
+    if rs_ratio >= 2.0:
+        if direction == "LONG":
+            return 12.0, f"TRUE_RS[RS={rs_ratio:.1f}x_LEADER(+12)]"
+        return -6.0, f"TRUE_RS[RS={rs_ratio:.1f}x_leader_vs_SHORT(-6)]"
+    elif rs_ratio >= 1.3:
+        if direction == "LONG":
+            return 8.0, f"TRUE_RS[RS={rs_ratio:.1f}x_strong(+8)]"
+        elif direction == "SHORT":
+            return -4.0, f"TRUE_RS[RS={rs_ratio:.1f}x_vs_SHORT(-4)]"
+    elif rs_ratio <= 0.5:
+        if direction == "SHORT":
+            return 12.0, f"TRUE_RS[RS={rs_ratio:.1f}x_LAGGARD_SHORT(+12)]"
+        return -12.0, f"TRUE_RS[RS={rs_ratio:.1f}x_laggard_vs_LONG(-12)]"
+    elif rs_ratio <= 0.8:
+        if direction == "SHORT":
+            return 8.0, f"TRUE_RS[RS={rs_ratio:.1f}x_weak_SHORT(+8)]"
+        return -8.0, f"TRUE_RS[RS={rs_ratio:.1f}x_lagging_vs_LONG(-8)]"
+    return 0.0, ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Strategy 7 — Trend Exhaustion (RSI Divergence + Climax Volume)
+# ─────────────────────────────────────────────────────────────────────────────
+
+def get_trend_exhaustion_score(df_5m, direction: str) -> Tuple[float, str]:
+    """
+    Bearish div (price new high, RSI lower): -8 LONG, +8 SHORT.
+    Bullish div (price new low, RSI higher): +8 LONG, -8 SHORT.
+    Climax volume (>3x avg final bar): -5 any direction (blow-off top/bottom).
+    Fail-open: (0.0, '').
+    """
+    try:
+        if df_5m is None or len(df_5m) < 20:
+            return 0.0, ""
+
+        col_map = {c.lower(): c for c in df_5m.columns}
+        close_c = col_map.get("close",  "Close")
+        high_c  = col_map.get("high",   "High")
+        low_c   = col_map.get("low",    "Low")
+        vol_c   = col_map.get("volume", "Volume")
+
+        closes = df_5m[close_c].values.astype(float)[-20:]
+        highs  = df_5m[high_c].values.astype(float)[-20:]
+        lows   = df_5m[low_c].values.astype(float)[-20:]
+        vols   = df_5m[vol_c].values.astype(float)[-20:]
+
+        def _rsi14(prices):
+            period = 14
+            if len(prices) < period + 1:
+                return [50.0] * len(prices)
+            deltas = [prices[i] - prices[i-1] for i in range(1, len(prices))]
+            gains  = [max(d, 0.0) for d in deltas]
+            losses = [max(-d, 0.0) for d in deltas]
+            ag = sum(gains[:period]) / period
+            al = sum(losses[:period]) / period
+            rsi_vals = []
+            for i in range(period, len(deltas)):
+                ag = (ag * (period - 1) + gains[i]) / period
+                al = (al * (period - 1) + losses[i]) / period
+                rs = ag / al if al > 0 else 100.0
+                rsi_vals.append(100 - 100 / (1 + rs))
+            return rsi_vals
+
+        rsi_vals = _rsi14(closes)
+        if len(rsi_vals) < 4:
+            return 0.0, ""
+
+        rsi_now, rsi_prev = rsi_vals[-1], rsi_vals[-4]
+        high_now,  high_prev  = max(highs[-4:]), max(highs[-8:-4])
+        low_now,   low_prev   = min(lows[-4:]),  min(lows[-8:-4])
+        avg_vol = sum(vols[:-1]) / max(len(vols) - 1, 1)
+        climax  = vols[-1] > avg_vol * 3.0
+
+        bearish_div = high_now > high_prev and rsi_now < rsi_prev - 3
+        bullish_div = low_now  < low_prev  and rsi_now > rsi_prev + 3
+
+        score, parts = 0.0, []
+        if bearish_div:
+            if direction == "LONG":
+                score -= 8.0; parts.append("BEARISH_RSI_DIV[-8]")
+            elif direction == "SHORT":
+                score += 8.0; parts.append("BEARISH_RSI_DIV[+8]")
+        if bullish_div:
+            if direction == "SHORT":
+                score -= 8.0; parts.append("BULLISH_RSI_DIV[-8]")
+            elif direction == "LONG":
+                score += 8.0; parts.append("BULLISH_RSI_DIV[+8]")
+        if climax:
+            score -= 5.0
+            parts.append(f"CLIMAX_VOL[{vols[-1]/max(avg_vol,1):.1f}x(-5)]")
+
+        reason = f"TREND_EXHAUST[{','.join(parts)}]" if parts else ""
+        return score, reason
+
+    except Exception as e:
+        logger.debug(f"[suppressed] trend_exhaustion: {e}")
+        return 0.0, ""
+
+
+# ─────────────────────────────────────────────────────────────────────────────
 # Master aggregator
 # ─────────────────────────────────────────────────────────────────────────────
 
@@ -382,7 +520,7 @@ def get_elite_god_mode_boost(
     df_5m,
 ) -> Tuple[bool, float, str]:
     """
-    Aggregate all 5 God Mode elite strategies.
+    Aggregate all 7 God Mode elite strategies (v26.0).
 
     Returns:
         (should_hard_block: bool, total_delta: float, combined_reason: str)
@@ -443,6 +581,26 @@ def get_elite_god_mode_boost(
                 reasons.append(r4)
     except Exception as e:
         logger.debug(f"[suppressed] god_mode S4 dow: {e}")
+
+    # Strategy 6: True Relative Strength vs SPY (Minervini)
+    try:
+        s6, r6 = get_true_rs_score(symbol, direction)
+        if s6 != 0.0:
+            total_delta += s6
+            if r6:
+                reasons.append(r6)
+    except Exception as e:
+        logger.debug(f"[suppressed] god_mode S6 true_rs: {e}")
+
+    # Strategy 7: Trend Exhaustion (RSI divergence + climax volume)
+    try:
+        s7, r7 = get_trend_exhaustion_score(df_5m, direction)
+        if s7 != 0.0:
+            total_delta += s7
+            if r7:
+                reasons.append(r7)
+    except Exception as e:
+        logger.debug(f"[suppressed] god_mode S7 exhaustion: {e}")
 
     combined_reason = " | ".join(reasons)
     logger.debug(
