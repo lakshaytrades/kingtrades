@@ -818,6 +818,19 @@ CROSS_SECTIONAL_RANKING_ENABLED: bool = os.getenv("CROSS_SECTIONAL_RANKING_ENABL
 # Single flag to enable/disable all hub modules at once (each fails open)
 INTELLIGENCE_HUB_ENABLED:    bool = os.getenv("INTELLIGENCE_HUB_ENABLED",    "true").lower() == "true"
 
+# ── v32.1 L99 — Free tier 2 + paid data proxies ──────────────────────────────
+FINRA_DARKPOOL_ENABLED:   bool = os.getenv("FINRA_DARKPOOL_ENABLED",   "true").lower() == "true"
+FEDWATCH_ENABLED:         bool = os.getenv("FEDWATCH_ENABLED",         "true").lower() == "true"
+CRYPTO_CROSS_ENABLED:     bool = os.getenv("CRYPTO_CROSS_ENABLED",     "true").lower() == "true"
+AV_NEWS_ENABLED:          bool = os.getenv("AV_NEWS_ENABLED",          "true").lower() == "true"
+OPTIONS_SWEEP_ENABLED:    bool = os.getenv("OPTIONS_SWEEP_ENABLED",    "true").lower() == "true"
+BLOOMBERG_PROXY_ENABLED:  bool = os.getenv("BLOOMBERG_PROXY_ENABLED",  "true").lower() == "true"
+FACTSET_PROXY_ENABLED:    bool = os.getenv("FACTSET_PROXY_ENABLED",    "true").lower() == "true"
+SATELLITE_PROXY_ENABLED:  bool = os.getenv("SATELLITE_PROXY_ENABLED",  "true").lower() == "true"
+ENIGMA_PROXY_ENABLED:     bool = os.getenv("ENIGMA_PROXY_ENABLED",     "true").lower() == "true"
+ITCH_L3_PROXY_ENABLED:    bool = os.getenv("ITCH_L3_PROXY_ENABLED",    "true").lower() == "true"
+LIVEVOL_PROXY_ENABLED:    bool = os.getenv("LIVEVOL_PROXY_ENABLED",    "true").lower() == "true"
+
 # ============================================================
 # VALIDATION
 # ============================================================

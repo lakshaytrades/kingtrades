@@ -57,7 +57,7 @@ import numpy as np
 logger = logging.getLogger(__name__)
 
 _HUB_TIMEOUT = 8.0   # seconds — total wall-clock budget for the hub
-_HUB_WORKERS = 12    # parallel threads (25 tasks, need more workers)
+_HUB_WORKERS = 16    # parallel threads (36 tasks total after L99 additions)
 
 
 def _safe(fn, *args, default=(0.0, "n/a"), **kwargs) -> Tuple[float, str]:
@@ -336,6 +336,87 @@ def get_intelligence_hub_boost(
             reasons = [r for r, d in [(o_r, o_d), (t_r, t_d), (c_r, c_d)] if d != 0.0]
             return (total, "|".join(reasons) if reasons else "micro:neutral")
         tasks["microstructure"] = _micro_task
+    except ImportError:
+        pass
+
+    # ── FREE DATA TIER 2 — 5 new free sources ───────────────────────────────
+
+    # F1. FINRA Real Dark Pool + Nasdaq Daily Short Volume
+    try:
+        from finra_dark_pool import get_finra_dark_pool_score as _fdp
+        tasks["finra_darkpool"] = lambda: _safe(_fdp, symbol, direction)
+    except ImportError:
+        pass
+
+    # F2. CME FedWatch + Full FRED Yield Curve (2Y/5Y/10Y/30Y)
+    try:
+        from fedwatch_signal import get_fedwatch_score as _fw
+        tasks["fedwatch_curve"] = lambda: _safe(_fw, direction)
+    except ImportError:
+        pass
+
+    # F3. BTC/ETH Cross-Asset Correlation
+    try:
+        from crypto_cross_asset import get_crypto_cross_asset_score as _cca
+        tasks["crypto_cross"] = lambda: _safe(_cca, symbol, direction)
+    except ImportError:
+        pass
+
+    # F4. Alpha Vantage Real-Time News NLP
+    try:
+        from alpha_vantage_news import get_av_news_score as _avn
+        tasks["av_news"] = lambda: _safe(_avn, symbol, direction)
+    except ImportError:
+        pass
+
+    # F5. True Options Sweep (Lee-Ready adapted)
+    try:
+        from options_sweep_classifier import get_options_sweep_score as _osw
+        tasks["options_sweep"] = lambda: _safe(_osw, symbol, ltp, direction)
+    except ImportError:
+        pass
+
+    # ── PAID DATA PROXIES — 6 institutional free equivalents ────────────────
+
+    # P1. Bloomberg Terminal Proxy (VIX + credit + USD + TICK)
+    try:
+        from bloomberg_proxy import get_bloomberg_score as _bbg
+        tasks["bloomberg"] = lambda: _safe(_bbg, direction)
+    except ImportError:
+        pass
+
+    # P2. FactSet Proxy — SEC EDGAR Form 4 + 13D real-time RSS
+    try:
+        from factset_proxy import get_factset_score as _fset
+        tasks["factset"] = lambda: _safe(_fset, symbol, direction)
+    except ImportError:
+        pass
+
+    # P3. Satellite/Alt Data Proxy (Orbital Insight equivalent)
+    try:
+        from satellite_proxy import get_satellite_score as _sat
+        tasks["satellite"] = lambda: _safe(_sat, symbol, direction)
+    except ImportError:
+        pass
+
+    # P4. Enigma Credit Card / Consumer Flow Proxy
+    try:
+        from enigma_proxy import get_enigma_score as _enig
+        tasks["enigma"] = lambda: _safe(_enig, direction)
+    except ImportError:
+        pass
+
+    # P5. NASDAQ ITCH L3 Order Book Proxy
+    try:
+        from level3_book_proxy import get_level3_book_score as _l3b
+        tasks["itch_l3"] = lambda: _safe(_l3b, symbol, df_5m, direction, ltp)
+    except ImportError:
+        pass
+
+    # P6. CBOE LiveVol Options Sweep Proxy
+    try:
+        from livevol_proxy import get_livevol_score as _lv
+        tasks["livevol"] = lambda: _safe(_lv, symbol, ltp, direction)
     except ImportError:
         pass
 
