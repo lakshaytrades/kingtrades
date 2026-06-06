@@ -2703,6 +2703,14 @@ class TradingBot:
                             _record_tr(pos.symbol, _pnl_pct)
                         except Exception as _tr_e:
                             logger.debug(f"[suppressed] record_trade_result: {_tr_e}")
+                        # Renaissance IC Tracker: feed trade outcome → self-learning strategy weights
+                        try:
+                            from renaissance_mode import record_strategy_outcome as _ren_record
+                            _ren_sc      = float(getattr(pos, 'signal_score', 70.0) or 70.0)
+                            _ren_pnl_pct = pnl / max(float(pos.entry_price or 1) * max(float(pos.quantity or 1), 1), 1.0)
+                            _ren_record('momentum_composite', _ren_sc, _ren_pnl_pct)
+                        except Exception as _ren_rec_e:
+                            logger.debug(f"[suppressed] renaissance_mode.record: {_ren_rec_e}")
                         # RL brain: feed trade outcome so agent learns from this trade
                         try:
                             from rl_agent import LakshKingRL
