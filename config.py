@@ -258,6 +258,11 @@ VWAP_REVERSION_MIN_DEVIATION_ATR: float = 1.5   # price must be 1.5+ ATR from VW
 GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score news sentiment
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
 
+# ── God Mode v31.0 — ETF flow + portfolio intelligence + news NLP ────────────
+ETF_FLOW_ENABLED             = bool(int(os.getenv("ETF_FLOW_ENABLED", "1")))
+US_NEWS_ALPHA_ENABLED        = bool(int(os.getenv("US_NEWS_ALPHA_ENABLED", "1")))
+US_PORTFOLIO_INTEL_ENABLED   = bool(int(os.getenv("US_PORTFOLIO_INTEL_ENABLED", "1")))
+
 # ── Aggressive sizing on elite setups — defined earlier from env var, not duplicated here ──
 
 # ── Opening Range Breakout (9:30–9:45 AM) ──────────────────────────────────

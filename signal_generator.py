@@ -1579,6 +1579,32 @@ class SignalGenerator:
                 except Exception as _cit_e:
                     logger.debug(f"[suppressed] citadel_mode: {_cit_e}")
 
+            # ── ETF Fund Flow Alpha (God Mode v31.0) ─────────────────────────
+            if getattr(config, 'ETF_FLOW_ENABLED', True):
+                try:
+                    from etf_flow_alpha import get_etf_flow_score
+                    _etf_d, _etf_r = get_etf_flow_score(symbol, direction)
+                    if _etf_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _etf_d)
+                        logger.debug(f"{symbol}: ETF_FLOW {_etf_d:+.0f} {_etf_r}")
+                except Exception:
+                    pass
+
+            # ── US News NLP Alpha (God Mode v31.0) ───────────────────────────
+            if getattr(config, 'US_NEWS_ALPHA_ENABLED', True):
+                try:
+                    from us_news_alpha import get_news_score, get_wsb_mention_score
+                    _news_d, _news_r = get_news_score(symbol, direction)
+                    if _news_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _news_d)
+                        logger.debug(f"{symbol}: US_NEWS {_news_d:+.0f} {_news_r}")
+                    _wsb_d, _wsb_r = get_wsb_mention_score(symbol, direction)
+                    if _wsb_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _wsb_d)
+                        logger.debug(f"{symbol}: WSB_MENTION {_wsb_d:+.0f} {_wsb_r}")
+                except Exception:
+                    pass
+
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
                 if getattr(config, 'HARMONIC_PATTERNS_ENABLED', True) and df_5m is not None and len(df_5m) >= 30:

@@ -2214,6 +2214,22 @@ class TradingBot:
                 except Exception as _he:
                     logger.debug(f"Portfolio heat check skipped: {_he}")
 
+                # 5c-bis. US portfolio intelligence gate (sector + correlation + heat)
+                if getattr(config, 'US_PORTFOLIO_INTEL_ENABLED', True):
+                    try:
+                        from us_portfolio_intelligence import check_position_allowed, get_dynamic_max_positions
+                        _cap = getattr(self.risk_manager.state, 'daily_capital', 5000)
+                        _open_pos = dict(getattr(self.risk_manager.state, 'positions', {}))
+                        _ok, _reason = check_position_allowed(
+                            signal.symbol, signal.direction, _open_pos,
+                            max_sector=2, max_corr=0.75, max_heat_pct=0.04, capital=_cap
+                        )
+                        if not _ok:
+                            logger.debug(f"{signal.symbol}: US portfolio gate — {_reason}")
+                            continue  # skip this signal
+                    except Exception:
+                        pass
+
                 # Risk gate: enforce daily-loss, max-positions, pause, and duplicate checks
                 # for BOTH paper and live (executor only runs can_take_trade in live mode)
                 _risk_check = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
