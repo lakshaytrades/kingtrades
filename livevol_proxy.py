@@ -96,12 +96,12 @@ def _analyze_flow(symbol: str, current_price: float) -> Optional[Dict]:
                 call_sweeps += len(otm_c)
                 put_sweeps  += len(otm_p)
 
-                ask_c = calls.get("ask", calls.get("lastPrice"))
-                ask_p = puts.get("ask",  puts.get("lastPrice"))
-                if ask_c is not None:
-                    call_notional += float((otm_c["volume"].fillna(0) * otm_c[ask_c.name if hasattr(ask_c, 'name') else "ask"].fillna(0) * 100).sum())
-                if ask_p is not None:
-                    put_notional += float((otm_p["volume"].fillna(0) * otm_p[ask_p.name if hasattr(ask_p, 'name') else "ask"].fillna(0) * 100).sum())
+                ask_col_c = "ask" if "ask" in calls.columns else ("lastPrice" if "lastPrice" in calls.columns else None)
+                ask_col_p = "ask" if "ask" in puts.columns  else ("lastPrice" if "lastPrice" in puts.columns  else None)
+                if ask_col_c and not otm_c.empty:
+                    call_notional += float((otm_c["volume"].fillna(0) * otm_c[ask_col_c].fillna(0) * 100).sum())
+                if ask_col_p and not otm_p.empty:
+                    put_notional += float((otm_p["volume"].fillna(0) * otm_p[ask_col_p].fillna(0) * 100).sum())
 
             except Exception:
                 continue
