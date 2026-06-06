@@ -717,6 +717,17 @@ class IndiaSignalGenerator:
             except Exception as e:
                 logger.debug(f"{symbol}: fii_dii {e}")
 
+        # FII/DII India intraday flow (new module)
+        if getattr(self._config, 'FII_DII_ENABLED', True):
+            try:
+                from fii_dii_india import get_fii_dii_score as _fii_india_score
+                _fii_d, _fii_r = _fii_india_score(symbol, direction)
+                if _fii_d:
+                    score = min(100.0, score + _fii_d)
+                    logger.debug(f"{symbol}: FII_DII_INDIA {_fii_d:+.0f} {_fii_r}")
+            except Exception:
+                pass
+
         # Delivery volume
         if self._config.DELIVERY_VOL_ENABLED:
             try:
