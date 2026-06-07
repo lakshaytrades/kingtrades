@@ -24,6 +24,8 @@ THE 14 CONFLUENCE GATES:
   Gate 12: ADX TRENDING          — ADX > 20 (no choppy directionless market)
   Gate 13: SPY ALIGNMENT         — SPY green for LONGs, SPY red for SHORTs
   Gate 14: CORRELATION GATE      — No new position if ≥75% correlated open pos exists
+  Gate 14c: OODA CONVICTION GATE  — OODA regime must not be CRISIS; strong directional conflict blocks trade
+  Gate 14d: INDIA INTEL GATE      — India VIX < 28; PCR/breadth/SGX composite adjusts score
 
 BONUS GATES (increase score further):
   + Heikin Ashi confirmation  (trend candle in signal direction)
@@ -445,6 +447,85 @@ class HighAccuracyFilter:
             result.gates_passed.append(_sec_reason)
         except Exception:
             result.gates_passed.append('SECTOR_SKIP')
+
+        # ── GATE 14c: OODA CONVICTION GATE ────────────────────────────────────
+        # OODA system must not be in CRISIS regime and conviction must be sufficient
+        try:
+            from ooda_engine import get_engine as _get_ooda_engine
+            _ooda_engine = _get_ooda_engine()
+            _ooda_ctx = _ooda_engine.get_context(symbol)
+
+            if _ooda_ctx.regime == "CRISIS":
+                result.gates_failed.append("OODA_CRISIS")
+                result.rejection_reason = "GATE14c_OODA: Market in CRISIS regime — no new entries"
+                self._log_rejection(result, signal_score, direction)
+                return result
+
+            if _ooda_ctx.direction_bias == "BEAR" and direction in ("BUY", "LONG"):
+                if _ooda_ctx.conviction > 0.70:  # strong bear signal
+                    result.gates_failed.append("OODA_DIR_CONFLICT")
+                    result.rejection_reason = (
+                        f"GATE14c_OODA: BEAR bias (conv={_ooda_ctx.conviction:.2f}) "
+                        f"conflicts with {direction}"
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+            elif _ooda_ctx.direction_bias == "BULL" and direction in ("SELL", "SHORT"):
+                if _ooda_ctx.conviction > 0.70:
+                    result.gates_failed.append("OODA_DIR_CONFLICT")
+                    result.rejection_reason = (
+                        f"GATE14c_OODA: BULL bias (conv={_ooda_ctx.conviction:.2f}) "
+                        f"conflicts with {direction}"
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+
+            result.gates_passed.append("OODA_OK")
+            # Conviction boost: high OODA conviction adds to signal_score pre-bonus
+            if _ooda_ctx.conviction > 0.75:
+                signal_score += 6
+                result.bonuses.append(f"OODA_HIGH_CONVICTION:{_ooda_ctx.conviction:.2f}(+6)")
+            elif _ooda_ctx.conviction > 0.65:
+                signal_score += 3
+                result.bonuses.append(f"OODA_CONVICTION:{_ooda_ctx.conviction:.2f}(+3)")
+        except ImportError:
+            result.gates_passed.append("OODA_SKIP")
+        except Exception as _ooda_ex:
+            logger.debug(f"[HAF] OODA gate error: {_ooda_ex}")
+            result.gates_passed.append("OODA_ERR")
+
+        # ── GATE 14d: INDIA INTELLIGENCE GATE (NSE only) ──────────────────────
+        # For NSE stocks: India VIX must be < 28 and conditions must not be CRISIS
+        try:
+            from india_intel import get_india_intel as _get_india_intel
+            _india = _get_india_intel()
+
+            if not _india.is_safe_to_trade():
+                result.gates_failed.append("INDIA_CRISIS")
+                result.rejection_reason = "GATE14d_INDIA: India VIX > 28 — CRISIS conditions"
+                self._log_rejection(result, signal_score, direction)
+                return result
+
+            if direction in ("BUY", "LONG") and not _india.long_bias_ok():
+                # Soft gate: raise the score requirement by 8 points instead of hard block
+                signal_score -= 8
+                result.bonuses.append("INDIA_ADVERSE_LONG(-8)")
+
+            _composite = _india.get_composite_score()
+            india_score = _composite.get("composite_score", 0.0)
+            if india_score > 3:
+                signal_score += 4
+                result.bonuses.append(f"INDIA_BULL({india_score:.1f})(+4)")
+            elif india_score < -3:
+                signal_score -= 4
+                result.bonuses.append(f"INDIA_BEAR({india_score:.1f})(-4)")
+
+            result.gates_passed.append("INDIA_OK")
+        except ImportError:
+            result.gates_passed.append("INDIA_SKIP")
+        except Exception as _india_ex:
+            logger.debug(f"[HAF] India gate error: {_india_ex}")
+            result.gates_passed.append("INDIA_ERR")
 
         # ── GATE 15: FALSE BREAKOUT DETECTOR ─────────────
         # Eliminates ~30% of losses by rejecting wick-rejections and volume fades.
