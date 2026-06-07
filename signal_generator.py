@@ -103,6 +103,13 @@ try:
 except ImportError:
     _ECON_CAL_AVAILABLE = False
 
+# OODA integration
+try:
+    from ooda_engine import get_engine as _get_ooda
+    _OODA_AVAILABLE = True
+except ImportError:
+    _OODA_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")   # server is UTC; all time checks use ET
 
@@ -696,6 +703,55 @@ class SignalGenerator:
                         f"{symbol} PM boost {pm_score.total_bonus:+.1f} | "
                         + " | ".join(pm_score.reasons[:3])
                     )
+
+            # === OODA context adjustment ===
+            if _OODA_AVAILABLE:
+                try:
+                    ooda = _get_ooda()
+                    prices_arr = df_5m["close"].values if hasattr(df_5m, 'columns') else None
+                    vols_arr = df_5m["volume"].values if hasattr(df_5m, 'columns') else None
+                    ctx = ooda.get_context(symbol, prices_arr, vols_arr)
+
+                    # CRISIS regime: skip all new entries
+                    if ctx.regime == "CRISIS":
+                        logger.debug(f"[OODA] {symbol} CRISIS regime — signal suppressed")
+                        return None
+
+                    # Direction alignment penalty
+                    if ctx.direction_bias == "BEAR" and direction == "LONG":
+                        ai_score -= 8
+                    elif ctx.direction_bias == "BULL" and direction == "SHORT":
+                        ai_score -= 8
+
+                    # Wyckoff phase bonus
+                    if ctx.wyckoff_phase in ("MARKUP", "SPRING") and direction == "LONG":
+                        ai_score += 4
+                    elif ctx.wyckoff_phase in ("MARKDOWN", "UTAD") and direction == "SHORT":
+                        ai_score += 4
+                    elif ctx.wyckoff_phase in ("DISTRIBUTION",) and direction == "LONG":
+                        ai_score -= 3
+
+                    # Macro + sentiment blend
+                    macro_blend = (ctx.macro_score + ctx.sentiment_score + ctx.flow_score) / 3.0
+                    ai_score += macro_blend * 0.5
+
+                    # Secret alpha
+                    ai_score += ctx.gamma_score * 0.3
+                    ai_score += ctx.pead_score * 0.5
+                    ai_score += ctx.seasonal_score * 0.4
+                    ai_score += ctx.smart_money_score * 0.4
+
+                    # Conviction boost
+                    if ctx.conviction > 0.75:
+                        ai_score *= 1.15
+                    elif ctx.conviction < 0.35:
+                        ai_score *= 0.80
+
+                    logger.debug(f"[OODA] {symbol} macro={ctx.macro_score:.1f} sent={ctx.sentiment_score:.1f} "
+                                 f"regime={ctx.regime} conv={ctx.conviction:.2f} bias={ctx.direction_bias} "
+                                 f"score_after={ai_score:.1f}")
+                except Exception as _ooda_err:
+                    logger.debug(f"[OODA] {symbol} error: {_ooda_err}")
 
             # 6d. Earnings Catalyst boost (up to +25 pts when EPS beat + RVOL surge)
             try:
