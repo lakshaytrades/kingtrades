@@ -376,9 +376,19 @@ class TradingBot:
         self.mtf_analyzer = MultiTimeframeAnalyzer()
         logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
 
-        # NSE-only modules — all disabled (Alpaca US mode)
-        self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
+        # NSE institutional intelligence modules
+        self.oc_analyzer = None
+        self.block_deal_scanner = None
         self.sector_rotation = self.pairs_engine = self.options_signals = None
+
+        # NSE FII/DII tracker
+        try:
+            from fii_dii_tracker import FIIDIITracker
+            self.fii_tracker = FIIDIITracker()
+            logger.info("[Main] FII/DII tracker initialized")
+        except Exception as _fii_err:
+            self.fii_tracker = None
+            logger.debug(f"[Main] FII/DII tracker unavailable: {_fii_err}")
 
         # Options Scalping Engine — Alpaca US options
         self.options_scalper = None
