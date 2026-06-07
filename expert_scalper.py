@@ -63,8 +63,8 @@ class ExpertScalper:
         self._active: Dict[str, float] = {}
         self._orb_levels: Dict[str, dict] = {}
 
-    def get_scalp_mode(self, use_ist: bool = True) -> ScalpMode:
-        regime = self._get_regime()
+    def get_scalp_mode(self, use_ist: bool = True, regime: Optional[str] = None) -> ScalpMode:
+        regime = regime or self._get_regime()
         if regime == "CRISIS":
             return ScalpMode.NONE
         now = datetime.now(IST if use_ist else ET)
@@ -87,9 +87,12 @@ class ExpertScalper:
             return ScalpMode.NONE
 
     def scan(self, symbol: str, closes: np.ndarray, highs: np.ndarray,
-             lows: np.ndarray, volumes: np.ndarray, use_ist: bool = True) -> Optional[ExpertScalpSignal]:
+             lows: np.ndarray, volumes: np.ndarray, use_ist: bool = True,
+             regime: Optional[str] = None) -> Optional[ExpertScalpSignal]:
         if len(self._active) >= self.MAX_ACTIVE: return None
-        mode = self.get_scalp_mode(use_ist)
+        # Prefer the regime supplied by the caller (the symbol actually being
+        # scanned); only fall back to a self-lookup keyed on this symbol.
+        mode = self.get_scalp_mode(use_ist, regime=regime or self._get_regime(symbol))
         if mode == ScalpMode.NONE: return None
         closes = np.asarray(closes, dtype=float); highs = np.asarray(highs, dtype=float)
         lows = np.asarray(lows, dtype=float); volumes = np.asarray(volumes, dtype=float)
@@ -228,10 +231,12 @@ class ExpertScalper:
         tp = (highs+lows+closes)/3; tv = np.sum(volumes)
         return float(np.sum(tp*volumes)/tv) if tv>0 else float(closes[-1])
 
-    def _get_regime(self):
+    def _get_regime(self, symbol: str = ""):
+        # Regime for the SYMBOL being scanned — not a hardcoded US index. On an
+        # NSE-only deployment "SPY" had no OODA context and always returned UNKNOWN.
         try:
             from ooda_engine import get_engine
-            return get_engine().get_context("SPY").regime
+            return get_engine().get_context(symbol or "^NSEI").regime
         except Exception: pass
         return "UNKNOWN"
 

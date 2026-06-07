@@ -764,6 +764,10 @@ class SignalGenerator:
                     logger.debug(f"[OODA] {symbol} macro={ctx.macro_score:.1f} sent={ctx.sentiment_score:.1f} "
                                  f"regime={ctx.regime} conv={ctx.conviction:.2f} bias={ctx.direction_bias} "
                                  f"score_after={ai_score:.1f}")
+                    # Clamp: OODA conviction (×1.15) + secret-alpha additions must
+                    # never push the score outside 0–100, or downstream grade/size
+                    # tiers (e.g. ≥95 → 2× size) fire on inflated arithmetic.
+                    ai_score = max(0.0, min(100.0, ai_score))
                 except Exception as _ooda_err:
                     logger.debug(f"[OODA] {symbol} error: {_ooda_err}")
 
@@ -806,8 +810,11 @@ class SignalGenerator:
                             pass
 
                     if _current_regime and _current_regime != "UNKNOWN":
-                        # Find pattern type from signal_type or pattern_name
-                        _pattern_name = getattr(signal, "signal_type", "") if "signal" in dir() else ""
+                        # Key the regime weight on the dominant detected pattern.
+                        # (Previous code referenced a non-existent `signal` local via
+                        #  `"signal" in dir()`, which was always False → dead feature.)
+                        _pat_objs = analysis_5m.get("patterns", []) if isinstance(analysis_5m, dict) else []
+                        _pattern_name = getattr(_pat_objs[0], "name", "") if _pat_objs else ""
                         if not _pattern_name:
                             _pattern_name = direction  # fallback
                         _regime_mult = _get_regime_weight(_pattern_name, _current_regime)
@@ -816,6 +823,7 @@ class SignalGenerator:
                         # Transform: score * weight → score + (weight-1) * 10
                         _regime_bonus = (_regime_mult - 1.0) * 10
                         ai_score += _regime_bonus
+                        ai_score = max(0.0, min(100.0, ai_score))
                         if abs(_regime_bonus) > 1.0:
                             logger.debug(f"[RegimeWeight] {symbol} pattern={_pattern_name} "
                                          f"regime={_current_regime} mult={_regime_mult:.2f} "

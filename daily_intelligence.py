@@ -60,15 +60,17 @@ def _send(msg: str):
         chat  = os.getenv("TELEGRAM_CHAT_ID",   "")
         if not token or not chat:
             print(msg)
-            return
+            return True
         import requests
-        requests.post(
+        resp = requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
             timeout=10,
         )
+        return bool(getattr(resp, "ok", False))
     except Exception as e:
         logger.debug(f"telegram: {e}")
+        return False
 
 
 # ── Plain English WHY Explainer ───────────────────────────────────────────────

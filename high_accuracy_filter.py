@@ -481,13 +481,14 @@ class HighAccuracyFilter:
                     return result
 
             result.gates_passed.append("OODA_OK")
-            # Conviction boost: high OODA conviction adds to signal_score pre-bonus
+            # NOTE: OODA conviction is already rewarded upstream in signal_generator
+            # (ai_score ×1.15 when conviction > 0.75). Adding score here too would
+            # DOUBLE-COUNT the same signal, inflating it past grade/size thresholds.
+            # We record conviction for transparency but do NOT re-add to the score.
             if _ooda_ctx.conviction > 0.75:
-                signal_score += 6
-                result.bonuses.append(f"OODA_HIGH_CONVICTION:{_ooda_ctx.conviction:.2f}(+6)")
+                result.bonuses.append(f"OODA_HIGH_CONVICTION:{_ooda_ctx.conviction:.2f}(noted)")
             elif _ooda_ctx.conviction > 0.65:
-                signal_score += 3
-                result.bonuses.append(f"OODA_CONVICTION:{_ooda_ctx.conviction:.2f}(+3)")
+                result.bonuses.append(f"OODA_CONVICTION:{_ooda_ctx.conviction:.2f}(noted)")
         except ImportError:
             result.gates_passed.append("OODA_SKIP")
         except Exception as _ooda_ex:

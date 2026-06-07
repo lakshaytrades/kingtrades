@@ -692,24 +692,31 @@ class RiskManager:
             "anti_mart": _anti_mult,
             "garch":     _garch_mult,
         }
+        # Anti-martingale (loss-streak shrink) is the PRIMARY drawdown brake — it
+        # must ALWAYS apply and must never be truncated away by the keep-worst-3
+        # logic below. Everything else competes for ≤3 reducer + ≤2 amplifier slots.
+        _optional_vals = [v for k, v in _all_mults.items() if k != "anti_mart"]
         _below_one = sorted(
-            [m for m in _all_mults.values() if m < 1.0]
-        )[:3]   # at most 3 most restrictive reductions
+            [m for m in _optional_vals if m < 1.0]
+        )[:3]   # at most 3 most restrictive optional reductions
         _above_one = sorted(
-            [m for m in _all_mults.values() if m > 1.0],
+            [m for m in _optional_vals if m > 1.0],
             reverse=True,
         )[:2]   # at most 2 amplifiers
         combined_mult = 1.0
+        if _anti_mult < 1.0:
+            combined_mult *= _anti_mult   # mandatory — never dropped
         for _m in _below_one + _above_one:
             combined_mult *= _m
-        # Hard floor/ceiling: combined mult never below 20% or above 2× base
-        combined_mult = max(0.20, min(2.0, combined_mult))
+        # Hard floor/ceiling: never above 2× base. Floor kept low (0.10) so a
+        # genuine loss-streak/defensive shrink is preserved, not clamped back up.
+        combined_mult = max(0.10, min(2.0, combined_mult))
 
         _active_mults = {k: v for k, v in _all_mults.items() if v != 1.0}
         if _active_mults:
             logger.debug(
                 f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x "
-                f"(floor=0.20 applied)" if combined_mult == 0.20 else
+                f"(floor=0.10 applied)" if combined_mult == 0.10 else
                 f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x"
             )
         if _streak > 0:

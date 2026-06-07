@@ -1861,21 +1861,45 @@ class TradingBot:
                 _rm_state.daily_capital + max(_rm_state.peak_pnl, 0.0)
             )
 
-            # Apply intraday adaptive params to signal generator before each scan
+            # Reconcile the two live adaptation systems (intraday_adapter +
+            # all_weather) into ONE param set before applying. Previously each
+            # called apply_adaptive_params separately and all_weather (applied
+            # last) always overwrote intraday's protective min_score raises.
+            # Rule: take the MORE CONSERVATIVE value — highest min_score (hardest
+            # bar) and lowest position-size multiplier — so neither system's risk
+            # protection can be silently discarded by the other.
             try:
-                from intraday_adapter import IntradayAdapter as _IA
-                _ia_params = _IA.load_params_from_file()
-                if _ia_params and hasattr(self.signal_gen, "apply_adaptive_params"):
-                    self.signal_gen.apply_adaptive_params(_ia_params)
-            except Exception:
-                pass
+                _merged_params: dict = {}
+                _ia_params = None
+                _aw_params = None
+                try:
+                    from intraday_adapter import IntradayAdapter as _IA
+                    _ia_params = _IA.load_params_from_file()
+                except Exception:
+                    pass
+                try:
+                    from all_weather_strategy import AllWeatherEngine as _AWE
+                    _aw_params = _AWE.load_config_from_file()
+                except Exception:
+                    pass
 
-            # All-weather strategy config
-            try:
-                from all_weather_strategy import AllWeatherEngine as _AWE
-                _aw_params = _AWE.load_config_from_file()
-                if _aw_params and hasattr(self.signal_gen, "apply_adaptive_params"):
-                    self.signal_gen.apply_adaptive_params(_aw_params)
+                _sources = [p for p in (_ia_params, _aw_params) if isinstance(p, dict)]
+                if _sources:
+                    _min_scores = [float(p["min_score"]) for p in _sources if "min_score" in p]
+                    if _min_scores:
+                        _merged_params["min_score"] = max(_min_scores)   # hardest bar wins
+                    _size_keys = ("size_multiplier", "pos_mult", "position_multiplier")
+                    _sizes = [float(p[k]) for p in _sources for k in _size_keys if k in p]
+                    if _sizes:
+                        _merged_params["size_multiplier"] = min(_sizes)  # most defensive wins
+                    # Pass through any remaining keys (last non-conflicting writer).
+                    for p in _sources:
+                        for k, v in p.items():
+                            if k not in _merged_params and k not in _size_keys and k != "min_score":
+                                _merged_params[k] = v
+
+                if _merged_params and hasattr(self.signal_gen, "apply_adaptive_params"):
+                    self.signal_gen.apply_adaptive_params(_merged_params)
             except Exception:
                 pass
 
@@ -2356,10 +2380,17 @@ class TradingBot:
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
 
                 # Pre-trade PLAN broadcast — explain intent + OODA reasoning BEFORE
-                # committing capital. Never allowed to block execution.
+                # committing capital. Fired on a daemon thread so the (synchronous,
+                # up-to-15s) Telegram POST can NEVER delay order entry on a momentum
+                # scalp where entry timing is the edge.
                 try:
+                    import threading as _threading
                     from trade_plan_broadcaster import broadcast_trade_plan
-                    broadcast_trade_plan(signal, self.alerter)
+                    _threading.Thread(
+                        target=broadcast_trade_plan,
+                        args=(signal, self.alerter),
+                        daemon=True,
+                    ).start()
                 except Exception as _bp:
                     logger.debug(f"trade plan broadcast skipped: {_bp}")
 

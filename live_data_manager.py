@@ -76,7 +76,7 @@ class LiveDataManager:
         if c is not None: return float(c)
         try:
             import yfinance as yf
-            df = yf.download("^VIX","2d","1d",progress=False,auto_adjust=True)
+            df = yf.download("^VIX", period="2d", interval="1d", progress=False, auto_adjust=True)
             if df is not None and len(df)>0:
                 v = float(df["Close"].iloc[-1]); self._c.set("us_vix",v); return v
         except Exception: pass
@@ -87,7 +87,7 @@ class LiveDataManager:
         if c is not None: return float(c)
         try:
             import yfinance as yf
-            df = yf.download("SPY","2d","1d",progress=False,auto_adjust=True)
+            df = yf.download("SPY", period="2d", interval="1d", progress=False, auto_adjust=True)
             if df is not None and len(df)>=2:
                 r = float(df["Close"].iloc[-1])/float(df["Close"].iloc[-2])-1
                 self._c.set("spy_ret",r); return r
