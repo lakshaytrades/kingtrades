@@ -555,6 +555,58 @@ class MLEnsemble:
             logger.warning(f"ml_ensemble: pretrained load failed ({e}), falling back")
             return False
 
+    def _load_pretrained_if_available(self) -> bool:
+        """Load pretrained models from data/ml_pretrained/ if they exist. Returns True if loaded.
+
+        Handles the output format of ml_pretrain.py (plain pickle objects + meta.json),
+        complementing the existing _load_pretrained() which handles the joblib dict format
+        produced by pretrain_ml.py / cold-start. Called first during initialisation so
+        that a full ml_pretrain.py run short-circuits the slower cold-start path.
+        """
+        pretrain_dir = os.path.join(os.path.dirname(__file__), "data", "ml_pretrained")
+        meta_path = os.path.join(pretrain_dir, "meta.json")
+
+        if not os.path.exists(meta_path):
+            return False
+
+        try:
+            import json
+            with open(meta_path) as f:
+                meta = json.load(f)
+
+            loaded = {}
+            for model_name in meta.get("models", []):
+                path = os.path.join(pretrain_dir, f"{model_name}.pkl")
+                if os.path.exists(path):
+                    with open(path, "rb") as f:
+                        obj = pickle.load(f)
+                    # Support both plain model objects and {"model": clf} dicts
+                    if isinstance(obj, dict) and "model" in obj:
+                        loaded[model_name] = obj["model"]
+                    else:
+                        loaded[model_name] = obj
+
+            if len(loaded) >= 3:  # need at least 3 models
+                self._models = loaded
+                self._weights = {k: DEFAULT_WEIGHTS.get(k, 1.0) for k in loaded}
+                self._model_history = {k: [] for k in loaded}
+                self._loaded = True
+                logger.info(
+                    f"[MLEnsemble] Loaded {len(loaded)} pretrained models from {pretrain_dir} "
+                    f"(trained {meta.get('trained_at', 'unknown')}, "
+                    f"n={meta.get('n_samples', '?')}, "
+                    f"win_rate={meta.get('win_rate', 0):.2%})"
+                )
+                return True
+            logger.debug(
+                f"[MLEnsemble] meta.json found but only {len(loaded)}/5 models present — "
+                "falling back to cold-start"
+            )
+            return False
+        except Exception as e:
+            logger.warning(f"[MLEnsemble] Failed to load pretrained models: {e}")
+            return False
+
     def _check_and_swap_regime(self) -> None:
         """
         Check if regime has changed (every 60 min).
@@ -600,7 +652,11 @@ class MLEnsemble:
                 return
         except Exception as e:
             logger.warning(f"ml_ensemble: could not load model ({e}), retraining")
-        # Priority 2: load pre-trained models from pretrain_ml.py output
+        # Priority 2a: load models saved by ml_pretrain.py (meta.json + plain pkl format)
+        if self._load_pretrained_if_available():
+            self._save()   # persist as live ensemble so next restart is fast
+            return
+        # Priority 2b: load pre-trained models from pretrain_ml.py output (joblib dict format)
         if self._load_pretrained():
             self._save()   # persist as live ensemble so next restart is fast
             self._loaded = True
@@ -813,6 +869,11 @@ def pretrain_if_needed() -> None:
     When real pretrain_ml.py output is present this is a no-op.
     """
     global _WARNED_NO_MODELS
+
+    # Check if ml_pretrain.py output exists (meta.json + plain pkl models) — highest priority
+    meta_sentinel = os.path.join(_PRETRAINED_DIR, "meta.json")
+    if os.path.exists(meta_sentinel):
+        return  # ml_pretrain.py models already present — nothing to do
 
     # Check if any pretrained model already exists — if so, skip cold-start
     sentinel = os.path.join(_PRETRAINED_DIR, "gbm_bull.pkl")
