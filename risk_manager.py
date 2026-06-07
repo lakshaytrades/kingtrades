@@ -514,6 +514,37 @@ class RiskManager:
     # POSITION SIZING
     # --------------------------------------------------------
 
+    @staticmethod
+    def conviction_to_size_mult(conviction: float) -> float:
+        """Map OODA conviction [0,1] to size multiplier [0.5, 1.5].
+
+        Used to scale position size based on signal conviction score.
+        High conviction setups get larger size; low conviction get smaller.
+        """
+        if conviction < 0.35:
+            return 0.50   # Very low conviction → half size
+        elif conviction < 0.50:
+            return 0.75
+        elif conviction < 0.65:
+            return 1.00   # Baseline
+        elif conviction < 0.80:
+            return 1.20
+        else:
+            return 1.50   # High conviction → 1.5x size
+
+    def get_size_summary(
+        self,
+        base_shares: int,
+        final_shares: int,
+        combined_mult: float,
+        mults: dict,
+    ) -> str:
+        """Human-readable size calculation summary for Telegram alerts."""
+        return (
+            f"Size: {base_shares}→{final_shares} ({combined_mult:.2f}x) | "
+            f"Mults: {' × '.join(f'{k}={v:.2f}' for k, v in mults.items() if v != 1.0)}"
+        )
+
     def calculate_position_size(
         self,
         symbol: str,
@@ -597,27 +628,21 @@ class RiskManager:
                 "— protecting elite setup sizing"
             )
             sess_mult = 0.8
-        quantity = max(1, int(quantity * sess_mult))
 
         # 4a. Day-of-week multiplier (4-day profit optimizer)
         now_ist    = get_current_ist_time()
         dow        = now_ist.weekday()   # 0=Mon … 4=Fri
         dow_mults  = getattr(_cfg, "DOW_SIZE_MULTIPLIERS", {})
         dow_mult   = dow_mults.get(dow, 1.0)
-        quantity   = max(1, int(quantity * dow_mult))
 
         # 4b. Institutional multiplier (FII/DII + Option Chain)
         inst_mult = getattr(self, "_inst_mult", 1.0)
-        quantity  = max(1, int(quantity * inst_mult))
 
         # 4c. Signal grade / profit engine size multiplier (A+=1.25, A=1.1, etc.)
-        if size_multiplier != 1.0:
-            quantity = max(1, int(quantity * size_multiplier))
+        # (already passed in as size_multiplier parameter)
 
         # 4d. Morning intelligence day-level size multiplier (DEFENSIVE=0.5, AGGRESSIVE=1.5)
         mi_mult = getattr(self, "size_multiplier", 1.0)
-        if mi_mult != 1.0:
-            quantity = max(1, int(quantity * mi_mult))
 
         # 4e. Anti-martingale: scale DOWN after consecutive losses, recover after wins.
         # This is the single most effective drawdown reducer — halves loss damage in streaks.
@@ -630,22 +655,10 @@ class RiskManager:
             _anti_mult = 0.75      # 1 loss: 75% size — slightly cautious
         else:
             _anti_mult = 1.0       # no losses today: full size
-        if _anti_mult < 1.0:
-            quantity = max(1, int(quantity * _anti_mult))
-            logger.debug(
-                f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size"
-            )
-
-        # ── HARD MULTIPLIER CAP: prevent stacked multipliers from exceeding 2× base ──
-        # Base quantity is what risk-based sizing alone gives (before session/DOW/inst multipliers).
-        # With 5 stacked multipliers, position can theoretically reach 5.4× — cap at 2×.
-        _base_risk_qty = int(risk_amount / sl_distance) if sl_distance > 0 else 1
-        if _base_risk_qty > 0 and quantity > _base_risk_qty * 2:
-            quantity = _base_risk_qty * 2
-            logger.debug(f"Multiplier cap: clamped qty to 2× base ({_base_risk_qty * 2})")
 
         # 4f. GARCH-style EWMA volatility sizing — scale by recent realized vol
         # Fail-open: returns 1.0 on any error; skips silently if BarCache unavailable
+        _garch_mult = 1.0
         try:
             from market_data_store import BarCache
             _bc = BarCache.instance() if hasattr(BarCache, 'instance') else None
@@ -661,11 +674,61 @@ class RiskManager:
                             for i in range(1, len(_closes))
                         ]
             _garch_mult = _garch_sizing.get_size_multiplier(symbol, _recent_returns)
-            if _garch_mult != 1.0:
-                quantity = max(1, int(quantity * _garch_mult))
-                logger.debug(f"{symbol}: GARCH vol sizing ×{_garch_mult:.2f} → {quantity} shares")
         except Exception as _ge:
             logger.debug(f"[suppressed] garch_sizing: {_ge}")
+
+        # ── COMBINED MULTIPLIER GUARD (floor=0.20, cap at 3 most restrictive) ──────
+        # Collect all independent multipliers that were previously applied sequentially.
+        # Stacking 7+ multipliers multiplicatively can reduce size to <5% of intent
+        # (e.g. 0.5 × 0.35 × 0.5 × 0.8 × 0.6 = 0.042 — effectively not trading).
+        # Fix: use at most the 3 most restrictive below-1.0 multipliers and 2 above-1.0,
+        # then enforce a hard floor of 0.20 (20% of base) and ceiling of 2.0.
+        _all_mults = {
+            "sess":      sess_mult,
+            "dow":       dow_mult,
+            "inst":      inst_mult,
+            "signal":    size_multiplier,
+            "morning":   mi_mult,
+            "anti_mart": _anti_mult,
+            "garch":     _garch_mult,
+        }
+        _below_one = sorted(
+            [m for m in _all_mults.values() if m < 1.0]
+        )[:3]   # at most 3 most restrictive reductions
+        _above_one = sorted(
+            [m for m in _all_mults.values() if m > 1.0],
+            reverse=True,
+        )[:2]   # at most 2 amplifiers
+        combined_mult = 1.0
+        for _m in _below_one + _above_one:
+            combined_mult *= _m
+        # Hard floor/ceiling: combined mult never below 20% or above 2× base
+        combined_mult = max(0.20, min(2.0, combined_mult))
+
+        _active_mults = {k: v for k, v in _all_mults.items() if v != 1.0}
+        if _active_mults:
+            logger.debug(
+                f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x "
+                f"(floor=0.20 applied)" if combined_mult == 0.20 else
+                f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x"
+            )
+        if _streak > 0:
+            logger.debug(
+                f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size "
+                f"(absorbed into combined_mult={combined_mult:.2f}x)"
+            )
+
+        quantity = max(1, int(quantity * combined_mult))
+
+        # ── HARD MULTIPLIER CAP: prevent stacked multipliers from exceeding 2× base ──
+        # Base quantity is what risk-based sizing alone gives (before all multipliers).
+        _base_risk_qty = int(risk_amount / sl_distance) if sl_distance > 0 else 1
+        if _base_risk_qty > 0 and quantity > _base_risk_qty * 2:
+            quantity = _base_risk_qty * 2
+            logger.debug(f"Multiplier cap: clamped qty to 2× base ({_base_risk_qty * 2})")
+
+        if _garch_mult != 1.0:
+            logger.debug(f"{symbol}: GARCH vol sizing ×{_garch_mult:.2f} (absorbed into combined_mult)")
 
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
@@ -774,6 +837,8 @@ class RiskManager:
             "dow_mult":       round(dow_mult, 2),
             "inst_mult":      round(inst_mult, 2),
             "heat_pct":       round(self.state.portfolio_heat, 2),
+            "combined_mult":  round(combined_mult, 3),
+            "size_mults":     {k: round(v, 3) for k, v in _active_mults.items()},
         }
 
     # --------------------------------------------------------
