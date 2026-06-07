@@ -1,7 +1,7 @@
 """
 ML Pre-trainer — bootstraps ML ensemble with historical market data.
 
-Downloads 2 years of daily data for 50+ symbols, computes the full
+Downloads up to 15 years (max available) of daily data for 50+ symbols, computes the full
 55-feature vector that ml_ensemble.py uses, labels each bar with
 binary outcome (next 5 bars: +1% return = WIN, -0.5% = LOSS, else skip),
 and pre-trains all 5 models. Saves to data/ml_pretrained/.
@@ -32,8 +32,20 @@ TRAINING_SYMBOLS = [
     "IWM", "DIA", "XLF", "XLK", "XLE", "XLV", "XLI", "GLD", "TLT",
     # High-beta momentum stocks
     "MARA", "RIOT", "COIN", "PLTR", "SOFI", "LCID", "F", "GM",
-    # India proxy (listed on US)
-    "INFY", "WIT", "HDB", "IBN",
+    # India ADRs and NSE proxies
+    "INFY", "WIT", "HDB", "IBN", "VEDL", "TTM",
+    # India ETFs
+    "INDA", "PIN", "EPI",
+    # Global macro context
+    "EEM", "FXI", "EWJ", "VEA", "VWO",
+    # More sectors
+    "XLB", "XLRE", "XLY", "XLC",
+    # Volatility
+    "UVXY",
+    # Fixed income / spreads
+    "TLT", "IEF", "HYG", "LQD",
+    # Commodities
+    "GLD", "SLV", "USO",
 ]
 
 FEATURE_NAMES = [
@@ -92,6 +104,35 @@ def download_data(symbols: list, period: str = "2y", interval: str = "1d"):
                 logger.warning(f"  Skipping {sym}: insufficient data")
         except Exception as e:
             logger.warning(f"  Failed {sym}: {e}")
+    return all_data
+
+
+def download_data_chunked(symbols: list, period: str = "max", interval: str = "1d"):
+    """Download with retry and small delays to avoid rate limiting."""
+    import yfinance as yf
+    import time as _time
+    all_data = {}
+    for i, sym in enumerate(symbols):
+        for attempt in range(3):
+            try:
+                df = yf.download(sym, period=period, interval=interval,
+                                  progress=False, auto_adjust=True)
+                if df is not None and len(df) >= 100:
+                    all_data[sym] = df
+                    logger.info(f"  [{i+1}/{len(symbols)}] {sym}: {len(df)} bars "
+                                f"({df.index[0].date()} → {df.index[-1].date()})")
+                    break
+                else:
+                    logger.warning(f"  {sym}: only {len(df) if df is not None else 0} bars — skipping")
+                    break
+            except Exception as e:
+                if attempt < 2:
+                    logger.debug(f"  {sym} retry {attempt+1}: {e}")
+                    _time.sleep(2 ** attempt)
+                else:
+                    logger.warning(f"  {sym}: failed — {e}")
+        if i % 10 == 9:
+            _time.sleep(1)  # brief pause every 10 symbols
     return all_data
 
 
@@ -410,7 +451,7 @@ def main():
     parser = argparse.ArgumentParser(description="Pre-train KingTrades ML models")
     parser.add_argument("--symbols", nargs="+", default=TRAINING_SYMBOLS,
                         help="Symbols to train on")
-    parser.add_argument("--period", default="2y", help="Data period (1y, 2y, 5y)")
+    parser.add_argument("--period", default="max", help="Data period (1y, 2y, 5y, max)")
     parser.add_argument("--output", default="data/ml_pretrained",
                         help="Output directory for models")
     args = parser.parse_args()
@@ -419,7 +460,7 @@ def main():
     logger.info(f"Symbols: {len(args.symbols)} | Period: {args.period} | Output: {args.output}")
 
     logger.info("Downloading market data...")
-    all_data = download_data(args.symbols, period=args.period)
+    all_data = download_data_chunked(args.symbols, period=args.period)
 
     # Download SPY and VIX for context features
     spy_data = all_data.get("SPY")
@@ -460,7 +501,77 @@ def main():
     logger.info("Training models...")
 
     train_models(X_combined, y_combined, args.output)
+    # Also train scalper model on 5-min data
+    train_scalper_model(args.symbols, args.output)
     logger.info("Pre-training complete!")
+
+
+def train_scalper_model(symbols: list, output_dir: str):
+    """Train a fast GBM model on 5-min data for scalp signal scoring."""
+    logger.info("Training scalper model on 5-min data...")
+    import yfinance as yf
+    import pickle
+
+    scalp_syms = [s for s in symbols if s in [
+        "SPY","QQQ","AAPL","MSFT","NVDA","TSLA","AMD","META","AMZN","GOOGL",
+        "IWM","INFY","WIT"
+    ]][:8]
+
+    all_X, all_y = [], []
+    for sym in scalp_syms:
+        try:
+            df = yf.download(sym, period="60d", interval="5m", progress=False, auto_adjust=True)
+            if df is None or len(df) < 100: continue
+            c = df["Close"].values.astype(float)
+            v = df["Volume"].values.astype(float)
+            h = df["High"].values.astype(float)
+            lo = df["Low"].values.astype(float)
+            import math
+            for i in range(20, len(c)-2):
+                try:
+                    r1=(c[i]-c[i-1])/c[i-1]; r3=(c[i]-c[i-3])/c[i-3]; r5=(c[i]-c[i-5])/c[i-5]
+                    d=np.diff(c[max(0,i-15):i+1]); g=np.where(d>0,d,0); l=np.where(d<0,-d,0)
+                    rsi=100-100/(1+np.mean(g[-14:])/(np.mean(l[-14:])+1e-10))
+                    w=c[i-19:i+1]; ma=np.mean(w); std=np.std(w)
+                    bb_pct=(c[i]-(ma-2*std))/(4*std+1e-10); bb_w=2*std/ma if ma!=0 else 0
+                    vr=v[i]/(np.mean(v[i-10:i])+1e-10)
+                    tr=np.maximum(h[i-9:i+1]-lo[i-9:i+1],
+                        np.maximum(np.abs(h[i-9:i+1]-np.roll(c[i-9:i+1],1)),
+                                   np.abs(lo[i-9:i+1]-np.roll(c[i-9:i+1],1))))
+                    atr=float(np.mean(tr[1:]))/c[i] if c[i]!=0 else 0
+                    tp=(h[i-19:i+1]+lo[i-19:i+1]+c[i-19:i+1])/3
+                    vwap=np.sum(tp*v[i-19:i+1])/(np.sum(v[i-19:i+1])+1e-10)
+                    vd=(c[i]-vwap)/vwap if vwap!=0 else 0
+                    h5=h[i-4:i+1].max(); l5=lo[i-4:i+1].min()
+                    pos5=(c[i]-l5)/(h5-l5+1e-10)
+                    rets5=np.diff(c[i-5:i+1])/c[i-5:i]
+                    mc=np.sum(rets5>0)/len(rets5) if len(rets5)>0 else 0.5
+                    dow=i%5; hr=(i//12)%7
+                    fv=[r1,r3,r5,rsi/100,bb_pct,bb_w,vr,atr,vd,pos5,mc,
+                        math.sin(2*math.pi*dow/5),math.cos(2*math.pi*dow/5),
+                        math.sin(2*math.pi*hr/7),math.cos(2*math.pi*hr/7),
+                        (rsi/100)*vr,r1**2,bb_w*vr,float(c[i]>np.mean(c[i-20:i])),float(vr>2)]
+                    fwd=c[i+1]/c[i]-1
+                    lbl=1 if fwd>0.003 else (0 if fwd<-0.002 else -1)
+                    all_X.append(fv); all_y.append(lbl)
+                except Exception: continue
+            logger.info(f"  {sym}: 5-min processed")
+        except Exception as e: logger.warning(f"  scalp {sym}: {e}")
+
+    if not all_X: logger.warning("No scalp data"); return
+    X=np.nan_to_num(np.array(all_X,dtype=float),nan=0,posinf=1,neginf=-1)
+    y=np.array(all_y); mask=y!=-1; X,y=X[mask],y[mask]
+    if len(X)<200: logger.warning(f"Too few scalp samples: {len(X)}"); return
+    logger.info(f"Scalp training: {len(X)} samples WR={y.mean():.2%}")
+    try:
+        from sklearn.ensemble import GradientBoostingClassifier
+        m=GradientBoostingClassifier(n_estimators=150,max_depth=3,learning_rate=0.08,
+                                      subsample=0.8,random_state=42)
+        m.fit(X,y)
+        os.makedirs(output_dir,exist_ok=True)
+        with open(os.path.join(output_dir,"scalp_gbm.pkl"),"wb") as f: pickle.dump(m,f)
+        logger.info(f"Scalp model saved. Score={m.score(X,y):.3f}")
+    except Exception as e: logger.warning(f"Scalp training failed: {e}")
 
 
 if __name__ == "__main__":
