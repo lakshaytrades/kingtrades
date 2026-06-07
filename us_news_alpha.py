@@ -5,7 +5,7 @@ Sources: SEC EDGAR RSS (official filings), Yahoo Finance news,
 
 3 signals:
   1. SEC 8-K material events (acquisition, guidance change, etc.)
-  2. News sentiment from Yahoo Finance headlines
+  2. News sentiment from Yahoo Finance headlines (VADER NLP + keyword fallback)
   3. WSB mention spike (contrarian: very high = reversal risk)
 
 Score: -12 to +10. Cache 20 min. Fail-open.
@@ -31,6 +31,83 @@ MILD_POS   = ["growth", "expansion", "positive", "raised guidance",
 MILD_NEG   = ["below", "concern", "slowing", "pressure", "headwinds",
               "cut guidance", "uncertainty"]
 
+# Breaking news terms that trigger an immediate -10 score override
+BREAKING_NEG = [
+    "going concern", "fraud", "restatement", "bankruptcy",
+    "sec subpoena", "class action", "fda reject",
+]
+
+# ── Entity relevance map ───────────────────────────────────────────────────────
+_COMPANY_MAP = {
+    "AAPL": ["apple"], "MSFT": ["microsoft"], "NVDA": ["nvidia"],
+    "GOOGL": ["google", "alphabet"], "GOOG": ["google", "alphabet"],
+    "META": ["meta", "facebook"], "AMZN": ["amazon"], "TSLA": ["tesla"],
+    "NFLX": ["netflix"], "AMD": ["advanced micro"], "INTC": ["intel"],
+    "JPM": ["jpmorgan", "j.p. morgan"], "BAC": ["bank of america"],
+    "SPY": ["s&p 500", "spx", "s&p500"], "QQQ": ["nasdaq", "qqq"],
+}
+
+
+def _score_keywords(text: str) -> float:
+    """
+    Pure keyword scoring on a single text string. Returns a raw float.
+    Positive = bullish, negative = bearish.
+    """
+    score = 0.0
+    for kw in STRONG_POS:
+        if kw in text:
+            score += 3.0
+            break
+    for kw in STRONG_NEG:
+        if kw in text:
+            score -= 4.0
+            break
+    for kw in MILD_POS:
+        if kw in text:
+            score += 1.5
+            break
+    for kw in MILD_NEG:
+        if kw in text:
+            score -= 1.5
+            break
+    return score
+
+
+def _score_with_vader(self_obj, text: str) -> float:
+    """
+    VADER compound score [-1, +1]. Falls back to keyword scoring if unavailable.
+    self_obj is a carrier object that stores the _vader instance lazily.
+    """
+    try:
+        from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+        if not hasattr(self_obj, '_vader'):
+            self_obj._vader = SentimentIntensityAnalyzer()
+        return self_obj._vader.polarity_scores(text)['compound']
+    except ImportError:
+        # Normalize keyword score to [-1, +1] range for blending
+        raw = _score_keywords(text)
+        return max(-1.0, min(1.0, raw / 4.0))
+    except Exception:
+        return 0.0
+
+
+def _is_entity_relevant(text: str, symbol: str) -> bool:
+    """True if the headline/text explicitly references the ticker or known company name."""
+    tl = text.lower()
+    if f" {symbol.lower()} " in f" {tl} ":
+        return True
+    for name in _COMPANY_MAP.get(symbol, []):
+        if name in tl:
+            return True
+    return False
+
+
+# Module-level carrier object to lazily hold the VADER analyzer singleton
+class _VaderCarrier:
+    pass
+
+_vader_carrier = _VaderCarrier()
+
 
 def _fetch_yahoo_headlines(symbol: str) -> List[str]:
     """
@@ -52,7 +129,7 @@ def _fetch_yahoo_headlines(symbol: str) -> List[str]:
             summary = item.get("summary", "") or ""
             combined = f"{title} {summary}".strip()
             if combined:
-                headlines.append(combined.lower())
+                headlines.append(combined)
         _cache[cache_key] = (headlines, now)
         return headlines
     except Exception as e:
@@ -61,9 +138,11 @@ def _fetch_yahoo_headlines(symbol: str) -> List[str]:
         return []
 
 
-def _score_headlines(headlines: List[str], direction: str) -> Tuple[float, str]:
+def _score_headlines(headlines: List[str], direction: str, symbol: str = "") -> Tuple[float, str]:
     """
-    Keyword scoring against strong/mild positive/negative lists.
+    VADER × 0.6 + keyword × 0.4 per headline.
+    If entity-relevant, multiply headline score by 1.8.
+    Detects BREAKING news and returns score = -10 immediately.
     Score aligned with direction. Clamp [-12, +10].
     """
     if not headlines:
@@ -71,35 +150,52 @@ def _score_headlines(headlines: List[str], direction: str) -> Tuple[float, str]:
 
     raw_score = 0.0
     hits: List[str] = []
+    breaking_flag = False
 
     for text in headlines[:10]:  # limit to 10 most recent
-        for kw in STRONG_POS:
-            if kw in text:
-                raw_score += 3.0
-                hits.append(f"+{kw}")
+        tl = text.lower()
+
+        # Breaking news detection — immediate override
+        for term in BREAKING_NEG:
+            if term in tl:
+                breaking_flag = True
+                hits.append(f"BREAKING:{term}")
                 break
-        for kw in STRONG_NEG:
-            if kw in text:
-                raw_score -= 4.0
-                hits.append(f"-{kw}")
-                break
-        for kw in MILD_POS:
-            if kw in text:
-                raw_score += 1.5
-                hits.append(f"+{kw}")
-                break
-        for kw in MILD_NEG:
-            if kw in text:
-                raw_score -= 1.5
-                hits.append(f"-{kw}")
-                break
+
+        if breaking_flag:
+            break
+
+        # VADER score (compound, already in [-1, +1])
+        vader_score = _score_with_vader(_vader_carrier, text)
+        # Keyword score normalized to ~[-1, +1]
+        kw_raw = _score_keywords(tl)
+        kw_score = max(-1.0, min(1.0, kw_raw / 4.0))
+
+        # Blend VADER + keyword
+        blended = vader_score * 0.6 + kw_score * 0.4
+
+        # Scale to roughly [-4, +3] per headline (matches old per-headline range)
+        scaled = blended * 3.5
+
+        # Entity relevance multiplier
+        if symbol and _is_entity_relevant(text, symbol):
+            scaled *= 1.8
+            hits.append(f"entity_match({symbol})")
+
+        raw_score += scaled
+        if abs(vader_score) > 0.3:
+            hits.append(f"vader={vader_score:.2f}")
+
+    if breaking_flag:
+        reason = f"BREAKING_NEWS:[{','.join(hits[:3])}]"
+        return -10.0, reason
 
     # Align with direction
     if direction == "SHORT":
         raw_score = -raw_score  # positive news is bad for shorts
 
     score = max(-12.0, min(10.0, raw_score))
-    reason = f"news_kw:[{','.join(hits[:3])}]" if hits else "news_neutral"
+    reason = f"news_nlp:[{','.join(hits[:3])}]" if hits else "news_neutral"
     return float(score), reason
 
 
@@ -206,30 +302,53 @@ def get_sec_8k_score(symbol: str, direction: str) -> Tuple[float, str]:
         return 0.0, ""
 
 
-def get_news_score(symbol: str, direction: str) -> Tuple[float, str]:
+def get_news_alpha_score(symbol: str, direction: str = "LONG") -> Tuple[float, str]:
     """
-    Combine: Yahoo news headlines score (weight 0.6) + SEC 8-K score (weight 0.4).
-    Fail-open (0.0, "").
+    Main entry point. Combines:
+      - Yahoo Finance headlines (VADER × 0.6 + keyword × 0.4; entity-relevant × 1.8)
+      - SEC EDGAR 8-K filings
+    Cached 20 min. Fail-open (0.0, "").
+
+    Breaking news override: if any headline contains a BREAKING_NEG term, returns -10.
     """
+    cache_key = f"news_alpha:{symbol}:{direction}"
+    now = _time.time()
+    cached = _cache.get(cache_key)
+    if cached is not None and now - cached[2] < _TTL:
+        return cached[0], cached[1]
+
     try:
         headlines = _fetch_yahoo_headlines(symbol)
-        yahoo_score, yahoo_reason = _score_headlines(headlines, direction)
-        sec_score,   sec_reason   = get_sec_8k_score(symbol, direction)
+        yahoo_score, yahoo_reason = _score_headlines(headlines, direction, symbol=symbol)
+
+        # If BREAKING news detected, short-circuit — don't even weight SEC
+        if "BREAKING_NEWS" in yahoo_reason:
+            _cache[cache_key] = (yahoo_score, yahoo_reason, now)
+            return float(yahoo_score), yahoo_reason
+
+        sec_score, sec_reason = get_sec_8k_score(symbol, direction)
 
         combined = yahoo_score * 0.6 + sec_score * 0.4
         combined = max(-12.0, min(10.0, combined))
 
         parts = []
-        if yahoo_reason:
+        if yahoo_reason and yahoo_reason != "news_neutral":
             parts.append(f"yahoo:{yahoo_reason}")
         if sec_reason:
             parts.append(f"sec:{sec_reason}")
         reason = " | ".join(parts) if parts else "news_neutral"
 
+        _cache[cache_key] = (float(combined), reason, now)
         return float(combined), reason
     except Exception as e:
-        logger.debug(f"get_news_score({symbol}): {e}")
+        logger.debug(f"get_news_alpha_score({symbol}): {e}")
         return 0.0, ""
+
+
+# Legacy alias — kept for backward compatibility with existing callers
+def get_news_score(symbol: str, direction: str) -> Tuple[float, str]:
+    """Backward-compatible alias for get_news_alpha_score."""
+    return get_news_alpha_score(symbol, direction)
 
 
 def get_wsb_mention_score(symbol: str, direction: str) -> Tuple[float, str]:

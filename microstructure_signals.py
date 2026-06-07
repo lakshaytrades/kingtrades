@@ -483,3 +483,115 @@ def get_correlation_filter_score(symbol: str, direction: str) -> Tuple[float, st
     except Exception as e:
         logger.debug(f"[correlation_filter] {symbol}: {e}")
         return 0.0, "error"
+
+
+# ── OFI + VPIN + Institutional Footprint (Strategy 15-17) ─────────────────────
+
+class MicrostructureAnalyzer:
+    """
+    Quantitative microstructure signals:
+      - OFI  (Order Flow Imbalance): buying vs selling pressure from OHLCV
+      - VPIN (Volume-Synchronized Probability of Informed Trading proxy)
+      - Institutional footprint: early-session volume concentration
+    All methods are fail-open (return defaults on any exception).
+    """
+
+    def compute_order_flow_imbalance(self, bars_df) -> float:
+        """
+        OFI from OHLCV: (close-open)/(high-low) × volume, normalized.
+        Returns -1 (selling pressure) to +1 (buying pressure).
+        """
+        if bars_df is None or len(bars_df) < 5:
+            return 0.0
+        try:
+            r = bars_df.tail(10).copy()
+            # Normalise column names
+            h_col = "high"   if "high"   in r.columns else "High"
+            l_col = "low"    if "low"    in r.columns else "Low"
+            c_col = "close"  if "close"  in r.columns else "Close"
+            o_col = "open"   if "open"   in r.columns else "Open"
+            v_col = "volume" if "volume" in r.columns else "Volume"
+            hl = (r[h_col] - r[l_col]).clip(lower=1e-8)
+            co = r[c_col] - r[o_col]
+            ofi = float((co / hl * r[v_col]).sum() / r[v_col].sum())
+            return round(max(-1.0, min(1.0, ofi)), 3)
+        except Exception:
+            return 0.0
+
+    def compute_vpin(self, bars_df) -> float:
+        """
+        VPIN proxy: |buy_vol - sell_vol| / total_vol over last 20 bars.
+        High VPIN = informed trading = adverse selection risk. Returns 0-1.
+        """
+        if bars_df is None or len(bars_df) < 10:
+            return 0.5
+        try:
+            c_col = "close" if "close" in bars_df.columns else "Close"
+            o_col = "open"  if "open"  in bars_df.columns else "Open"
+            v_col = "volume" if "volume" in bars_df.columns else "Volume"
+            r = bars_df.tail(20)
+            buy_vol  = r[r[c_col] >= r[o_col]][v_col].sum()
+            sell_vol = r[r[c_col] <  r[o_col]][v_col].sum()
+            total    = buy_vol + sell_vol
+            return round(float(abs(buy_vol - sell_vol) / max(total, 1)), 3)
+        except Exception:
+            return 0.5
+
+    def detect_institutional_footprint(self, bars_df) -> bool:
+        """
+        True if volume arrives earlier than usual (institutional front-running signal).
+        Checks if >45% of session volume occurred in first 60 min (unusual = institutional).
+        """
+        try:
+            if bars_df is None or len(bars_df) < 10:
+                return False
+            v_col = "volume" if "volume" in bars_df.columns else "Volume"
+            if not hasattr(bars_df.index[0], "hour"):
+                return False
+            early = bars_df[bars_df.index.map(
+                lambda x: x.hour < 10 or (x.hour == 10 and x.minute < 30)
+            )][v_col].sum()
+            total = bars_df[v_col].sum()
+            return float(early / max(total, 1)) > 0.45
+        except Exception:
+            return False
+
+    def get_microstructure_score(self, symbol: str, bars_df) -> dict:
+        """Composite microstructure signal for use in signal scoring."""
+        ofi  = self.compute_order_flow_imbalance(bars_df)
+        vpin = self.compute_vpin(bars_df)
+        inst = self.detect_institutional_footprint(bars_df)
+        # Composite: buying pressure + low adverse selection + institutional presence
+        ms_score = ofi * 5.0 - (vpin - 0.5) * 4.0 + (2.0 if inst else 0.0)
+        ms_score = round(max(-8.0, min(8.0, ms_score)), 2)
+        return {
+            "ofi": ofi,
+            "vpin": vpin,
+            "institutional": inst,
+            "ms_score": ms_score,
+        }
+
+
+# ── Module-level singleton + wrapper ──────────────────────────────────────────
+
+_ms_instance: "MicrostructureAnalyzer | None" = None
+
+
+def get_ms_analyzer() -> MicrostructureAnalyzer:
+    """Return the module-level MicrostructureAnalyzer singleton."""
+    global _ms_instance
+    if _ms_instance is None:
+        _ms_instance = MicrostructureAnalyzer()
+    return _ms_instance
+
+
+def get_microstructure_score(symbol: str, bars_df) -> dict:
+    """
+    Module-level wrapper. Returns OFI, VPIN, institutional flag, and composite ms_score.
+    Fail-open: returns defaults dict on any exception.
+    """
+    try:
+        return get_ms_analyzer().get_microstructure_score(symbol, bars_df)
+    except Exception as e:
+        logger.debug(f"[microstructure_score] {symbol}: {e}")
+        return {"ofi": 0.0, "vpin": 0.5, "institutional": False, "ms_score": 0.0}

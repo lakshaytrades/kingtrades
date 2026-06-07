@@ -11,80 +11,181 @@ GEX signal:
 - Large positive GEX at current price: score -5 (pinned, avoid momentum)
 - Negative GEX zone: score +10 for momentum trades (moves amplify)
 - Price at key GEX flip point: score +8 (breakout imminent)
-Cached 20 min. Fail-open 0.0.
+Cached 15 min per symbol. Fail-open 0.0.
 """
 import logging
 import time
-from typing import Tuple
+from typing import Tuple, Dict, Optional
 
 logger = logging.getLogger(__name__)
-_cache: dict = {}
-_TTL = 1200.0
+_TTL_LEGACY = 1200.0  # 20-min for legacy get_gex_signal
+
+
+class GEXCalculator:
+    """
+    Real options-chain-based Gamma Exposure estimator using yfinance.
+    Singleton via get_gex_calculator(). All results cached 15 minutes per symbol.
+    """
+
+    def __init__(self):
+        self._cache: Dict[str, Tuple[float, dict]] = {}  # key → (timestamp, result)
+
+    def calculate_gex(self, symbol: str) -> dict:
+        """
+        Gamma Exposure estimate from live options chain (yfinance).
+        Returns gex_score [-10,+10], regime, iv_percentile, pcr_oi.
+        Cached 15 minutes per symbol.
+        """
+        cache_key = f"{symbol}_gex"
+        if cache_key in self._cache:
+            ts, val = self._cache[cache_key]
+            if time.time() - ts < 900:  # 15 min
+                return val
+
+        result: dict = {
+            "gex_score": 0.0,
+            "regime": "NEUTRAL",
+            "iv_percentile": 50,
+            "pcr_oi": 1.0,
+        }
+        try:
+            import yfinance as yf
+
+            ticker = yf.Ticker(symbol)
+            expirations = ticker.options
+            if not expirations:
+                self._cache[cache_key] = (time.time(), result)
+                return result
+
+            near_exp = expirations[0]
+            chain = ticker.option_chain(near_exp)
+            calls, puts = chain.calls, chain.puts
+
+            # Current price
+            info = ticker.fast_info
+            price = float(
+                getattr(info, "last_price", 0)
+                or getattr(info, "previous_close", 0)
+                or 0
+            )
+            if price <= 0:
+                self._cache[cache_key] = (time.time(), result)
+                return result
+
+            # ATM options (within 5% of spot)
+            atm_c = calls[abs(calls["strike"] - price) / price < 0.05]
+            atm_p = puts[abs(puts["strike"] - price) / price < 0.05]
+
+            call_iv = (
+                float(atm_c["impliedVolatility"].mean()) if len(atm_c) else 0.25
+            )
+            put_iv = (
+                float(atm_p["impliedVolatility"].mean()) if len(atm_p) else 0.25
+            )
+            skew = put_iv - call_iv  # positive = puts pricier = fear
+
+            # Put/Call OI ratio
+            call_oi = float(calls["openInterest"].fillna(0).sum())
+            put_oi = float(puts["openInterest"].fillna(0).sum())
+            pcr = put_oi / max(call_oi, 1)
+
+            avg_iv = (call_iv + put_iv) / 2
+            iv_pct = min(100, max(0, (avg_iv - 0.10) / 0.60 * 100))
+
+            # GEX score: negative = dealer short gamma = amplified moves (bad for trend)
+            gex = 0.0
+            gex += -skew * 25.0            # put skew → negative GEX
+            gex += (1.0 - min(pcr, 2.0)) * 3.0
+            gex += (50 - iv_pct) / 12.0
+            gex = round(max(-10.0, min(10.0, gex)), 2)
+
+            result = {
+                "gex_score": gex,
+                "regime": (
+                    "AMPLIFYING" if gex < -3
+                    else ("DAMPENING" if gex > 3 else "NEUTRAL")
+                ),
+                "iv_percentile": round(iv_pct, 1),
+                "pcr_oi": round(pcr, 2),
+                "put_call_skew": round(skew, 4),
+            }
+            self._cache[cache_key] = (time.time(), result)
+        except Exception as e:
+            logger.debug(f"[GEX] {symbol}: {e}")
+            self._cache[cache_key] = (time.time(), result)
+
+        return result
+
+
+# ── Module-level singleton ─────────────────────────────────────────────────────
+
+_gex_instance: Optional[GEXCalculator] = None
+
+
+def get_gex_calculator() -> GEXCalculator:
+    """Return the module-level GEXCalculator singleton."""
+    global _gex_instance
+    if _gex_instance is None:
+        _gex_instance = GEXCalculator()
+    return _gex_instance
+
+
+def get_gex_score(symbol: str) -> float:
+    """Simple wrapper: return gex_score for a symbol. Fail-open 0.0."""
+    try:
+        return get_gex_calculator().calculate_gex(symbol).get("gex_score", 0.0)
+    except Exception:
+        return 0.0
+
+
+# ── Legacy function — kept for backward compatibility ──────────────────────────
+
+_legacy_cache: dict = {}
+
 
 def get_gex_signal(symbol: str, current_price: float, direction: str) -> Tuple[float, str]:
-    """Returns (score_delta, reason). Fail-open returns (0.0, 'gex_unavailable')."""
+    """
+    Legacy interface. Returns (score_delta, reason). Fail-open returns (0.0, 'gex_unavailable').
+    Now delegates to the real GEXCalculator for the base gex_score, then maps it to the
+    old (score, reason) tuple the caller expected.
+    """
     try:
         now = time.time()
-        cache_key = f"{symbol}_{int(current_price)}"
-        if cache_key in _cache and now - _cache[cache_key][1] < _TTL:
-            return _cache[cache_key][0]
+        cache_key = f"legacy_{symbol}_{int(current_price)}_{direction}"
+        if cache_key in _legacy_cache and now - _legacy_cache[cache_key][1] < _TTL_LEGACY:
+            return _legacy_cache[cache_key][0]
 
-        import yfinance as yf
-        import numpy as np
+        gex_data = get_gex_calculator().calculate_gex(symbol)
+        gex_score = gex_data.get("gex_score", 0.0)
+        regime = gex_data.get("regime", "NEUTRAL")
+        iv_pct = gex_data.get("iv_percentile", 50)
+        pcr = gex_data.get("pcr_oi", 1.0)
 
-        ticker = yf.Ticker(symbol)
-        exps = ticker.options
-        if not exps:
-            result = (0.0, "no_options")
-            _cache[cache_key] = (result, now)
-            return result
-
-        total_gex = 0.0
-        # Use first 2 expiries for accuracy
-        for exp in exps[:2]:
-            try:
-                chain = ticker.option_chain(exp)
-                calls = chain.calls.copy()
-                puts = chain.puts.copy()
-
-                # GEX = OI × Gamma × 100 × spot²
-                # Calls: positive GEX, Puts: negative GEX
-                for df, sign in [(calls, 1), (puts, -1)]:
-                    if "gamma" not in df.columns or "openInterest" not in df.columns:
-                        continue
-                    df = df.dropna(subset=["gamma", "openInterest"])
-                    # Only near ATM strikes (within 10% of spot)
-                    atm_mask = (df["strike"] > current_price * 0.90) & (df["strike"] < current_price * 1.10)
-                    df_atm = df[atm_mask]
-                    if df_atm.empty:
-                        continue
-                    gex_contrib = float((df_atm["gamma"] * df_atm["openInterest"] * 100 * current_price ** 2 * sign).sum())
-                    total_gex += gex_contrib
-            except Exception:
-                continue
-
-        # Normalize GEX to a score
-        gex_bn = total_gex / 1e9  # in billions
-        if gex_bn < -0.5:
-            # Negative GEX — moves amplify — great for momentum
+        # Map gex_score to legacy scoring scheme
+        if regime == "AMPLIFYING":
             score = 10.0
-            reason = f"negative_GEX({gex_bn:.1f}B) moves_amplify"
-        elif gex_bn > 2.0:
-            # Very high positive GEX — pinned
+            reason = (
+                f"negative_GEX(score={gex_score:.1f}) moves_amplify "
+                f"pcr={pcr:.2f} iv_pct={iv_pct:.0f}"
+            )
+        elif regime == "DAMPENING":
             score = -5.0
-            reason = f"high_GEX({gex_bn:.1f}B) price_pinned"
-        elif gex_bn > 0.5:
-            score = -2.0
-            reason = f"pos_GEX({gex_bn:.1f}B) slight_pin"
+            reason = (
+                f"high_GEX(score={gex_score:.1f}) price_pinned "
+                f"pcr={pcr:.2f} iv_pct={iv_pct:.0f}"
+            )
         else:
             score = 3.0
-            reason = f"neutral_GEX({gex_bn:.1f}B)"
+            reason = (
+                f"neutral_GEX(score={gex_score:.1f}) "
+                f"pcr={pcr:.2f} iv_pct={iv_pct:.0f}"
+            )
 
         if direction == "SHORT":
             score = -score
 
         result = (float(score), reason)
-        _cache[cache_key] = (result, now)
+        _legacy_cache[cache_key] = (result, now)
         return result
     except Exception as e:
         logger.debug(f"gex_calculator fail-open {symbol}: {e}")
