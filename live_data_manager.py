@@ -48,8 +48,8 @@ class LiveDataManager:
         try:
             import yfinance as yf
             info = yf.Ticker(symbol).fast_info
-            last = getattr(info,"last_price",0) or 0
-            if last > 0:
+            last = getattr(info, "last_price", None)
+            if last is not None and last > 0:
                 return Quote(symbol=symbol, last=float(last),
                     volume=int(getattr(info,"three_month_average_volume",0) or 0), source="yfinance")
         except Exception as e: logger.debug(f"quote {symbol}: {e}")

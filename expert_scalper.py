@@ -111,7 +111,8 @@ class ExpertScalper:
         try:
             c = closes[-1]; atr = self._atr(highs,lows,closes)
             ret = (closes[-1]-closes[-2])/closes[-2] if closes[-2]!=0 else 0
-            vol_r = volumes[-1]/np.mean(volumes[-10:-1]) if len(volumes)>=10 else 1
+            avg_v = np.mean(volumes[-10:-1]) if len(volumes) >= 10 else 0
+            vol_r = volumes[-1] / avg_v if avg_v > 0 else 1
             if vol_r < 2.0: return None
             rsi = self._rsi(closes)
             direction = None
@@ -165,7 +166,8 @@ class ExpertScalper:
             c = closes[-1]; orb_range = oh - ol
             if orb_range == 0 or orb_range/c < 0.002: return None
             atr = self._atr(highs,lows,closes)
-            vol_r = volumes[-1]/np.mean(volumes[:-1]) if len(volumes)>1 else 1
+            avg_v_orb = np.mean(volumes[:-1]) if len(volumes) > 1 else 0
+            vol_r = volumes[-1] / avg_v_orb if avg_v_orb > 0 else 1
             direction = None
             if c > oh*1.001 and vol_r > 1.5: direction = "LONG"
             elif c < ol*0.999 and vol_r > 1.5: direction = "SHORT"

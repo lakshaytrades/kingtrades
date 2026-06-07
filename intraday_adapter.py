@@ -97,7 +97,8 @@ class IntradaySessionTracker:
             return "UNKNOWN", 0.5
 
         prices = np.array(prices, dtype=float)
-        returns = np.diff(prices) / prices[:-1]
+        denom = np.where(prices[:-1] != 0, prices[:-1], 1e-8)
+        returns = np.diff(prices) / denom
 
         # Trend strength: sum of directional returns
         up_rets = np.sum(returns[returns > 0])

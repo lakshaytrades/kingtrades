@@ -59,14 +59,17 @@ class AllWeatherEngine:
         self._last_regime = "UNKNOWN"
         self._stop = threading.Event()
         self._thread: Optional[threading.Thread] = None
+        self._thread_lock = threading.Lock()
         self._cycle = 0
         os.makedirs("data", exist_ok=True)
 
     def start_background(self):
-        if self._thread and self._thread.is_alive(): return
-        self._stop.clear()
-        self._thread = threading.Thread(target=self._loop, daemon=True, name="AllWeatherEngine")
-        self._thread.start()
+        with self._thread_lock:
+            if self._thread and self._thread.is_alive():
+                return
+            self._stop.clear()
+            self._thread = threading.Thread(target=self._loop, daemon=True, name="AllWeatherEngine")
+            self._thread.start()
         logger.info("[AllWeather] Background regime-strategy loop started (30-min)")
 
     def stop(self): self._stop.set()

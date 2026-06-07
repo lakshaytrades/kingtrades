@@ -7,6 +7,7 @@ from dataclasses import dataclass, field
 from typing import Optional
 import logging
 import time
+import threading
 from datetime import datetime
 
 logger = logging.getLogger(__name__)
@@ -41,6 +42,7 @@ class OODAContext:
 
 
 _CACHE: dict = {}  # symbol -> (OODAContext, expiry_ts)
+_CACHE_LOCK = threading.Lock()
 _CACHE_TTL = 300   # 5 minutes
 
 
@@ -77,12 +79,15 @@ class OODAEngine:
     def get_context(self, symbol: str, prices=None, volumes=None) -> OODAContext:
         """Return cached OODAContext or build fresh one."""
         now = time.time()
-        if symbol in _CACHE:
-            ctx, expiry = _CACHE[symbol]
-            if now < expiry:
-                return ctx
+        with _CACHE_LOCK:
+            entry = _CACHE.get(symbol)
+            if entry is not None:
+                ctx, expiry = entry
+                if now < expiry:
+                    return ctx
         ctx = self._build_context(symbol, prices, volumes)
-        _CACHE[symbol] = (ctx, now + _CACHE_TTL)
+        with _CACHE_LOCK:
+            _CACHE[symbol] = (ctx, now + _CACHE_TTL)
         return ctx
 
     def _build_context(self, symbol: str, prices=None, volumes=None) -> OODAContext:
