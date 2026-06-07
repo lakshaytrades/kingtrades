@@ -154,11 +154,140 @@ class AlpacaExecutor:
         self._day_trade_date  = ""   # "YYYY-MM-DD" — resets each trading day
         self._rl_agent        = None  # set via set_learning_callbacks()
         self._ml_ensemble_mod = None  # module ref for record_trade_outcome_ensemble
+        self._last_known_account = None   # cache for get_account_safe() failover
+        self._last_account_fetch: float = 0.0  # monotonic timestamp of last successful fetch
 
     def set_learning_callbacks(self, rl_agent=None, ml_ensemble_mod=None):
         """Wire RL agent and ML ensemble for post-trade learning."""
         self._rl_agent        = rl_agent
         self._ml_ensemble_mod = ml_ensemble_mod
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BROKER ACCOUNT — RESILIENT FETCH WITH EXPONENTIAL BACKOFF
+    # ─────────────────────────────────────────────────────────────────────
+
+    def get_account_safe(self) -> dict:
+        """
+        Fetch Alpaca account info with 4-retry exponential backoff (2s, 4s, 8s, 16s).
+        On all retries failing, returns cached _last_known_account if available,
+        otherwise returns a zero-balance sentinel with CRITICAL log.
+        Caches every successful fetch for failover.
+        """
+        delays = [2, 4, 8, 16]
+        last_err = None
+        for attempt, delay in enumerate(delays):
+            try:
+                trading_client = self._auth.get_trading_client()
+                account = trading_client.get_account()
+                result = {
+                    "portfolio_value": str(getattr(account, "portfolio_value", "0") or "0"),
+                    "buying_power":    str(getattr(account, "buying_power",    "0") or "0"),
+                    "cash":            str(getattr(account, "cash",            "0") or "0"),
+                }
+                self._last_known_account = result
+                self._last_account_fetch = _time.monotonic()
+                return result
+            except Exception as e:
+                last_err = e
+                if attempt < len(delays) - 1:
+                    logger.warning(
+                        f"[get_account_safe] Attempt {attempt + 1}/{len(delays)} failed: {e} "
+                        f"— retrying in {delay}s"
+                    )
+                    _time.sleep(delay)
+
+        # All retries exhausted
+        if self._last_known_account is not None:
+            logger.warning(
+                f"[get_account_safe] All retries failed ({last_err}) "
+                f"— returning cached account (age={_time.monotonic() - self._last_account_fetch:.0f}s)"
+            )
+            return self._last_known_account
+
+        logger.critical(
+            f"[get_account_safe] All retries failed AND no cached account available: {last_err} "
+            "— returning zero-balance sentinel. Check Alpaca connectivity immediately!"
+        )
+        return {"portfolio_value": "0", "buying_power": "0", "cash": "0"}
+
+    # ─────────────────────────────────────────────────────────────────────
+    # POSITION RECONCILIATION
+    # ─────────────────────────────────────────────────────────────────────
+
+    def reconcile_positions_with_broker(self, risk_manager) -> dict:
+        """
+        Compare Alpaca's live positions vs bot's in-memory positions.
+        Fixes mismatches to prevent ghost positions and missed fills.
+        Called every 5 minutes from main loop.
+        """
+        result = {"added": [], "removed": [], "qty_fixed": []}
+        try:
+            trading_client = self._auth.get_trading_client()
+            broker_positions = {str(p.symbol): p for p in trading_client.get_all_positions()}
+        except Exception as e:
+            logger.warning(f"[RECONCILE] Alpaca get_all_positions() failed: {e}")
+            return result
+
+        bot_symbols = set(risk_manager.positions.keys()) if hasattr(risk_manager, 'positions') else set()
+        broker_symbols = set(broker_positions.keys())
+
+        # In Alpaca but NOT in bot memory → add ghost position
+        for sym in broker_symbols - bot_symbols:
+            try:
+                pos = broker_positions[sym]
+                qty = int(float(pos.qty))
+                price = float(pos.avg_entry_price)
+                logger.warning(
+                    f"[RECONCILE] {sym}: in Alpaca (qty={qty}, entry=${price:.2f}) "
+                    "but NOT in bot — re-adding"
+                )
+                from risk_manager import Position
+                import uuid
+                ghost = Position(
+                    symbol=sym,
+                    direction="LONG" if qty > 0 else "SHORT",
+                    entry_price=price,
+                    quantity=abs(qty),
+                    stop_loss=price * (0.97 if qty > 0 else 1.03),  # 3% default stop
+                    target_1=price * (1.03 if qty > 0 else 0.97),
+                    target_2=price * (1.06 if qty > 0 else 0.94),
+                    order_id=str(uuid.uuid4()),
+                    quality_grade="B",
+                )
+                risk_manager.positions[sym] = ghost
+                result["added"].append(sym)
+            except Exception as e:
+                logger.warning(f"[RECONCILE] Failed to re-add {sym}: {e}")
+
+        # In bot memory but NOT at Alpaca → remove ghost
+        for sym in bot_symbols - broker_symbols:
+            logger.warning(
+                f"[RECONCILE] {sym}: in bot memory but NOT at Alpaca — removing ghost"
+            )
+            risk_manager.positions.pop(sym, None)
+            result["removed"].append(sym)
+
+        # Qty mismatch check
+        for sym in broker_symbols & bot_symbols:
+            try:
+                broker_qty = abs(int(float(broker_positions[sym].qty)))
+                bot_qty = getattr(risk_manager.positions[sym], 'quantity', 0)
+                if broker_qty > 0 and abs(broker_qty - bot_qty) / max(broker_qty, 1) > 0.1:
+                    logger.warning(
+                        f"[RECONCILE] {sym}: qty mismatch Alpaca={broker_qty} bot={bot_qty} "
+                        "— syncing"
+                    )
+                    risk_manager.positions[sym].quantity = broker_qty
+                    result["qty_fixed"].append(sym)
+            except Exception as e:
+                logger.debug(f"[RECONCILE] qty check failed for {sym}: {e}")
+
+        if any(result.values()):
+            logger.info(
+                f"[RECONCILE] Done: added={result['added']} "
+                f"removed={result['removed']} fixed={result['qty_fixed']}"
+            )
+        return result
 
     def _fire_learning_callbacks(self, symbol: str, pnl: float, exit_reason: str,
                                   entry_price: float = 0.0, exit_price: float = 0.0):

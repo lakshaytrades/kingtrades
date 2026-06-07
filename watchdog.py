@@ -160,9 +160,35 @@ def _is_bot_running() -> bool:
         return False
 
 
+def _check_open_positions_before_restart() -> str:
+    """Check Alpaca for open positions before restarting. Returns summary string."""
+    try:
+        import requests as _req
+        base = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.markets")
+        headers = {
+            "APCA-API-KEY-ID":     os.getenv("ALPACA_API_KEY", ""),
+            "APCA-API-SECRET-KEY": os.getenv("ALPACA_SECRET_KEY", ""),
+        }
+        resp = _req.get(f"{base}/v2/positions", headers=headers, timeout=5)
+        if resp.status_code == 200:
+            positions = resp.json()
+            if positions:
+                syms = [p.get("symbol", "?") for p in positions]
+                return f"⚠️ {len(positions)} open positions at restart: {', '.join(syms)}"
+    except Exception:
+        pass
+    return ""
+
+
 def _restart_bot():
     global _state
     logger.info("Restarting bot via start.sh...")
+
+    # Check for open positions before restarting so the Telegram alert includes them
+    pos_summary = _check_open_positions_before_restart()
+    if pos_summary:
+        logger.warning(f"Pre-restart position check: {pos_summary}")
+
     try:
         # Kill any lingering process
         subprocess.run(["pkill", "-9", "-f", "main.py"], capture_output=True)
@@ -178,10 +204,11 @@ def _restart_bot():
             stderr=subprocess.DEVNULL,
         )
         time.sleep(5)
-        return _is_bot_running()
+        ok = _is_bot_running()
+        return ok, pos_summary
     except Exception as e:
         logger.error(f"restart failed: {e}")
-        return False
+        return False, pos_summary
 
 
 def _record_crash():
@@ -485,6 +512,12 @@ def _should_alert(category: str, cooldown_seconds: int = 3600) -> bool:
 def health_check():
     global _state
 
+    # Heartbeat — lets systemd / external monitors confirm watchdog is alive
+    try:
+        Path("logs/watchdog_heartbeat.txt").write_text(str(time.time()))
+    except Exception:
+        pass
+
     # 1. Process guardian
     if not _is_bot_running():
         crash_count = _record_crash()
@@ -502,21 +535,25 @@ def health_check():
             return
 
         logger.info("Attempting auto-restart...")
-        ok = _restart_bot()
+        ok, pos_summary = _restart_bot()
+        _restart_msg = (
+            f"*Bot restarted automatically* (crash #{crash_count})\n"
+            f"_No action needed — monitoring continues_"
+        )
+        if pos_summary:
+            _restart_msg += f"\n{pos_summary}"
         if ok:
-            _telegram_send(
-                f"*Bot restarted automatically* (crash #{crash_count})\n"
-                f"_No action needed — monitoring continues_",
-                "OK"
-            )
+            _telegram_send(_restart_msg, "OK")
         else:
             if _should_alert("RESTART_FAIL"):
-                _telegram_send(
+                _fail_msg = (
                     "*Bot restart failed*\n"
                     "Please restart manually:\n"
-                    "`cd /root/kingtrades && bash start.sh`",
-                    "CRIT"
+                    "`cd /root/kingtrades && bash start.sh`"
                 )
+                if pos_summary:
+                    _fail_msg += f"\n{pos_summary}"
+                _telegram_send(_fail_msg, "CRIT")
 
     # 2. Log scanning
     errors = _scan_logs_for_errors()

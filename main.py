@@ -1446,6 +1446,22 @@ class TradingBot:
                     # Write terminal dashboard state every 30s (non-blocking)
                     self._write_terminal_state()
 
+                # ── Position reconciliation — every 5 minutes ────────────
+                if (not hasattr(self, '_last_reconcile') or
+                        time.time() - self._last_reconcile > 300):
+                    if self.executor and self.risk_manager:
+                        try:
+                            recon = self.executor.reconcile_positions_with_broker(self.risk_manager)
+                            if any(recon.values()) and self.alerter:
+                                self.alerter.send_alert(
+                                    f"⚠️ Reconcile: added={recon['added']} "
+                                    f"removed={recon['removed']} fixed={recon['qty_fixed']}",
+                                    priority="HIGH"
+                                )
+                        except Exception as _e:
+                            logger.warning(f"Reconcile error (non-fatal): {_e}")
+                    self._last_reconcile = time.time()
+
                 elif self.market_open_today and not self.eod_done:
                     # Market just closed
                     self._do_eod_shutdown()
@@ -5115,6 +5131,29 @@ class TradingBot:
     def _cleanup(self):
         """Graceful shutdown."""
         self.running = False
+
+        # Attempt to close open positions before full shutdown (prevents dangling broker positions)
+        try:
+            if self.executor and self.risk_manager:
+                open_syms = list(getattr(getattr(self.risk_manager, 'state', None), 'positions', {}).keys())
+                if open_syms:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] Cleanup: {len(open_syms)} open positions detected "
+                        f"— attempting squareoff before exit: {open_syms}"
+                    )
+                    # Use square_off_all which calls Alpaca's close_all_positions
+                    self.executor.square_off_all(reason="BOT_SHUTDOWN_CLEANUP")
+                    if self.alerter:
+                        try:
+                            self.alerter.send_text(
+                                f"⚠️ <b>Bot shutdown</b> — squaring off {len(open_syms)} position(s): "
+                                + ", ".join(open_syms)
+                            )
+                        except Exception:
+                            pass
+        except Exception as _sq_e:
+            logger.warning(f"[{format_ist_timestamp()}] Cleanup squareoff error (non-fatal): {_sq_e}")
+
         # Stop crypto engine gracefully
         if self.crypto_engine:
             try:
