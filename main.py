@@ -2354,6 +2354,15 @@ class TradingBot:
                     continue
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+
+                # Pre-trade PLAN broadcast — explain intent + OODA reasoning BEFORE
+                # committing capital. Never allowed to block execution.
+                try:
+                    from trade_plan_broadcaster import broadcast_trade_plan
+                    broadcast_trade_plan(signal, self.alerter)
+                except Exception as _bp:
+                    logger.debug(f"trade plan broadcast skipped: {_bp}")
+
                 # Live trading: use bracket orders (entry+SL+TP in one atomic order)
                 # to avoid Alpaca's "potential wash trade" rejection on separate stop orders.
                 use_bracket = (
