@@ -888,6 +888,35 @@ class SignalGenerator:
             except Exception as _rvol_e:
                 logger.debug(f"RVOL mega-boost skipped for {symbol}: {_rvol_e}")
 
+            # === Expert Scalper (OODA-regime-aware 4-mode) ===
+            try:
+                from expert_scalper import get_expert_scalper as _get_es
+                _es = _get_es()
+                _use_ist = True  # default NSE
+                _closes_es = df_5m["close"].values if hasattr(df_5m, "columns") and "close" in df_5m.columns else (
+                    df_5m["Close"].values if hasattr(df_5m, "columns") and "Close" in df_5m.columns else np.array([])
+                )
+                _h_es = df_5m["high"].values if hasattr(df_5m, "columns") and "high" in df_5m.columns else (
+                    df_5m["High"].values if hasattr(df_5m, "columns") and "High" in df_5m.columns else _closes_es
+                )
+                _lo_es = df_5m["low"].values if hasattr(df_5m, "columns") and "low" in df_5m.columns else (
+                    df_5m["Low"].values if hasattr(df_5m, "columns") and "Low" in df_5m.columns else _closes_es
+                )
+                _v_es = df_5m["volume"].values if hasattr(df_5m, "columns") and "volume" in df_5m.columns else (
+                    df_5m["Volume"].values if hasattr(df_5m, "columns") and "Volume" in df_5m.columns else np.ones_like(_closes_es)
+                )
+                if len(_closes_es) > 0:
+                    _es_sig = _es.scan(symbol, _closes_es, _h_es, _lo_es, _v_es, use_ist=_use_ist)
+                    if _es_sig and _es_sig.direction == direction:
+                        ai_score += _es_sig.score * 0.15
+                        logger.debug(f"[ExpertScalp] {symbol} {_es_sig.mode.value} conf={_es_sig.confidence:.2f} +"
+                                     f"{_es_sig.score * 0.15:.1f} → {ai_score:.1f}")
+                    elif _es_sig and _es_sig.direction != direction:
+                        ai_score -= 5
+                        logger.debug(f"[ExpertScalp] {symbol} {_es_sig.mode.value} opposes {direction} → -5 score")
+            except Exception as _es_err:
+                logger.debug(f"[ExpertScalp] {symbol}: {_es_err}")
+
             # Per-symbol adaptive score floor: proven symbols get -5 pts relief,
             # serial losers get +5 pts harder bar. Falls back to self.min_score.
             _sym_min = self.min_score
