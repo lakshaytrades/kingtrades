@@ -4121,8 +4121,16 @@ class TradingBot:
                                     self.alerter.send_alert(report)
                                 except Exception:
                                     _reply(report)
+                            elif cmd in ("/brain", "/quant", "/council"):
+                                try:
+                                    from quant_brain import QuantBrain
+                                    brain = QuantBrain({"alerter": self.alerter})
+                                    report = brain.generate_weekly_report()
+                                    self.alerter.send_text(report)
+                                except Exception as e:
+                                    self.alerter.send_text(f"Brain error: {e}")
                             else:
-                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /debug /fixdata /ab")
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /brain /debug /fixdata /ab")
                         except Exception as _ce:
                             logger.warning(f"Telegram cmd {cmd} error: {_ce}")
                             _reply(f"Error: {_ce}")

@@ -254,6 +254,26 @@ class ContinuousLearner:
             weekdays=[0,1,2,3,4]
         ))
 
+        # QuantBrain 30-min pulse (Mon-Fri, during market hours)
+        self.tasks.append(ScheduledTask(
+            "QuantBrain Pulse", 9, 30,
+            self._task_quant_pulse,
+            weekdays=[0,1,2,3,4]
+        ))
+
+        # QuantBrain post-market deep analysis (Mon-Fri at 5:00 PM IST)
+        self.tasks.append(ScheduledTask(
+            "QuantBrain Deep Analysis", 17, 0,
+            self._task_quant_deep,
+            weekdays=[0,1,2,3,4]
+        ))
+
+        # QuantBrain parameter optimization (daily at 9:00 PM IST)
+        self.tasks.append(ScheduledTask(
+            "QuantBrain Optimize", 21, 0,
+            self._task_quant_optimize
+        ))
+
         logger.info(f"[{format_ist_timestamp()}] {len(self.tasks)} tasks scheduled")
 
     # ── TASK IMPLEMENTATIONS ───────────────────────────────
@@ -642,6 +662,57 @@ class ContinuousLearner:
 
         except Exception as e:
             logger.error(f"[{format_ist_timestamp()}] Token refresh task error: {e}")
+
+    def _task_quant_pulse(self):
+        """
+        QuantBrain 30-min pulse check during market hours.
+        Detects loss streaks, overtrading, and daily P&L anomalies.
+        """
+        try:
+            from quant_brain import QuantBrain
+            brain = QuantBrain(modules=self._modules)
+            anomalies = brain.pulse_check()
+            if anomalies:
+                alerter = self._modules.get("alerter")
+                if alerter:
+                    try:
+                        alerter.send_text("🧠 Brain:\n" + "\n".join(anomalies[:4]))
+                    except Exception as _e:
+                        logger.debug(f"[suppressed] {_e}")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] [Brain] pulse: {e}")
+
+    def _task_quant_deep(self):
+        """
+        QuantBrain full 8-council analysis — runs post-market at 5:00 PM IST.
+        """
+        try:
+            from quant_brain import QuantBrain
+            brain = QuantBrain(modules=self._modules)
+            insight = brain.deep_analysis()
+            alerter = self._modules.get("alerter")
+            if alerter and insight.get("findings"):
+                try:
+                    alerter.send_text(
+                        f"🧠 Brain Post-Market:\n" +
+                        "\n".join(insight["findings"][:5])
+                    )
+                except Exception as _e:
+                    logger.debug(f"[suppressed] {_e}")
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] [Brain] deep: {e}")
+
+    def _task_quant_optimize(self):
+        """
+        QuantBrain Bayesian parameter optimization — runs at 9:00 PM IST daily.
+        Saves optimized params to data/adaptive_params.json.
+        """
+        try:
+            from quant_brain import QuantBrain
+            brain = QuantBrain(modules=self._modules)
+            brain.optimize_parameters()
+        except Exception as e:
+            logger.warning(f"[{format_ist_timestamp()}] [Brain] optimize: {e}")
 
     # ── MAIN SCHEDULER LOOP ────────────────────────────────
 
