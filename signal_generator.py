@@ -110,6 +110,20 @@ try:
 except ImportError:
     _OODA_AVAILABLE = False
 
+# Regime pattern weights
+try:
+    from regime_pattern_weights import get_weight as _get_regime_weight, REGIME_WEIGHTS as _REGIME_WEIGHTS
+    _REGIME_WEIGHTS_AVAILABLE = True
+except ImportError:
+    _REGIME_WEIGHTS_AVAILABLE = False
+
+# Ichimoku signals
+try:
+    from ichimoku_signals import get_analyzer as _get_ichimoku
+    _ICHIMOKU_AVAILABLE = True
+except ImportError:
+    _ICHIMOKU_AVAILABLE = False
+
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")   # server is UTC; all time checks use ET
 
@@ -752,6 +766,62 @@ class SignalGenerator:
                                  f"score_after={ai_score:.1f}")
                 except Exception as _ooda_err:
                     logger.debug(f"[OODA] {symbol} error: {_ooda_err}")
+
+            # === Ichimoku Cloud confirmation ===
+            if _ICHIMOKU_AVAILABLE and df_5m is not None:
+                try:
+                    ichimoku = _get_ichimoku()
+                    if hasattr(df_5m, 'columns'):
+                        _h = df_5m["high"].values if "high" in df_5m.columns else df_5m["close"].values
+                        _lo = df_5m["low"].values if "low" in df_5m.columns else df_5m["close"].values
+                        _c = df_5m["close"].values
+                    else:
+                        _h = _lo = _c = df_5m
+                    ichi_score = ichimoku.get_score_for_signal_generator(_h, _lo, _c)
+
+                    # Direction alignment: Ichimoku score aligns with trade direction
+                    if direction == "LONG" and ichi_score > 0:
+                        ai_score += ichi_score * 0.5
+                    elif direction == "SHORT" and ichi_score < 0:
+                        ai_score += abs(ichi_score) * 0.5
+                    elif direction == "LONG" and ichi_score < -5:
+                        ai_score -= 4  # Strong Ichimoku bear signal against LONG
+                    elif direction == "SHORT" and ichi_score > 5:
+                        ai_score -= 4  # Strong Ichimoku bull signal against SHORT
+
+                    logger.debug(f"[Ichimoku] {symbol} ichi_score={ichi_score:.1f} after={ai_score:.1f}")
+                except Exception as _ichi_err:
+                    logger.debug(f"[Ichimoku] {symbol}: {_ichi_err}")
+
+            # === Regime-weighted pattern score ===
+            if _REGIME_WEIGHTS_AVAILABLE:
+                try:
+                    # Get current regime from OODA if available, else from features
+                    _current_regime = "UNKNOWN"
+                    if _OODA_AVAILABLE:
+                        try:
+                            _ooda_ctx_for_regime = _get_ooda().get_context(symbol)
+                            _current_regime = _ooda_ctx_for_regime.regime
+                        except Exception:
+                            pass
+
+                    if _current_regime and _current_regime != "UNKNOWN":
+                        # Find pattern type from signal_type or pattern_name
+                        _pattern_name = getattr(signal, "signal_type", "") if "signal" in dir() else ""
+                        if not _pattern_name:
+                            _pattern_name = direction  # fallback
+                        _regime_mult = _get_regime_weight(_pattern_name, _current_regime)
+
+                        # Apply weight as score adjustment (not multiply — preserve base scoring)
+                        # Transform: score * weight → score + (weight-1) * 10
+                        _regime_bonus = (_regime_mult - 1.0) * 10
+                        ai_score += _regime_bonus
+                        if abs(_regime_bonus) > 1.0:
+                            logger.debug(f"[RegimeWeight] {symbol} pattern={_pattern_name} "
+                                         f"regime={_current_regime} mult={_regime_mult:.2f} "
+                                         f"bonus={_regime_bonus:+.1f}")
+                except Exception as _rw_err:
+                    logger.debug(f"[RegimeWeight] {symbol}: {_rw_err}")
 
             # 6d. Earnings Catalyst boost (up to +25 pts when EPS beat + RVOL surge)
             try:
