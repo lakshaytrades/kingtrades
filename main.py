@@ -483,6 +483,26 @@ class TradingBot:
 
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
 
+        # Initialize structured event logger + A/B testing framework
+        from structured_logger import get_structured_logger
+        from ab_testing import get_ab
+        self.slog = get_structured_logger()
+        self.ab = get_ab()
+        self.slog.log("bot_start", {"version": "L99", "modules": "all"})
+
+        # Register initial A/B test on signal score threshold
+        import os
+        if os.getenv("AB_TESTING_ENABLED", "true").lower() == "true":
+            import config as _cfg
+            self.ab.register(
+                name="score_threshold_v1",
+                description="Test +3pt higher threshold improves win rate",
+                parameter="min_score",
+                control=float(_cfg.MIN_SIGNAL_SCORE),
+                treatment=float(_cfg.MIN_SIGNAL_SCORE) + 3.0,
+                min_samples=30,
+            )
+
         # Send startup message to Telegram with live balance
         try:
             bal = self.fetcher.get_account_balance() if self.fetcher else {}
@@ -3659,6 +3679,8 @@ class TradingBot:
         self.market_open_today = False
         self.eod_done = True
         logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
+        if hasattr(self, 'slog'):
+            self.slog.log("bot_stop", {"reason": "normal_shutdown"})
         self.running = False
 
     # --------------------------------------------------------
@@ -4077,8 +4099,14 @@ class TradingBot:
                                 _reply(self._force_barcache_refresh())
                             elif cmd == "/start":
                                 _reply(f"✅ <b>KingTrades running</b>\nChat ID: <code>{chat_id}</code>")
+                            elif cmd in ("/ab", "/abtest"):
+                                report = self.ab.status_report() if hasattr(self, 'ab') else "A/B not initialized"
+                                try:
+                                    self.alerter.send_alert(report)
+                                except Exception:
+                                    _reply(report)
                             else:
-                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /debug /fixdata")
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /debug /fixdata /ab")
                         except Exception as _ce:
                             logger.warning(f"Telegram cmd {cmd} error: {_ce}")
                             _reply(f"Error: {_ce}")
@@ -4462,6 +4490,15 @@ class TradingBot:
                             parse_mode="HTML"
                         )
 
+                async def cmd_ab(update, context):
+                    if not _auth(update):
+                        return
+                    report = self.ab.status_report() if hasattr(self, 'ab') else "A/B not initialized"
+                    try:
+                        self.alerter.send_alert(report)
+                    except Exception:
+                        await update.message.reply_text(report, parse_mode="HTML")
+
                 app.add_handler(CommandHandler("start",      cmd_start))
                 app.add_handler(CommandHandler("kill",       cmd_kill))
                 app.add_handler(CommandHandler("status",     cmd_status))
@@ -4475,6 +4512,8 @@ class TradingBot:
                 app.add_handler(CommandHandler("health",     cmd_health))
                 app.add_handler(CommandHandler("debug",      cmd_debug))
                 app.add_handler(CommandHandler("fixdata",    cmd_fixdata))
+                app.add_handler(CommandHandler("ab",         cmd_ab))
+                app.add_handler(CommandHandler("abtest",     cmd_ab))
 
                 # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
                 async def _tg_error_handler(update, context):
