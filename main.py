@@ -778,6 +778,17 @@ class TradingBot:
             logger.warning(f"[Main] IntradayAdapter init failed: {_ia_err}")
             self._intraday_adapter = None
 
+        # All-Weather Strategy Engine
+        try:
+            from all_weather_strategy import get_all_weather_engine as _get_aw
+            _aw = _get_aw()
+            _aw.start_background()
+            self._aw_engine = _aw
+            logger.info("[Main] AllWeatherEngine started — any-condition strategy active")
+        except Exception as _aw_err:
+            logger.warning(f"[Main] AllWeatherEngine init failed: {_aw_err}")
+            self._aw_engine = None
+
         # ── Step 6: Initialize Profit Engine with plan's daily target ────────
         try:
             if self.profit_engine:
@@ -1856,6 +1867,15 @@ class TradingBot:
                 _ia_params = _IA.load_params_from_file()
                 if _ia_params and hasattr(self.signal_gen, "apply_adaptive_params"):
                     self.signal_gen.apply_adaptive_params(_ia_params)
+            except Exception:
+                pass
+
+            # All-weather strategy config
+            try:
+                from all_weather_strategy import AllWeatherEngine as _AWE
+                _aw_params = _AWE.load_config_from_file()
+                if _aw_params and hasattr(self.signal_gen, "apply_adaptive_params"):
+                    self.signal_gen.apply_adaptive_params(_aw_params)
             except Exception:
                 pass
 
@@ -4175,8 +4195,18 @@ class TradingBot:
                                     self.alerter.send_text(report)
                                 except Exception as e:
                                     self.alerter.send_text(f"Brain error: {e}")
+                            elif cmd == "/strategy":
+                                try:
+                                    from all_weather_strategy import AllWeatherEngine as _AWE
+                                    p = _AWE.load_config_from_file()
+                                    reply = (f"📊 Strategy: {p.get('strategy_type','?')} | Regime: {p.get('regime','?')}\n"
+                                             f"MinScore: {p.get('min_score','?')} | Size: {p.get('position_size_mult','?')}x\n"
+                                             f"Updated: {p.get('updated_at','?')}")
+                                except Exception:
+                                    reply = "Strategy config unavailable"
+                                _reply(reply)
                             else:
-                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /brain /debug /fixdata /ab")
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /brain /debug /fixdata /ab /strategy")
                         except Exception as _ce:
                             logger.warning(f"Telegram cmd {cmd} error: {_ce}")
                             _reply(f"Error: {_ce}")
