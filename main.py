@@ -139,6 +139,7 @@ class TradingBot:
         self._optimizer_reload_interval = 3600   # re-apply optimizer params every 60 min
         self._orb_done_today: bool = False       # ORB scan fired once per day at 9:31-9:45 AM ET
         self._last_state_write: float = 0.0      # timestamp of last terminal dashboard state write
+        self._intraday_adapter = None            # IntradayAdapter: 30-min live session adaptation
 
     # --------------------------------------------------------
     # STARTUP
@@ -754,6 +755,18 @@ class TradingBot:
         # Must run BEFORE the first trading scan so every signal today uses
         # the walk-forward-optimised thresholds.
         self._apply_adaptive_params()
+
+        # ── Step 5b: Start IntradayAdapter — 30-min live session adaptation ──
+        # Runs a background thread that re-evaluates regime + session P&L every
+        # 30 minutes and writes adapted params to data/intraday_params.json.
+        try:
+            from intraday_adapter import get_adapter as _get_intraday_adapter
+            self._intraday_adapter = _get_intraday_adapter()
+            self._intraday_adapter.start_background()
+            logger.info("[Main] IntradayAdapter started — 30-min live adaptation active")
+        except Exception as _ia_err:
+            logger.warning(f"[Main] IntradayAdapter init failed: {_ia_err}")
+            self._intraday_adapter = None
 
         # ── Step 6: Initialize Profit Engine with plan's daily target ────────
         try:
@@ -1827,6 +1840,15 @@ class TradingBot:
                 _rm_state.daily_capital + max(_rm_state.peak_pnl, 0.0)
             )
 
+            # Apply intraday adaptive params to signal generator before each scan
+            try:
+                from intraday_adapter import IntradayAdapter as _IA
+                _ia_params = _IA.load_params_from_file()
+                if _ia_params and hasattr(self.signal_gen, "apply_adaptive_params"):
+                    self.signal_gen.apply_adaptive_params(_ia_params)
+            except Exception:
+                pass
+
             signals = self.signal_gen.scan_watchlist(
                 symbols=combined_watchlist,
                 max_signals=min(max_new, 4)  # up to 4 signals per cycle (was 3)
@@ -2695,6 +2717,13 @@ class TradingBot:
                         # Remove from risk state, update daily P&L / win-loss counters
                         self.risk_manager.close_position(pos.symbol, actual_exit, health["reason"])
                         self._save_capital_intraday()
+                        # Record trade outcome for intraday adaptation
+                        try:
+                            trade_pnl = pnl
+                            if hasattr(self, "_intraday_adapter") and self._intraday_adapter:
+                                self._intraday_adapter.record_trade(pnl=trade_pnl, win=trade_pnl > 0)
+                        except Exception:
+                            pass
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, health["reason"]
@@ -2961,6 +2990,13 @@ class TradingBot:
                                 logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: {adapt_msg}")
                             except Exception as e:
                                 logger.debug(f"AdaptiveBrain record error: {e}")
+                        # Record trade outcome for intraday adaptation
+                        try:
+                            trade_pnl = pnl
+                            if hasattr(self, "_intraday_adapter") and self._intraday_adapter:
+                                self._intraday_adapter.record_trade(pnl=trade_pnl, win=trade_pnl > 0)
+                        except Exception:
+                            pass
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, action["reason"]
