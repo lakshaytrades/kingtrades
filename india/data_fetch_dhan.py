@@ -206,10 +206,13 @@ _NSE_CHART_HDR   = {
         "AppleWebKit/537.36 (KHTML, like Gecko) "
         "Chrome/124.0.0.0 Safari/537.36"
     ),
-    "Accept":          "*/*",
-    "Accept-Encoding": "gzip, deflate, br",
-    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
-    "Connection":      "keep-alive",
+    "Accept":           "application/json, text/plain, */*",
+    "Accept-Encoding":  "gzip, deflate, br",
+    "Accept-Language":  "en-US,en;q=0.9,hi;q=0.8",
+    "Connection":       "keep-alive",
+    "sec-ch-ua":        '"Chromium";v="124", "Google Chrome";v="124", "Not-A.Brand";v="99"',
+    "sec-ch-ua-mobile": "?0",
+    "sec-ch-ua-platform": '"Windows"',
 }
 
 _nse_session: Optional[object] = None   # requests.Session
@@ -226,7 +229,14 @@ _OHLCV_CACHE_TTL = 290.0   # cache just under scan interval (5 min)
 
 
 def _get_nse_session():
-    """Return a warmed-up requests.Session with valid NSE cookies."""
+    """
+    Return a warmed-up requests.Session with valid NSE cookies.
+    3-step warmup mirrors what a real browser does before loading charts:
+      1. Main site → base cookies (nsit, nseappid, etc.)
+      2. Market data page → trading-specific cookies
+      3. Charting subdomain main page → charting-specific cookies
+    Referer must always be nseindia.com (not charting subdomain) for CORS.
+    """
     global _nse_session, _nse_session_ts
     import requests as _req
     now = _time.monotonic()
@@ -236,14 +246,30 @@ def _get_nse_session():
     sess = _req.Session()
     sess.headers.update(_NSE_CHART_HDR)
     try:
-        # Step 1: hit main page to get initial cookies
-        sess.get(_NSE_MAIN, timeout=10)
-        _time.sleep(0.3)
-        # Step 2: hit market data page for trading-related cookies
+        # Step 1: main NSE page — gets nsit, nseappid, ak_bmsc cookies
+        sess.get(_NSE_MAIN, timeout=12)
+        _time.sleep(0.6)
+        # Step 2: market data page — gets additional trading cookies
         sess.get(
             f"{_NSE_MAIN}/market-data/live-equity-market",
-            timeout=10,
+            timeout=12,
+            headers={"Referer": _NSE_MAIN + "/"},
         )
+        _time.sleep(0.6)
+        # Step 3: charting subdomain — gets charting-specific session token
+        # Referer = nseindia.com (same-site origin, required by NSE CORS policy)
+        sess.get(
+            _NSE_CHART_BASE,
+            timeout=12,
+            headers={
+                "Referer":        _NSE_MAIN + "/",
+                "Origin":         _NSE_MAIN,
+                "sec-fetch-site": "same-site",
+                "sec-fetch-mode": "navigate",
+                "sec-fetch-dest": "document",
+            },
+        )
+        _time.sleep(0.3)
     except Exception as e:
         logger.debug(f"NSE session warmup: {e}")
 
@@ -312,13 +338,22 @@ def _fetch_nse_chart(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
     """
     Call NSE charting endpoint for one symbol + interval.
     Retries once after refreshing cookies on 401/403/empty response.
+    Key: Referer must be nseindia.com (same-site CORS) not the charting subdomain.
     """
     import requests as _req
 
     def _call(sess):
         url = f"{_NSE_CHART_BASE}/Charts/symbolhistoricaldata/{symbol}"
         params = {"time": str(interval_min), "type": "EQ"}
-        hdrs = {**_NSE_CHART_HDR, "Referer": f"{_NSE_CHART_BASE}/"}
+        # Referer = nseindia.com (browser behaviour: chart loaded from main site)
+        # sec-fetch-site = same-site (charting.nseindia.com ↔ nseindia.com)
+        hdrs = {
+            "Referer":        _NSE_MAIN + "/",
+            "Origin":         _NSE_MAIN,
+            "sec-fetch-site": "same-site",
+            "sec-fetch-mode": "cors",
+            "sec-fetch-dest": "empty",
+        }
         resp = sess.get(url, params=params, headers=hdrs, timeout=15)
         return resp
 
