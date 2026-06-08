@@ -47,19 +47,29 @@ from signal_generator_india import IndiaSignalGenerator, IndiaTradeSignal
 LOG_DIR = _BASE / "logs"
 LOG_DIR.mkdir(exist_ok=True)
 
+IST = ZoneInfo("Asia/Kolkata")
+
+# Server runs in UTC. Make %(asctime)s emit IST so the "[IST]" label is truthful
+# and logged times match the bot's trading clock (datetime.now(IST)).
+# This is a process-wide class attribute, so it fixes every logger in this process.
+def _ist_log_converter(*args):
+    # Assigned as a class attribute, so it may be called bound (self, ts) or
+    # unbound (ts); the epoch timestamp is always the last positional arg.
+    return datetime.fromtimestamp(args[-1], IST).timetuple()
+logging.Formatter.converter = staticmethod(_ist_log_converter)
+
 logging.basicConfig(
     level   = logging.INFO,
     format  = "%(asctime)s [IST] [%(levelname)s] [%(name)s] %(message)s",
     handlers=[
         logging.StreamHandler(),
-        logging.FileHandler(LOG_DIR / f"india_{datetime.now().strftime('%Y-%m-%d')}.log"),
+        logging.FileHandler(LOG_DIR / f"india_{datetime.now(IST).strftime('%Y-%m-%d')}.log"),
     ],
+    force   = True,   # override any root handler an imported lib configured first
 )
 logger = logging.getLogger("main_india")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("peewee").setLevel(logging.CRITICAL)
-
-IST = ZoneInfo("Asia/Kolkata")
 
 
 # -- Telegram helper ----------------------------------------------------------

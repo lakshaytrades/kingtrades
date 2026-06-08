@@ -46,8 +46,12 @@ def _parse_ist(ts: str) -> datetime:
 
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [INDIA-IMPROVER] %(message)s",
+    format="%(asctime)s [IST] [INDIA-IMPROVER] %(message)s",
 )
+# Server runs in UTC — render %(asctime)s in IST (IST defined above).
+def _ist_log_converter(*args):
+    return datetime.fromtimestamp(args[-1], IST).timetuple()
+logging.Formatter.converter = staticmethod(_ist_log_converter)
 logger = logging.getLogger("india_improver")
 
 # ── India-specific tunable parameters ────────────────────────────────────────

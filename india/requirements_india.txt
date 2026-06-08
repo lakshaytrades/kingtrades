@@ -6,3 +6,4 @@ xgboost>=1.7.0
 requests>=2.28.0
 python-dotenv
 pyotp
+tzdata        # IST (Asia/Kolkata) zoneinfo data — required on minimal/UTC servers

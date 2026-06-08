@@ -39,6 +39,11 @@ logging.basicConfig(
 logger = logging.getLogger("india_intel")
 IST   = ZoneInfo("Asia/Kolkata")
 
+# Server runs in UTC — render %(asctime)s in IST so the "[IST]" label is truthful.
+def _ist_log_converter(*args):
+    return datetime.fromtimestamp(args[-1], IST).timetuple()
+logging.Formatter.converter = staticmethod(_ist_log_converter)
+
 DATA_DIR       = Path(__file__).parent.parent / "data"
 DECISIONS_FILE = DATA_DIR / "india_trade_decisions.json"
 MONTHLY_FILE   = DATA_DIR / "india_monthly_pnl.json"

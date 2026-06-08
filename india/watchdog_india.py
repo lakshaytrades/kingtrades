@@ -41,9 +41,14 @@ LOG_DIR    = BASE_DIR / "logs"
 STATE_FILE = BASE_DIR / "data" / "india_watchdog_state.json"
 IST        = ZoneInfo("Asia/Kolkata")
 
+# Server runs in UTC — emit IST timestamps in logs (see main_india for rationale).
+def _ist_log_converter(*args):
+    return datetime.fromtimestamp(args[-1], IST).timetuple()
+logging.Formatter.converter = staticmethod(_ist_log_converter)
+
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s [INDIA-WATCHDOG] %(message)s",
+    format="%(asctime)s [IST] [INDIA-WATCHDOG] %(message)s",
     handlers=[
         logging.StreamHandler(),
         logging.FileHandler(LOG_DIR / "india_watchdog.log"),
