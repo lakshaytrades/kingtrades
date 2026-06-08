@@ -317,9 +317,39 @@ class KingTradesIndia:
         if not hasattr(self, "_scan_stats"):
             self._scan_stats = {"scanned": 0, "signals": 0, "rejected_no_sig": 0,
                                 "rejected_regime": 0, "rejected_orb": 0,
-                                "rejected_qty": 0, "last_tg_ts": 0.0}
+                                "rejected_qty": 0, "last_tg_ts": 0.0,
+                                "data_ok": 0, "data_fail": 0, "data_warn_ts": 0.0}
         _ss = self._scan_stats
         _ss["scanned"] = 0   # reset per scan cycle
+
+        # -- NSE OHLCV data health check (3-symbol sample every scan) ---------
+        _sample_syms = self._watchlist[:3]
+        _data_ok_count = 0
+        for _dsym in _sample_syms:
+            try:
+                from data_fetch_dhan import get_ohlcv as _gohlcv
+                _df = _gohlcv(_dsym, interval="5m", period="5d")
+                if _df is not None and not _df.empty and len(_df) >= 20:
+                    _data_ok_count += 1
+            except Exception:
+                pass
+        _ss["data_ok"]   = _data_ok_count
+        _ss["data_fail"] = len(_sample_syms) - _data_ok_count
+
+        if _data_ok_count == 0 and len(_sample_syms) > 0:
+            logger.warning("NSE OHLCV data: 0/3 sample symbols loaded — NSE charting API may be down")
+            if _time.monotonic() - _ss["data_warn_ts"] > 1800:  # alert max every 30 min
+                _ss["data_warn_ts"] = _time.monotonic()
+                _tg(
+                    "⚠️ INDIA BOT — NSE Data Alert\n"
+                    "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                    "NSE charting API returning NO data for 3 sample symbols.\n"
+                    "This is why 0 signals are found — no OHLCV candles to analyse.\n\n"
+                    "Fix on VPS:\n"
+                    "curl -s 'https://www.nseindia.com/api/allIndices' | head -100\n"
+                    "# If above works but signals still 0 → NSE charting blocked.\n"
+                    "# Check VPS IP is Indian and not rate-limited by NSE."
+                )
 
         # ORB-only window: 9:15-9:30 IST -- market still settling.
         _t = current_time or datetime.now(IST).time()
@@ -472,11 +502,14 @@ class KingTradesIndia:
         _orb_r  = _ss["rejected_orb"]
         _qty_r  = _ss["rejected_qty"]
         _sigs   = _ss["signals"]
+        _dok    = _ss.get("data_ok", 0)
+        _dfail  = _ss.get("data_fail", 0)
+        _data_tag = f"✅ {_dok}/3" if _dok > 0 else "❌ 0/3 — NSE data DOWN"
         logger.info(
             f"[SCAN] {_total} symbols | signals={_sigs} | "
             f"no_signal={_no_sig} | regime_filter={_regime} | "
             f"orb_only={_orb_r} | qty_fail={_qty_r} | "
-            f"regime={regime} | scalp={'ON' if _scalp else 'off'}"
+            f"data={_dok}/3 | regime={regime} | scalp={'ON' if _scalp else 'off'}"
         )
         _now_ts = _time.monotonic()
         if _now_ts - _ss.get("last_tg_ts", 0) > 1800:   # every 30 min
@@ -486,6 +519,7 @@ class KingTradesIndia:
             _tg(
                 f"📊 INDIA BOT — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
                 f"Mode: {_mode_tag} | Regime: {regime} | Scalp: {'ON' if _scalp else 'off'}\n"
+                f"NSE Data: {_data_tag}\n"
                 f"Scanned: {_total} | Signals found: {_sigs}\n"
                 f"Rejected → no signal: {_no_sig} | regime: {_regime} | ORB window: {_orb_r} | qty: {_qty_r}\n"
                 f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
