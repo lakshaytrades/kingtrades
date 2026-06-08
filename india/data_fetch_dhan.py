@@ -78,7 +78,10 @@ def _fetch_dhan_index_ohlc(security_id: int) -> Optional[dict]:
                         "low":   float(ohlc.get("low", 0) or 0),
                         "close": float(ohlc.get("close", 0) or 0),
                     }
-            return None
+            # transient empty/non-success → retry (don't abort the loop); this is
+            # the primary VIX/Nifty path, so a single bad payload must not silently
+            # disable the VIX risk gate.
+            _time.sleep(2 ** attempt)
         except Exception as e:
             logger.debug(f"Dhan index {security_id} attempt {attempt+1}: {e}")
             _time.sleep(2 ** attempt)
