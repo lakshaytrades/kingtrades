@@ -34,8 +34,8 @@ TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
 # 67 post-HAF threshold captures more HAF-validated signals vs 70 (+~15% trades)
 # 63 pre-filter is tighter than old 60 -- reduces noise entering the 26-gate pipeline
 # 82 Grand Slam unchanged -- highest conviction -> 1.35x Kelly-weighted size
-MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "63.0"))
-FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "67.0"))
+MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "66.0"))
+FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "72.0"))
 GRAND_SLAM_MIN_SCORE  = float(os.getenv("INDIA_GRAND_SLAM_MIN_SCORE", "82.0"))
 
 # -- ATR-based SL / TP --------------------------------------------------------
@@ -92,8 +92,8 @@ BREAKEVEN_TRIGGER_PCT   = float(os.getenv("INDIA_BREAKEVEN_TRIGGER", "0.3")) / 1
 TRAILING_T1_PCT         = float(os.getenv("INDIA_TRAILING_T1", "50.0")) / 100
 TRAILING_TIGHT_ATR      = float(os.getenv("INDIA_TRAILING_TIGHT_ATR", "0.3"))
 
-# -- Idle scalp mode ----------------------------------------------------------
-IDLE_SCALP_ENABLED          = _flag("INDIA_IDLE_SCALP_ENABLED")
+# -- Idle scalp mode (DISABLED per owner — high-accuracy momentum only) -------
+IDLE_SCALP_ENABLED          = os.getenv("INDIA_IDLE_SCALP_ENABLED", "False") == "True"
 IDLE_SCALP_THRESHOLD_MIN    = int(os.getenv("INDIA_SCALP_THRESHOLD_MIN", "30"))
 IDLE_SCALP_MIN_SCORE        = float(os.getenv("INDIA_SCALP_MIN_SCORE", "55.0"))
 IDLE_SCALP_MIN_RR           = float(os.getenv("INDIA_SCALP_MIN_RR", "1.5"))

@@ -83,7 +83,7 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # live-trading safe cap
 ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
 ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # 1x cash — safe for live trading
 
-MAX_POSITIONS: int = 8       # allow more concurrent positions for more opportunities
+MAX_POSITIONS: int = 5       # high-accuracy mode: fewer, higher-conviction positions (was 8 for scalping)
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 15.0   # 15% per trade — sized for profit, not reckless
 
@@ -155,15 +155,15 @@ PRIMARY_TIMEFRAME: str = "5Min"
 CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
-MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "60.0"))
-L99_MIN_SCORE: float    = float(os.getenv("L99_MIN_SCORE", "65.0"))    # L99 gate minimum (65=B, 76=A, 85=A+)
+MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "66.0"))
+L99_MIN_SCORE: float    = float(os.getenv("L99_MIN_SCORE", "72.0"))    # high-accuracy: 72=A- conviction (65=B, 76=A, 85=A+)
                                        # v20.1: lowered 63→60. Pre-filter feeds the 28-gate HAF system.
                                        # Boosters (CSM, VWAP, OFI, etc.) add pts after gates. Kept low so
                                        # gate system — not the pre-filter — is the quality barrier.
 HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses
 GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "82.0"))  # Grand Slam requires 82+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry
-FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "60.0"))  # Post-booster gate — matches pre-filter (no dead zone)
+FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "70.0"))  # high-accuracy post-booster gate (was 60)
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
 ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "12.0"))  # lowered 18→12: 12-18 still has directional bias

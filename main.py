@@ -435,17 +435,10 @@ class TradingBot:
             self.fii_tracker = None
             logger.debug(f"[Main] FII/DII tracker unavailable: {_fii_err}")
 
-        # Options Scalping Engine — Alpaca US options
+        # Options Scalping Engine — DISABLED (per owner: remove scalper, take
+        # fewer but higher-accuracy swing/momentum trades only).
         self.options_scalper = None
-        try:
-            from options_scalping import get_options_scalping_engine
-            self.options_scalper = get_options_scalping_engine(
-                live_enabled=config.LIVE_TRADING_ENABLED
-            )
-            logger.info(f"[{format_ist_timestamp()}] Options Scalping Engine ready (live={config.LIVE_TRADING_ENABLED})")
-        except Exception as e:
-            self.options_scalper = None
-            logger.warning(f"[{format_ist_timestamp()}] Options scalping init failed: {e}")
+        logger.info(f"[{format_ist_timestamp()}] Options scalper disabled (high-accuracy mode)")
 
         try:
             from orb_strategy import get_orb_strategy
@@ -455,13 +448,9 @@ class TradingBot:
             self.orb_strategy = None
             logger.warning(f"[{format_ist_timestamp()}] ORB strategy init failed: {e}")
 
-        try:
-            from scalping_engine import get_scalping_engine
-            self.scalping_engine = get_scalping_engine()
-            logger.info(f"[{format_ist_timestamp()}] Scalping engine ready")
-        except Exception as e:
-            self.scalping_engine = None
-            logger.warning(f"[{format_ist_timestamp()}] Scalping engine init failed: {e}")
+        # Intraday scalping engine — DISABLED (per owner: remove scalper).
+        self.scalping_engine = None
+        logger.info(f"[{format_ist_timestamp()}] Scalping engine disabled (high-accuracy mode)")
 
         # Initialize Morning Intelligence engine
         try:
