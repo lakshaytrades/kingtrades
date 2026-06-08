@@ -319,6 +319,14 @@ class KingTradesIndia:
             self._generator._session_losses = self._stats.losses
             self._generator._idle_scalp_active = _scalp
 
+        # -- Scan diagnostics: track rejection reasons -------------------------
+        if not hasattr(self, "_scan_stats"):
+            self._scan_stats = {"scanned": 0, "signals": 0, "rejected_no_sig": 0,
+                                "rejected_regime": 0, "rejected_orb": 0,
+                                "rejected_qty": 0, "last_tg_ts": 0.0}
+        _ss = self._scan_stats
+        _ss["scanned"] = 0   # reset per scan cycle
+
         # ORB-only window: 9:15-9:30 IST -- market still settling.
         _t = current_time or datetime.now(IST).time()
         _orb_only = time(9, 15) <= _t < time(9, 30)
@@ -346,9 +354,11 @@ class KingTradesIndia:
                 break
 
             try:
+                _ss["scanned"] += 1
                 ltp = ltp_map.get(symbol, 0.0)
                 signal_obj = self._generator.generate_signal(symbol, current_price=ltp)
                 if signal_obj is None:
+                    _ss["rejected_no_sig"] += 1
                     continue
 
                 # ORB-only: skip non-ORB signals during 9:15-9:30 IST
@@ -356,19 +366,23 @@ class KingTradesIndia:
                     has_orb = any("orb" in str(p).lower()
                                   for p in getattr(signal_obj, "patterns", []))
                     if not has_orb:
-                        logger.debug(f"{symbol}: skipped (ORB-only window 9:15-9:30)")
+                        logger.info(f"{symbol}: skipped (ORB-only window 9:15-9:30)")
+                        _ss["rejected_orb"] += 1
                         continue
 
                 # Nifty regime filter: don't fight the market
                 if regime == "BEARISH" and signal_obj.direction == "LONG":
-                    logger.debug(f"{symbol}: LONG skipped (Nifty BEARISH regime)")
+                    logger.info(f"{symbol}: LONG skipped (Nifty BEARISH regime)")
+                    _ss["rejected_regime"] += 1
                     continue
                 if regime == "BULLISH" and signal_obj.direction == "SHORT":
-                    logger.debug(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
+                    logger.info(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
+                    _ss["rejected_regime"] += 1
                     continue
 
+                _ss["signals"] += 1
                 logger.info(
-                    f"SIGNAL: {symbol} {signal_obj.direction} "
+                    f"✅ SIGNAL: {symbol} {signal_obj.direction} "
                     f"score={signal_obj.signal_score:.1f} "
                     f"grade={signal_obj.quality_grade} "
                     f"entry=Rs.{signal_obj.entry_price:.2f} "
@@ -379,8 +393,20 @@ class KingTradesIndia:
                 # Position sizing
                 qty = self._calculate_qty(signal_obj)
                 if qty <= 0:
-                    logger.info(f"{symbol}: qty=0 -- insufficient capital or risk")
+                    logger.info(f"{symbol}: qty=0 -- capital Rs.{config.MAX_DAILY_CAPITAL:,.0f} insufficient for this SL distance")
+                    _ss["rejected_qty"] += 1
                     continue
+
+                # Guard: security_id required for LIVE orders; paper mode uses fallback
+                if not signal_obj.security_id:
+                    if config.LIVE_TRADING_ENABLED:
+                        logger.warning(f"{symbol}: no security_id -- skipping live order")
+                        _ss["rejected_qty"] += 1
+                        continue
+                    else:
+                        # Paper mode: assign dummy ID so position can be tracked
+                        signal_obj.security_id = f"PAPER-{symbol}"
+                        logger.info(f"{symbol}: no scrip ID in master — using paper ID for tracking")
 
                 # Execute entry
                 result = self._executor.place_entry_order(
@@ -398,14 +424,9 @@ class KingTradesIndia:
                 fill_price = result.fill_price or signal_obj.entry_price
                 fill_qty   = result.quantity or qty
 
-                # Guard: only place stop if fill confirmed
+                # Guard: only continue if fill confirmed
                 if fill_qty <= 0 or fill_price <= 0:
-                    logger.warning(f"{symbol}: fill not confirmed -- skipping stop order")
-                    continue
-
-                # Guard: validate security_id before placing any order
-                if not signal_obj.security_id:
-                    logger.warning(f"{symbol}: no security_id -- skipping order")
+                    logger.warning(f"{symbol}: fill not confirmed -- skipping position tracking")
                     continue
 
                 # Place stop-loss
@@ -478,6 +499,33 @@ class KingTradesIndia:
 
             except Exception as e:
                 logger.error(f"Signal scan {symbol}: {e}")
+
+        # -- Scan summary: log always, Telegram every 30 min ------------------
+        _total = len(self._watchlist)
+        _no_sig = _ss["rejected_no_sig"]
+        _regime = _ss["rejected_regime"]
+        _orb_r  = _ss["rejected_orb"]
+        _qty_r  = _ss["rejected_qty"]
+        _sigs   = _ss["signals"]
+        logger.info(
+            f"[SCAN] {_total} symbols | signals={_sigs} | "
+            f"no_signal={_no_sig} | regime_filter={_regime} | "
+            f"orb_only={_orb_r} | qty_fail={_qty_r} | "
+            f"regime={regime} | scalp={'ON' if _scalp else 'off'}"
+        )
+        _now_ts = _time.monotonic()
+        if _now_ts - _ss.get("last_tg_ts", 0) > 1800:   # every 30 min
+            _ss["last_tg_ts"] = _now_ts
+            _now_ist = datetime.now(IST)
+            _mode_tag = "LIVE" if config.LIVE_TRADING_ENABLED else "PAPER"
+            _tg(
+                f"📊 INDIA BOT — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
+                f"Mode: {_mode_tag} | Regime: {regime} | Scalp: {'ON' if _scalp else 'off'}\n"
+                f"Scanned: {_total} | Signals found: {_sigs}\n"
+                f"Rejected → no signal: {_no_sig} | regime: {_regime} | ORB window: {_orb_r} | qty: {_qty_r}\n"
+                f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
+                f"Pos: {len(self._positions)}/{config.MAX_POSITIONS}"
+            )
 
     # -- Position management --------------------------------------------------
 
