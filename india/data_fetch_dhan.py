@@ -482,13 +482,71 @@ def _fetch_dhan_ohlcv(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
     return None
 
 
+# ── Yahoo Finance (FREE, no broker account, works from VPS) ──────────────────
+# Alternative data source for users who don't use Dhan. Serves NSE equity
+# (SYMBOL.NS), India VIX (^INDIAVIX) and Nifty (^NSEI). Intraday ~60d history,
+# ~15-min delayed on the free feed — fine for manual/swing signals.
+_YH_BASE = "https://query1.finance.yahoo.com/v8/finance/chart"
+_YH_INTERVAL = {1: "1m", 3: "5m", 5: "5m", 10: "15m", 15: "15m",
+                30: "30m", 60: "60m"}
+_YH_HDR = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                         "AppleWebKit/537.36 (KHTML, like Gecko) "
+                         "Chrome/124.0.0.0 Safari/537.36"}
+
+
+def _fetch_yahoo_chart(yf_symbol: str, interval_min: int,
+                       rng: str = "5d") -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from Yahoo for a Yahoo symbol (e.g. RELIANCE.NS, ^NSEI)."""
+    import requests as _req
+    iv = _YH_INTERVAL.get(interval_min, "5m")
+    url = f"{_YH_BASE}/{yf_symbol}"
+    for attempt in range(2):
+        try:
+            r = _req.get(url, params={"range": rng, "interval": iv},
+                         headers=_YH_HDR, timeout=15)
+            if r.status_code != 200:
+                _time.sleep(1.5)
+                continue
+            res = r.json()["chart"]["result"][0]
+            ts = res.get("timestamp") or []
+            q = res["indicators"]["quote"][0]
+            rows = []
+            for i in range(len(ts)):
+                o, h, l, c = q["open"][i], q["high"][i], q["low"][i], q["close"][i]
+                v = (q.get("volume") or [0] * len(ts))[i]
+                if None in (o, h, l, c):
+                    continue
+                rows.append((ts[i], o, h, l, c, v or 0))
+            if not rows:
+                return None
+            idx = pd.to_datetime([x[0] for x in rows], unit="s", utc=True
+                                 ).tz_convert("Asia/Kolkata")
+            df = pd.DataFrame({
+                "open":   [x[1] for x in rows],
+                "high":   [x[2] for x in rows],
+                "low":    [x[3] for x in rows],
+                "close":  [x[4] for x in rows],
+                "volume": [x[5] for x in rows],
+            }, index=idx).dropna()
+            return df if not df.empty else None
+        except Exception as e:
+            logger.debug(f"Yahoo {yf_symbol} attempt {attempt+1}: {e}")
+            _time.sleep(1.5)
+    return None
+
+
+def _fetch_yahoo_ohlcv(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
+    """NSE equity OHLCV via Yahoo (SYMBOL.NS)."""
+    return _fetch_yahoo_chart(f"{symbol}.NS", interval_min, rng="5d")
+
+
 def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV candles. Dhan (authenticated) is primary because NSE's charting
-    API is IP-blocked (403) on most datacenter/VPS hosts; NSE is the fallback
-    for hosts (e.g. residential) where it is reachable.
-    Returns DataFrame: lowercase columns open/high/low/close/volume, IST-indexed.
-    Cached ~5 minutes.
+    Fetch OHLCV candles. Source priority:
+      1. Dhan intraday API   (if a Dhan client is registered)
+      2. Yahoo Finance       (free, no account — SYMBOL.NS)
+      3. NSE charting API    (only on non-blocked/residential IPs)
+    Returns DataFrame: lowercase open/high/low/close/volume, IST-indexed. ~5m cache.
     """
     cache_key = f"{symbol}_{interval}"
     now_mono  = _time.monotonic()
@@ -498,19 +556,25 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
 
     interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
 
-    # ── Primary: Dhan intraday API (authenticated, VPS-reliable) ──────────────
+    # 1. Dhan (only if a client is registered)
     df = _fetch_dhan_ohlcv(symbol, interval_min)
     if df is not None and not df.empty:
         _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
         return df
 
-    # ── Fallback: NSE charting API (works only on non-blocked IPs) ────────────
+    # 2. Yahoo Finance (free, no broker account)
+    df = _fetch_yahoo_ohlcv(symbol, interval_min)
+    if df is not None and not df.empty:
+        _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
+        return df
+
+    # 3. NSE charting (residential IPs only)
     df = _fetch_nse_chart(symbol, interval_min)
     if df is not None and not df.empty:
         _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
         return df
 
-    logger.debug(f"{symbol}: OHLCV unavailable from both Dhan and NSE")
+    logger.debug(f"{symbol}: OHLCV unavailable from Dhan, Yahoo, or NSE")
     return None
 
 
@@ -564,6 +628,15 @@ def get_india_vix() -> float:
         _vix_cache["ts"]  = now
         return vix
 
+    # Yahoo: ^INDIAVIX (free, no account)
+    ydf = _fetch_yahoo_chart("^INDIAVIX", 5, rng="1d")
+    if ydf is not None and not ydf.empty:
+        vix = float(ydf["close"].iloc[-1])
+        if vix > 0:
+            _vix_cache["vix"] = vix
+            _vix_cache["ts"]  = now
+            return vix
+
     # Fallback: NSE allIndices
     try:
         sess = _get_nse_session()
@@ -595,6 +668,11 @@ def get_nifty_intraday(interval: str = "5m") -> Optional[pd.DataFrame]:
     Falls back to single-row DataFrame from allIndices if charting fails.
     """
     interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
+
+    # Attempt -1: Yahoo ^NSEI (free, no broker account)
+    ydf = _fetch_yahoo_chart("^NSEI", interval_min, rng="5d")
+    if ydf is not None and not ydf.empty:
+        return ydf
 
     # Attempt 0: Dhan index intraday (IDX_I) — primary on VPS where NSE is blocked
     client = _dhan_client_ref
@@ -744,6 +822,18 @@ def get_nifty_level() -> dict:
         base     = prev_clo or open_px
         change   = round((level - base) / base * 100, 2) if base else 0.0
         return {"level": level, "open": open_px, "change_pct": change}
+
+    # Yahoo: ^NSEI daily (free, no account)
+    ydf = _fetch_yahoo_chart("^NSEI", 60, rng="2d")
+    if ydf is not None and not ydf.empty:
+        level   = float(ydf["close"].iloc[-1])
+        open_px = float(ydf["open"].iloc[-1])
+        # change vs first bar of the latest session (intraday-style)
+        sess = ydf[ydf.index.date == ydf.index[-1].date()]
+        base = float(sess["open"].iloc[0]) if not sess.empty else open_px
+        change = round((level - base) / base * 100, 2) if base else 0.0
+        if level > 0:
+            return {"level": level, "open": base, "change_pct": change}
 
     return {"level": 0.0, "open": 0.0, "change_pct": 0.0}
 
