@@ -557,15 +557,18 @@ class TradingBot:
             available = bal.get("available", 0)
             mode = "⚡ LIVE TRADING" if config.LIVE_TRADING_ENABLED else "🔒 DRY RUN"
             wl_count = len(config.WATCHLIST)
+            _now_ist = get_current_ist_time()
+            _daily_tgt = config.DAILY_PROFIT_TARGET or (available * 0.01)
             self.alerter.send_text(
                 f"🚀 <b>{config.BOT_DISPLAY_NAME} Bot Started</b>\n"
                 f"<code>{format_ist_timestamp()}</code>\n\n"
                 f"Mode: <b>{mode}</b>\n"
                 f"Balance: <b>${available:,.2f}</b>\n"
-                f"Daily Target: <b>${config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
+                f"Daily Target: <b>${_daily_tgt:,.0f}</b> (1%)\n"
                 f"Watchlist: <b>{wl_count} stocks</b>\n\n"
                 f"Strategies: MTF + SmartMoney + ProfitMaximizer\n"
-                f"Market opens at 9:30 AM ET"
+                f"🇺🇸 US market: 9:30 AM ET = {_now_ist.strftime('%I:%M %p')} IST +9h30m\n"
+                f"🇮🇳 India market: 9:15 AM IST (run india/main_india.py)"
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
@@ -4573,10 +4576,35 @@ class TradingBot:
             # India bot status from state file
             try:
                 import json as _json
+                import time as _time_mod
                 from pathlib import Path as _Path
+                from utils import get_current_ist_time as _ist_now
                 _india_f = _Path("/tmp/india_state.json")
-                if _india_f.exists():
+                _india_lines = []
+                if not _india_f.exists():
+                    # File doesn't exist — India bot is not running
+                    _now_ist = _ist_now()
+                    _ist_t   = _now_ist.time()
+                    from datetime import time as _dt_time
+                    if _ist_t < _dt_time(9, 0):
+                        _eta_min = int((_dt_time(9, 15).hour * 60 + _dt_time(9, 15).minute) - (_ist_t.hour * 60 + _ist_t.minute))
+                        _india_lines = [
+                            f"\n🇮🇳 <b>PSEB — INDIA BOT</b>",
+                            f"⏳ PRE-MARKET — NSE opens in ~{_eta_min} min (9:15 AM IST)",
+                            f"⚠️ India bot not detected running",
+                            f"Start it: <code>cd /root/kingtrades/india && python3 main_india.py</code>",
+                        ]
+                    else:
+                        _india_lines = [
+                            f"\n🇮🇳 <b>PSEB — INDIA BOT</b>",
+                            f"⚠️ OFFLINE — state file not found",
+                            f"Ensure India bot is running on VPS",
+                        ]
+                else:
                     _ind = _json.loads(_india_f.read_text())
+                    # Check if stale (> 10 min old)
+                    _file_age = _time_mod.time() - _india_f.stat().st_mtime
+                    _stale = _file_age > 600
                     _ind_pnl     = _ind.get("daily_pnl", 0)
                     _ind_pnl_pct = _ind.get("daily_pnl_pct", 0)
                     _ind_trades  = _ind.get("trades", 0)
@@ -4585,19 +4613,45 @@ class TradingBot:
                     _ind_cap     = _ind.get("capital", 0)
                     _ind_pos     = _ind.get("positions", [])
                     _ind_mode    = "LIVE ⚡" if _ind.get("live") else "PAPER 🔒"
-                    _ind_state   = "⏸ PAUSED" if _ind.get("circuit_hit") else "ACTIVE ✅"
+                    _ind_mkt     = _ind.get("market_state", "UNKNOWN")
+                    _ind_circuit = _ind.get("circuit_hit", False)
+                    _ind_guard   = _ind.get("loss_guard", False)
                     _ind_ts      = _ind.get("ts", "?")[:16]
                     _ind_wr      = _ind_wins / _ind_trades if _ind_trades else 0
 
+                    _mkt_icons = {
+                        "PRE_MARKET": "⏳ PRE-MARKET",
+                        "PRE_OPEN":   "🔔 PRE-OPEN (9:00-9:15)",
+                        "OPEN":       "✅ MARKET OPEN",
+                        "CLOSED":     "🔴 MARKET CLOSED",
+                        "UNKNOWN":    "❓",
+                    }
+                    _mkt_label = _mkt_icons.get(_ind_mkt, _ind_mkt)
+                    _stale_tag = " ⚠️ (stale)" if _stale else ""
+
+                    if _ind_circuit:
+                        _state_str = "⏸ CIRCUIT PAUSED"
+                    elif _ind_guard:
+                        _state_str = "🛡 LOSS GUARD ON"
+                    else:
+                        _state_str = "ACTIVE ✅"
+
                     _india_lines = [
                         f"\n🇮🇳 <b>PSEB — INDIA BOT</b> | {_ind_mode}",
-                        f"📅 Updated: {_ind_ts} IST",
+                        f"📅 {_ind_ts} IST{_stale_tag}",
+                        f"NSE: {_mkt_label}",
                         "─" * 28,
-                        f"STATUS  {_ind_state}",
+                        f"STATUS  {_state_str}",
                         f"CAPITAL Rs.{_ind_cap:,.0f}",
                         f"DAY P&L <b>Rs.{_ind_pnl:+,.0f} ({_ind_pnl_pct:+.2f}%)</b>",
-                        f"TRADES  {_ind_trades} | {_ind_wins}W / {_ind_losses}L | WR: {_ind_wr:.0%}",
+                        f"TRADES  {_ind_trades} today | {_ind_wins}W / {_ind_losses}L | WR: {_ind_wr:.0%}",
                     ]
+                    if _ind_mkt in ("PRE_MARKET", "PRE_OPEN"):
+                        from datetime import time as _dt_time
+                        _now_ist = _ist_now()
+                        _ist_t   = _now_ist.time()
+                        _eta = int((_dt_time(9, 15).hour * 60 + _dt_time(9, 15).minute) - (_ist_t.hour * 60 + _ist_t.minute))
+                        _india_lines.append(f"⏳ Market opens in ~{max(0, _eta)} min — no trades yet (normal)")
                     if _ind_pos:
                         _india_lines.append(f"\n── OPEN POSITIONS ({len(_ind_pos)}) ──")
                         for _p in _ind_pos:
@@ -4614,8 +4668,9 @@ class TradingBot:
                                 )
                             else:
                                 _india_lines.append(f"{_arr} <b>{_p['symbol']}</b> entry {_ep:.2f}")
-                    else:
+                    elif _ind_mkt == "OPEN":
                         _india_lines.append("No open India positions")
+                if _india_lines:
                     self.alerter.send_html("\n".join(_india_lines))
             except Exception as _ie:
                 logger.debug(f"India state append failed: {_ie}")

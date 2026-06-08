@@ -184,6 +184,7 @@ class KingTradesIndia:
 
         # Start Telegram command listener
         self._start_telegram_listener()
+        self._write_state_file()   # write immediately so /status shows India bot is online
 
         mode = "LIVE TRADING" if config.LIVE_TRADING_ENABLED else "PAPER MODE"
         _tg(
@@ -215,6 +216,7 @@ class KingTradesIndia:
 
                 # -- Pre-market: wait -----------------------------------------
                 if t < config.PRE_MARKET_START_IST:
+                    self._write_state_file()
                     _time.sleep(60)
                     continue
 
@@ -945,8 +947,19 @@ class KingTradesIndia:
             import json as _json
             from pathlib import Path as _Path
 
+            now_ist = datetime.now(IST)
+            t = now_ist.time()
+            if t < config.PRE_MARKET_START_IST:
+                mkt_state = "PRE_MARKET"
+            elif t < config.MARKET_OPEN_IST:
+                mkt_state = "PRE_OPEN"
+            elif t < config.SQUAREOFF_TIME_IST:
+                mkt_state = "OPEN"
+            else:
+                mkt_state = "CLOSED"
+
             ltp_map = {}
-            if self._positions:
+            if self._positions and mkt_state == "OPEN":
                 try:
                     ltp_map = get_multiple_ltp(list(self._positions.keys()), self._dhan)
                 except Exception:
@@ -964,7 +977,8 @@ class KingTradesIndia:
                 })
 
             state = {
-                "ts": datetime.now(IST).isoformat(),
+                "ts": now_ist.isoformat(),
+                "market_state": mkt_state,
                 "live": config.LIVE_TRADING_ENABLED,
                 "capital": cap,
                 "daily_pnl": s.total_pnl,
