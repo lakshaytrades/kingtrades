@@ -19,6 +19,10 @@ import pandas as pd
 logger = logging.getLogger("data_fetch_dhan")
 IST = ZoneInfo("Asia/Kolkata")
 
+# Suppress yfinance's own verbose ERROR/WARNING spam (404s etc handled in get_ohlcv)
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("peewee").setLevel(logging.CRITICAL)
+
 _SCRIP_MASTER_URL  = "https://images.dhan.co/api-data/api-scrip-master.csv"
 _SCRIP_CACHE_PATH  = Path(__file__).parent.parent / "data" / "dhan_scrip_master.csv"
 _SCRIP_CACHE_TTL   = 86400  # refresh daily
@@ -184,37 +188,59 @@ def get_multiple_ltp(symbols: List[str], dhan_client) -> Dict[str, float]:
 
 # ── Historical OHLCV from yfinance ───────────────────────────────────────────
 
+def _yf_parse(df) -> Optional["pd.DataFrame"]:
+    """Normalise a yfinance DataFrame to lowercase OHLCV with IST index."""
+    if df is None or df.empty:
+        return None
+    if isinstance(df.columns, pd.MultiIndex):
+        df.columns = [str(c[0]).lower() for c in df.columns]
+    else:
+        df.columns = [str(c).lower() for c in df.columns]
+    missing = [c for c in ["open", "high", "low", "close", "volume"] if c not in df.columns]
+    if missing:
+        return None
+    df = df[["open", "high", "low", "close", "volume"]].dropna()
+    if df.empty:
+        return None
+    if df.index.tzinfo is None:
+        df.index = df.index.tz_localize("Asia/Kolkata")
+    else:
+        df.index = df.index.tz_convert("Asia/Kolkata")
+    return df
+
+
 def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV bars from yfinance using NSE .NS suffix.
+    Fetch OHLCV bars from yfinance.
+    Tries NSE (.NS) first; falls back to BSE (.BO) if Yahoo returns 404.
     Returns DataFrame with lowercase columns: open, high, low, close, volume
-    Indexed by timezone-aware datetime (IST).
-    Returns None on failure (fail-open).
+    Indexed by timezone-aware datetime (IST).  Returns None on failure.
     """
+    import yfinance as yf
+    sym_up = symbol.upper()
+
+    # Attempt 1: NSE suffix
     try:
-        import yfinance as yf
-        ticker = f"{symbol.upper()}.NS"
-        df = yf.download(ticker, period=period, interval=interval,
+        df = yf.download(f"{sym_up}.NS", period=period, interval=interval,
                          progress=False, auto_adjust=True)
-        if df is None or df.empty:
-            return None
-        # Handle MultiIndex columns from newer yfinance versions
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [str(c[0]).lower() for c in df.columns]
-        else:
-            df.columns = [str(c).lower() for c in df.columns]
-        df = df[["open", "high", "low", "close", "volume"]].dropna()
-        if df.empty:
-            return None
-        # Convert index to IST
-        if df.index.tzinfo is None:
-            df.index = df.index.tz_localize("Asia/Kolkata")
-        else:
-            df.index = df.index.tz_convert("Asia/Kolkata")
-        return df
+        result = _yf_parse(df)
+        if result is not None:
+            return result
     except Exception as e:
-        logger.debug(f"yfinance {symbol}.NS failed: {e}")
-        return None
+        logger.debug(f"yfinance {sym_up}.NS failed: {e}")
+
+    # Attempt 2: BSE suffix fallback (same data, different exchange code in Yahoo)
+    try:
+        df = yf.download(f"{sym_up}.BO", period=period, interval=interval,
+                         progress=False, auto_adjust=True)
+        result = _yf_parse(df)
+        if result is not None:
+            logger.debug(f"{sym_up}: .NS failed, using .BO fallback")
+            return result
+    except Exception as e:
+        logger.debug(f"yfinance {sym_up}.BO also failed: {e}")
+
+    return None
 
 
 def get_ohlcv_multi_tf(symbol: str) -> Dict[str, Optional[pd.DataFrame]]:

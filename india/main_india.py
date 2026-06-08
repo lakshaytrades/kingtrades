@@ -56,6 +56,8 @@ logging.basicConfig(
     ],
 )
 logger = logging.getLogger("main_india")
+logging.getLogger("yfinance").setLevel(logging.CRITICAL)
+logging.getLogger("peewee").setLevel(logging.CRITICAL)
 
 IST = ZoneInfo("Asia/Kolkata")
 
@@ -288,8 +290,9 @@ class KingTradesIndia:
             ema21 = float(df["close"].ewm(span=21, adjust=False).mean().iloc[-1])
             gap   = (ema9 - ema21) / (ema21 + 1e-9)
 
-            # < 0.05% gap: EMA nearly flat -> choppy, allow both directions
-            if abs(gap) < 0.0005:
+            # < 0.3% gap: EMA nearly flat -> neutral, allow both directions
+            # Old 0.05% threshold was too tight — blocked all longs at -0.1% gaps
+            if abs(gap) < 0.003:
                 regime = "NEUTRAL"
             elif gap > 0:
                 regime = "BULLISH"
