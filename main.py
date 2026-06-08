@@ -298,6 +298,14 @@ class TradingBot:
         # Apply adaptive thresholds to signal generator (from self-learning)
         if self.signal_gen:
             self.signal_gen.min_score = adaptive_cfg.min_signal_score
+            # Wire the learner into the signal path so adaptive pattern weighting /
+            # pattern-disable logic actually engages (was never connected → ignored).
+            if hasattr(self.signal_gen, "set_learner"):
+                try:
+                    self.signal_gen.set_learner(self.learner)
+                    logger.info(f"[{format_ist_timestamp()}] Self-learner wired into signal generator")
+                except Exception as _swe:
+                    logger.debug(f"[suppressed] set_learner: {_swe}")
 
         # Apply self-learning threshold to HighAccuracyFilter
         try:

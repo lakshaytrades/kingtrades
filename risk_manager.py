@@ -207,6 +207,7 @@ class RiskManager:
         self._fii_mult:  float = 1.0   # FII/DII flow: 0.5–1.5×
         self._oc_mult:   float = 1.0   # Option chain bias: 0.9–1.1×
         self._inst_mult: float = 1.0   # Combined: fii_mult × oc_mult
+        self._session_size_mult: float = 1.0   # Morning futures-bias size mult (set by main.py)
 
         # Morning intelligence attrs — set by morning_intelligence.apply_to_risk_manager()
         self.size_multiplier: float = 1.0   # Day-level size modifier (DEFENSIVE=0.5, AGGRESSIVE=1.5)
@@ -289,6 +290,18 @@ class RiskManager:
             f"[{format_ist_timestamp()}] Institutional multiplier set: "
             f"FII={self._fii_mult:.2f}× OC={self._oc_mult:.2f}× "
             f"→ Combined={self._inst_mult:.2f}×"
+        )
+
+    def set_session_size_mult(self, mult: float) -> None:
+        """
+        Set the morning futures-bias position-size multiplier (from futures_bias).
+        Called by main.py after the pre-open global-futures read. Clamped 0.5–1.5
+        and folded into the combined multiplier in calculate_position_size().
+        """
+        self._session_size_mult = max(0.5, min(float(mult), 1.5))
+        logger.info(
+            f"[{format_ist_timestamp()}] Futures-bias size multiplier set: "
+            f"{self._session_size_mult:.2f}×"
         )
 
     # --------------------------------------------------------
@@ -691,6 +704,7 @@ class RiskManager:
             "morning":   mi_mult,
             "anti_mart": _anti_mult,
             "garch":     _garch_mult,
+            "futures":   getattr(self, "_session_size_mult", 1.0),
         }
         # Anti-martingale (loss-streak shrink) is the PRIMARY drawdown brake — it
         # must ALWAYS apply and must never be truncated away by the keep-worst-3
