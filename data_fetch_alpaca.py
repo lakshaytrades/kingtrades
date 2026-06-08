@@ -678,7 +678,8 @@ class AlpacaDataFetcher:
 
     def get_candles(self, symbol: str, interval: str = "5m", days: int = 5) -> Optional[pd.DataFrame]:
         """Alias matching GrowwDataFetcher.get_candles() so shared code works."""
-        interval_map = {"5m": "5minute", "15m": "15minute", "1h": "1hour", "60m": "1hour"}
+        interval_map = {"5m": "5minute", "15m": "15minute", "1h": "1hour", "60m": "1hour",
+                        "1Day": "day", "1d": "day", "day": "day"}
         alpaca_interval = interval_map.get(interval, interval)
         df = self.get_ohlcv(symbol, interval=alpaca_interval, lookback_days=days)
         return df if not df.empty else None

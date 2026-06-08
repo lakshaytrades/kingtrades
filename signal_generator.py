@@ -417,7 +417,7 @@ class SignalGenerator:
             # Cache by symbol so we don't re-fetch within the same scan cycle.
             if symbol not in self._daily_candles_cache:
                 try:
-                    _daily = self.fetcher.get_candles(symbol, "1Day", limit=25)
+                    _daily = self.fetcher.get_candles(symbol, "1Day", days=25)
                     self._daily_candles_cache[symbol] = _daily
                 except Exception:
                     self._daily_candles_cache[symbol] = None
@@ -2912,7 +2912,7 @@ class SignalGenerator:
                         "adx":             float(ind.adx or 25),
                         "ema_slope_pct":   float(getattr(ind, "ema_slope_pct", 0.0)),
                         "vwap_dist_pct":   float(abs(ltp_now - ind.vwap) / max(ltp_now, 0.01) * 100) if ind.vwap > 0 else 0.0,
-                        "bb_pct":          float(getattr(ind, "bb_pct", 0.5)),
+                        "bb_pct":          float(getattr(ind, "bb_pct_b", getattr(ind, "bb_pct", 0.5))),
                         "hour_et":         float(getattr(locals().get("_et_now", type("_", (), {"hour": 10})()), "hour", 10)),
                         "is_long":         1.0 if direction in ("LONG", "BUY") else 0.0,
                         "r2_quality":      float(getattr(filter_result, "_r2_quality", 0.5)),

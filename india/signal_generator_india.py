@@ -244,6 +244,11 @@ class IndiaSignalGenerator:
 
             return sig
 
+        except (AttributeError, TypeError) as e:
+            # Code bugs (phantom method, wrong args) must be LOUD — this exact
+            # silent-swallow is what hid the compute_indicators 0-trades bug.
+            logger.error(f"generate_signal {symbol} CODE ERROR: {e}", exc_info=True)
+            return None
         except Exception as e:
             logger.debug(f"generate_signal {symbol}: {e}")
             return None

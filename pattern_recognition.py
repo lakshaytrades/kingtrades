@@ -792,7 +792,9 @@ class PatternRecognizer:
         Returns dict with all detected patterns and indicator values.
         """
         if df is None or len(df) < 50:
-            return {"patterns": [], "indicators": IndicatorSet(), "score": 0}
+            # score must stay a dict — callers do score.get("direction"); an int
+            # here raised AttributeError that got swallowed into a None signal.
+            return {"patterns": [], "indicators": IndicatorSet(), "score": {}}
 
         # Add indicators
         df = self.indicators.compute(df)

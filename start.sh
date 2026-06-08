@@ -12,6 +12,19 @@ CRON_MODE=0
 mkdir -p "$BOT_DIR/logs"
 cd "$BOT_DIR"
 
+# Dependency preflight: alpaca-py (broker + execution) and yfinance (data
+# supplement) are mandatory. Without them the bot gets no market data
+# (0 signals, 0 trades) and can place no orders. Install if missing.
+if ! python3 -c "import alpaca, yfinance" >/dev/null 2>&1; then
+    echo "Installing US bot dependencies (alpaca-py / yfinance missing)..."
+    python3 -m pip install -q -r "$BOT_DIR/requirements.txt" 2>&1 | tail -3
+    if ! python3 -c "import alpaca, yfinance" >/dev/null 2>&1; then
+        echo "❌ alpaca-py / yfinance still not importable after install. Fix manually:"
+        echo "   python3 -m pip install alpaca-py yfinance"
+        echo "   (without them: 0 data, 0 signals, 0 orders)"
+    fi
+fi
+
 # If screen session exists and is alive, do nothing
 if screen -list 2>/dev/null | grep -q "$SESSION"; then
     if [ "$CRON_MODE" -eq 0 ]; then
