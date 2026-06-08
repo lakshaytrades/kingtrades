@@ -965,7 +965,7 @@ class TelegramAlerter:
             text += f"{_sep()}\n  {E['brain']} _{thesis}_\n"
         text += (
             f"{_sep()}\n"
-            f"  🤖 KingTrades v3.0 — ARMED & READY\n"
+            f"  🤖 {__import__('config').BOT_DISPLAY_NAME} — ARMED & READY\n"
             f"  {E['clock']} `{now_str}`"
         )
         if oc_summary:
@@ -1071,7 +1071,7 @@ class TelegramAlerter:
             f"  EV/TRADE    `{'+' if ev_trade>=0 else ''}{_CUR}{ev_trade:,.0f}`\n"
             f"  DAILY TGT   `{'✅ ACHIEVED' if target_hit else f'❌ MISSED ({_daily_tgt_pct:.1f}%)'}`\n"
             f"{_sep()}\n"
-            f"  🤖 KingTrades v3.0  |  Next session: 09:30 ET\n"
+            f"  🤖 {__import__('config').BOT_DISPLAY_NAME}  |  Next session: 09:30 ET\n"
             f"  {E['clock']} `{format_ist_timestamp()}`"
         )
 

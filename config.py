@@ -38,8 +38,9 @@ ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.marke
 # ============================================================
 # TELEGRAM
 # ============================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
+BOT_DISPLAY_NAME     = os.getenv("BOT_DISPLAY_NAME", "PSEB")
 
 # ============================================================
 # NEWS / SENTIMENT

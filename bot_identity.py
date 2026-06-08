@@ -74,7 +74,12 @@ def print_banner() -> None:
 
 def get_telegram_header() -> str:
     """One-line header for Telegram alerts."""
-    return f"👑 <b>KING</b> ({BOT_VERSION}) — lakshaytrades"
+    try:
+        import config as _cfg
+        display = _cfg.BOT_DISPLAY_NAME
+    except Exception:
+        display = "PSEB"
+    return f"👑 <b>{display}</b> ({BOT_VERSION})"
 
 def get_framework_tagline(framework: str) -> str:
     return FRAMEWORK_CREDITS.get(framework, "")

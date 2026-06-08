@@ -137,7 +137,11 @@ def _telegram_send(msg: str, level: str = "INFO"):
     try:
         import requests
         emoji = {"INFO": "ℹ️", "OK": "✅", "WARN": "⚠️", "CRIT": "🚨", "FIX": "🔧"}.get(level, "📌")
-        full  = f"{emoji} *KingTrades Watchdog*\n{msg}"
+        try:
+            import config as _c; _wdog_name = _c.BOT_DISPLAY_NAME
+        except Exception:
+            _wdog_name = "PSEB"
+        full  = f"{emoji} *{_wdog_name} Watchdog*\n{msg}"
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
             json={"chat_id": chat, "text": full, "parse_mode": "Markdown"},

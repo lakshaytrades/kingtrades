@@ -558,7 +558,7 @@ class TradingBot:
             mode = "⚡ LIVE TRADING" if config.LIVE_TRADING_ENABLED else "🔒 DRY RUN"
             wl_count = len(config.WATCHLIST)
             self.alerter.send_text(
-                f"🚀 <b>KingTrades Bot Started</b>\n"
+                f"🚀 <b>{config.BOT_DISPLAY_NAME} Bot Started</b>\n"
                 f"<code>{format_ist_timestamp()}</code>\n\n"
                 f"Mode: <b>{mode}</b>\n"
                 f"Balance: <b>${available:,.2f}</b>\n"
@@ -4322,7 +4322,7 @@ class TradingBot:
             dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
 
             lines = [
-                f"☀️ <b>KingTrades — Morning Scan Ready</b>",
+                f"☀️ <b>{config.BOT_DISPLAY_NAME} — Morning Scan Ready</b>",
                 f"📅 {now_ist.strftime('%d %b %Y')} | {dow_name}",
                 f"🔑 Alpaca auth: ✅ API keys",
                 f"📊 Watchlist: {len(watchlist)} stocks scanned",
@@ -4454,7 +4454,7 @@ class TradingBot:
                             elif cmd == "/fixdata":
                                 _reply(self._force_barcache_refresh())
                             elif cmd == "/start":
-                                _reply(f"✅ <b>KingTrades running</b>\nChat ID: <code>{chat_id}</code>")
+                                _reply(f"✅ <b>{config.BOT_DISPLAY_NAME} running</b>\nChat ID: <code>{chat_id}</code>")
                             elif cmd in ("/ab", "/abtest"):
                                 report = self.ab.status_report() if hasattr(self, 'ab') else "A/B not initialized"
                                 try:
@@ -4522,7 +4522,7 @@ class TradingBot:
             cfg_id  = str(config.TELEGRAM_CHAT_ID).strip()
             if cfg_id in ("", "YOUR_TELEGRAM_CHAT_ID_HERE", "0") or real_id != cfg_id:
                 await update.message.reply_text(
-                    f"👋 <b>KingTrades bot is running!</b>\n\n"
+                    f"👋 <b>{config.BOT_DISPLAY_NAME} bot is running!</b>\n\n"
                     f"Your Chat ID is: <code>{real_id}</code>\n\n"
                     f"Add this to your <code>.env</code> file:\n"
                     f"<pre>TELEGRAM_CHAT_ID={real_id}</pre>\n"
@@ -4531,7 +4531,7 @@ class TradingBot:
                 )
             else:
                 await update.message.reply_text(
-                    f"✅ <b>KingTrades bot ready</b>\n"
+                    f"✅ <b>{config.BOT_DISPLAY_NAME} bot ready</b>\n"
                     f"Chat ID verified: <code>{real_id}</code>\n"
                     f"Use /status, /balance, /kill, /pause, /resume",
                     parse_mode="HTML"
