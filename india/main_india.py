@@ -238,6 +238,7 @@ class KingTradesIndia:
                     if not self._stats.circuit_hit:
                         self._scan_for_signals(t)
                     self._manage_positions()
+                    self._write_state_file()
 
                 # -- Adaptive scan interval ------------------------------------
                 # 60s during high-volume windows (open + power close).
@@ -471,6 +472,8 @@ class KingTradesIndia:
                 except Exception:
                     pass
 
+                self._write_state_file()
+
             except Exception as e:
                 logger.error(f"Signal scan {symbol}: {e}")
 
@@ -636,6 +639,7 @@ class KingTradesIndia:
             f"Day P&L: Rs.{self._stats.total_pnl:+,.2f} | "
             f"W:{self._stats.wins} L:{self._stats.losses}"
         )
+        self._write_state_file()
 
     # -- Force square-off -----------------------------------------------------
 
@@ -778,6 +782,202 @@ class KingTradesIndia:
             return (exit_price - pos.entry_price) * pos.quantity
         return (pos.entry_price - exit_price) * pos.quantity
 
+    # -- Rich India status builder -------------------------------------------
+
+    def _build_rich_status(self) -> str:
+        now = datetime.now(IST)
+        s   = self._stats
+        cap = config.MAX_DAILY_CAPITAL
+        wr  = s.wins / s.trades if s.trades else 0.0
+        pnl_pct = s.total_pnl / max(cap, 1) * 100
+
+        filled  = max(0, min(10, int(round(abs(pnl_pct) / (config.DAILY_TARGET_PCT * 100) * 10))))
+        bar     = ("█" * filled + "░" * (10 - filled))[:10]
+
+        mode_str   = "LIVE ⚡" if config.LIVE_TRADING_ENABLED else "PAPER 🔒"
+        state_str  = "⏸ PAUSED" if s.circuit_hit else "ACTIVE ✅"
+        guard_str  = "🛡 LOSS GUARD ON" if s.loss_guard_active else "OFF ✅"
+
+        lines = [
+            f"🇮🇳 <b>PSEB — INDIA BOT</b>",
+            f"📅 {now.strftime('%d %b %Y')} | {now.strftime('%H:%M')} IST | {mode_str}",
+            "─" * 30,
+            f"STATUS  {state_str}",
+            f"CAPITAL Rs.{cap:,.0f}",
+            f"DAY P&L <b>Rs.{s.total_pnl:+,.0f} ({pnl_pct:+.2f}%)</b>",
+            f"TARGET  {config.DAILY_TARGET_PCT*100:.1f}% = Rs.{cap*config.DAILY_TARGET_PCT:,.0f} [{bar}]",
+            "",
+            f"TRADES  {s.trades} today | {s.wins}W / {s.losses}L | WR: {wr:.0%}",
+            f"GUARD   {guard_str}",
+        ]
+
+        # -- Open positions with live P&L ---
+        if self._positions:
+            lines.append("")
+            lines.append(f"── OPEN POSITIONS ({len(self._positions)}) ──")
+            try:
+                ltp_map = get_multiple_ltp(list(self._positions.keys()), self._dhan)
+            except Exception:
+                ltp_map = {}
+            for sym, pos in self._positions.items():
+                ltp = ltp_map.get(sym, 0.0)
+                arrow = "↑" if pos.direction == "LONG" else "↓"
+                if ltp > 0:
+                    pos_pnl     = self._calc_pnl(pos, ltp)
+                    pos_pnl_pct = self._pnl_pct(pos, ltp) * 100
+                    be_tag = " [BE]" if pos.breakeven_moved else ""
+                    lines.append(
+                        f"{arrow} <b>{sym}</b> | Entry: {pos.entry_price:.2f} | "
+                        f"CMP: {ltp:.2f} ({pos_pnl_pct:+.1f}%)"
+                    )
+                    lines.append(
+                        f"  P&L: Rs.{pos_pnl:+,.0f}{be_tag} | "
+                        f"SL: {pos.stop_loss:.2f} | T1: {pos.target_1:.2f}"
+                    )
+                else:
+                    lines.append(f"{arrow} <b>{sym}</b> | Entry: {pos.entry_price:.2f} | SL: {pos.stop_loss:.2f}")
+        else:
+            lines.append("")
+            lines.append("── No open positions ──")
+
+        # -- OODA Intelligence ---
+        lines.append("")
+        lines.append("── OODA INTELLIGENCE ──")
+        try:
+            from regime_classifier_india import get_regime as _get_regime, _cache as _rc
+            _get_regime()  # refresh
+            regime     = _rc.get("regime", "UNKNOWN")
+            regime_conf = _rc.get("confidence", 0.0)
+            vix_val    = _rc.get("details", {}).get("vix", 0.0)
+            regime_icons = {
+                "TRENDING_UP":   "📈", "TRENDING_DOWN": "📉",
+                "RANGING":       "↔️", "VOLATILE":      "🌪",
+                "UNKNOWN":       "❓",
+            }
+            icon = regime_icons.get(regime, "❓")
+            lines.append(f"Regime: <b>{regime}</b> {icon} (conf: {regime_conf:.0%})")
+            if vix_val:
+                vix_tag = "🔴 HIGH" if vix_val >= 22 else ("🟡 ELEV" if vix_val >= 17 else "🟢 calm")
+                lines.append(f"VIX:    {vix_val:.1f} {vix_tag}")
+        except Exception:
+            lines.append("Regime: unavailable")
+
+        try:
+            from fii_dii_india import get_fii_dii_bias as _fii_bias, _get_cached_fii_dii as _fii_raw
+            bias, conf, reason = _fii_bias()
+            raw = _fii_raw()
+            if raw:
+                fii = raw.get("fii_net_cr", 0)
+                dii = raw.get("dii_net_cr", 0)
+                bias_icon = "🟢" if bias == "BULLISH" else ("🔴" if bias == "BEARISH" else "⚪")
+                lines.append(f"FII:    {fii:+.0f}Cr | DII: {dii:+.0f}Cr {bias_icon} {bias}")
+            else:
+                lines.append(f"FII/DII: {reason[:50]}")
+        except Exception:
+            pass
+
+        try:
+            from nse_option_chain import get_put_call_ratio as _pcr
+            pcr = _pcr("NIFTY")
+            if pcr:
+                pcr_bias = "Bullish" if pcr > 1.1 else ("Bearish" if pcr < 0.8 else "Neutral")
+                lines.append(f"PCR:    {pcr:.2f} → {pcr_bias}")
+        except Exception:
+            pass
+
+        # -- Sector snapshot ---
+        try:
+            from nse_sector_momentum import _get_sector_returns as _sr
+            sret = _sr()
+            if sret:
+                lines.append("")
+                lines.append("── SECTORS ──")
+                top3 = sorted(sret.items(), key=lambda x: x[1], reverse=True)[:4]
+                parts = []
+                for sec, ret in top3:
+                    icon = "🔥" if ret > 0.5 else ("✅" if ret > 0 else "⚠️")
+                    parts.append(f"{icon} {sec}: {ret:+.1f}%")
+                lines.append("  ".join(parts))
+        except Exception:
+            pass
+
+        # -- Next setups watching (top candidates via base score proxy) ---
+        try:
+            if self._generator and self._watchlist:
+                from data_fetch_dhan import get_ohlcv as _gohlcv
+                _top = [s for s in self._watchlist if s not in self._positions][:10]
+                _candidates = []
+                _rec = self._generator._recognizer
+                for _sym in _top:
+                    try:
+                        _df5 = _gohlcv(_sym, "5m", 30, self._dhan)
+                        if _df5 is not None and len(_df5) >= 20:
+                            _ind = (
+                                _rec.compute_indicators(_df5)
+                                if hasattr(_rec, "compute_indicators")
+                                else _rec.get_latest_indicators(_df5)
+                            )
+                            if _ind is None:
+                                continue
+                            _dir = self._generator._get_direction(_ind, _df5)
+                            if _dir:
+                                _sc = self._generator._compute_base_score(_ind, _dir, _df5)
+                                if _sc > 50:
+                                    _candidates.append((_sym, _dir, _sc))
+                    except Exception:
+                        pass
+                if _candidates:
+                    _candidates.sort(key=lambda x: x[2], reverse=True)
+                    lines.append("")
+                    lines.append("── NEXT WATCHING ──")
+                    for _sym, _dir, _sc in _candidates[:3]:
+                        _arr = "↑" if _dir == "LONG" else "↓"
+                        lines.append(f"• <b>{_sym}</b> {_arr} — Score: {_sc:.0f}")
+        except Exception:
+            pass
+
+        return "\n".join(lines)
+
+    def _write_state_file(self):
+        try:
+            s   = self._stats
+            cap = config.MAX_DAILY_CAPITAL
+            import json as _json
+            from pathlib import Path as _Path
+
+            ltp_map = {}
+            if self._positions:
+                try:
+                    ltp_map = get_multiple_ltp(list(self._positions.keys()), self._dhan)
+                except Exception:
+                    pass
+
+            positions_data = []
+            for sym, pos in self._positions.items():
+                ltp = ltp_map.get(sym, 0.0)
+                pos_pnl = self._calc_pnl(pos, ltp) if ltp > 0 else 0.0
+                positions_data.append({
+                    "symbol": sym, "direction": pos.direction,
+                    "entry_price": pos.entry_price, "ltp": ltp,
+                    "stop_loss": pos.stop_loss, "target_1": pos.target_1,
+                    "pnl": pos_pnl, "breakeven_moved": pos.breakeven_moved,
+                })
+
+            state = {
+                "ts": datetime.now(IST).isoformat(),
+                "live": config.LIVE_TRADING_ENABLED,
+                "capital": cap,
+                "daily_pnl": s.total_pnl,
+                "daily_pnl_pct": s.total_pnl / max(cap, 1) * 100,
+                "trades": s.trades, "wins": s.wins, "losses": s.losses,
+                "positions": positions_data,
+                "circuit_hit": s.circuit_hit,
+                "loss_guard": s.loss_guard_active,
+            }
+            _Path("/tmp/india_state.json").write_text(_json.dumps(state, indent=2))
+        except Exception:
+            pass
+
     # -- Telegram command listener --------------------------------------------
 
     def _start_telegram_listener(self):
@@ -810,10 +1010,20 @@ class KingTradesIndia:
                         self._stats.circuit_hit = False
                         _tg("India bot resumed.")
                     elif txt == "/status":
-                        p = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
-                        _tg(f"INDIA P&L: Rs.{self._stats.total_pnl:+,.0f} ({p:.2%}) | "
-                            f"W:{self._stats.wins} L:{self._stats.losses} | "
-                            f"Pos:{len(self._positions)}/{config.MAX_POSITIONS}")
+                        try:
+                            rich = self._build_rich_status()
+                            _tg(rich, parse_mode="HTML")
+                        except Exception as _se:
+                            p = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
+                            _tg(f"INDIA P&L: Rs.{self._stats.total_pnl:+,.0f} ({p:.2%}) | "
+                                f"W:{self._stats.wins} L:{self._stats.losses} | "
+                                f"Pos:{len(self._positions)}/{config.MAX_POSITIONS}")
+                    elif txt == "/india":
+                        try:
+                            rich = self._build_rich_status()
+                            _tg(rich, parse_mode="HTML")
+                        except Exception as _se:
+                            _tg(f"India status error: {_se}")
             except Exception as e:
                 logger.debug(f"tg_loop: {e}")
             _time.sleep(30)

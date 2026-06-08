@@ -4570,6 +4570,55 @@ class TradingBot:
             except Exception as _e:
                 logger.warning(f"cmd_status balance fetch failed: {_e}")
                 self.alerter.send_status(self.risk_manager)
+            # India bot status from state file
+            try:
+                import json as _json
+                from pathlib import Path as _Path
+                _india_f = _Path("/tmp/india_state.json")
+                if _india_f.exists():
+                    _ind = _json.loads(_india_f.read_text())
+                    _ind_pnl     = _ind.get("daily_pnl", 0)
+                    _ind_pnl_pct = _ind.get("daily_pnl_pct", 0)
+                    _ind_trades  = _ind.get("trades", 0)
+                    _ind_wins    = _ind.get("wins", 0)
+                    _ind_losses  = _ind.get("losses", 0)
+                    _ind_cap     = _ind.get("capital", 0)
+                    _ind_pos     = _ind.get("positions", [])
+                    _ind_mode    = "LIVE ⚡" if _ind.get("live") else "PAPER 🔒"
+                    _ind_state   = "⏸ PAUSED" if _ind.get("circuit_hit") else "ACTIVE ✅"
+                    _ind_ts      = _ind.get("ts", "?")[:16]
+                    _ind_wr      = _ind_wins / _ind_trades if _ind_trades else 0
+
+                    _india_lines = [
+                        f"\n🇮🇳 <b>PSEB — INDIA BOT</b> | {_ind_mode}",
+                        f"📅 Updated: {_ind_ts} IST",
+                        "─" * 28,
+                        f"STATUS  {_ind_state}",
+                        f"CAPITAL Rs.{_ind_cap:,.0f}",
+                        f"DAY P&L <b>Rs.{_ind_pnl:+,.0f} ({_ind_pnl_pct:+.2f}%)</b>",
+                        f"TRADES  {_ind_trades} | {_ind_wins}W / {_ind_losses}L | WR: {_ind_wr:.0%}",
+                    ]
+                    if _ind_pos:
+                        _india_lines.append(f"\n── OPEN POSITIONS ({len(_ind_pos)}) ──")
+                        for _p in _ind_pos:
+                            _arr = "↑" if _p.get("direction") == "LONG" else "↓"
+                            _ltp = _p.get("ltp", 0)
+                            _ep  = _p.get("entry_price", 0)
+                            _ppnl = _p.get("pnl", 0)
+                            _be  = " [BE]" if _p.get("breakeven_moved") else ""
+                            if _ltp > 0:
+                                _chg = (_ltp - _ep) / _ep * 100 if _ep else 0
+                                _india_lines.append(
+                                    f"{_arr} <b>{_p['symbol']}</b> {_ep:.2f}→{_ltp:.2f} "
+                                    f"({_chg:+.1f}%) P&L: Rs.{_ppnl:+,.0f}{_be}"
+                                )
+                            else:
+                                _india_lines.append(f"{_arr} <b>{_p['symbol']}</b> entry {_ep:.2f}")
+                    else:
+                        _india_lines.append("No open India positions")
+                    self.alerter.send_html("\n".join(_india_lines))
+            except Exception as _ie:
+                logger.debug(f"India state append failed: {_ie}")
             # Also send crypto engine status
             if self.crypto_engine:
                 try:
