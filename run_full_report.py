@@ -47,15 +47,28 @@ TELEGRAM_CHAT  = os.getenv("TELEGRAM_CHAT_ID", "")
 CAPITAL        = float(os.getenv("MAX_DAILY_CAPITAL", "5000"))
 
 # ── Symbols ────────────────────────────────────────────────────────────────
-FULL_SYMBOLS = [
+FULL_SYMBOLS_US = [
     "NVDA","TSLA","AAPL","MSFT","META","AMZN","GOOGL","AMD","NFLX","COIN",
     "PLTR","SHOP","UBER","JPM","GS","XOM","CVX","MARA","RIOT","SOFI",
     "SNAP","RBLX","HOOD","PINS","CRWD","DDOG","SNOW","NOW","CRM","SQ",
 ]
-QUICK_SYMBOLS = ["NVDA","TSLA","AAPL","MSFT","META"]
+# NSE symbols (Yahoo Finance format: SYMBOL.NS)
+FULL_SYMBOLS_NSE = [
+    "RELIANCE.NS","TCS.NS","HDFCBANK.NS","ICICIBANK.NS","INFY.NS",
+    "HINDUNILVR.NS","ITC.NS","SBIN.NS","BHARTIARTL.NS","KOTAKBANK.NS",
+    "LT.NS","AXISBANK.NS","ASIANPAINT.NS","MARUTI.NS","TITAN.NS",
+    "WIPRO.NS","ULTRACEMCO.NS","BAJFINANCE.NS","HCLTECH.NS","SUNPHARMA.NS",
+]
+QUICK_SYMBOLS_US  = ["NVDA","TSLA","AAPL","MSFT","META"]
+QUICK_SYMBOLS_NSE = ["RELIANCE.NS","TCS.NS","HDFCBANK.NS","INFY.NS","SBIN.NS"]
+
+# Legacy alias
+FULL_SYMBOLS  = FULL_SYMBOLS_US
+QUICK_SYMBOLS = QUICK_SYMBOLS_US
 
 COMMISSION_PER_SHARE = 0.005  # $0.005/share (Alpaca default)
 SLIPPAGE_PCT         = 0.0005  # 0.05% round-trip slippage
+NSE_BROKERAGE_PCT    = 0.0003  # Zerodha/Groww ~0.03% per side (NSE intraday MIS)
 
 # ── Telegram ────────────────────────────────────────────────────────────────
 def _tg(text: str) -> bool:
@@ -710,48 +723,115 @@ def save_and_send(report: str, results: Dict) -> None:
         print("ℹ️  Telegram not configured — report saved locally only")
     print("\n" + report.replace("<b>", "**").replace("</b>", "**"))
 
+# ── Live expectations section ────────────────────────────────────────────────
+def build_live_expectations_section() -> str:
+    try:
+        from live_expectations import build_report as _le_build
+        return "\n\n" + _le_build()
+    except Exception as e:
+        return f"\n\n[Live expectations unavailable: {e}]"
+
+
+# ── Market standing section ──────────────────────────────────────────────────
+def build_market_standing_section() -> str:
+    try:
+        from market_standing import build_standing_report
+        return "\n\n" + build_standing_report()
+    except Exception as e:
+        return f"\n\n[Market standing unavailable: {e}]"
+
+
+# ── Master report (all-in-one) ───────────────────────────────────────────────
+def build_master_report(results_us: Dict, results_nse: Optional[Dict], days: int) -> str:
+    report = format_report(results_us, days)
+
+    if results_nse:
+        report += "\n\n" + "━" * 43 + "\n"
+        report += f"🇮🇳 <b>NSE BACKTEST RESULTS</b>\n"
+        report += f"   {days}-day test on {results_nse['portfolio']['symbols_tested']} NSE symbols\n\n"
+        nse_port = results_nse["portfolio"]
+        report += (
+            f"  Capital: ₹{nse_port['capital']:,.0f} → ₹{nse_port['final_capital']:,.0f}\n"
+            f"  Total Return: {nse_port['total_return_pct']:+.1f}% in {days} days\n"
+            f"  Win Rate: {nse_port['avg_win_rate']:.0f}%  |  PF: {nse_port['avg_profit_factor']:.1f}x\n"
+            f"  Avg Sharpe: {nse_port['avg_sharpe']:.1f}  |  Daily: {nse_port['daily_avg_pct']:+.3f}%\n"
+        )
+        if results_nse["strategies"]:
+            report += f"\n  Best NSE strategy: {results_nse['strategies'][0]['name']}\n"
+
+    report += build_live_expectations_section()
+    report += build_market_standing_section()
+    return report
+
+
 # ── Entry point ──────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="KingTrades Backtest")
-    parser.add_argument("--quick",  action="store_true", help="Fast test: 30 days, 5 symbols")
-    parser.add_argument("--live",   action="store_true", help="Live expectations only")
-    parser.add_argument("--days",   type=int, default=90, help="Backtest days")
-    parser.add_argument("--capital",type=float, default=CAPITAL, help="Starting capital")
+    parser = argparse.ArgumentParser(description="KingTrades Master Report")
+    parser.add_argument("--quick",    action="store_true", help="Fast test: 30 days, 5 symbols")
+    parser.add_argument("--live",     action="store_true", help="Live expectations + standing only")
+    parser.add_argument("--standing", action="store_true", help="Market standing report only")
+    parser.add_argument("--nse",      action="store_true", help="Include NSE symbols in backtest")
+    parser.add_argument("--days",     type=int, default=90, help="Backtest days")
+    parser.add_argument("--capital",  type=float, default=CAPITAL, help="Starting capital")
     args = parser.parse_args()
 
-    if args.live:
-        # Quick expectations from stored backtest
-        print("📊 KingTrades Live Expectations")
-        try:
-            with open("logs/backtest_latest.json") as f:
-                results = json.load(f)
-            print(format_report(results, 90))
-        except Exception:
-            print("No backtest data found. Run without --live first.")
+    if args.standing:
+        print("📍 KingTrades — Where We Stand")
+        from market_standing import run_standing_report_and_send
+        run_standing_report_and_send()
         return
 
-    symbols = QUICK_SYMBOLS if args.quick else FULL_SYMBOLS
-    days    = 30 if args.quick else args.days
+    if args.live:
+        print("📊 KingTrades Live Expectations + Market Standing")
+        section = build_live_expectations_section() + build_market_standing_section()
+        print(section.replace("<b>", "").replace("</b>", ""))
+        if TELEGRAM_TOKEN and TELEGRAM_CHAT:
+            chunks = [section[i:i+4000] for i in range(0, len(section), 4000)]
+            for chunk in chunks:
+                _tg(chunk)
+                time.sleep(0.5)
+        return
 
-    print(f"\n🚀 KingTrades Backtest — {days} days, {len(symbols)} symbols, ${args.capital:,.0f} capital")
+    days = 30 if args.quick else args.days
+    symbols_us  = QUICK_SYMBOLS_US  if args.quick else FULL_SYMBOLS_US
+    symbols_nse = QUICK_SYMBOLS_NSE if args.quick else FULL_SYMBOLS_NSE
+
+    print(f"\n🚀 KingTrades Master Report — {days} days")
+    print(f"   US symbols: {len(symbols_us)}  |  NSE symbols: {len(symbols_nse) if args.nse else 0}")
     print(f"   Strategies: ORB, VWAP Reclaim, Momentum, Z-Score, Gap-and-Go, Power Hour")
-    print(f"   Commission: ${COMMISSION_PER_SHARE}/share + {SLIPPAGE_PCT*100:.2f}% slippage")
+    print(f"   US commission: ${COMMISSION_PER_SHARE}/share + {SLIPPAGE_PCT*100:.2f}% slippage")
+    if args.nse:
+        print(f"   NSE brokerage: {NSE_BROKERAGE_PCT*100:.3f}% per side")
     print("   Downloading data...\n")
 
-    _tg(f"⏳ <b>Backtest starting</b>\n{days} days | {len(symbols)} symbols | ${args.capital:,.0f}")
+    _tg(
+        f"⏳ <b>KingTrades Master Report starting</b>\n"
+        f"{days} days | US:{len(symbols_us)} + NSE:{len(symbols_nse) if args.nse else 0} symbols"
+    )
 
     t0 = time.time()
-    results = run_backtest(symbols, days, args.capital)
+    results_us = run_backtest(symbols_us, days, args.capital)
+
+    results_nse = None
+    if args.nse:
+        print("\n🇮🇳 Running NSE backtest...")
+        # NSE capital in INR — approximate conversion
+        nse_capital = args.capital * 84  # ~84 INR per USD
+        results_nse = run_backtest(symbols_nse, days, nse_capital)
+
     elapsed = time.time() - t0
 
-    # Save latest
     Path("logs").mkdir(exist_ok=True)
     with open("logs/backtest_latest.json", "w") as f:
-        json.dump(results, f, indent=2)
+        json.dump(results_us, f, indent=2)
+    if results_nse:
+        with open("logs/backtest_nse_latest.json", "w") as f:
+            json.dump(results_nse, f, indent=2)
 
-    report = format_report(results, days)
+    report = build_master_report(results_us, results_nse, days)
     report += f"\n\n⏱ Completed in {elapsed:.0f}s"
-    save_and_send(report, results)
+    save_and_send(report, results_us)
+
 
 if __name__ == "__main__":
     main()

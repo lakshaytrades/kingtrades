@@ -1022,6 +1022,14 @@ class TradingBot:
             except Exception as _e:
                 logger.debug(f"[suppressed] morning brief: {_e}")
 
+            # Market standing + OODA morning briefing
+            try:
+                import threading as _ms_thread
+                from market_standing import run_morning_briefing_and_send
+                _ms_thread.Thread(target=run_morning_briefing_and_send, daemon=True).start()
+            except Exception as _mse:
+                logger.debug(f"[suppressed] market_standing morning: {_mse}")
+
             if not self.morning_intel:
                 self.alerter.send_morning_brief(
                     watchlist, available, spy_open,
@@ -4377,6 +4385,13 @@ class TradingBot:
             if not _auth(update):
                 return
             self.alerter.send_eod_report(self.risk_manager)
+            # Also send market standing + positioning intelligence
+            try:
+                import threading as _rep_thread
+                from market_standing import run_standing_report_and_send
+                _rep_thread.Thread(target=run_standing_report_and_send, daemon=True).start()
+            except Exception as _rpe:
+                logger.debug(f"[suppressed] /report market_standing: {_rpe}")
 
         async def cmd_balance(update, context):
             if not _auth(update):
