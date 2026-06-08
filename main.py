@@ -2081,7 +2081,8 @@ class TradingBot:
                 signals = [s for s in signals if s.quality_grade in ("A+", "A")]
 
             # Alert once per hour if scanned symbols but found nothing
-            if before_filter == 0 and self.alerter:
+            # (Telegram only in verbose mode — default quiet; log always.)
+            if before_filter == 0 and self.alerter and getattr(config, "TELEGRAM_VERBOSE", False):
                 last_no_sig = getattr(self, "_no_signal_alerted_hour", -1)
                 if last_no_sig != now_ist.hour:
                     self._no_signal_alerted_hour = now_ist.hour

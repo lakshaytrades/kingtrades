@@ -90,6 +90,10 @@ MAX_POSITIONS: int = 5       # high-accuracy mode: fewer, higher-conviction posi
 # the source of the 0W/10L bleed. OFF by default now.
 ENABLE_SCALPER: bool = os.getenv("ENABLE_SCALPER", "False") == "True"
 ENABLE_BURST:   bool = os.getenv("ENABLE_BURST",   "False") == "True"
+
+# ── Telegram quiet mode (owner: only startup, command replies, trade signals,
+#    and order-placed confirmations — no scan/no-signal/pulse spam) ───────────
+TELEGRAM_VERBOSE: bool = os.getenv("TELEGRAM_VERBOSE", "False") == "True"
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 15.0   # 15% per trade — sized for profit, not reckless
 

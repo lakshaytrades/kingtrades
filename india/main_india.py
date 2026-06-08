@@ -522,7 +522,8 @@ class KingTradesIndia:
             f"data={_dok}/3 | regime={regime} | scalp={'ON' if _scalp else 'off'}"
         )
         _now_ts = _time.monotonic()
-        if _now_ts - _ss.get("last_tg_ts", 0) > 1800:   # every 30 min
+        if (_now_ts - _ss.get("last_tg_ts", 0) > 1800
+                and getattr(config, "TELEGRAM_VERBOSE", False)):   # scan pulse: verbose only
             _ss["last_tg_ts"] = _now_ts
             _now_ist = datetime.now(IST)
             _mode_tag = "LIVE" if config.LIVE_TRADING_ENABLED else "PAPER"

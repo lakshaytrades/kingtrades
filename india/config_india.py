@@ -50,6 +50,10 @@ LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True
 # False = bot auto-executes in Dhan (requires LIVE_TRADING_ENABLED=True)
 MANUAL_SIGNALS_ONLY = os.getenv("INDIA_MANUAL_SIGNALS_ONLY", "True") != "False"
 
+# -- Telegram quiet mode: only startup, command replies, trade signals, and
+#    order-placed confirmations. No routine scan-pulse spam. ------------------
+TELEGRAM_VERBOSE = os.getenv("INDIA_TELEGRAM_VERBOSE", "False") == "True"
+
 # -- Feature flags (all on by default) ----------------------------------------
 def _flag(key: str) -> bool:
     return os.getenv(key, "True") != "False"
