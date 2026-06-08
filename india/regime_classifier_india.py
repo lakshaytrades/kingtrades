@@ -17,18 +17,13 @@ _TTL = 900.0  # 15 min
 
 def _compute_regime() -> dict:
     try:
-        import yfinance as yf
         import numpy as np
         import pandas as pd
+        from data_fetch_dhan import get_nifty_intraday as _get_nifty
 
-        df = yf.download("^NSEI", period="5d", interval="15m", progress=False, auto_adjust=True)
+        df = _get_nifty(interval="15m")
         if df is None or df.empty or len(df) < 30:
             return {"regime": "UNKNOWN", "confidence": 0.0, "details": {}}
-
-        if isinstance(df.columns, pd.MultiIndex):
-            df.columns = [str(c[0]).lower() for c in df.columns]
-        else:
-            df.columns = [str(c).lower() for c in df.columns]
 
         close = df["close"]
         high  = df["high"]

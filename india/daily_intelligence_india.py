@@ -200,18 +200,10 @@ def _target_bar(pct: float, width: int = 18) -> str:
 
 def _get_nifty_info() -> dict:
     try:
-        import yfinance as yf
-        hist = yf.download("^NSEI", period="2d", interval="1d",
-                           progress=False, auto_adjust=True)
-        if hist is not None and len(hist) >= 2:
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = [str(c[0]).lower() for c in hist.columns]
-            else:
-                hist.columns = [str(c).lower() for c in hist.columns]
-            close_today = float(hist["close"].iloc[-1])
-            close_prev  = float(hist["close"].iloc[-2])
-            chg_pct     = (close_today - close_prev) / close_prev * 100
-            return {"level": close_today, "chg_pct": chg_pct}
+        from data_fetch_dhan import get_nifty_level as _nifty
+        info = _nifty()
+        if info.get("level", 0) > 0:
+            return {"level": info["level"], "chg_pct": info["change_pct"]}
     except Exception:
         pass
     return {"level": 0, "chg_pct": 0}
@@ -219,12 +211,8 @@ def _get_nifty_info() -> dict:
 
 def _get_india_vix() -> float:
     try:
-        import yfinance as yf
-        tk   = yf.Ticker("^INDIAVIX")
-        hist = tk.history(period="2d", interval="1d")
-        if hist is not None and not hist.empty:
-            close_col = "Close" if "Close" in hist.columns else "close"
-            return float(hist[close_col].iloc[-1])
+        from data_fetch_dhan import get_india_vix as _vix
+        return _vix()
     except Exception:
         pass
     return 0.0

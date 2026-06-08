@@ -533,6 +533,107 @@ def get_nifty_intraday(interval: str = "5m") -> Optional[pd.DataFrame]:
     return None
 
 
+# ── NSE allIndices helpers (Nifty level, VIX, sector returns) ────────────────
+# These replace all yfinance ^NSEI / ^INDIAVIX / ^NIFTYBANK etc. calls across
+# the codebase. Single shared session — same cookies as OHLCV fetches.
+
+_NSE_SECTOR_INDEX_MAP = {
+    "NIFTY BANK":     "Banking",
+    "NIFTY AUTO":     "Auto",
+    "NIFTY IT":       "IT",
+    "NIFTY PHARMA":   "Pharma",
+    "NIFTY FMCG":     "FMCG",
+    "NIFTY ENERGY":   "Energy",
+    "NIFTY METAL":    "Metal",
+    "NIFTY INFRA":    "Infra",
+    "NIFTY PSU BANK": "PSU Bank",
+    "NIFTY REALTY":   "Realty",
+    "NIFTY MIDCAP 100": "Midcap",
+    "NIFTY SMALLCAP 100": "Smallcap",
+}
+
+_indices_cache: dict = {}
+_INDICES_TTL = 120.0   # 2-min cache (allIndices is lightweight)
+
+
+def _fetch_all_indices() -> list:
+    """Fetch NSE allIndices JSON. Cached 2 min. Returns list of index dicts."""
+    now = _time.monotonic()
+    if _indices_cache.get("ts", 0) > now - _INDICES_TTL:
+        return _indices_cache.get("data", [])
+    try:
+        sess = _get_nse_session()
+        r = sess.get(
+            f"{_NSE_MAIN}/api/allIndices",
+            headers={**_NSE_CHART_HDR, "Referer": _NSE_MAIN},
+            timeout=8,
+        )
+        if r.status_code == 200:
+            data = r.json().get("data", [])
+            _indices_cache["data"] = data
+            _indices_cache["ts"]   = now
+            return data
+    except Exception as e:
+        logger.debug(f"_fetch_all_indices: {e}")
+    return _indices_cache.get("data", [])   # return stale if fetch fails
+
+
+def get_nifty_level() -> dict:
+    """
+    Return current Nifty50 snapshot: level, open, change_pct.
+    e.g. {'level': 24512.0, 'open': 24300.0, 'change_pct': 0.87}
+    Returns zeros on failure (fail-open).
+    """
+    for idx in _fetch_all_indices():
+        sym = str(idx.get("indexSymbol", "") or idx.get("index", "")).upper()
+        if sym in ("NIFTY 50", "NIFTY50"):
+            try:
+                return {
+                    "level":      float(idx.get("last")       or idx.get("lastPrice") or 0),
+                    "open":       float(idx.get("open")       or 0),
+                    "change_pct": float(idx.get("percChange") or idx.get("percentChange") or 0),
+                }
+            except Exception:
+                pass
+    return {"level": 0.0, "open": 0.0, "change_pct": 0.0}
+
+
+def get_all_sector_returns() -> Dict[str, float]:
+    """
+    Return {sector_name: daily_return_relative_to_nifty} using NSE allIndices.
+    e.g. {'Banking': 1.2, 'IT': -0.4, ...}
+    Replaces yfinance sector ETF downloads (blocked from server IPs).
+    Cached 2 min via _fetch_all_indices().
+    """
+    indices = _fetch_all_indices()
+    if not indices:
+        return {}
+
+    # Get Nifty base return first
+    nifty_pct = 0.0
+    for idx in indices:
+        sym = str(idx.get("indexSymbol", "") or idx.get("index", "")).upper()
+        if sym in ("NIFTY 50", "NIFTY50"):
+            try:
+                nifty_pct = float(idx.get("percChange") or idx.get("percentChange") or 0)
+            except Exception:
+                pass
+            break
+
+    result: Dict[str, float] = {}
+    for idx in indices:
+        sym = str(idx.get("indexSymbol", "") or idx.get("index", "")).upper()
+        sector = _NSE_SECTOR_INDEX_MAP.get(sym)
+        if sector:
+            try:
+                pct = float(idx.get("percChange") or idx.get("percentChange") or 0)
+                result[sector] = round(pct - nifty_pct, 4)
+            except Exception:
+                pass
+
+    return result
+
+
 # ── Fallback security_id map (top 30 NSE stocks) ─────────────────────────────
 # Used only if scrip master download fails. Dhan security IDs as of 2024.
 _FALLBACK_MAP: Dict[str, str] = {

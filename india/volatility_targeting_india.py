@@ -36,11 +36,9 @@ def _get_india_vix() -> float:
     if _india_vix_cache and now - _india_vix_cache.get("ts", 0) < _INDIA_VIX_TTL:
         return _india_vix_cache["vix"]
     try:
-        import yfinance as yf
-        tk = yf.Ticker("^INDIAVIX")
-        hist = tk.history(period="2d", interval="1d")
-        if hist is not None and not hist.empty:
-            vix = float(hist["Close"].iloc[-1])
+        from data_fetch_dhan import get_india_vix as _get_vix
+        vix = _get_vix()
+        if vix > 0:
             _india_vix_cache.update({"vix": vix, "ts": now})
             logger.debug(f"India VIX: {vix:.1f}")
             return vix

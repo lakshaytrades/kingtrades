@@ -101,17 +101,13 @@ def get_gap_fade_score_india(symbol: str, direction: str,
         if elapsed_min < 0 or elapsed_min > _FADE_WINDOW:
             return (0.0, "")   # outside fade window
 
-        # Fetch prev close via yfinance if not cached
+        # Fetch prev close via NSE charting API if not cached
         if symbol not in _gap_cache:
             try:
-                import yfinance as yf
-                hist = yf.download(f"{symbol}.NS", period="2d",
-                                   interval="1d", progress=False, auto_adjust=True)
+                from data_fetch_dhan import get_ohlcv as _get_ohlcv
+                hist = _get_ohlcv(symbol, interval="1h", period="5d")
                 if hist is not None and len(hist) >= 2:
-                    if isinstance(hist.columns, pd.MultiIndex):
-                        hist.columns = [str(c[0]).lower() for c in hist.columns]
-                    else:
-                        hist.columns = [str(c).lower() for c in hist.columns]
+                    # Use second-to-last close as previous day close proxy
                     _gap_cache[symbol] = float(hist["close"].iloc[-2])
             except Exception:
                 return (0.0, "")
@@ -168,28 +164,24 @@ def get_pairs_signal_india(symbol: str, direction: str) -> Tuple[float, str]:
             return cached_val
 
     try:
-        import yfinance as yf
+        from data_fetch_dhan import get_ohlcv as _get_ohlcv
         for sym_a, sym_b in relevant_pairs:
             try:
-                tickers = [f"{sym_a}.NS", f"{sym_b}.NS"]
-                hist_raw = yf.download(tickers, period="25d", interval="1d",
-                                       progress=False, auto_adjust=True)
-                if hist_raw is None or hist_raw.shape[0] < 20:
+                df_a = _get_ohlcv(sym_a, interval="1h", period="30d")
+                df_b = _get_ohlcv(sym_b, interval="1h", period="30d")
+                if df_a is None or df_b is None or len(df_a) < 15 or len(df_b) < 15:
                     continue
-                if isinstance(hist_raw.columns, pd.MultiIndex):
-                    lvl0 = hist_raw.columns.get_level_values(0).str.lower()
-                    if "close" in lvl0.tolist():
-                        hist = hist_raw.xs("Close", level=0, axis=1, drop_level=True) \
-                               if "Close" in hist_raw.columns.get_level_values(0) \
-                               else hist_raw.xs("close", level=0, axis=1, drop_level=True)
-                    else:
-                        continue
-                else:
-                    col = "Close" if "Close" in hist_raw.columns else "close"
-                    hist = hist_raw[col]
 
-                series_a = hist[f"{sym_a}.NS"].dropna() if f"{sym_a}.NS" in hist.columns else pd.Series(dtype=float)
-                series_b = hist[f"{sym_b}.NS"].dropna() if f"{sym_b}.NS" in hist.columns else pd.Series(dtype=float)
+                # Align on common index
+                import pandas as pd
+                merged = pd.concat(
+                    {"a": df_a["close"], "b": df_b["close"]}, axis=1
+                ).dropna()
+                if len(merged) < 15:
+                    continue
+
+                series_a = merged["a"]
+                series_b = merged["b"]
                 if len(series_a) < 15 or len(series_b) < 15:
                     continue
 

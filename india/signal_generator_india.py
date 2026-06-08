@@ -430,14 +430,12 @@ class IndiaSignalGenerator:
             if cache_valid:
                 vix = self._vix_cache_value
             else:
-                import yfinance as yf
-                _vix_tick = yf.Ticker("^INDIAVIX")
-                _hist = _vix_tick.history(period="2d", interval="5m")
-                if _hist is None or _hist.empty:
+                from data_fetch_dhan import get_india_vix as _get_vix
+                vix = _get_vix()
+                if vix <= 0:
                     self._last_india_vix = 0.0
                     self._vix_size_mult = 1.0
                     return True
-                vix = float(_hist["Close"].iloc[-1])
                 self._vix_cache_value = vix
                 self._vix_cache_time = now
 

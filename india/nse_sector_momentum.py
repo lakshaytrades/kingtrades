@@ -69,54 +69,20 @@ def _get_sector_returns() -> Dict[str, float]:
         return _sector_returns_cache[today]["returns"]
 
     try:
-        import yfinance as yf  # type: ignore
+        from data_fetch_dhan import get_all_sector_returns as _sector_returns
+        sector_returns = _sector_returns()
 
-        all_tickers = ["^NSEI"] + list(_SECTOR_ETF_MAP.keys())
-        raw = yf.download(
-            tickers=all_tickers,
-            period="2d",
-            interval="1d",
-            progress=False,
-            auto_adjust=True,
-        )
-
-        if raw.empty:
-            logger.debug("sector_returns: yfinance returned empty data")
-            return {}
-
-        # Handle multi-level column index from yfinance
-        if hasattr(raw.columns, "levels"):
-            close = raw["Close"] if "Close" in raw.columns.get_level_values(0) else None
-        else:
-            close = raw[["Close"]] if "Close" in raw.columns else None
-
-        if close is None or close.empty:
-            logger.debug("sector_returns: no Close column in yfinance data")
-            return {}
-
-        # Compute 1-day % return for each ticker
-        pct = close.pct_change().iloc[-1] * 100.0  # latest day's return
-
-        nifty_ret = float(pct.get("^NSEI", 0.0))
-
-        sector_returns: Dict[str, float] = {}
-        for ticker, sector_name in _SECTOR_ETF_MAP.items():
-            if ticker in pct.index:
-                ticker_ret = float(pct[ticker])
-                sector_returns[sector_name] = ticker_ret - nifty_ret
-            else:
-                logger.debug(f"sector_returns: ticker {ticker} missing from data")
-
-        _sector_returns_cache[today] = {
-            "returns":    sector_returns,
-            "fetched_at": datetime.now(IST),
-        }
-        logger.info(f"sector_returns refreshed: {sector_returns}")
-        return sector_returns
+        if sector_returns:
+            _sector_returns_cache[today] = {
+                "returns":    sector_returns,
+                "fetched_at": datetime.now(IST),
+            }
+            logger.info(f"sector_returns refreshed: {sector_returns}")
+            return sector_returns
 
     except Exception as e:
         logger.debug(f"sector_returns fetch failed: {e}")
-        return {}
+    return {}
 
 
 def get_sector_momentum_score(symbol: str, direction: str) -> Tuple[float, str]:

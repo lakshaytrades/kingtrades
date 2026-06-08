@@ -171,14 +171,9 @@ class KingTradesIndia:
         # India VIX circuit breaker
         if getattr(config, 'INDIA_VIX_ENABLED', True):
             try:
-                import yfinance as yf
-                _vdf = yf.download("^INDIAVIX", period="1d", interval="5m", progress=False)
-                if _vdf is not None and not _vdf.empty:
-                    if isinstance(_vdf.columns, pd.MultiIndex):
-                        _vdf.columns = [str(c[0]).lower() for c in _vdf.columns]
-                    else:
-                        _vdf.columns = [str(c).lower() for c in _vdf.columns]
-                    _vix = float(_vdf["close"].iloc[-1])
+                from data_fetch_dhan import get_india_vix as _get_vix
+                _vix = _get_vix()
+                if _vix > 0:
                     logger.info(f"India VIX: {_vix:.1f}")
                     if _vix >= getattr(config, 'INDIA_VIX_EXTREME_THRESHOLD', 28.0):
                         self._stats.circuit_hit = True
@@ -271,23 +266,15 @@ class KingTradesIndia:
         Fail-open: returns 'NEUTRAL' on any error.
         """
         try:
-            import yfinance as yf
             now_ts = _time.time()
             if not hasattr(self, "_nifty_cache"):
                 self._nifty_cache: dict = {}
             if self._nifty_cache.get("ts", 0) > now_ts - 900:
                 return self._nifty_cache.get("regime", "NEUTRAL")
 
-            df = yf.download("^NSEI", period="5d", interval="15m",
-                             progress=False, auto_adjust=True)
-            if df is None or df.empty:
-                return "NEUTRAL"
-            if isinstance(df.columns, pd.MultiIndex):
-                df.columns = [str(c[0]).lower() for c in df.columns]
-            else:
-                df.columns = [str(c).lower() for c in df.columns]
-
-            if "close" not in df.columns or len(df) < 21:
+            from data_fetch_dhan import get_nifty_intraday as _get_nifty
+            df = _get_nifty(interval="15m")
+            if df is None or df.empty or len(df) < 21:
                 return "NEUTRAL"
 
             ema9  = float(df["close"].ewm(span=9,  adjust=False).mean().iloc[-1])

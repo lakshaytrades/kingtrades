@@ -98,15 +98,10 @@ def get_nifty_open() -> float:
     Fail-open: returns 0.
     """
     try:
-        import yfinance as yf
-        hist = yf.download("^NSEI", period="1d", interval="5m",
-                           progress=False, auto_adjust=True)
-        if hist is not None and not hist.empty:
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = [str(c[0]).lower() for c in hist.columns]
-            else:
-                hist.columns = [str(c).lower() for c in hist.columns]
-            return float(hist["open"].iloc[0])   # first bar of today = today's open
+        from data_fetch_dhan import get_nifty_level as _nifty
+        info = _nifty()
+        if info.get("open", 0) > 0:
+            return info["open"]
     except Exception as e:
         logger.debug(f"Nifty open fetch: {e}")
     return 0.0
@@ -115,15 +110,8 @@ def get_nifty_open() -> float:
 def get_nifty_current() -> float:
     """Fetch current Nifty level. Fail-open: returns 0."""
     try:
-        import yfinance as yf
-        hist = yf.download("^NSEI", period="1d", interval="5m",
-                           progress=False, auto_adjust=True)
-        if hist is not None and not hist.empty:
-            if isinstance(hist.columns, pd.MultiIndex):
-                hist.columns = [str(c[0]).lower() for c in hist.columns]
-            else:
-                hist.columns = [str(c).lower() for c in hist.columns]
-            return float(hist["close"].iloc[-1])
+        from data_fetch_dhan import get_nifty_level as _nifty
+        return _nifty().get("level", 0.0)
     except Exception as e:
         logger.debug(f"Nifty current fetch: {e}")
     return 0.0

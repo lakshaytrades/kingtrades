@@ -67,7 +67,6 @@ _MOMENTUM_TIER: Dict[str, str] = {
     "ABB":        "T3", "HAVELLS":    "T3", "UPL":        "T3",
     "DMART":      "T3", "FEDERALBNK": "T3", "MUTHOOTFIN": "T3",
     "CHOLAFIN":   "T3", "MPHASIS":    "T3", "PAYTM":      "T3",
-    "PAYTM":      "T3",
 }
 
 # ── Sector mapping ────────────────────────────────────────────────────────────

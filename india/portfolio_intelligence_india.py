@@ -26,29 +26,24 @@ def get_correlation(sym_a: str, sym_b: str) -> float:
         if cached and now - cached["ts"] < _CORR_TTL:
             return cached["corr"]
 
-        import yfinance as yf
         import pandas as pd
+        from data_fetch_dhan import get_ohlcv as _get_ohlcv
 
-        tickers = [f"{sym_a.upper()}.NS", f"{sym_b.upper()}.NS"]
-        df = yf.download(tickers, period="30d", interval="1d", progress=False, auto_adjust=True)
-        if df is None or df.empty:
+        df_a = _get_ohlcv(sym_a, interval="1h", period="30d")
+        df_b = _get_ohlcv(sym_b, interval="1h", period="30d")
+        if df_a is None or df_b is None:
             return 0.0
 
-        # Flatten MultiIndex if present
-        if isinstance(df.columns, pd.MultiIndex):
-            close_df = df["Close"] if "Close" in df.columns.get_level_values(0) else df["close"]
-        else:
-            close_df = df
-
-        if close_df.shape[1] < 2 or len(close_df) < 10:
+        merged = pd.concat({"a": df_a["close"], "b": df_b["close"]}, axis=1).dropna()
+        if len(merged) < 10:
             return 0.0
 
-        returns = close_df.pct_change().dropna()
+        returns = merged.pct_change().dropna()
         if len(returns) < 10:
             return 0.0
 
-        col_a = returns.iloc[:, 0]
-        col_b = returns.iloc[:, 1]
+        col_a = returns["a"]
+        col_b = returns["b"]
         corr = float(col_a.corr(col_b))
         if not np.isfinite(corr):
             corr = 0.0
