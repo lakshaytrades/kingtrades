@@ -1043,13 +1043,203 @@ class KingTradesIndia:
         except Exception:
             pass
 
+    # -- Manual order & TradingView command handling --------------------------
+
+    def _handle_manual_order(self, direction: str, parts: list) -> str:
+        """
+        Parse and stage a manual order from Telegram or TradingView webhook.
+        parts: [SYMBOL, QTY] or [SYMBOL, QTY, PRICE]
+        Returns reply string.
+        """
+        if len(parts) < 2:
+            return f"Usage: /{'buy' if direction=='LONG' else 'sell'} SYMBOL QTY [PRICE]\nExample: /buy RELIANCE 10 2850"
+        symbol = parts[0].upper().replace(".NS", "")
+        try:
+            qty = int(parts[1])
+        except ValueError:
+            return "Invalid quantity — must be a whole number"
+        if qty <= 0:
+            return "Quantity must be > 0"
+        limit_price = 0.0
+        if len(parts) >= 3:
+            try:
+                limit_price = float(parts[2])
+            except ValueError:
+                return "Invalid price"
+
+        # Fetch current LTP
+        ltp = 0.0
+        try:
+            from data_fetch_dhan import get_multiple_ltp as _gltp
+            ltp_map = _gltp([symbol], self._dhan)
+            ltp = ltp_map.get(symbol, 0.0)
+        except Exception:
+            pass
+        if ltp <= 0:
+            try:
+                from data_fetch_dhan import get_ohlcv as _gohlcv
+                df = _gohlcv(symbol, "5m", "5d")
+                if df is not None and not df.empty:
+                    ltp = float(df["close"].iloc[-1])
+            except Exception:
+                pass
+
+        exec_price = limit_price if limit_price > 0 else (ltp if ltp > 0 else 0)
+        if exec_price <= 0:
+            return f"Could not fetch price for {symbol} — check symbol spelling"
+
+        # Auto SL: 2% for longs, 2% above for shorts
+        if direction == "LONG":
+            auto_sl = round(exec_price * 0.98, 2)
+        else:
+            auto_sl = round(exec_price * 1.02, 2)
+
+        order_type = "LIMIT" if limit_price > 0 else "MARKET"
+        arrow = "↑ BUY" if direction == "LONG" else "↓ SELL"
+
+        self._pending_manual_order = {
+            "symbol": symbol, "direction": direction, "qty": qty,
+            "price": exec_price, "limit_price": limit_price,
+            "auto_sl": auto_sl, "order_type": order_type,
+            "ts": _time.monotonic(), "source": "manual",
+        }
+
+        mode_tag = "" if config.LIVE_TRADING_ENABLED else " [PAPER]"
+        return (
+            f"📋 MANUAL ORDER PENDING{mode_tag}\n"
+            f"{'─'*28}\n"
+            f"{arrow} {qty} × {symbol}\n"
+            f"Type:  {order_type} @ Rs.{exec_price:,.2f}\n"
+            f"LTP:   Rs.{ltp:,.2f}\n"
+            f"SL:    Rs.{auto_sl:,.2f} (2%)\n"
+            f"Value: Rs.{qty * exec_price:,.0f}\n"
+            f"{'─'*28}\n"
+            f"✅ /confirm — execute\n"
+            f"❌ /cancel  — abort\n"
+            f"⏱ Expires in 5 minutes"
+        )
+
+    def _execute_manual_order(self) -> str:
+        """Execute the staged pending manual order."""
+        o = getattr(self, "_pending_manual_order", None)
+        if not o:
+            return "No pending order to confirm."
+        if _time.monotonic() - o["ts"] > 300:
+            self._pending_manual_order = None
+            return "⏱ Order expired (5 min). Re-send the /buy or /sell command."
+
+        self._pending_manual_order = None
+        symbol    = o["symbol"]
+        direction = o["direction"]
+        qty       = o["qty"]
+        price     = o["price"]
+
+        from data_fetch_dhan import get_security_id as _gsid
+        security_id = _gsid(symbol) or (f"PAPER-{symbol}" if not config.LIVE_TRADING_ENABLED else "")
+
+        if config.LIVE_TRADING_ENABLED and not security_id:
+            return f"⚠️ No security_id for {symbol} — cannot place live order. Check symbol."
+
+        result = self._executor.place_entry_order(
+            symbol=symbol, direction=direction,
+            qty=qty, price=price, security_id=security_id,
+        )
+        if not result.success:
+            return f"❌ Order failed: {result.message}"
+
+        fill_price = result.fill_price or price
+        fill_qty   = result.quantity or qty
+
+        # Place auto stop-loss
+        sl_result = self._executor.place_stop_order(
+            symbol=symbol, direction=direction,
+            qty=fill_qty, stop_price=o["auto_sl"], security_id=security_id,
+        )
+
+        pos = OpenPosition(
+            symbol=symbol, direction=direction,
+            entry_price=fill_price, stop_loss=o["auto_sl"],
+            target_1=round(fill_price * (1.04 if direction=="LONG" else 0.96), 2),
+            target_2=round(fill_price * (1.06 if direction=="LONG" else 0.94), 2),
+            quantity=int(fill_qty), security_id=security_id,
+            stop_order_id=sl_result.order_id if sl_result.success else "",
+        )
+        self._positions[symbol] = pos
+        self._stats.trades += 1
+        self._last_trade_ts = _time.monotonic()
+        self._write_state_file()
+
+        arrow = "↑ BUY" if direction == "LONG" else "↓ SELL"
+        sl_tag = " ✅" if sl_result.success else " ⚠️ SL not set"
+        mode_tag = "" if config.LIVE_TRADING_ENABLED else " [PAPER]"
+        return (
+            f"✅ MANUAL ORDER FILLED{mode_tag}\n"
+            f"{'─'*28}\n"
+            f"{arrow} {fill_qty} × {symbol}\n"
+            f"Fill:  Rs.{fill_price:,.2f}\n"
+            f"SL:    Rs.{o['auto_sl']:,.2f}{sl_tag}\n"
+            f"Value: Rs.{fill_qty * fill_price:,.0f}\n"
+            f"Use /close {symbol} to exit manually"
+        )
+
+    def _handle_tv_webhook_order(self, order: dict) -> None:
+        """Receive a TradingView webhook order and send Telegram confirmation request."""
+        symbol    = order["symbol"]
+        direction = order["direction"]
+        qty       = order["qty"]
+        price     = order.get("price", 0)
+        msg       = order.get("message", "")
+        arrow     = "↑ BUY" if direction == "LONG" else "↓ SELL"
+
+        if price <= 0:
+            try:
+                from data_fetch_dhan import get_ohlcv as _gohlcv
+                df = _gohlcv(symbol, "5m", "5d")
+                if df is not None and not df.empty:
+                    price = float(df["close"].iloc[-1])
+            except Exception:
+                pass
+
+        auto_sl = round(price * 0.98, 2) if direction == "LONG" else round(price * 1.02, 2)
+
+        self._pending_manual_order = {
+            "symbol": symbol, "direction": direction, "qty": qty,
+            "price": price, "limit_price": price, "auto_sl": auto_sl,
+            "order_type": "MARKET", "ts": _time.monotonic(), "source": "TradingView",
+        }
+
+        mode_tag = "" if config.LIVE_TRADING_ENABLED else " [PAPER]"
+        _tg(
+            f"📡 TRADINGVIEW ALERT{mode_tag}\n"
+            f"{'─'*28}\n"
+            f"{arrow} {qty} × {symbol} @ Rs.{price:,.2f}\n"
+            f"Reason: {msg or 'alert fired'}\n"
+            f"SL:     Rs.{auto_sl:,.2f} (2%)\n"
+            f"{'─'*28}\n"
+            f"✅ /confirm — execute now\n"
+            f"❌ /cancel  — skip\n"
+            f"⏱ Expires in 5 min"
+        )
+
     # -- Telegram command listener --------------------------------------------
 
     def _start_telegram_listener(self):
         if not getattr(config, 'TELEGRAM_COMMANDS_ENABLED', True):
             return
         import threading
+        self._pending_manual_order = None
         threading.Thread(target=self._telegram_loop, daemon=True).start()
+        # Start TradingView webhook server
+        try:
+            from tradingview_webhook import start_webhook_server, WEBHOOK_PORT
+            start_webhook_server()
+            _tg(
+                f"📡 TradingView webhook ready\n"
+                f"URL: http://YOUR_VPS_IP:{WEBHOOK_PORT}/tv\n"
+                f"Commands: /buy SYMBOL QTY [PRICE] | /sell | /chart | /close"
+            )
+        except Exception as _we:
+            logger.warning(f"Webhook server failed to start: {_we}")
 
     def _telegram_loop(self):
         token = config.TELEGRAM_BOT_TOKEN
@@ -1057,14 +1247,31 @@ class KingTradesIndia:
         if not token or not chat:
             return
         last_id = 0
+        try:
+            from tradingview_webhook import pending_queue as _tv_queue
+        except Exception:
+            _tv_queue = None
+
         while self._running:
+            # -- Process TradingView webhook queue ---
+            if _tv_queue:
+                while not _tv_queue.empty():
+                    try:
+                        tv_order = _tv_queue.get_nowait()
+                        self._handle_tv_webhook_order(tv_order)
+                    except Exception:
+                        pass
+
             try:
                 import requests
                 r = requests.get(f"https://api.telegram.org/bot{token}/getUpdates",
                                  params={"offset": last_id+1, "timeout": 10}, timeout=15)
                 for upd in r.json().get("result", []):
                     last_id = upd["update_id"]
-                    txt = upd.get("message", {}).get("text", "").strip().lower()
+                    raw_txt = upd.get("message", {}).get("text", "").strip()
+                    txt = raw_txt.lower()
+
+                    # -- Existing commands ---
                     if txt == "/kill":
                         _tg("INDIA BOT /kill -- squaring off all India positions")
                         self._handle_shutdown()
@@ -1074,24 +1281,75 @@ class KingTradesIndia:
                     elif txt == "/resume":
                         self._stats.circuit_hit = False
                         _tg("India bot resumed.")
-                    elif txt == "/status":
+                    elif txt in ("/status", "/india"):
                         try:
-                            rich = self._build_rich_status()
-                            _tg(rich, parse_mode="HTML")
+                            _tg(self._build_rich_status(), parse_mode="HTML")
                         except Exception as _se:
                             p = self._stats.total_pnl / max(config.MAX_DAILY_CAPITAL, 1)
                             _tg(f"INDIA P&L: Rs.{self._stats.total_pnl:+,.0f} ({p:.2%}) | "
-                                f"W:{self._stats.wins} L:{self._stats.losses} | "
-                                f"Pos:{len(self._positions)}/{config.MAX_POSITIONS}")
-                    elif txt == "/india":
-                        try:
-                            rich = self._build_rich_status()
-                            _tg(rich, parse_mode="HTML")
-                        except Exception as _se:
-                            _tg(f"India status error: {_se}")
+                                f"W:{self._stats.wins} L:{self._stats.losses}")
+
+                    # -- Manual order commands ---
+                    elif txt.startswith("/buy ") or txt.startswith("/b "):
+                        parts = raw_txt.split()[1:]
+                        _tg(self._handle_manual_order("LONG", parts))
+
+                    elif txt.startswith("/sell ") or txt.startswith("/s "):
+                        parts = raw_txt.split()[1:]
+                        _tg(self._handle_manual_order("SHORT", parts))
+
+                    elif txt == "/confirm" or txt == "/yes":
+                        _tg(self._execute_manual_order())
+
+                    elif txt == "/cancel" or txt == "/no":
+                        if getattr(self, "_pending_manual_order", None):
+                            self._pending_manual_order = None
+                            _tg("❌ Order cancelled.")
+                        else:
+                            _tg("No pending order to cancel.")
+
+                    elif txt.startswith("/close "):
+                        sym = raw_txt.split()[1].upper().replace(".NS", "")
+                        if sym in self._positions:
+                            self._close_position(sym, 0.0)
+                            _tg(f"✅ Manually closed {sym}")
+                        else:
+                            _tg(f"{sym} not in open positions. Open: {list(self._positions.keys()) or 'none'}")
+
+                    elif txt.startswith("/chart") or txt.startswith("/tv "):
+                        parts = raw_txt.split()
+                        sym = parts[1].upper().replace(".NS", "") if len(parts) > 1 else ""
+                        if sym:
+                            _tg(
+                                f"📈 TradingView Chart\n"
+                                f"NSE:{sym}\n"
+                                f"https://www.tradingview.com/chart/?symbol=NSE:{sym}\n\n"
+                                f"Place order: /buy {sym} QTY [PRICE]"
+                            )
+                        else:
+                            _tg("Usage: /chart RELIANCE")
+
+                    elif txt == "/orders" or txt == "/help":
+                        _tg(
+                            "📋 MANUAL TRADING COMMANDS\n"
+                            "────────────────────────\n"
+                            "/buy SYMBOL QTY [PRICE]\n"
+                            "  e.g. /buy RELIANCE 10\n"
+                            "  e.g. /buy RELIANCE 10 2850\n\n"
+                            "/sell SYMBOL QTY [PRICE]\n"
+                            "  e.g. /sell TCS 5\n\n"
+                            "/confirm — execute pending order\n"
+                            "/cancel  — abort pending order\n"
+                            "/close SYMBOL — exit open position\n"
+                            "/chart SYMBOL — TradingView link\n"
+                            "/status — portfolio + India OODA\n\n"
+                            "📡 TradingView webhooks also supported\n"
+                            "Set alert webhook to your VPS IP:8888/tv"
+                        )
+
             except Exception as e:
                 logger.debug(f"tg_loop: {e}")
-            _time.sleep(30)
+            _time.sleep(5)   # faster polling for manual trading responsiveness
 
     def _handle_shutdown(self, *_):
         logger.info("Shutdown signal received -- squaring off")
