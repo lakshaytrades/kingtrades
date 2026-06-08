@@ -155,6 +155,7 @@ CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
 MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "60.0"))
+L99_MIN_SCORE: float    = float(os.getenv("L99_MIN_SCORE", "65.0"))    # L99 gate minimum (65=B, 76=A, 85=A+)
                                        # v20.1: lowered 63→60. Pre-filter feeds the 28-gate HAF system.
                                        # Boosters (CSM, VWAP, OFI, etc.) add pts after gates. Kept low so
                                        # gate system — not the pre-filter — is the quality barrier.

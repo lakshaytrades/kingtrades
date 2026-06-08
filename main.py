@@ -381,6 +381,43 @@ class TradingBot:
         self.block_deal_scanner = None
         self.sector_rotation = self.pairs_engine = self.options_signals = None
 
+        # ── Pairs Trading Engine (cointegration stat-arb) ─────────────────────
+        try:
+            from pairs_engine import get_pairs_engine
+            self.pairs_engine = get_pairs_engine()
+            logger.info(f"[{format_ist_timestamp()}] Pairs Engine ready (stat-arb)")
+        except Exception as _pe_err:
+            self.pairs_engine = None
+            logger.debug(f"[Main] Pairs engine unavailable: {_pe_err}")
+
+        # ── Block Deal Scanner (NSE institutional bulk/block deals) ───────────
+        try:
+            from block_deal_scanner import get_block_deal_scanner
+            self.block_deal_scanner = get_block_deal_scanner()
+            logger.info(f"[{format_ist_timestamp()}] Block Deal Scanner ready (NSE institutional)")
+        except Exception as _bd_err:
+            self.block_deal_scanner = None
+            logger.debug(f"[Main] Block deal scanner unavailable: {_bd_err}")
+
+        # ── Portfolio Drawdown Monitor (real-time equity guardian) ────────────
+        try:
+            from portfolio_drawdown_monitor import get_drawdown_monitor
+            self._drawdown_monitor = get_drawdown_monitor()
+            self._drawdown_monitor.start(risk_manager=self.risk_manager)
+            logger.info(f"[{format_ist_timestamp()}] Drawdown Monitor started (real-time equity guardian)")
+        except Exception as _dm_err:
+            self._drawdown_monitor = None
+            logger.debug(f"[Main] Drawdown monitor unavailable: {_dm_err}")
+
+        # ── L99 Gate (ultra-high conviction final filter) ─────────────────────
+        try:
+            import l99_gate as _l99_mod
+            self._l99_gate = _l99_mod
+            logger.info(f"[{format_ist_timestamp()}] L99 Gate loaded (15-component conviction filter)")
+        except Exception as _l99_err:
+            self._l99_gate = None
+            logger.debug(f"[Main] L99 gate unavailable: {_l99_err}")
+
         # NSE FII/DII tracker
         try:
             from fii_dii_tracker import FIIDIITracker
@@ -1142,6 +1179,50 @@ class TradingBot:
                 f"{signal.symbol} — {_risk_check['reason']}"
             )
             return
+
+        # ── Drawdown Monitor gate — blocks entries when equity is deteriorating ──
+        try:
+            _dm = getattr(self, "_drawdown_monitor", None)
+            if _dm:
+                _dm_status = _dm.get_status()
+                if not _dm_status.allow_new_entries:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] DRAWDOWN GATE: {signal.symbol} "
+                        f"BLOCKED — {_dm_status.message}"
+                    )
+                    return
+        except Exception as _dme:
+            logger.debug(f"[suppressed] drawdown gate: {_dme}")
+
+        # ── L99 Gate — ultra-high conviction check (15-component fusion) ──────
+        try:
+            _l99 = getattr(self, "_l99_gate", None)
+            if _l99 is not None:
+                _l99_result = _l99.evaluate_l99(
+                    signal       = signal,
+                    news_filter  = self.news_filter,
+                    risk_manager = self.risk_manager,
+                )
+                _l99_min = float(getattr(config, "L99_MIN_SCORE", 65))
+                if not _l99_result.allow_trade or _l99_result.score < _l99_min:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] L99 GATE SKIP: {signal.symbol} "
+                        f"score={_l99_result.score:.1f} grade={_l99_result.grade} — "
+                        f"{_l99_result.reasoning}"
+                    )
+                    return
+                # Blend L99 size multiplier into signal
+                if hasattr(signal, "size_multiplier"):
+                    signal.size_multiplier = min(
+                        signal.size_multiplier,
+                        _l99_result.size_mult,
+                    )
+                logger.info(
+                    f"[{format_ist_timestamp()}] L99 {_l99_result.grade} "
+                    f"({_l99_result.score:.1f}) ✅ — {signal.symbol}"
+                )
+        except Exception as _l99e:
+            logger.debug(f"[suppressed] L99 gate: {_l99e}")
 
         logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
 

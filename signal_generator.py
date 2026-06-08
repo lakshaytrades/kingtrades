@@ -845,7 +845,7 @@ class SignalGenerator:
             except Exception as _cat_err:
                 logger.debug(f"Catalyst boost error for {symbol}: {_cat_err}")
 
-            # 6e. Gap direction alignment boost (top-3% edge: gap + direction = very high win rate)
+            # 6e. Gap direction alignment + statistical fill probability model
             try:
                 gap_pct = self._get_gap_pct(symbol)
                 if direction == "LONG" and gap_pct >= 0.5:
@@ -856,6 +856,27 @@ class SignalGenerator:
                     gap_boost = min(abs(gap_pct) * 2.0, config.GAP_DIRECTION_BOOST)
                     ai_score = min(100.0, ai_score + gap_boost)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: gap boost +{gap_boost:.1f} (gap={gap_pct:+.1f}%)")
+            except Exception:
+                pass
+
+            # 6e2. Gap fill probability model — adjusts score based on statistical fill odds
+            try:
+                from gap_fill_model import get_gap_fill_model
+                _gfm = get_gap_fill_model()
+                _gap_pct  = self._get_gap_pct(symbol)
+                _open_p   = analysis_5m.get("open_price", current_price) if isinstance(analysis_5m, dict) else current_price
+                _prev_cls = _open_p / (1 + _gap_pct / 100.0) if _gap_pct != 0 else _open_p
+                _vix = getattr(self, "_vix", 18.0)
+                _regime_str = "UNKNOWN"
+                try:
+                    from ooda_engine import get_engine as _oe
+                    _regime_str = _oe().get_context(symbol).regime
+                except Exception:
+                    pass
+                _gf_adj = _gfm.get_score_adj(symbol, direction, float(_open_p), float(_prev_cls), _vix, _regime_str)
+                if _gf_adj != 0:
+                    ai_score = max(0.0, min(100.0, ai_score + _gf_adj))
+                    logger.debug(f"{symbol}: gap_fill_model adj {_gf_adj:+.0f}")
             except Exception:
                 pass
 
