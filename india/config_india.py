@@ -68,7 +68,7 @@ SORTINO_SIZING_ENABLED    = _flag("INDIA_SORTINO_SIZING_ENABLED")
 # -- Dhan exchange constants --------------------------------------------------
 EXCHANGE        = "NSE_EQ"
 PRODUCT_TYPE    = "INTRADAY"   # MIS equivalent on Dhan
-YFINANCE_SUFFIX = ".NS"        # for yfinance historical data
+NSE_SUFFIX = "-EQ"             # Dhan security ID suffix for NSE equity
 
 # -- Scan interval ------------------------------------------------------------
 SCAN_INTERVAL_SECONDS = 300   # scan watchlist every 5 minutes

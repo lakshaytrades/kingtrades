@@ -157,5 +157,5 @@ def get_sector(symbol: str) -> str:
 
 
 def get_nifty_symbol() -> str:
-    """yfinance symbol for Nifty 50 index (used as market benchmark)."""
-    return "^NSEI"
+    """NSE symbol for Nifty 50 index (used as market benchmark)."""
+    return "NIFTY 50"
