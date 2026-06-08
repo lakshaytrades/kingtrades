@@ -163,6 +163,92 @@ def _build_plan_text(signal, ctx) -> str:
     return "\n".join(lines)
 
 
+def _build_scalp_plan_text(signal, scalp_type: str = "SCALP") -> str:
+    """Compact pre-trade message for scalp signals (shorter, faster to read)."""
+    symbol    = getattr(signal, "symbol", "?")
+    direction = getattr(signal, "direction", "?")
+    entry     = float(getattr(signal, "entry_price", 0) or 0)
+    stop      = float(getattr(signal, "stop_loss",   0) or 0)
+    t1        = float(getattr(signal, "target_1",    0) or 0)
+    score     = float(getattr(signal, "signal_score",0) or 0)
+    reason    = str(getattr(signal, "rationale", getattr(signal, "reason", "—")))
+    max_hold  = int(getattr(signal, "time_stop_minutes", 10))
+    rr        = abs(t1 - entry) / max(abs(entry - stop), 0.001) if (t1 and stop and entry) else 0
+
+    arrow = "🚀" if direction == "LONG" else "⬇️"
+    mode  = getattr(signal, "mode", None)
+    mode_str = mode.value if hasattr(mode, "value") else str(mode) if mode else scalp_type
+
+    return (
+        f"⚡ <b>{scalp_type}: {symbol} {arrow}</b>  score={score:.0f}\n"
+        f"  Mode: {mode_str}\n"
+        f"  Entry ₹{entry:.2f}  Stop ₹{stop:.2f}  T1 ₹{t1:.2f}  R:R {rr:.1f}:1\n"
+        f"  Max hold: {max_hold} min\n"
+        f"  Why: {reason[:120]}\n"
+        f"  🕐 {_ist_clock()}"
+    )
+
+
+def _build_india_context_suffix(symbol: str) -> str:
+    """Append India-specific market context to any trade plan."""
+    lines = []
+    try:
+        from india_intel import IndiaVIXReader
+        vix = IndiaVIXReader().get_vix()
+        if vix > 0:
+            icon = "🟢" if vix < 15 else ("🟡" if vix < 22 else "🔴")
+            lines.append(f"  {icon} India VIX: {vix:.1f}")
+    except Exception:
+        pass
+
+    try:
+        from india_intel import NiftyPCRReader
+        pcr = NiftyPCRReader().get_pcr()
+        if pcr > 0:
+            icon = "🟢" if pcr > 1.2 else ("🔴" if pcr < 0.8 else "🟡")
+            lines.append(f"  {icon} PCR: {pcr:.2f}")
+    except Exception:
+        pass
+
+    try:
+        from fii_dii_tracker import FIIDIITracker
+        data = FIIDIITracker().get_latest() if hasattr(FIIDIITracker(), "get_latest") else {}
+        fii  = data.get("fii_net", 0)
+        if fii:
+            icon = "🟢" if fii > 0 else "🔴"
+            lines.append(f"  {icon} FII: ₹{abs(fii):,.0f}Cr {'buy' if fii > 0 else 'sell'}")
+    except Exception:
+        pass
+
+    try:
+        from india.nse_option_chain import NSEOptionChain
+        nifty_sym = "NIFTY" if not symbol.endswith(".NS") else symbol.replace(".NS", "")
+        oc = NSEOptionChain()
+        data = oc.get_analysis(nifty_sym) or {}
+        mp = data.get("max_pain")
+        if mp:
+            lines.append(f"  🎯 Max Pain: ₹{mp:,.0f}")
+    except Exception:
+        pass
+
+    if not lines:
+        return ""
+    return "\n🇮🇳 <b>NSE CONTEXT</b>\n" + "\n".join(lines)
+
+
+def _is_nse_symbol(symbol: str) -> bool:
+    """Best-effort check if this is an NSE trade."""
+    return (
+        symbol.endswith(".NS")
+        or symbol.startswith("NIFTY")
+        or symbol in {
+            "RELIANCE","TCS","HDFCBANK","ICICIBANK","INFY","ITC","SBIN",
+            "BHARTIARTL","KOTAKBANK","LT","AXISBANK","ASIANPAINT","MARUTI","TITAN",
+            "WIPRO","BAJFINANCE","HCLTECH","SUNPHARMA","HINDUNILVR","ULTRACEMCO",
+        }
+    )
+
+
 def broadcast_trade_plan(signal, alerter=None) -> bool:
     """
     Send a pre-trade plan message. Returns True if a message was sent.
@@ -185,6 +271,15 @@ def broadcast_trade_plan(signal, alerter=None) -> bool:
         ctx = _get_ooda_context(symbol)
         text = _build_plan_text(signal, ctx)
 
+        # Append India-specific context for NSE symbols
+        if _is_nse_symbol(symbol):
+            try:
+                india_suffix = _build_india_context_suffix(symbol)
+                if india_suffix:
+                    text = text + "\n" + india_suffix
+            except Exception:
+                pass
+
         sent = False
         if alerter is not None and hasattr(alerter, "_send"):
             sent = alerter._send(text, parse_mode="Markdown")
@@ -202,4 +297,57 @@ def broadcast_trade_plan(signal, alerter=None) -> bool:
         return sent
     except Exception as e:
         logger.debug(f"[TradePlan] broadcast failed (non-fatal): {e}")
+        return False
+
+
+def broadcast_scalp_plan(signal, alerter=None, scalp_type: str = "EXPERT SCALP") -> bool:
+    """
+    Lightweight pre-trade broadcast specifically for scalp signals.
+    Compact format — scalps are fast, message must be read instantly.
+    """
+    try:
+        symbol    = getattr(signal, "symbol", None)
+        direction = getattr(signal, "direction", None)
+        if not symbol or not direction:
+            return False
+
+        key = f"SCALP|{symbol}|{direction}"
+        now = time.monotonic()
+        if now - _LAST_SENT.get(key, 0.0) < 120:   # 2-min dedup for scalps
+            return False
+
+        text = _build_scalp_plan_text(signal, scalp_type)
+
+        if _is_nse_symbol(symbol):
+            try:
+                india_suffix = _build_india_context_suffix(symbol)
+                if india_suffix:
+                    text += "\n" + india_suffix
+            except Exception:
+                pass
+
+        sent = False
+        if alerter is not None and hasattr(alerter, "_send"):
+            sent = alerter._send(text, parse_mode="HTML")
+        else:
+            try:
+                import os, requests as _req
+                token = os.getenv("TELEGRAM_BOT_TOKEN","")
+                chat  = os.getenv("TELEGRAM_CHAT_ID","")
+                if token and chat:
+                    r = _req.post(
+                        f"https://api.telegram.org/bot{token}/sendMessage",
+                        json={"chat_id": chat, "text": text, "parse_mode": "HTML"},
+                        timeout=10,
+                    )
+                    sent = r.status_code == 200
+            except Exception:
+                sent = False
+
+        if sent:
+            _LAST_SENT[key] = now
+            logger.info(f"[TradePlan] Scalp broadcast: {symbol} {direction} ({scalp_type})")
+        return sent
+    except Exception as e:
+        logger.debug(f"[TradePlan] scalp broadcast failed (non-fatal): {e}")
         return False

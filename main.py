@@ -1067,6 +1067,18 @@ class TradingBot:
             except Exception as _mse:
                 logger.debug(f"[suppressed] market_standing morning: {_mse}")
 
+            # India NSE open brief — comprehensive pre-market intelligence
+            try:
+                import threading as _india_thread
+                from setup_preview import send_india_open_brief as _india_brief
+                _india_thread.Thread(
+                    target=_india_brief,
+                    kwargs={"watchlist": list(watchlist), "fetcher": self.fetcher},
+                    daemon=True,
+                ).start()
+            except Exception as _ibe:
+                logger.debug(f"[suppressed] india_open_brief: {_ibe}")
+
             if not self.morning_intel:
                 self.alerter.send_morning_brief(
                     watchlist, available, spy_open,
@@ -1225,6 +1237,19 @@ class TradingBot:
             logger.debug(f"[suppressed] L99 gate: {_l99e}")
 
         logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+
+        # ── Pre-trade PLAN broadcast — fires for ALL trades (scalp/ORB/burst/etc) ──
+        # Broadcasts before every order — not just OODA main-loop trades.
+        try:
+            import threading as _bt
+            from trade_plan_broadcaster import broadcast_trade_plan as _btp
+            _bt.Thread(
+                target=_btp,
+                args=(signal, self.alerter),
+                daemon=True,
+            ).start()
+        except Exception as _bpe:
+            logger.debug(f"[suppressed] _execute_signal broadcast: {_bpe}")
 
         # RL agent pre-trade signal validation (learn from every trade)
         try:
@@ -2289,6 +2314,17 @@ class TradingBot:
                                     f"SL: ${bs.stop_loss:.2f} | "
                                     f"T1: ${bs.target_1:.2f}"
                                 )
+                            # Pre-trade plan broadcast for burst signals
+                            try:
+                                import threading as _bt2
+                                from trade_plan_broadcaster import broadcast_scalp_plan as _bsp2
+                                _bt2.Thread(
+                                    target=_bsp2,
+                                    args=(burst_ts, self.alerter, "MOMENTUM BURST"),
+                                    daemon=True,
+                                ).start()
+                            except Exception:
+                                pass
                 except Exception as e:
                     logger.debug(f"Burst scan failed: {e}")
 
@@ -2313,6 +2349,115 @@ class TradingBot:
                         signals.extend(_fb_sigs)
                 except Exception as _fbe:
                     logger.debug(f"Fallback scan: {_fbe}")
+
+            # 4j. EXPERT SCALPER — idle scalp mode: when still no signals, run
+            # the OODA-regime-aware 4-mode scalper on the top liquid symbols.
+            # Generates smaller-profit, shorter-hold trades to keep capital working.
+            if not signals:
+                try:
+                    from idle_scalp_mode import is_active as _ism_active
+                    from expert_scalper import ExpertScalper as _ES
+                    if _ism_active():
+                        if not hasattr(self, "_expert_scalper"):
+                            self._expert_scalper = _ES()
+                        _scalp_watchlist = watchlist[:15]
+                        _scalp_signals_raw = []
+                        import numpy as _np
+                        for _scalp_sym in _scalp_watchlist:
+                            try:
+                                _df_s = self.fetcher.get_today_candles(_scalp_sym)
+                                if _df_s is None or len(_df_s) < 15:
+                                    continue
+                                _c_col = "close" if "close" in _df_s.columns else "Close"
+                                _h_col = "high"  if "high"  in _df_s.columns else "High"
+                                _l_col = "low"   if "low"   in _df_s.columns else "Low"
+                                _v_col = "volume"if "volume"in _df_s.columns else "Volume"
+                                _ss = self._expert_scalper.scan(
+                                    symbol   = _scalp_sym,
+                                    closes   = _df_s[_c_col].values,
+                                    highs    = _df_s[_h_col].values,
+                                    lows     = _df_s[_l_col].values,
+                                    volumes  = _df_s[_v_col].values,
+                                )
+                                if _ss:
+                                    _scalp_signals_raw.append(_ss)
+                            except Exception as _sse:
+                                logger.debug(f"ExpertScalper {_scalp_sym}: {_sse}")
+
+                        # Sort by score, take top 2 to avoid overtrading
+                        _scalp_signals_raw.sort(key=lambda x: x.score, reverse=True)
+                        for _ss in _scalp_signals_raw[:2]:
+                            try:
+                                # Convert ExpertScalpSignal → TradeSignal
+                                from signal_generator import TradeSignal as _TS
+                                _scalp_ts = _TS(
+                                    symbol          = _ss.symbol,
+                                    direction       = _ss.direction,
+                                    signal_score    = round(_ss.score, 1),
+                                    entry_price     = _ss.entry_price,
+                                    stop_loss       = _ss.stop_loss,
+                                    target_1        = _ss.target_1,
+                                    target_2        = _ss.target_2,
+                                    risk_reward     = round(
+                                        abs(_ss.target_1 - _ss.entry_price) /
+                                        max(abs(_ss.entry_price - _ss.stop_loss), 0.001), 2
+                                    ),
+                                    atr             = _ss.atr,
+                                    patterns        = [str(_ss.mode.value)],
+                                    quality_grade   = "B" if _ss.score >= 70 else "C",
+                                    size_multiplier = 0.40,   # 40% — scalp sizing
+                                    rationale       = f"EXPERT SCALP [{_ss.mode.value}]: {_ss.reason}",
+                                    is_high_confidence = _ss.score >= 80,
+                                    time_stop_minutes  = _ss.max_hold_minutes,
+                                )
+                                # Scalp-specific broadcast (compact format)
+                                import threading as _sct
+                                from trade_plan_broadcaster import broadcast_scalp_plan as _bsp
+                                _sct.Thread(
+                                    target=_bsp,
+                                    args=(_scalp_ts, self.alerter, "EXPERT SCALP"),
+                                    daemon=True,
+                                ).start()
+                                signals.append(_scalp_ts)
+                                self._expert_scalper.record_entry(_ss.symbol)
+                                logger.info(
+                                    f"[{format_ist_timestamp()}] EXPERT SCALP: "
+                                    f"{_ss.symbol} {_ss.direction} "
+                                    f"mode={_ss.mode.value} score={_ss.score:.0f}"
+                                )
+                            except Exception as _tse:
+                                logger.debug(f"ExpertScalper TradeSignal convert: {_tse}")
+
+                        if _scalp_signals_raw and self.alerter and not signals:
+                            self.alerter.send_html(
+                                f"⚡ <b>IDLE SCALP MODE</b> — No prime setups\n"
+                                f"Expert Scalper scanning {len(_scalp_watchlist)} symbols\n"
+                                f"Regime: {_scalp_signals_raw[0].mode.value if _scalp_signals_raw else 'scanning'}\n"
+                                f"Size: 0.4× (small, fast)"
+                            )
+                except Exception as _exp_se:
+                    logger.debug(f"[suppressed] expert_scalper idle: {_exp_se}")
+
+            # 4k. Setup preview — send periodic "what we're watching" Telegram message
+            # Fires every 30 min when idle (no trades taken in that window)
+            try:
+                from setup_preview import should_preview, send_setup_preview
+                if should_preview(
+                    last_trade_ts   = self._last_executed_trade_ts,
+                    no_trade_minutes= 30.0,
+                ):
+                    import threading as _spv
+                    _spv.Thread(
+                        target=send_setup_preview,
+                        kwargs={
+                            "watchlist":  list(combined_watchlist)[:20],
+                            "signal_gen": self.signal_gen,
+                            "fetcher":    self.fetcher,
+                        },
+                        daemon=True,
+                    ).start()
+            except Exception as _spve:
+                logger.debug(f"[suppressed] setup_preview: {_spve}")
 
             # 5. Execute signals
             for signal in signals:
