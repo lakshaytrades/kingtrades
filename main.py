@@ -487,14 +487,19 @@ class TradingBot:
             self.elite_brain = None
             logger.warning(f"[{format_ist_timestamp()}] Elite Brain init failed: {e}")
 
-        # Initialize Momentum Burst Detector (explosive 3-5% move scanner)
-        try:
-            from momentum_burst import get_burst_detector
-            self.burst_detector = get_burst_detector()
-            logger.info(f"[{format_ist_timestamp()}] Momentum Burst Detector ready")
-        except Exception as e:
-            self.burst_detector = None
-            logger.warning(f"[{format_ist_timestamp()}] Burst detector init failed: {e}")
+        # Momentum Burst Detector — DISABLED by default (low-score burst trades
+        # bypass the quality gate; set ENABLE_BURST=True to re-enable).
+        self.burst_detector = None
+        if getattr(config, "ENABLE_BURST", False):
+            try:
+                from momentum_burst import get_burst_detector
+                self.burst_detector = get_burst_detector()
+                logger.info(f"[{format_ist_timestamp()}] Momentum Burst Detector ready")
+            except Exception as e:
+                self.burst_detector = None
+                logger.warning(f"[{format_ist_timestamp()}] Burst detector init failed: {e}")
+        else:
+            logger.info(f"[{format_ist_timestamp()}] Momentum Burst disabled (high-accuracy mode)")
 
         # Initialize dashboard (wired to journal)
         from dashboard import PerformanceDashboard
@@ -2353,7 +2358,7 @@ class TradingBot:
             # 4j. EXPERT SCALPER — idle scalp mode: when still no signals, run
             # the OODA-regime-aware 4-mode scalper on the top liquid symbols.
             # Generates smaller-profit, shorter-hold trades to keep capital working.
-            if not signals:
+            if not signals and getattr(config, "ENABLE_SCALPER", False):
                 try:
                     from idle_scalp_mode import is_active as _ism_active
                     from expert_scalper import ExpertScalper as _ES

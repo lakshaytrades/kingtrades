@@ -84,6 +84,12 @@ ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
 ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # 1x cash — safe for live trading
 
 MAX_POSITIONS: int = 5       # high-accuracy mode: fewer, higher-conviction positions (was 8 for scalping)
+
+# ── Scalper / burst kill-switch (owner: high-accuracy only, no scalping) ──────
+# These low-score, high-frequency paths bypassed the main quality gate and were
+# the source of the 0W/10L bleed. OFF by default now.
+ENABLE_SCALPER: bool = os.getenv("ENABLE_SCALPER", "False") == "True"
+ENABLE_BURST:   bool = os.getenv("ENABLE_BURST",   "False") == "True"
 MIN_POSITIONS: int = 1
 MAX_CAPITAL_PER_TRADE_PCT: float = 15.0   # 15% per trade — sized for profit, not reckless
 
