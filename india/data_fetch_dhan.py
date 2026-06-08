@@ -1,6 +1,6 @@
 """
 data_fetch_dhan.py — Market data for Indian NSE market
-Primary OHLCV:   Dhan intraday candle API (replaces yfinance — Yahoo 403 blocked)
+Primary OHLCV:   NSE charting API (charting.nseindia.com — no auth required)
 Real-time LTP:   Dhan API (for order placement & live P&L)
 Scrip master:    Dhan CSV → symbol → security_id mapping
 """
@@ -194,55 +194,171 @@ def get_multiple_ltp(symbols: List[str], dhan_client) -> Dict[str, float]:
     return result
 
 
-# ── Historical OHLCV from Dhan intraday API ───────────────────────────────────
-# Replaces yfinance — Yahoo Finance blocks VPS IPs with HTTP 403.
-# Dhan provides 1m/5m/15m/25m/60m candles free for account holders.
+# ── NSE charting session (shared across all OHLCV calls) ─────────────────────
+# NSE requires browser-like headers and session cookies before it serves chart data.
+# We create one session, warm it up with two GET requests, then reuse for 30 min.
 
-_DHAN_INTERVAL_MAP = {
-    "1m": "1", "5m": "5", "15m": "15", "25m": "25",
-    "30m": "25", "60m": "60", "1h": "60",
+_NSE_CHART_BASE  = "https://charting.nseindia.com"
+_NSE_MAIN        = "https://www.nseindia.com"
+_NSE_CHART_HDR   = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/124.0.0.0 Safari/537.36"
+    ),
+    "Accept":          "*/*",
+    "Accept-Encoding": "gzip, deflate, br",
+    "Accept-Language": "en-US,en;q=0.9,hi;q=0.8",
+    "Connection":      "keep-alive",
 }
-# Dhan max window per interval (calendar days to cover 5 trading days safely)
-_DHAN_LOOKBACK_DAYS = {"1": 3, "5": 7, "15": 7, "25": 7, "60": 10}
+
+_nse_session: Optional[object] = None   # requests.Session
+_nse_session_ts: float = 0.0
+_NSE_SESSION_TTL = 1500.0   # refresh cookies every 25 min
+
+_NSE_INTERVAL_MAP = {
+    "1m": "1", "3m": "3", "5m": "5",
+    "10m": "10", "15m": "15", "30m": "30", "60m": "60", "1h": "60",
+}
 
 _ohlcv_cache: Dict[str, dict] = {}
-_OHLCV_CACHE_TTL = 60.0   # 1-min candle cache
+_OHLCV_CACHE_TTL = 290.0   # cache just under scan interval (5 min)
 
 
-def _dhan_to_df(data: dict) -> Optional[pd.DataFrame]:
-    """Convert Dhan intraday API response dict → normalised OHLCV DataFrame (IST index)."""
+def _get_nse_session():
+    """Return a warmed-up requests.Session with valid NSE cookies."""
+    global _nse_session, _nse_session_ts
+    import requests as _req
+    now = _time.monotonic()
+    if _nse_session is not None and now - _nse_session_ts < _NSE_SESSION_TTL:
+        return _nse_session
+
+    sess = _req.Session()
+    sess.headers.update(_NSE_CHART_HDR)
     try:
-        ts   = data.get("timestamp") or data.get("start_Time") or []
-        opens  = data.get("open",   [])
-        highs  = data.get("high",   [])
-        lows   = data.get("low",    [])
-        closes = data.get("close",  [])
-        vols   = data.get("volume", [])
-        if not ts or not closes:
-            return None
-        # timestamps may be Unix seconds (int) or ISO strings
-        if isinstance(ts[0], (int, float)):
-            index = pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
-        else:
-            index = pd.to_datetime(ts, utc=True).tz_convert("Asia/Kolkata")
-        df = pd.DataFrame({
-            "open":   [float(v) for v in opens],
-            "high":   [float(v) for v in highs],
-            "low":    [float(v) for v in lows],
-            "close":  [float(v) for v in closes],
-            "volume": [float(v) for v in vols],
-        }, index=index)
-        return df.dropna()
+        # Step 1: hit main page to get initial cookies
+        sess.get(_NSE_MAIN, timeout=10)
+        _time.sleep(0.3)
+        # Step 2: hit market data page for trading-related cookies
+        sess.get(
+            f"{_NSE_MAIN}/market-data/live-equity-market",
+            timeout=10,
+        )
     except Exception as e:
-        logger.debug(f"_dhan_to_df: {e}")
+        logger.debug(f"NSE session warmup: {e}")
+
+    _nse_session = sess
+    _nse_session_ts = now
+    return sess
+
+
+def _parse_nse_chart_response(raw) -> Optional[pd.DataFrame]:
+    """
+    Parse NSE charting API JSON into OHLCV DataFrame (IST-indexed).
+    Handles two response shapes:
+      - dict with 'grapthData' / 'graphData' key: list of [ts_ms, O, H, L, C, V]
+      - dict with 'data' key containing the same list
+    """
+    try:
+        if isinstance(raw, dict):
+            rows = (
+                raw.get("grapthData")
+                or raw.get("graphData")
+                or raw.get("data")
+                or []
+            )
+        elif isinstance(raw, list):
+            rows = raw
+        else:
+            return None
+
+        if not rows:
+            return None
+
+        records = []
+        for row in rows:
+            try:
+                if not isinstance(row, (list, tuple)) or len(row) < 6:
+                    continue
+                ts_raw = row[0]
+                # timestamp can be ms epoch (int) or "DD-Mon-YYYY HH:MM" string
+                if isinstance(ts_raw, (int, float)):
+                    dt = pd.Timestamp(int(ts_raw), unit="ms", tz="Asia/Kolkata")
+                else:
+                    dt = pd.Timestamp(str(ts_raw)).tz_localize("Asia/Kolkata")
+                records.append({
+                    "datetime": dt,
+                    "open":     float(row[1]),
+                    "high":     float(row[2]),
+                    "low":      float(row[3]),
+                    "close":    float(row[4]),
+                    "volume":   float(row[5]),
+                })
+            except Exception:
+                continue
+
+        if not records:
+            return None
+
+        df = pd.DataFrame(records).set_index("datetime").sort_index()
+        return df.dropna()
+
+    except Exception as e:
+        logger.debug(f"_parse_nse_chart_response: {e}")
         return None
+
+
+def _fetch_nse_chart(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
+    """
+    Call NSE charting endpoint for one symbol + interval.
+    Retries once after refreshing cookies on 401/403/empty response.
+    """
+    import requests as _req
+
+    def _call(sess):
+        url = f"{_NSE_CHART_BASE}/Charts/symbolhistoricaldata/{symbol}"
+        params = {"time": str(interval_min), "type": "EQ"}
+        hdrs = {**_NSE_CHART_HDR, "Referer": f"{_NSE_CHART_BASE}/"}
+        resp = sess.get(url, params=params, headers=hdrs, timeout=15)
+        return resp
+
+    sess = _get_nse_session()
+    for attempt in range(2):
+        try:
+            resp = _call(sess)
+            if resp.status_code in (401, 403) and attempt == 0:
+                # Cookies stale — force refresh and retry
+                global _nse_session_ts
+                _nse_session_ts = 0.0
+                sess = _get_nse_session()
+                continue
+            if resp.status_code != 200:
+                logger.debug(f"NSE chart {symbol}: HTTP {resp.status_code}")
+                return None
+            raw = resp.json()
+            df = _parse_nse_chart_response(raw)
+            if df is not None and not df.empty:
+                return df
+            # Empty response — force cookie refresh on next call
+            if attempt == 0:
+                _nse_session_ts = 0.0
+                sess = _get_nse_session()
+        except _req.exceptions.RequestException as e:
+            logger.debug(f"NSE chart {symbol} attempt {attempt+1}: {e}")
+            if attempt == 0:
+                _time.sleep(2)
+        except Exception as e:
+            logger.debug(f"NSE chart parse {symbol}: {e}")
+            break
+
+    return None
 
 
 def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV candles from Dhan's intraday API.
-    Falls back to NSE public JSON API if Dhan client is unavailable.
+    Fetch OHLCV candles from NSE charting API (primary) or Dhan (fallback).
     Returns DataFrame: lowercase columns open/high/low/close/volume, IST-indexed.
+    Cached for ~5 minutes to stay well within NSE's rate limits.
     """
     cache_key = f"{symbol}_{interval}"
     now_mono  = _time.monotonic()
@@ -250,91 +366,62 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
     if cached and now_mono - cached["ts"] < _OHLCV_CACHE_TTL:
         return cached["df"]
 
-    client = _dhan_client_ref
-    dhan_interval = _DHAN_INTERVAL_MAP.get(interval, "5")
+    interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
 
-    # ── Attempt 1: Dhan intraday API ─────────────────────────────────────────
+    # ── Primary: NSE charting API ─────────────────────────────────────────────
+    df = _fetch_nse_chart(symbol, interval_min)
+    if df is not None and not df.empty:
+        _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
+        return df
+
+    # ── Fallback: Dhan intraday API (if credentials available) ────────────────
+    client = _dhan_client_ref
     if client is not None:
         security_id = get_security_id(symbol)
         if security_id:
-            lookback = _DHAN_LOOKBACK_DAYS.get(dhan_interval, 7)
-            from_dt  = datetime.now(IST) - timedelta(days=lookback)
-            to_dt    = datetime.now(IST)
-            from_date = from_dt.strftime("%Y-%m-%d")
-            to_date   = to_dt.strftime("%Y-%m-%d")
+            dhan_iv   = str(interval_min) if interval_min in (1,5,15,25,60) else "5"
+            lookback  = 7
+            from_date = (datetime.now(IST) - timedelta(days=lookback)).strftime("%Y-%m-%d")
+            to_date   = datetime.now(IST).strftime("%Y-%m-%d")
             for attempt in range(3):
                 try:
                     resp = client.intraday_minute_data(
-                        security_id      = security_id,
-                        exchange_segment = "NSE_EQ",
-                        instrument_type  = "EQUITY",
-                        interval         = dhan_interval,
-                        from_date        = from_date,
-                        to_date          = to_date,
+                        security_id=security_id, exchange_segment="NSE_EQ",
+                        instrument_type="EQUITY", interval=dhan_iv,
+                        from_date=from_date, to_date=to_date,
                     )
                     if resp and resp.get("status") == "success":
-                        df = _dhan_to_df(resp.get("data", {}))
-                        if df is not None and not df.empty:
-                            _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
-                            return df
+                        raw = resp.get("data", {})
+                        ts   = raw.get("timestamp") or raw.get("start_Time") or []
+                        if ts:
+                            idx = (
+                                pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
+                                if isinstance(ts[0], (int, float))
+                                else pd.to_datetime(ts, utc=True).tz_convert("Asia/Kolkata")
+                            )
+                            df2 = pd.DataFrame({
+                                "open":   raw.get("open",   []),
+                                "high":   raw.get("high",   []),
+                                "low":    raw.get("low",    []),
+                                "close":  raw.get("close",  []),
+                                "volume": raw.get("volume", []),
+                            }, index=idx).dropna()
+                            if not df2.empty:
+                                _ohlcv_cache[cache_key] = {"df": df2, "ts": now_mono}
+                                return df2
                     break
                 except Exception as e:
-                    wait = 2 ** attempt
-                    logger.debug(f"Dhan OHLCV {symbol} attempt {attempt+1}: {e}")
-                    _time.sleep(wait)
+                    _time.sleep(2 ** attempt)
+                    logger.debug(f"Dhan OHLCV fallback {symbol}: {e}")
 
-    # ── Attempt 2: NSE public JSON API (no auth, EOD only for 1h+ intervals) ─
-    # Only useful as a last-resort for daily/hourly data when Dhan is down
-    if dhan_interval == "60":
-        try:
-            import requests
-            nse_url = (
-                "https://www.nseindia.com/api/historical/cm/equity"
-                f"?symbol={symbol}&series=[%22EQ%22]"
-                f"&from={(datetime.now(IST)-timedelta(days=30)).strftime('%d-%m-%Y')}"
-                f"&to={datetime.now(IST).strftime('%d-%m-%Y')}"
-            )
-            headers = {
-                "User-Agent": "Mozilla/5.0",
-                "Accept": "application/json",
-                "Referer": "https://www.nseindia.com",
-            }
-            r = requests.get(nse_url, headers=headers, timeout=10)
-            if r.status_code == 200:
-                rows = r.json().get("data", [])
-                if rows:
-                    records = []
-                    for row in rows:
-                        try:
-                            records.append({
-                                "open":   float(row.get("CH_OPENING_PRICE", 0)),
-                                "high":   float(row.get("CH_TRADE_HIGH_PRICE", 0)),
-                                "low":    float(row.get("CH_TRADE_LOW_PRICE", 0)),
-                                "close":  float(row.get("CH_CLOSING_PRICE", 0)),
-                                "volume": float(row.get("CH_TOT_TRADED_QTY", 0)),
-                                "date":   row.get("CH_TIMESTAMP", ""),
-                            })
-                        except Exception:
-                            pass
-                    if records:
-                        df = pd.DataFrame(records)
-                        df["date"] = pd.to_datetime(df["date"])
-                        df = df.set_index("date").sort_index()
-                        if df.index.tzinfo is None:
-                            df.index = df.index.tz_localize("Asia/Kolkata")
-                        _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
-                        return df
-        except Exception as e:
-            logger.debug(f"NSE public API fallback {symbol}: {e}")
-
-    logger.debug(f"{symbol}: no OHLCV data available (Dhan client not set + no fallback)")
+    logger.debug(f"{symbol}: OHLCV unavailable from both NSE and Dhan")
     return None
 
 
 def get_ohlcv_multi_tf(symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
     """
-    Fetch 5m candles from Dhan and resample to 15m and 1h.
-    One API call per symbol instead of three.
+    Fetch 5m candles (NSE charting API) then resample to 15m and 1h.
+    One network call per symbol.
     """
     df_5m = get_ohlcv(symbol, interval="5m", period="5d")
     if df_5m is None or df_5m.empty:
@@ -343,11 +430,8 @@ def get_ohlcv_multi_tf(symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
     def _resample(df: pd.DataFrame, rule: str) -> Optional[pd.DataFrame]:
         try:
             r = df.resample(rule).agg({
-                "open":   "first",
-                "high":   "max",
-                "low":    "min",
-                "close":  "last",
-                "volume": "sum",
+                "open": "first", "high": "max",
+                "low": "min",    "close": "last", "volume": "sum",
             }).dropna()
             return r if not r.empty else None
         except Exception:
@@ -365,65 +449,34 @@ def get_ohlcv_multi_tf(symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
 _vix_cache: dict = {}
 _VIX_TTL = 1800.0  # 30 min
 
-# Dhan security IDs for NSE indices
-_NIFTY_SECURITY_ID  = "13"    # Nifty 50
-_VIX_SECURITY_ID    = "20626" # India VIX
-_NSE_INDEX_SEGMENT  = "IDX_I"
-_INDEX_INSTRUMENT   = "INDEX"
-
 
 def get_india_vix() -> float:
     """
-    Fetch India VIX from Dhan index API, fallback to NSE public endpoint.
-    Cached 30 minutes. Returns 0.0 on failure (fail-open).
+    Fetch India VIX from NSE allIndices endpoint. Cached 30 min.
+    Returns 0.0 on failure (fail-open — bot continues without VIX gate).
     """
     now = _time.monotonic()
     if _vix_cache.get("ts", 0) > now - _VIX_TTL:
         return _vix_cache.get("vix", 0.0)
 
-    # Attempt 1: Dhan index candle data
-    client = _dhan_client_ref
-    if client is not None:
-        try:
-            from_date = (datetime.now(IST) - timedelta(days=3)).strftime("%Y-%m-%d")
-            to_date   = datetime.now(IST).strftime("%Y-%m-%d")
-            resp = client.intraday_minute_data(
-                security_id      = _VIX_SECURITY_ID,
-                exchange_segment = _NSE_INDEX_SEGMENT,
-                instrument_type  = _INDEX_INSTRUMENT,
-                interval         = "5",
-                from_date        = from_date,
-                to_date          = to_date,
-            )
-            if resp and resp.get("status") == "success":
-                df = _dhan_to_df(resp.get("data", {}))
-                if df is not None and not df.empty:
-                    vix = float(df["close"].iloc[-1])
-                    _vix_cache["vix"] = vix
-                    _vix_cache["ts"]  = now
-                    return vix
-        except Exception as e:
-            logger.debug(f"Dhan VIX fetch: {e}")
-
-    # Attempt 2: NSE public API
     try:
-        import requests
-        r = requests.get(
-            "https://www.nseindia.com/api/allIndices",
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
-                     "Referer": "https://www.nseindia.com"},
+        sess = _get_nse_session()
+        r = sess.get(
+            f"{_NSE_MAIN}/api/allIndices",
+            headers={**_NSE_CHART_HDR, "Referer": _NSE_MAIN},
             timeout=8,
         )
         if r.status_code == 200:
             for idx in r.json().get("data", []):
-                if "VIX" in str(idx.get("indexSymbol", "")).upper():
-                    vix = float(idx.get("last", 0))
+                name = str(idx.get("indexSymbol", "") or idx.get("index", "")).upper()
+                if "VIX" in name:
+                    vix = float(idx.get("last") or idx.get("lastPrice") or 0)
                     if vix > 0:
                         _vix_cache["vix"] = vix
                         _vix_cache["ts"]  = now
                         return vix
     except Exception as e:
-        logger.debug(f"NSE VIX fallback: {e}")
+        logger.debug(f"get_india_vix: {e}")
 
     return 0.0
 
@@ -431,51 +484,51 @@ def get_india_vix() -> float:
 # ── Nifty 50 intraday data ────────────────────────────────────────────────────
 
 def get_nifty_intraday(interval: str = "5m") -> Optional[pd.DataFrame]:
-    """Fetch Nifty50 intraday data from Dhan index API for regime detection."""
-    dhan_interval = _DHAN_INTERVAL_MAP.get(interval, "5")
-    client = _dhan_client_ref
-    if client is None:
-        logger.debug("get_nifty_intraday: no Dhan client")
-        return None
-    try:
-        from_date = (datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
-        to_date   = datetime.now(IST).strftime("%Y-%m-%d")
-        resp = client.intraday_minute_data(
-            security_id      = _NIFTY_SECURITY_ID,
-            exchange_segment = _NSE_INDEX_SEGMENT,
-            instrument_type  = _INDEX_INSTRUMENT,
-            interval         = dhan_interval,
-            from_date        = from_date,
-            to_date          = to_date,
-        )
-        if resp and resp.get("status") == "success":
-            return _dhan_to_df(resp.get("data", {}))
-    except Exception as e:
-        logger.debug(f"Nifty intraday Dhan: {e}")
+    """
+    Fetch Nifty50 intraday candles from NSE charting API (symbol=NIFTY+50, type=IDX).
+    Falls back to single-row DataFrame from allIndices if charting fails.
+    """
+    interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
 
-    # Fallback: NSE public API for Nifty last price (returns scalar, not OHLCV series)
+    # Attempt 1: NSE charting API for Nifty index
     try:
-        import requests
-        r = requests.get(
-            "https://www.nseindia.com/api/allIndices",
-            headers={"User-Agent": "Mozilla/5.0", "Accept": "application/json",
-                     "Referer": "https://www.nseindia.com"},
+        sess = _get_nse_session()
+        url  = f"{_NSE_CHART_BASE}/Charts/symbolhistoricaldata/NIFTY%2050"
+        resp = sess.get(
+            url,
+            params={"time": str(interval_min), "type": "IDX"},
+            headers={**_NSE_CHART_HDR, "Referer": f"{_NSE_CHART_BASE}/"},
+            timeout=15,
+        )
+        if resp.status_code == 200:
+            df = _parse_nse_chart_response(resp.json())
+            if df is not None and not df.empty:
+                return df
+    except Exception as e:
+        logger.debug(f"Nifty chart: {e}")
+
+    # Attempt 2: allIndices last price → single-row df for regime detection
+    try:
+        sess = _get_nse_session()
+        r = sess.get(
+            f"{_NSE_MAIN}/api/allIndices",
+            headers={**_NSE_CHART_HDR, "Referer": _NSE_MAIN},
             timeout=8,
         )
         if r.status_code == 200:
             for idx in r.json().get("data", []):
-                if idx.get("indexSymbol") == "NIFTY 50":
-                    price = float(idx.get("last", 0))
+                sym = str(idx.get("indexSymbol", "") or idx.get("index", "")).upper()
+                if sym in ("NIFTY 50", "NIFTY50"):
+                    price = float(idx.get("last") or idx.get("lastPrice") or 0)
                     if price > 0:
                         now_ist = datetime.now(IST)
-                        df = pd.DataFrame(
-                            [{"open": price, "high": price, "low": price,
-                              "close": price, "volume": 0}],
+                        return pd.DataFrame(
+                            [{"open": price, "high": price,
+                              "low": price, "close": price, "volume": 0}],
                             index=pd.DatetimeIndex([now_ist]),
                         )
-                        return df
     except Exception as e:
-        logger.debug(f"NSE Nifty fallback: {e}")
+        logger.debug(f"Nifty allIndices fallback: {e}")
 
     return None
 
