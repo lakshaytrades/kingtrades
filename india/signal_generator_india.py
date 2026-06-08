@@ -97,7 +97,12 @@ class IndiaSignalGenerator:
             if ltp <= 0:
                 return None
 
-            ind = self._recognizer.compute_indicators(df_5m)
+            # PatternRecognizer has no compute_indicators() — that phantom call
+            # raised AttributeError on EVERY symbol, was swallowed by the except
+            # below, and returned None → 0 trades, always. Use the real API:
+            # compute() adds indicator columns, get_latest_indicators() reads them.
+            df_5m = self._recognizer.indicators.compute(df_5m)
+            ind = self._recognizer.indicators.get_latest_indicators(df_5m)
             if ind is None:
                 return None
 
