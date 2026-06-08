@@ -396,10 +396,17 @@ class KingTradesIndia:
                 # Position sizing
                 qty = self._calculate_qty(signal_obj)
                 if qty <= 0:
-                    logger.info(f"{symbol}: qty=0 -- capital Rs.{config.MAX_DAILY_CAPITAL:,.0f} insufficient for this SL distance")
+                    logger.info(f"{symbol}: qty=0 -- capital Rs.{config.MAX_DAILY_CAPITAL:,.0f} insufficient")
                     _ss["rejected_qty"] += 1
                     continue
 
+                # ── MANUAL SIGNALS MODE: alert Telegram, user places in Dhan ──
+                if getattr(config, 'MANUAL_SIGNALS_ONLY', True):
+                    self._send_manual_signal_alert(signal_obj, qty)
+                    self._last_trade_ts = _time.monotonic()
+                    continue
+
+                # ── AUTO-EXECUTION (MANUAL_SIGNALS_ONLY=False in .env) ────────
                 # Guard: security_id required for LIVE orders; paper mode uses fallback
                 if not signal_obj.security_id:
                     if config.LIVE_TRADING_ENABLED:
@@ -407,97 +414,61 @@ class KingTradesIndia:
                         _ss["rejected_qty"] += 1
                         continue
                     else:
-                        # Paper mode: assign dummy ID so position can be tracked
                         signal_obj.security_id = f"PAPER-{symbol}"
-                        logger.info(f"{symbol}: no scrip ID in master — using paper ID for tracking")
 
-                # Execute entry
                 result = self._executor.place_entry_order(
-                    symbol      = symbol,
-                    direction   = signal_obj.direction,
-                    qty         = qty,
-                    price       = signal_obj.entry_price,
-                    security_id = signal_obj.security_id,
+                    symbol=symbol, direction=signal_obj.direction,
+                    qty=qty, price=signal_obj.entry_price,
+                    security_id=signal_obj.security_id,
                 )
-
                 if not result.success:
                     logger.warning(f"{symbol}: entry failed -- {result.message}")
                     continue
 
                 fill_price = result.fill_price or signal_obj.entry_price
                 fill_qty   = result.quantity or qty
-
-                # Guard: only continue if fill confirmed
                 if fill_qty <= 0 or fill_price <= 0:
-                    logger.warning(f"{symbol}: fill not confirmed -- skipping position tracking")
+                    logger.warning(f"{symbol}: fill not confirmed -- skipping")
                     continue
 
-                # Place stop-loss
                 stop_result = self._executor.place_stop_order(
-                    symbol      = symbol,
-                    direction   = signal_obj.direction,
-                    qty         = fill_qty,
-                    stop_price  = signal_obj.stop_loss,
-                    security_id = signal_obj.security_id,
+                    symbol=symbol, direction=signal_obj.direction,
+                    qty=fill_qty, stop_price=signal_obj.stop_loss,
+                    security_id=signal_obj.security_id,
                 )
-
-                # Guard: if stop order fails, close the entry to avoid unprotected position
                 if not stop_result.success:
-                    logger.error(f"{symbol}: stop order FAILED ({stop_result.message}) -- squaring off entry")
-                    _tg(f"INDIA BOT Stop order failed for {symbol} -- entry being reversed to avoid unprotected position")
+                    logger.error(f"{symbol}: stop FAILED -- reversing entry")
+                    _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
                     try:
-                        self._executor.square_off_all(
-                            self._executor.get_open_positions()
-                        )
+                        self._executor.square_off_all(self._executor.get_open_positions())
                     except Exception:
                         pass
                     continue
 
                 pos = OpenPosition(
-                    symbol        = symbol,
-                    direction     = signal_obj.direction,
-                    entry_price   = fill_price,
-                    stop_loss     = signal_obj.stop_loss,
-                    target_1      = signal_obj.target_1,
-                    target_2      = signal_obj.target_2,
-                    quantity      = int(fill_qty),
-                    security_id   = signal_obj.security_id,
-                    stop_order_id = stop_result.order_id,
-                    atr           = signal_obj.atr,
-                    is_scalp      = getattr(signal_obj, 'is_scalp', False),
-                    time_stop_min = getattr(signal_obj, 'time_stop_min', 0),
+                    symbol=symbol, direction=signal_obj.direction,
+                    entry_price=fill_price, stop_loss=signal_obj.stop_loss,
+                    target_1=signal_obj.target_1, target_2=signal_obj.target_2,
+                    quantity=int(fill_qty), security_id=signal_obj.security_id,
+                    stop_order_id=stop_result.order_id, atr=signal_obj.atr,
+                    is_scalp=getattr(signal_obj, 'is_scalp', False),
+                    time_stop_min=getattr(signal_obj, 'time_stop_min', 0),
                 )
                 self._positions[symbol] = pos
                 self._stats.trades += 1
                 self._last_trade_ts = _time.monotonic()
-
                 _tg(
-                    f"INDIA BOT Trade Entered -- {symbol}\n"
-                    f"--------------------------------\n"
-                    f"Direction: {signal_obj.direction} | Grade: {signal_obj.quality_grade}\n"
+                    f"INDIA BOT Auto-Executed -- {symbol}\n"
                     f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
-                    f"Stop:  Rs.{signal_obj.stop_loss:.2f}  Target: Rs.{signal_obj.target_1:.2f}\n"
-                    f"R:R: {abs(signal_obj.target_1-fill_price)/max(abs(fill_price-signal_obj.stop_loss),0.01):.1f}:1 | "
-                    f"Score: {signal_obj.signal_score:.0f}/100\n"
-                    f"Sector: {get_sector(symbol)} | NSE/Dhan | IST"
+                    f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
+                    f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
                 )
-
-                # Log trade explanation to decisions file
                 try:
                     from daily_intelligence_india import explain_trade as _explain
                     signal_obj.quantity = int(fill_qty)
-                    _why = _explain(signal_obj)
-                    _tg(_why)
+                    _tg(_explain(signal_obj))
                 except Exception:
                     pass
-
-                # Neural predictor feedback (fail-open)
-                try:
-                    from neural_predictor import record_outcome as _nr_record
-                    # Will be called at close
-                except Exception:
-                    pass
-
                 self._write_state_file()
 
             except Exception as e:
@@ -529,6 +500,124 @@ class KingTradesIndia:
                 f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
                 f"Pos: {len(self._positions)}/{config.MAX_POSITIONS}"
             )
+
+    # -- Manual signal alert --------------------------------------------------
+
+    def _send_manual_signal_alert(self, sig, qty: int) -> None:
+        """
+        Send a rich Telegram alert with everything needed to place the order
+        manually in Dhan app. Called instead of auto-execution when
+        MANUAL_SIGNALS_ONLY=True.
+        """
+        # Dedup: don't alert the same symbol twice within 10 minutes
+        if not hasattr(self, "_alerted_symbols"):
+            self._alerted_symbols: dict = {}
+        last_alert = self._alerted_symbols.get(sig.symbol, 0)
+        if _time.monotonic() - last_alert < 600:
+            logger.info(f"{sig.symbol}: signal alert suppressed (sent <10 min ago)")
+            return
+        self._alerted_symbols[sig.symbol] = _time.monotonic()
+
+        symbol    = sig.symbol
+        direction = sig.direction
+        entry     = sig.entry_price
+        sl        = sig.stop_loss
+        t1        = sig.target_1
+        t2        = sig.target_2
+        score     = sig.signal_score
+        grade     = sig.quality_grade
+        atr       = sig.atr
+        rationale = getattr(sig, "rationale", "")
+        patterns  = getattr(sig, "patterns", [])
+        is_scalp  = getattr(sig, "is_scalp", False)
+
+        arrow = "↑ BUY" if direction == "LONG" else "↓ SELL"
+        sl_pct = abs(entry - sl) / entry * 100
+        t1_pct = abs(t1 - entry) / entry * 100
+        t2_pct = abs(t2 - entry) / entry * 100
+        sl_dist = abs(entry - sl)
+        rr = abs(t1 - entry) / sl_dist if sl_dist > 0 else 0
+        invested = qty * entry
+        risk_inr = qty * sl_dist
+        sector = get_sector(symbol)
+        now_ist = datetime.now(IST)
+        time_str = now_ist.strftime("%H:%M IST")
+
+        # Grade emoji
+        grade_icon = {"A+": "🏆", "A": "✅", "B+": "🟡", "B": "🟠", "C": "⚠️"}.get(grade, "")
+        trade_type = "⚡ SCALP" if is_scalp else "📊 INTRADAY"
+        urgency    = "Act within 5 min" if is_scalp else "Act within 10 min"
+
+        # Setup reasons from rationale
+        reasons = []
+        if patterns:
+            reasons.append(", ".join(str(p) for p in patterns[:3]))
+        if rationale:
+            parts_r = rationale.split("|")
+            for pr in parts_r:
+                pr = pr.strip()
+                if pr and not pr.startswith("Score") and not pr.startswith("Grade") and "RR" not in pr:
+                    reasons.append(pr)
+        setup_str = " + ".join(reasons[:2]) if reasons else rationale[:60]
+
+        # FII/VIX context
+        fii_str = ""
+        try:
+            from fii_dii_india import get_fii_dii_bias as _fii
+            bias, _, reason = _fii()
+            fii_str = f"FII: {bias}"
+        except Exception:
+            pass
+
+        vix_str = ""
+        try:
+            from data_fetch_dhan import get_india_vix as _vix
+            vix = _vix()
+            if vix > 0:
+                vix_tag = "🔴HIGH" if vix >= 22 else ("🟡" if vix >= 17 else "🟢")
+                vix_str = f"VIX: {vix:.1f} {vix_tag}"
+        except Exception:
+            pass
+
+        context_parts = [p for p in [vix_str, fii_str, f"Sector: {sector}"] if p]
+        context_str = "  |  ".join(context_parts)
+
+        # Dhan order instruction
+        if direction == "LONG":
+            dhan_action = "BUY"
+            dhan_order = f"BUY {symbol} | MIS | Market | {qty} qty"
+            sl_note = f"After filling: place SL order SELL {symbol} SL-M trigger Rs.{sl:.2f}"
+        else:
+            dhan_action = "SELL"
+            dhan_order = f"SELL {symbol} | MIS | Market | {qty} qty"
+            sl_note = f"After filling: place SL order BUY {symbol} SL-M trigger Rs.{sl:.2f}"
+
+        sep = "━" * 28
+        msg = (
+            f"{trade_type}  {grade_icon} Grade {grade}  |  Score {score:.0f}/100\n"
+            f"{sep}\n"
+            f"{arrow}  NSE:{symbol}\n"
+            f"{sep}\n"
+            f"Entry:  Rs.{entry:,.2f}  (market)\n"
+            f"Stop:   Rs.{sl:,.2f}  ({sl_pct:.1f}% away) ← SET THIS IN DHAN\n"
+            f"T1:     Rs.{t1:,.2f}  (+{t1_pct:.1f}%) ← exit 50%\n"
+            f"T2:     Rs.{t2:,.2f}  (+{t2_pct:.1f}%) ← trail rest\n"
+            f"R:R     {rr:.1f} : 1\n"
+            f"{sep}\n"
+            f"Setup:  {setup_str}\n"
+            f"{context_str}\n"
+            f"Time:   {time_str}  |  {urgency}\n"
+            f"{sep}\n"
+            f"Qty:    {qty} shares  ≈  Rs.{invested:,.0f} invested\n"
+            f"Risk:   Rs.{risk_inr:,.0f}  ({risk_inr/max(config.MAX_DAILY_CAPITAL,1)*100:.2f}% of capital)\n"
+            f"{sep}\n"
+            f"📈 tradingview.com/chart/?symbol=NSE:{symbol}\n"
+            f"🏦 Dhan: {dhan_order}\n"
+            f"🛡 {sl_note}"
+        )
+
+        _tg(msg)
+        logger.info(f"[MANUAL ALERT] {direction} {symbol} score={score:.0f} qty={qty} sent to Telegram")
 
     # -- Position management --------------------------------------------------
 

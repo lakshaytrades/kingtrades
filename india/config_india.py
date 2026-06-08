@@ -45,6 +45,11 @@ ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "3.0"))
 # -- Live trading gate --------------------------------------------------------
 LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
 
+# -- Manual signals mode: bot sends alerts, YOU place orders in Dhan app -----
+# True  = bot detects setups and messages you → you trade manually in Dhan
+# False = bot auto-executes in Dhan (requires LIVE_TRADING_ENABLED=True)
+MANUAL_SIGNALS_ONLY = os.getenv("INDIA_MANUAL_SIGNALS_ONLY", "True") != "False"
+
 # -- Feature flags (all on by default) ----------------------------------------
 def _flag(key: str) -> bool:
     return os.getenv(key, "True") != "False"
