@@ -150,6 +150,10 @@ class KingTradesIndia:
                 return False
             logger.warning("Dhan not connected -- running in paper mode")
 
+        # Register client with data module so OHLCV/VIX/Nifty use Dhan API
+        import data_fetch_dhan as _dfd
+        _dfd.set_dhan_client(self._dhan)
+
         self._executor = get_executor(self._dhan, config.LIVE_TRADING_ENABLED)
 
         # Watchlist
