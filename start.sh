@@ -3,6 +3,14 @@
 # start.sh — KingTrades US Bot Launcher (autonomous-safe)
 # Pass --cron to skip interactive prompts (for crontab use).
 # ============================================================
+# NOTE: US bot DISABLED by owner directive (full focus on India bot). It will
+# not start unless US_BOT_ENABLED=True. Run India:  bash india/start_india.sh
+if [ "${US_BOT_ENABLED}" != "True" ]; then
+    echo "US bot is DISABLED — focus is on the India bot."
+    echo "Start the India bot:  bash india/start_india.sh"
+    echo "(Re-enable US: export US_BOT_ENABLED=True && bash start.sh)"
+    exit 0
+fi
 
 BOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 SESSION="kingtrades"

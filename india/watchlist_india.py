@@ -19,6 +19,20 @@ _LIQUID_CORE: List[str] = [
     "KOTAKBANK", "TATAMOTORS",
 ]
 
+# Wider liquid universe (~28) — Nifty50 heavyweights + the most liquid Next-50.
+# More instruments = more KingEdge setups per week (statistical scale), still
+# liquid enough to keep slippage low. Trade-off: more candidates to monitor.
+_LIQUID_WIDE: List[str] = _LIQUID_CORE + [
+    "HINDUNILVR", "BAJFINANCE", "MARUTI", "HCLTECH", "SUNPHARMA",
+    "TITAN", "ASIANPAINT", "NTPC", "POWERGRID", "TATASTEEL",
+    "JSWSTEEL", "ADANIENT", "ADANIPORTS", "BAJAJFINSV", "WIPRO",
+    "M&M",
+]
+
+# Universe selector: "core" (12), "wide" (~28), "full" (80). Default "wide" for
+# more statistical sampling while staying liquid. Override with INDIA_UNIVERSE.
+_UNIVERSE = os.getenv("INDIA_UNIVERSE", "wide").lower().strip()
+
 # Liquid-only mode ON by default (per nse_research.py — accuracy was highest and
 # cost drag lowest on the most liquid names). Set INDIA_LIQUID_ONLY=False to use
 # the full 80-symbol universe.
@@ -143,11 +157,17 @@ def get_active_watchlist(dhan_client=None) -> List[str]:
     Return watchlist filtered by minimum liquidity, ordered by priority tier.
     Falls back to full priority list if data unavailable (fail-open).
     """
-    # Liquid-only mode: trade ONLY the ultra-liquid core (best accuracy, least
-    # slippage — see nse_research.py). This is the default profitable-defense.
+    # Liquid-only mode: trade liquid names only (best accuracy, least slippage
+    # — see nse_research.py). Universe size selectable via INDIA_UNIVERSE.
     if LIQUID_ONLY_MODE:
-        logger.info(f"Watchlist: LIQUID-ONLY mode — {len(_LIQUID_CORE)} ultra-liquid names")
-        return list(_LIQUID_CORE)
+        if _UNIVERSE == "core":
+            uni = list(_LIQUID_CORE)
+        elif _UNIVERSE == "full":
+            uni = get_priority_watchlist()
+        else:   # "wide" (default)
+            uni = list(_LIQUID_WIDE)
+        logger.info(f"Watchlist: LIQUID mode '{_UNIVERSE}' — {len(uni)} names")
+        return uni
 
     ordered = get_priority_watchlist()
 

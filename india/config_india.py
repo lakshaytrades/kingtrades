@@ -28,6 +28,17 @@ MAX_POSITIONS           = int(os.getenv(  "INDIA_MAX_POSITIONS",       "5"))
 DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "")
 DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
 
+# -- Optional PAID real-time data feed (replaces delayed Yahoo) ---------------
+# Plug in any REST intraday provider you subscribe to (e.g. broker API, a paid
+# market-data vendor). When set, it's tried FIRST for OHLCV/LTP before falling
+# back to Dhan -> Yahoo. Credentials from env only — never hardcoded.
+#   INDIA_REALTIME_URL : base URL with {symbol} and {interval} placeholders
+#   INDIA_REALTIME_KEY : API key/token, sent as Bearer header
+# Leave blank to stay on the free Yahoo feed.
+REALTIME_DATA_URL = os.getenv("INDIA_REALTIME_URL", "")
+REALTIME_DATA_KEY = os.getenv("INDIA_REALTIME_KEY", "")
+REALTIME_ENABLED  = bool(REALTIME_DATA_URL)
+
 # -- Telegram (shared with US bot if using same channel) ----------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
@@ -80,7 +91,11 @@ PRODUCT_TYPE    = "INTRADAY"   # MIS equivalent on Dhan
 NSE_SUFFIX = "-EQ"             # Dhan security ID suffix for NSE equity
 
 # -- Scan interval ------------------------------------------------------------
-SCAN_INTERVAL_SECONDS = 300   # scan watchlist every 5 minutes
+# Faster intraday polling: base 120s (was 300s), and 30s during high-volume
+# power windows (open + close). Parallel scanning makes this cheap. Reacts to
+# breakouts ~2.5x sooner. Override base with INDIA_SCAN_INTERVAL.
+SCAN_INTERVAL_SECONDS = int(os.getenv("INDIA_SCAN_INTERVAL", "120"))
+FAST_SCAN_SECONDS     = int(os.getenv("INDIA_FAST_SCAN", "30"))   # power-window cadence
 
 # -- Tier 1 feature flags (India-specific free data) --------------------------
 OPTION_CHAIN_ENABLED    = _flag("INDIA_OPTION_CHAIN_ENABLED")    # NSE option chain PCR/OI

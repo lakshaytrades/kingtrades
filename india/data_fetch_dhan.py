@@ -270,7 +270,11 @@ _NSE_INTERVAL_MAP = {
 }
 
 _ohlcv_cache: Dict[str, dict] = {}
-_OHLCV_CACHE_TTL = 290.0   # cache just under scan interval (5 min)
+import os as _os
+# Shorter TTL so faster intraday polling (30s power-window scans) gets fresh
+# candles instead of stale cache. 45s default keeps data ~6x fresher than the
+# old 290s while staying gentle on the data source. Override per provider.
+_OHLCV_CACHE_TTL = float(_os.getenv("INDIA_OHLCV_CACHE_TTL", "45"))
 
 
 def _get_nse_session():
@@ -540,9 +544,57 @@ def _fetch_yahoo_ohlcv(symbol: str, interval_min: int) -> Optional[pd.DataFrame]
     return _fetch_yahoo_chart(f"{symbol}.NS", interval_min, rng="5d")
 
 
+def _fetch_realtime_provider(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
+    """
+    Optional PAID real-time data feed. Enabled when INDIA_REALTIME_URL is set.
+    Expects a JSON REST endpoint returning candles. Tries common shapes:
+      {"candles": [[epoch, o, h, l, c, v], ...]}  or
+      {"data": [{"t":epoch,"o":..,"h":..,"l":..,"c":..,"v":..}, ...]}
+    Credentials read from config (env only). Fail-soft -> returns None so the
+    Yahoo/Dhan fallback still works if the provider errors.
+    """
+    try:
+        import config_india as _cfg
+        if not getattr(_cfg, "REALTIME_ENABLED", False):
+            return None
+        import requests as _req
+        url = _cfg.REALTIME_DATA_URL.format(symbol=symbol, interval=interval_min)
+        headers = {}
+        if _cfg.REALTIME_DATA_KEY:
+            headers["Authorization"] = f"Bearer {_cfg.REALTIME_DATA_KEY}"
+        r = _req.get(url, headers=headers, timeout=12)
+        if r.status_code != 200:
+            logger.debug(f"realtime provider {symbol}: HTTP {r.status_code}")
+            return None
+        j = r.json()
+        rows = []
+        if isinstance(j.get("candles"), list):
+            for c in j["candles"]:
+                if len(c) >= 6:
+                    rows.append((c[0], c[1], c[2], c[3], c[4], c[5]))
+        elif isinstance(j.get("data"), list):
+            for d in j["data"]:
+                rows.append((d.get("t"), d.get("o"), d.get("h"),
+                             d.get("l"), d.get("c"), d.get("v", 0)))
+        if not rows:
+            return None
+        idx = pd.to_datetime([x[0] for x in rows], unit="s", utc=True
+                             ).tz_convert("Asia/Kolkata")
+        df = pd.DataFrame({
+            "open":   [x[1] for x in rows], "high":   [x[2] for x in rows],
+            "low":    [x[3] for x in rows], "close":  [x[4] for x in rows],
+            "volume": [x[5] for x in rows],
+        }, index=idx).dropna()
+        return df if not df.empty else None
+    except Exception as e:
+        logger.debug(f"realtime provider {symbol}: {e}")
+        return None
+
+
 def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional[pd.DataFrame]:
     """
     Fetch OHLCV candles. Source priority:
+      0. Paid real-time provider (if INDIA_REALTIME_URL configured)
       1. Dhan intraday API   (if a Dhan client is registered)
       2. Yahoo Finance       (free, no account — SYMBOL.NS)
       3. NSE charting API    (only on non-blocked/residential IPs)
@@ -555,6 +607,12 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
         return cached["df"]
 
     interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
+
+    # 0. Paid real-time provider (highest priority when configured)
+    df = _fetch_realtime_provider(symbol, interval_min)
+    if df is not None and not df.empty:
+        _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
+        return df
 
     # 1. Dhan (only if a client is registered)
     df = _fetch_dhan_ohlcv(symbol, interval_min)

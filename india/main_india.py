@@ -277,11 +277,12 @@ class KingTradesIndia:
                     self._write_state_file()
 
                 # -- Adaptive scan interval ------------------------------------
-                # 60s during high-volume windows (open + power close).
-                # 300s otherwise -- reduces Dhan API load mid-day.
+                # Faster: 30s during high-volume windows (open + power close),
+                # 120s otherwise. Parallel scanning keeps this cheap.
                 _in_power = (time(9, 15) <= t <= time(9, 59)) or \
                             (time(14, 30) <= t <= time(15, 20))
-                _time.sleep(60 if _in_power else config.SCAN_INTERVAL_SECONDS)
+                _fast = getattr(config, "FAST_SCAN_SECONDS", 30)
+                _time.sleep(_fast if _in_power else config.SCAN_INTERVAL_SECONDS)
 
             except Exception as e:
                 logger.error(f"Main loop error: {e}", exc_info=True)

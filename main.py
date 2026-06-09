@@ -5666,6 +5666,15 @@ class _SuppressYFNoise(logging.Filter):
 
 
 def main():
+    # ── US BOT DISABLED — full focus on the India bot ─────────────────────────
+    # Owner directive: stop the US bot, run India only. This guard makes the US
+    # bot refuse to start unless explicitly re-enabled with US_BOT_ENABLED=True.
+    if os.getenv("US_BOT_ENABLED", "False") != "True":
+        print("[KingTrades] US bot is DISABLED (focus on India bot). "
+              "Set US_BOT_ENABLED=True to re-enable. "
+              "Run the India bot: bash india/start_india.sh", flush=True)
+        sys.exit(0)
+
     # ── Single-instance guard — prevents duplicate processes owning the Telegram bot ──
     import fcntl
     _pid_path = Path(config.LOG_DIR) / "kingtrades.pid"
