@@ -1600,6 +1600,12 @@ class KingTradesIndia:
                 for upd in r.json().get("result", []):
                     last_id = upd["update_id"]
                     raw_txt = upd.get("message", {}).get("text", "").strip()
+                    # Group support: Telegram appends @botname to commands sent
+                    # in groups (e.g. "/today@MyBot"). Strip it so they match.
+                    if raw_txt.startswith("/") and "@" in raw_txt.split(" ", 1)[0]:
+                        _p = raw_txt.split(" ")
+                        _p[0] = _p[0].split("@", 1)[0]
+                        raw_txt = " ".join(_p)
                     txt = raw_txt.lower()
 
                     # -- Existing commands ---
