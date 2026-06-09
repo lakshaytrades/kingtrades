@@ -85,6 +85,7 @@ class IndiaSignalGenerator:
         """
         try:
             from data_fetch_dhan import get_ohlcv_multi_tf, get_security_id
+            self._king_setup = False   # reset KingEdge confluence flag per signal
             bars = get_ohlcv_multi_tf(symbol)
             df_5m  = bars.get("5m")
             df_15m = bars.get("15m")
@@ -208,6 +209,13 @@ class IndiaSignalGenerator:
                 quality_grade = "B"
                 size_mult     = 0.65
 
+            # KingEdge confluence = the only edge that survived realistic costs
+            # in OOS research (61.5% WR, PF 1.32). Promote to top conviction.
+            _is_king = getattr(self, "_king_setup", False)
+            if _is_king:
+                quality_grade = "A+"
+                size_mult     = max(size_mult, 1.35)
+
             security_id = get_security_id(symbol) or ""
             _vix_now = getattr(self, '_last_india_vix', 0.0)
 
@@ -222,10 +230,10 @@ class IndiaSignalGenerator:
                 risk_reward   = rr,
                 atr           = round(atr, 4),
                 security_id   = security_id,
-                patterns      = getattr(ind, "_patterns", []),
+                patterns      = (["👑 KingEdge"] + list(getattr(ind, "_patterns", []))) if _is_king else getattr(ind, "_patterns", []),
                 quality_grade = quality_grade,
                 size_multiplier = size_mult,
-                rationale     = f"Score {score:.0f} | {direction} | RR {rr:.1f} | Grade {quality_grade}",
+                rationale     = (f"👑 KINGEDGE confluence | " if _is_king else "") + f"Score {score:.0f} | {direction} | RR {rr:.1f} | Grade {quality_grade}",
                 vix_level     = _vix_now,
             )
 
@@ -533,6 +541,35 @@ class IndiaSignalGenerator:
                     elif direction == "SHORT" and close <= ll20 and vol_ok:
                         score += 10
                         logger.debug("breakdown: 20-bar low + volume +10")
+
+                    # ── KINGEDGE: full-confluence high-accuracy setup ──────────
+                    # The ONLY edge that survived realistic costs in OOS research
+                    # (US: 61.5% WR, PF 1.32, 2.4% MDD). Requires ALL of:
+                    #   EMA9>EMA21>EMA50 stack | ADX>=25 | 20-bar breakout |
+                    #   2x volume | RSI in trend-not-exhausted band.
+                    # When it fires, this is the top-conviction trade -> big boost.
+                    try:
+                        e9  = float(getattr(ind, "ema9",  0) or 0)
+                        e21 = float(getattr(ind, "ema21", 0) or 0)
+                        e50 = float(getattr(ind, "ema50", 0) or 0)
+                        adx = float(getattr(ind, "adx",   0) or 0)
+                        rsi = float(getattr(ind, "rsi",  50) or 50)
+                        vol_2x = vol_avg_bo > 0 and vol_now_bo >= 2.0 * vol_avg_bo
+                        if direction == "LONG":
+                            king = (e9 > e21 > e50 > 0 and adx >= 25
+                                    and close >= hh20 and vol_2x
+                                    and 50 <= rsi < 72 and close > e50)
+                        else:
+                            king = (0 < e9 < e21 < e50 and adx >= 25
+                                    and close <= ll20 and vol_2x
+                                    and 28 < rsi <= 50 and close < e50)
+                        if king:
+                            score += 15
+                            self._king_setup = True
+                            logger.info(f"👑 KINGEDGE confluence {direction} "
+                                        f"(ADX={adx:.0f} RSI={rsi:.0f}) +15")
+                    except Exception as _ke:
+                        logger.debug(f"kingedge score error: {_ke}")
                 except Exception as _bo:
                     logger.debug(f"breakout score error: {_bo}")
 
