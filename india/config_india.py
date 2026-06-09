@@ -32,13 +32,15 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID",   "")
 
-# -- Signal thresholds (optimised for NSE 2:1 R:R, target WR 57-61%) ---------
-# Break-even WR at 2:1 R:R = 33.3%. Optimal EV at ~58% WR.
-# 67 post-HAF threshold captures more HAF-validated signals vs 70 (+~15% trades)
-# 63 pre-filter is tighter than old 60 -- reduces noise entering the 26-gate pipeline
-# 82 Grand Slam unchanged -- highest conviction -> 1.35x Kelly-weighted size
-MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "66.0"))
-FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "72.0"))
+# -- Signal thresholds --------------------------------------------------------
+# RESEARCH FINDING (nse_research.py): after realistic 0.21% round-trip costs,
+# FREQUENT trading LOSES on NSE — 997 trades = -15%/yr (MDD 68%), 103 trades =
+# -2.4%/yr. The per-trade edge is smaller than the cost drag, so the only
+# defense is to trade RARELY and take only top-conviction (KingEdge-tier)
+# setups. Gate raised 72 -> 78 so only A / A+ signals execute. Fewer, better
+# trades = less cost bleed and the best chance the real intraday edge shows.
+MIN_SIGNAL_SCORE      = float(os.getenv("INDIA_MIN_SIGNAL_SCORE",     "70.0"))
+FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "78.0"))
 GRAND_SLAM_MIN_SCORE  = float(os.getenv("INDIA_GRAND_SLAM_MIN_SCORE", "82.0"))
 
 # -- ATR-based SL / TP --------------------------------------------------------
