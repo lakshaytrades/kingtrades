@@ -59,6 +59,45 @@ def score_quality(r):
     if r["pf"] <= 1.10 or r["cagr"] <= 0: return -999
     return r["sharpe"]
 
+
+def quick_research(symbols=None, capital=500000.0) -> str:
+    """
+    Compact research callable from Telegram (/research). Uses a smaller liquid
+    universe so it finishes in ~60-90s. Returns a formatted verdict string.
+    """
+    uni = symbols or NSE[:14]   # top liquid names for speed
+    rows = []
+    for name, fn in STRATS.items():
+        best = None
+        for pname, P in PROFILES.items():
+            r = run_c(uni, fn, P)
+            if not r or r.get("n", 0) == 0:
+                continue
+            if best is None or score_quality(r) > score_quality(best[1]):
+                best = (pname, r)
+        if best:
+            rows.append((name, best[0], best[1], score_quality(best[1])))
+
+    sep = "━" * 28
+    out = [f"🔬 NSE RESEARCH (live test)",
+           f"{len(uni)} stocks | OOS 2020-26 | cost {COST*100:.2f}%/RT", sep]
+    survivors = [x for x in rows if x[3] > -999]
+    for name, pname, r, q in sorted(rows, key=lambda x: x[3], reverse=True):
+        icon = "🟢" if q > -999 else "🔴"
+        out.append(f"{icon} {name}: WR {r['wr']:.0f}% PF {r['pf']:.2f} "
+                   f"CAGR {r['cagr']:+.1f}%")
+    out.append(sep)
+    if not survivors:
+        out.append("VERDICT: No daily edge beats costs on NSE.")
+        out.append("Trade only live KingEdge setups + watch /proof.")
+    else:
+        name, pname, r, q = survivors[0]
+        monthly = ((1 + r["cagr"]/100)**(1/12) - 1) * 100
+        out.append(f"BEST: {name} → {monthly:+.2f}%/mo")
+        out.append(f"On Rs.{capital:,.0f}: Rs.{capital*monthly/100:+,.0f}/mo")
+    return "\n".join(out)
+
+
 if __name__ == "__main__":
     print(f"NSE DEEP RESEARCH — {len(NSE)} stocks, OOS 2020-2026, cost {COST*100:.2f}%/RT\n")
     results = []

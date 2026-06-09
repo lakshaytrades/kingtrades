@@ -1661,6 +1661,18 @@ class KingTradesIndia:
                         except Exception as _fe:
                             _tg(f"Forward-test report error: {_fe}")
 
+                    elif txt == "/research":
+                        _tg("🔬 Running NSE strategy research on real 15y data… "
+                            "(~60-90s, you'll get the verdict here)")
+                        def _do_research():
+                            try:
+                                from nse_research import quick_research
+                                _tg(quick_research(capital=config.MAX_DAILY_CAPITAL))
+                            except Exception as _re:
+                                _tg(f"Research error: {_re}")
+                        import threading as _th
+                        _th.Thread(target=_do_research, daemon=True).start()
+
                     # -- Manual order commands ---
                     elif txt.startswith("/buy ") or txt.startswith("/b "):
                         parts = raw_txt.split()[1:]
@@ -1720,7 +1732,8 @@ class KingTradesIndia:
                             "/weekly  — this week's P&L + win rate\n"
                             "/monthly — this month's P&L + win rate\n"
                             "/monthly 2026-05 — specific month report\n"
-                            "/proof   — 90-day forward-test GO/NO-GO report\n\n"
+                            "/proof   — 90-day forward-test GO/NO-GO report\n"
+                            "/research — re-run NSE backtest after real costs\n\n"
                             "⚙️ CONTROLS\n"
                             "/pause  — pause new entries\n"
                             "/resume — resume after pause\n"
