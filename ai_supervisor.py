@@ -1266,6 +1266,12 @@ class AISupervisor:
 # ── Entry point ───────────────────────────────────────────────────────────────
 
 def main() -> None:
+    # US supervisor is part of the US-bot stack, which is disabled by owner
+    # directive (full focus on the India bot — it has its own watchdog_india).
+    # Refuse to run unless explicitly re-enabled, so it can never spam Telegram.
+    if os.getenv("US_BOT_ENABLED", "False") != "True":
+        logger.info("AI Supervisor disabled (US bot off). Set US_BOT_ENABLED=True to run.")
+        return
     _init_anthropic()
     supervisor = AISupervisor()
     supervisor.run()

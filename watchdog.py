@@ -653,6 +653,13 @@ def _handle_signal(signum, frame):
 
 
 def main():
+    # US watchdog monitors the US main.py, which is disabled by owner directive.
+    # Refuse to run unless explicitly re-enabled (the India bot uses its own
+    # watchdog_india). This stops the "Bot restart failed" spam for good.
+    if os.getenv("US_BOT_ENABLED", "False") != "True":
+        logger.info("US watchdog disabled (US bot off). Set US_BOT_ENABLED=True to run.")
+        return
+
     signal.signal(signal.SIGTERM, _handle_signal)
     signal.signal(signal.SIGINT,  _handle_signal)
 
