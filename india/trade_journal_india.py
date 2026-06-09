@@ -142,6 +142,24 @@ def get_all_time_summary() -> dict:
     return _query_summary("1=1", ())
 
 
+def get_first_trade_date() -> Optional[date]:
+    with _conn() as con:
+        row = con.execute("SELECT MIN(trade_date) AS d FROM trades").fetchone()
+    if not row or not row["d"]:
+        return None
+    try:
+        return date.fromisoformat(row["d"])
+    except Exception:
+        return None
+
+
+def get_trading_days_count() -> int:
+    """Number of distinct days on which at least one trade closed."""
+    with _conn() as con:
+        row = con.execute("SELECT COUNT(DISTINCT trade_date) AS n FROM trades").fetchone()
+    return int(row["n"]) if row and row["n"] else 0
+
+
 # --------------------------------------------------------------------------
 # Telegram-formatted message builders
 # --------------------------------------------------------------------------
@@ -234,6 +252,138 @@ def format_weekly_report() -> str:
         f"Avg Loss:  Rs.{s['avg_loss']:,.2f}",
         sep,
     ])
+
+
+# --------------------------------------------------------------------------
+# 90-day forward-test: the GO / NO-GO proof report
+# --------------------------------------------------------------------------
+
+# Honest pass thresholds for a real, fundable edge (intraday momentum).
+# These are deliberately strict — they're what separates a real edge from noise.
+_FT_MIN_TRADES   = 30     # need a meaningful sample before judging
+_FT_PASS_WR      = 0.50   # win rate >= 50%
+_FT_PASS_PF      = 1.30   # profit factor >= 1.30 (covers costs + real edge)
+_FT_PASS_EXP_PCT = 0.0    # net positive after costs
+_FT_TARGET_DAYS  = 90
+
+
+def _verdict(s: dict, days_elapsed: int) -> tuple:
+    """Return (icon, headline, detail) GO/NO-GO verdict from live stats."""
+    n  = s.get("trades", 0)
+    wr = s.get("win_rate", 0.0)
+    pf = s.get("profit_factor", 0.0)
+    pnl = s.get("total_pnl", 0.0)
+
+    if n < _FT_MIN_TRADES:
+        return ("⏳", "COLLECTING DATA",
+                f"Need {_FT_MIN_TRADES} trades to judge (have {n}). Keep running.")
+    if wr >= _FT_PASS_WR and pf >= _FT_PASS_PF and pnl > 0:
+        return ("🟢", "EDGE LOOKS REAL — trending toward GO",
+                "Win rate, profit factor and net P&L all pass. "
+                "Finish the 90 days, then consider scaling slowly.")
+    if pf >= 1.10 and pnl > 0:
+        return ("🟡", "THIN EDGE — keep testing",
+                "Marginally positive. Not yet fundable. Needs PF >= 1.30.")
+    return ("🔴", "NO EDGE YET — do NOT add capital",
+            "Net negative or PF < 1.10. The strategy has not proven itself. "
+            "Do not scale up.")
+
+
+def format_forward_test_report() -> str:
+    """
+    The 90-day proof report. Shows where the bot stands on its journey to
+    proving (or disproving) a real, fundable edge — with 30/60/90 milestones.
+    """
+    first = get_first_trade_date()
+    s     = get_all_time_summary()
+    sep   = "━" * 28
+
+    if not first or not s:
+        return "\n".join([
+            "🔬 90-DAY FORWARD TEST — Day 0",
+            sep,
+            "No trades recorded yet.",
+            "The proof clock starts on your first closed trade.",
+            "",
+            "PLAN: run tiny capital @ 1% risk for 90 days.",
+            "Let REAL results — not promises — decide if the edge is real.",
+        ])
+
+    today = date.today()
+    days_elapsed = (today - first).days + 1
+    trading_days = get_trading_days_count()
+    days_left    = max(0, _FT_TARGET_DAYS - days_elapsed)
+    pct_done     = min(100, int(days_elapsed / _FT_TARGET_DAYS * 100))
+    bar_w        = 20
+    filled       = min(bar_w, int(pct_done / 100 * bar_w))
+    progress     = "█" * filled + "░" * (bar_w - filled)
+
+    wr  = s["win_rate"]
+    pf  = s["profit_factor"]
+    pnl = s["total_pnl"]
+    pf_str = f"{pf:.2f}" if pf != float("inf") else "∞"
+
+    icon, headline, detail = _verdict(s, days_elapsed)
+
+    # checkmarks against each pass criterion
+    c_trades = "✅" if s["trades"] >= _FT_MIN_TRADES else "⏳"
+    c_wr     = "✅" if wr >= _FT_PASS_WR else "❌"
+    c_pf     = "✅" if pf >= _FT_PASS_PF else "❌"
+    c_pnl    = "✅" if pnl > 0 else "❌"
+
+    # milestones
+    def _milestone(day_n):
+        if days_elapsed >= day_n:
+            return "✅ reached"
+        return f"in {day_n - days_elapsed}d"
+
+    lines = [
+        f"🔬 90-DAY FORWARD TEST — Day {days_elapsed}/{_FT_TARGET_DAYS}",
+        sep,
+        f"Progress [{progress}] {pct_done}%",
+        f"Started: {first.strftime('%d %b %Y')}  |  {days_left} days left",
+        f"Trading days: {trading_days}  |  Trades: {s['trades']}",
+        sep,
+        f"{icon} <b>{headline}</b>",
+        f"   {detail}",
+        sep,
+        "PASS CRITERIA (all must be ✅ to fund):",
+        f"  {c_trades} Sample ≥ {_FT_MIN_TRADES} trades   ({s['trades']})",
+        f"  {c_wr} Win rate ≥ {_FT_PASS_WR:.0%}      ({wr:.0%})",
+        f"  {c_pf} Profit factor ≥ {_FT_PASS_PF:.2f}  ({pf_str})",
+        f"  {c_pnl} Net P&L positive    (Rs.{pnl:+,.0f})",
+        sep,
+        "MILESTONES:",
+        f"  Day 30 (first read):  {_milestone(30)}",
+        f"  Day 60 (confirm):     {_milestone(60)}",
+        f"  Day 90 (verdict):     {_milestone(90)}",
+        sep,
+        f"Avg win: Rs.{s['avg_win']:,.0f} | Avg loss: Rs.{s['avg_loss']:,.0f}",
+        f"Best: Rs.{s['best_trade']:+,.0f} | Worst: Rs.{s['worst_trade']:+,.0f}",
+    ]
+
+    if days_elapsed >= _FT_TARGET_DAYS:
+        lines.append(sep)
+        if icon == "🟢":
+            lines.append("🎉 90 DAYS DONE — edge held. Scale SLOWLY (2x max).")
+        else:
+            lines.append("📋 90 DAYS DONE — edge did not pass. Do NOT fund. "
+                         "Review settings or stop.")
+
+    return "\n".join(lines)
+
+
+def maybe_send_weekly_forward_test(tg_fn) -> None:
+    """
+    Call at startup. On Mondays, auto-send the forward-test proof report so
+    Lakshay gets a weekly GO/NO-GO read without asking.
+    """
+    try:
+        if date.today().weekday() != 0:   # Monday only
+            return
+        tg_fn(f"📬 Weekly Forward-Test Proof\n{format_forward_test_report()}")
+    except Exception as e:
+        logger.debug(f"maybe_send_weekly_forward_test: {e}")
 
 
 def maybe_send_monthly_summary(tg_fn) -> None:

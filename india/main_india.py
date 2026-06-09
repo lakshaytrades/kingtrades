@@ -223,6 +223,12 @@ class KingTradesIndia:
             maybe_send_monthly_summary(_tg)
         except Exception:
             pass
+        # On Mondays, auto-send the 90-day forward-test GO/NO-GO proof report
+        try:
+            from trade_journal_india import maybe_send_weekly_forward_test
+            maybe_send_weekly_forward_test(_tg)
+        except Exception:
+            pass
         return True
 
     # -- Main loop -------------------------------------------------------------
@@ -1557,6 +1563,13 @@ class KingTradesIndia:
                         except Exception as _we:
                             _tg(f"Weekly report error: {_we}")
 
+                    elif txt in ("/proof", "/forwardtest", "/ft"):
+                        try:
+                            from trade_journal_india import format_forward_test_report
+                            _tg(format_forward_test_report(), parse_mode="HTML")
+                        except Exception as _fe:
+                            _tg(f"Forward-test report error: {_fe}")
+
                     # -- Manual order commands ---
                     elif txt.startswith("/buy ") or txt.startswith("/b "):
                         parts = raw_txt.split()[1:]
@@ -1615,7 +1628,8 @@ class KingTradesIndia:
                             "/today   — scan for today's A-grade setups\n"
                             "/weekly  — this week's P&L + win rate\n"
                             "/monthly — this month's P&L + win rate\n"
-                            "/monthly 2026-05 — specific month report\n\n"
+                            "/monthly 2026-05 — specific month report\n"
+                            "/proof   — 90-day forward-test GO/NO-GO report\n\n"
                             "⚙️ CONTROLS\n"
                             "/pause  — pause new entries\n"
                             "/resume — resume after pause\n"
