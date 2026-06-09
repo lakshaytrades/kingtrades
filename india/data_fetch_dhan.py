@@ -200,42 +200,53 @@ def get_ltp(symbol: str, dhan_client) -> Optional[float]:
 
 
 def get_multiple_ltp(symbols: List[str], dhan_client) -> Dict[str, float]:
-    """Batch LTP fetch for up to 25 symbols. Returns {symbol: ltp}."""
+    """
+    Batch LTP fetch for symbols. Returns {symbol: ltp}.
+    Source priority: Dhan (if connected) -> Yahoo last close (cached OHLCV).
+    This makes the bot fully functional WITHOUT Dhan / without IP whitelisting.
+    """
     result: Dict[str, float] = {}
-    if dhan_client is None:
-        return result
 
-    # Map symbols to security_ids
-    id_to_sym: Dict[str, str] = {}
-    sids: List[int] = []
-    for sym in symbols:
-        sid = get_security_id(sym)
-        if sid:
-            id_to_sym[sid] = sym
-            sids.append(int(sid))
+    # 1. Dhan (only if a client is connected)
+    if dhan_client is not None:
+        id_to_sym: Dict[str, str] = {}
+        sids: List[int] = []
+        for sym in symbols:
+            sid = get_security_id(sym)
+            if sid:
+                id_to_sym[sid] = sym
+                sids.append(int(sid))
+        for i in range(0, len(sids), 25):   # Dhan batch is max 25
+            batch = sids[i:i+25]
+            for attempt in range(4):
+                try:
+                    resp = dhan_client.ohlc_data(securities={"NSE_EQ": batch})
+                    if resp and resp.get("status") == "success":
+                        data = resp.get("data", {}).get("NSE_EQ", {})
+                        for sid_str, entry in data.items():
+                            sym = id_to_sym.get(sid_str)
+                            if sym:
+                                ltp = float(entry.get("last_price", 0) or entry.get("ltp", 0))
+                                if ltp > 0:
+                                    result[sym] = ltp
+                    break
+                except Exception as e:
+                    logger.debug(f"Batch LTP attempt {attempt+1} failed: {e}")
+                    _time.sleep(2 ** attempt)
 
-    if not sids:
-        return result
-
-    # Dhan batch is max 25 at a time
-    for i in range(0, len(sids), 25):
-        batch = sids[i:i+25]
-        for attempt in range(4):
-            try:
-                resp = dhan_client.ohlc_data(securities={"NSE_EQ": batch})
-                if resp and resp.get("status") == "success":
-                    data = resp.get("data", {}).get("NSE_EQ", {})
-                    for sid_str, entry in data.items():
-                        sym = id_to_sym.get(sid_str)
-                        if sym:
-                            ltp = float(entry.get("last_price", 0) or entry.get("ltp", 0))
-                            if ltp > 0:
-                                result[sym] = ltp
-                break
-            except Exception as e:
-                wait = 2 ** attempt
-                logger.debug(f"Batch LTP attempt {attempt+1} failed: {e}")
-                _time.sleep(wait)
+    # 2. Yahoo fallback for any symbol Dhan didn't price (or Dhan absent).
+    #    Uses the last close of the cached 5m OHLCV — no extra network calls
+    #    during a scan (the scan already warmed that cache). Works with no broker.
+    missing = [s for s in symbols if s not in result or result.get(s, 0) <= 0]
+    for sym in missing:
+        try:
+            df = get_ohlcv(sym, interval="5m", period="5d")
+            if df is not None and not df.empty:
+                px = float(df["close"].iloc[-1])
+                if px > 0:
+                    result[sym] = px
+        except Exception as e:
+            logger.debug(f"Yahoo LTP fallback {sym}: {e}")
     return result
 
 
