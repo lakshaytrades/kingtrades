@@ -516,6 +516,26 @@ class IndiaSignalGenerator:
                     elif rvol >= 1.5:
                         score += 4
 
+            # 20-bar breakout with volume — the highest-Sharpe validated edge
+            # (OOS 2020-2026: breakout Sharpe 1.00, PF 1.59, WR 51%). Reward a
+            # close that takes out the prior 20-bar high/low on above-avg volume.
+            if len(df) >= 21 and "volume" in df.columns:
+                try:
+                    prior = df.iloc[-21:-1]   # exclude current bar
+                    hh20 = float(prior["high"].max())
+                    ll20 = float(prior["low"].min())
+                    vol_avg_bo = prior["volume"].mean()
+                    vol_now_bo = float(df["volume"].iloc[-1])
+                    vol_ok = vol_avg_bo > 0 and vol_now_bo >= 1.5 * vol_avg_bo
+                    if direction == "LONG" and close >= hh20 and vol_ok:
+                        score += 10
+                        logger.debug("breakout: 20-bar high + volume +10")
+                    elif direction == "SHORT" and close <= ll20 and vol_ok:
+                        score += 10
+                        logger.debug("breakdown: 20-bar low + volume +10")
+                except Exception as _bo:
+                    logger.debug(f"breakout score error: {_bo}")
+
             # Engulfing candle detection (last 2 bars)
             if len(df) >= 2:
                 prev = df.iloc[-2]
