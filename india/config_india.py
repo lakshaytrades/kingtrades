@@ -34,6 +34,10 @@ DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
 # OHLCV/LTP, falls back to Yahoo automatically if it fails.
 UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "")
 UPSTOX_ENABLED      = bool(UPSTOX_ACCESS_TOKEN)
+# For the daily-token login helper (auth_upstox.py):
+UPSTOX_API_KEY      = os.getenv("UPSTOX_API_KEY", "")
+UPSTOX_API_SECRET   = os.getenv("UPSTOX_API_SECRET", "")
+UPSTOX_REDIRECT_URI = os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1")
 
 # -- Optional PAID real-time data feed (replaces delayed Yahoo) ---------------
 # Plug in any REST intraday provider you subscribe to (e.g. broker API, a paid

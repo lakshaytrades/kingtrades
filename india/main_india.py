@@ -182,6 +182,22 @@ class KingTradesIndia:
         # Signal generator
         self._generator = IndiaSignalGenerator(config, self._watchlist)
 
+        # Pre-load data source: warm the Upstox instrument map (if token set) and
+        # confirm the active feed so the bot is "fully data loaded" at startup.
+        self._data_source = "Yahoo (free, ~15m delayed)"
+        try:
+            import upstox_data as _ux
+            if _ux.enabled():
+                _ux._load_instruments()                 # warm symbol->key map
+                if _ux._sym_to_key:
+                    self._data_source = f"Upstox (real-time, {len(_ux._sym_to_key)} instruments)"
+                    logger.info(f"Upstox active: {len(_ux._sym_to_key)} instruments loaded")
+                else:
+                    logger.warning("Upstox token set but instruments failed to load — using Yahoo")
+        except Exception as _ue:
+            logger.debug(f"upstox preload: {_ue}")
+        logger.info(f"Data source: {self._data_source}")
+
         # Balance
         balance = self._get_balance()
         self._stats.daily_start = balance
@@ -656,6 +672,45 @@ class KingTradesIndia:
             near = " | ".join(f"{s} {sc:.0f}" for s, sc in candidates[:5])
             msg += f"\nClosest: {near}  (need ≥{config.FINAL_EXEC_MIN_SCORE:.0f})"
         return msg
+
+    # -- Data source status (/data) -------------------------------------------
+
+    def _build_data_status(self) -> str:
+        """Show which feed is active and prove data is loading (live sample)."""
+        lines = ["📡 DATA SOURCE STATUS", "━" * 26]
+        src = getattr(self, "_data_source", "unknown")
+        lines.append(f"Active: {src}")
+        # Upstox detail
+        try:
+            import upstox_data as _ux
+            if _ux.enabled():
+                lines.append(f"Upstox token: ✅ set | instruments: {len(_ux._sym_to_key)}")
+            else:
+                lines.append("Upstox token: ❌ not set (using free Yahoo)")
+        except Exception:
+            pass
+        # Live sample — proves data actually flows right now
+        syms = self._watchlist[:5]
+        try:
+            ltp = get_multiple_ltp(syms, self._dhan)
+        except Exception:
+            ltp = {}
+        lines.append("━" * 26)
+        lines.append("Live sample (proves data is loading):")
+        ok = 0
+        for s in syms:
+            px = ltp.get(s, 0)
+            if px > 0:
+                ok += 1
+                lines.append(f"  {s}: ₹{px:,.2f}")
+            else:
+                lines.append(f"  {s}: — no data")
+        lines.append("━" * 26)
+        lines.append(f"Loaded {ok}/{len(syms)} sample symbols "
+                     f"{'✅ healthy' if ok == len(syms) else ('⚠️ partial' if ok else '❌ DOWN')}")
+        lines.append(f"Universe: {len(self._watchlist)} stocks | scan every "
+                     f"{getattr(config,'FAST_SCAN_SECONDS',30)}-{config.SCAN_INTERVAL_SECONDS}s")
+        return "\n".join(lines)
 
     # -- Manual signal alert --------------------------------------------------
 
@@ -1668,6 +1723,12 @@ class KingTradesIndia:
                         except Exception as _fe:
                             _tg(f"Forward-test report error: {_fe}")
 
+                    elif txt in ("/data", "/datasource"):
+                        try:
+                            _tg(self._build_data_status())
+                        except Exception as _de:
+                            _tg(f"Data status error: {_de}")
+
                     elif txt == "/research":
                         _tg("🔬 Running NSE strategy research on real 15y data… "
                             "(~60-90s, you'll get the verdict here)")
@@ -1740,7 +1801,8 @@ class KingTradesIndia:
                             "/monthly — this month's P&L + win rate\n"
                             "/monthly 2026-05 — specific month report\n"
                             "/proof   — 90-day forward-test GO/NO-GO report\n"
-                            "/research — re-run NSE backtest after real costs\n\n"
+                            "/research — re-run NSE backtest after real costs\n"
+                            "/data    — active data feed + live price sample\n\n"
                             "⚙️ CONTROLS\n"
                             "/pause  — pause new entries\n"
                             "/resume — resume after pause\n"
