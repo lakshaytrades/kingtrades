@@ -17,7 +17,10 @@ PRE_MARKET_START_IST  = time(9, 0)
 
 # -- Capital (INR) ------------------------------------------------------------
 MAX_DAILY_CAPITAL       = float(os.getenv("INDIA_MAX_DAILY_CAPITAL",   "500000"))
-MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",        "0.5")) / 100
+# Risk per trade: 1.0% = "beat-FD experiment" level (~2x return vs 0.5%, ~17%
+# drawdown, UNPROVEN live). Raise to 0.02 for ~15%/yr but ~33% drawdowns.
+# Lower to 0.005 for the safest setting. NOT guaranteed — paper-prove first.
+MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",        "1.0")) / 100
 DAILY_LOSS_LIMIT_PCT    = float(os.getenv("INDIA_DAILY_LOSS_LIMIT_PCT","2.0")) / 100
 MAX_POSITIONS           = int(os.getenv(  "INDIA_MAX_POSITIONS",       "5"))
 
