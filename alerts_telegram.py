@@ -293,7 +293,11 @@ class TelegramAlerter:
 
     def __init__(self, bot_token: str, chat_id: str):
         self.bot_token    = bot_token
-        self.chat_id      = str(chat_id)
+        # Multi-chat: chat_id may be a comma/space-separated list to broadcast
+        # to any number of chats (e.g. "12345,-100999,67890"). chat_id stays
+        # the first one for backward-compat (command replies go to sender).
+        self.chat_ids     = [c.strip() for c in str(chat_id).replace(" ", ",").split(",") if c.strip()]
+        self.chat_id      = self.chat_ids[0] if self.chat_ids else str(chat_id)
         self._bot         = None
         self._ready       = False
         self._risk_manager = None   # set via set_risk_manager() after bot init
@@ -355,14 +359,23 @@ class TelegramAlerter:
 
     def _send(self, text: str, image_buf: Optional[io.BytesIO] = None,
               parse_mode: str = "Markdown") -> bool:
-        """Send message via direct Telegram Bot HTTP API (synchronous)."""
+        """Broadcast a message to every configured chat. True if any succeed."""
         if not self._ready:
             logger.debug("Telegram not ready — alert suppressed")
             return False
+        ok_any = False
+        for _cid in (self.chat_ids or [self.chat_id]):
+            if self._send_one(_cid, text, image_buf, parse_mode):
+                ok_any = True
+        return ok_any
+
+    def _send_one(self, cid: str, text: str, image_buf: Optional[io.BytesIO] = None,
+                  parse_mode: str = "Markdown") -> bool:
+        """Send one message to a single chat via the Telegram Bot HTTP API."""
         try:
             if image_buf:
                 image_buf.seek(0)
-                post_data: dict = {"chat_id": self.chat_id, "caption": text[:1024]}
+                post_data: dict = {"chat_id": cid, "caption": text[:1024]}
                 if parse_mode:
                     post_data["parse_mode"] = parse_mode
                 resp = _requests.post(
@@ -372,7 +385,7 @@ class TelegramAlerter:
                     timeout=15,
                 )
             else:
-                msg_data: dict = {"chat_id": self.chat_id, "text": text[:4096]}
+                msg_data: dict = {"chat_id": cid, "text": text[:4096]}
                 if parse_mode:
                     msg_data["parse_mode"] = parse_mode
                 resp = _requests.post(
@@ -387,12 +400,12 @@ class TelegramAlerter:
                     import re as _re
                     plain = _re.sub(r'<[^>]+>', '', text)  # strip HTML tags
                     logger.debug("Telegram parse-entities error — retrying as plain text")
-                    return self._send(plain, image_buf, parse_mode="")
+                    return self._send_one(cid, plain, image_buf, parse_mode="")
                 logger.warning(f"Telegram API {resp.status_code}: {resp.text[:200]}")
                 return False
             return True
         except Exception as e:
-            logger.error(f"Telegram send error: {e}")
+            logger.error(f"Telegram send error ({cid}): {e}")
             return False
 
     def send_text(self, text: str) -> bool:

@@ -81,12 +81,19 @@ def _tg(msg: str, parse_mode: str = "Markdown"):
         if not token or not chat:
             logger.info(f"[TG] {msg[:120]}")
             return
+        # Multi-chat: TELEGRAM_CHAT_ID may be a comma/space-separated list to
+        # broadcast to any number of chats (e.g. "12345,-100999,67890").
+        chat_ids = [c.strip() for c in str(chat).replace(" ", ",").split(",") if c.strip()]
         import requests
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": msg, "parse_mode": parse_mode},
-            timeout=8,
-        )
+        for cid in chat_ids:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": cid, "text": msg, "parse_mode": parse_mode},
+                    timeout=8,
+                )
+            except Exception as _ce:
+                logger.debug(f"telegram chat {cid}: {_ce}")
     except Exception as e:
         logger.debug(f"telegram: {e}")
 
@@ -536,6 +543,53 @@ class KingTradesIndia:
                 f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
                 f"Pos: {len(self._positions)}/{config.MAX_POSITIONS}"
             )
+
+    # -- On-demand setups (/today) --------------------------------------------
+
+    def _build_today_setups(self) -> str:
+        """
+        Scan the watchlist on demand and return the current A-grade setups for
+        manual trading. Shows passing signals; if none, the top candidates by score.
+        """
+        if not self._generator:
+            return "Bot not initialised yet."
+        passed, candidates = [], []
+        ltp_map = {}
+        try:
+            ltp_map = get_multiple_ltp(self._watchlist, self._dhan)
+        except Exception:
+            pass
+        for sym in self._watchlist[:30]:   # cap for responsiveness
+            try:
+                ltp = ltp_map.get(sym, 0.0)
+                sig = self._generator.generate_signal(sym, current_price=ltp)
+                if sig is not None:
+                    passed.append(sig)
+                else:
+                    sc = getattr(self._generator, "_last_score", 0) or 0
+                    if sc:
+                        candidates.append((sym, sc))
+            except Exception:
+                continue
+        now = datetime.now(IST).strftime("%d %b %H:%M IST")
+        if passed:
+            passed.sort(key=lambda s: getattr(s, "signal_score", 0), reverse=True)
+            lines = [f"🇮🇳 TODAY'S SETUPS — {now}", "━━━━━━━━━━━━━━━━━━━━"]
+            for s in passed[:5]:
+                lines.append(
+                    f"{'🟢 BUY' if s.direction=='LONG' else '🔴 SELL'} {s.symbol} "
+                    f"| {getattr(s,'quality_grade','?')} {getattr(s,'signal_score',0):.0f}\n"
+                    f"  Entry ₹{s.entry_price:.2f} | SL ₹{s.stop_loss:.2f} | "
+                    f"T1 ₹{s.target_1:.2f}"
+                )
+            lines.append("\nPlace these manually in your broker.")
+            return "\n".join(lines)
+        msg = f"🇮🇳 No A-grade setups right now — {now}\nBot is waiting for quality (high-accuracy mode)."
+        if candidates:
+            candidates.sort(key=lambda x: x[1], reverse=True)
+            near = " | ".join(f"{s} {sc:.0f}" for s, sc in candidates[:5])
+            msg += f"\nClosest: {near}  (need ≥{config.FINAL_EXEC_MIN_SCORE:.0f})"
+        return msg
 
     # -- Manual signal alert --------------------------------------------------
 
@@ -1412,6 +1466,10 @@ class KingTradesIndia:
                             _tg(f"INDIA P&L: Rs.{self._stats.total_pnl:+,.0f} ({p:.2%}) | "
                                 f"W:{self._stats.wins} L:{self._stats.losses}")
 
+                    elif txt == "/today":
+                        _tg("🔍 Scanning for today's A-grade setups… (a few seconds)")
+                        _tg(self._build_today_setups())
+
                     # -- Manual order commands ---
                     elif txt.startswith("/buy ") or txt.startswith("/b "):
                         parts = raw_txt.split()[1:]
@@ -1465,7 +1523,8 @@ class KingTradesIndia:
                             "/cancel  — abort pending order\n"
                             "/close SYMBOL — exit open position\n"
                             "/chart SYMBOL — TradingView link\n"
-                            "/status — portfolio + India OODA\n\n"
+                            "/status — portfolio + India OODA\n"
+                            "/today — scan for today's A-grade setups now\n\n"
                             "📡 TradingView webhooks also supported\n"
                             "Set alert webhook to your VPS IP:8888/tv"
                         )
