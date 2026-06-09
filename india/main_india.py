@@ -347,16 +347,22 @@ class KingTradesIndia:
         _ss["scanned"] = 0   # reset per scan cycle
 
         # -- NSE OHLCV data health check (3-symbol sample every scan) ---------
+        # Parallel: 3 concurrent fetches instead of blocking sequentially.
+        # Warms the OHLCV cache too, so the scan below reuses these candles.
         _sample_syms = self._watchlist[:3]
-        _data_ok_count = 0
-        for _dsym in _sample_syms:
+
+        def _check_one(_dsym):
             try:
                 from data_fetch_dhan import get_ohlcv as _gohlcv
                 _df = _gohlcv(_dsym, interval="5m", period="5d")
-                if _df is not None and not _df.empty and len(_df) >= 20:
-                    _data_ok_count += 1
+                return _df is not None and not _df.empty and len(_df) >= 20
             except Exception:
-                pass
+                return False
+
+        _data_ok_count = 0
+        if _sample_syms:
+            with ThreadPoolExecutor(max_workers=len(_sample_syms)) as _hpool:
+                _data_ok_count = sum(_hpool.map(_check_one, _sample_syms))
         _ss["data_ok"]   = _data_ok_count
         _ss["data_fail"] = len(_sample_syms) - _data_ok_count
 
