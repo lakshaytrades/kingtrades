@@ -234,10 +234,22 @@ def get_multiple_ltp(symbols: List[str], dhan_client) -> Dict[str, float]:
                     logger.debug(f"Batch LTP attempt {attempt+1} failed: {e}")
                     _time.sleep(2 ** attempt)
 
-    # 2. Yahoo fallback for any symbol Dhan didn't price (or Dhan absent).
+    # 1b. Upstox FREE real-time LTP (when token configured)
+    missing = [s for s in symbols if result.get(s, 0) <= 0]
+    if missing:
+        try:
+            import upstox_data as _ux
+            if _ux.enabled():
+                for s, p in _ux.get_ltp(missing).items():
+                    if p > 0:
+                        result[s] = p
+        except Exception as _ue:
+            logger.debug(f"upstox ltp: {_ue}")
+
+    # 2. Yahoo fallback for any symbol still unpriced (no Dhan, no Upstox).
     #    Uses the last close of the cached 5m OHLCV — no extra network calls
     #    during a scan (the scan already warmed that cache). Works with no broker.
-    missing = [s for s in symbols if s not in result or result.get(s, 0) <= 0]
+    missing = [s for s in symbols if result.get(s, 0) <= 0]
     for sym in missing:
         try:
             df = get_ohlcv(sym, interval="5m", period="5d")
@@ -624,6 +636,17 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
     if df is not None and not df.empty:
         _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
         return df
+
+    # 0b. Upstox FREE real-time (when UPSTOX_ACCESS_TOKEN configured)
+    try:
+        import upstox_data as _ux
+        if _ux.enabled():
+            df = _ux.get_ohlcv(symbol, interval_min)
+            if df is not None and not df.empty:
+                _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
+                return df
+    except Exception as _ue:
+        logger.debug(f"upstox ohlcv {symbol}: {_ue}")
 
     # 1. Dhan (only if a client is registered)
     df = _fetch_dhan_ohlcv(symbol, interval_min)

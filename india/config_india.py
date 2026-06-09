@@ -28,6 +28,13 @@ MAX_POSITIONS           = int(os.getenv(  "INDIA_MAX_POSITIONS",       "5"))
 DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "")
 DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
 
+# -- Optional FREE real-time data via Upstox (no IP whitelist) ----------------
+# Get a token at https://account.upstox.com/developer/apps (valid until ~3:30 AM
+# next day) and put it in .env: UPSTOX_ACCESS_TOKEN=... Tried first for
+# OHLCV/LTP, falls back to Yahoo automatically if it fails.
+UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "")
+UPSTOX_ENABLED      = bool(UPSTOX_ACCESS_TOKEN)
+
 # -- Optional PAID real-time data feed (replaces delayed Yahoo) ---------------
 # Plug in any REST intraday provider you subscribe to (e.g. broker API, a paid
 # market-data vendor). When set, it's tried FIRST for OHLCV/LTP before falling
