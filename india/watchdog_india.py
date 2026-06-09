@@ -101,20 +101,36 @@ def _save_state(state: Dict):
 def _telegram_send(msg: str, level: str = "INFO"):
     try:
         import config_india as cfg
+        import os as _os
         import requests
         token = cfg.TELEGRAM_BOT_TOKEN
         chat  = cfg.TELEGRAM_CHAT_ID
         if not token or not chat:
             logger.info(f"[TG-{level}] {msg[:120]}")
             return
+        # Quiet by default: only CRIT escapes unless verbose. Filter benign
+        # manual/paper-mode notices that are normal, not errors.
+        verbose = getattr(cfg, "TELEGRAM_VERBOSE", False) or \
+                  _os.getenv("TELEGRAM_VERBOSE", "False") == "True"
+        low = msg.lower()
+        _benign = ("dhan not connected", "paper mode", "no api key",
+                   "not set in .env", "manual review", "novel error")
+        if not verbose and (level not in ("CRIT",) or any(b in low for b in _benign)):
+            logger.info(f"[india-watchdog quiet | {level}] {msg[:100]}")
+            return
         prefix = {"INFO": "🔵", "WARN": "⚠️", "CRIT": "🚨"}.get(level, "🔵")
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat,
-                  "text": f"{prefix} *India Watchdog*\n{msg}",
-                  "parse_mode": "Markdown"},
-            timeout=8,
-        )
+        chat_ids = [c.strip() for c in str(chat).replace(" ", ",").split(",") if c.strip()]
+        for cid in chat_ids:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": cid,
+                          "text": f"{prefix} *India Watchdog*\n{msg}",
+                          "parse_mode": "Markdown"},
+                    timeout=8,
+                )
+            except Exception as _ce:
+                logger.debug(f"telegram chat {cid}: {_ce}")
     except Exception as e:
         logger.debug(f"telegram: {e}")
 

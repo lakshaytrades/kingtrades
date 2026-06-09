@@ -189,6 +189,27 @@ def _telegram_send(msg: str, level: str = "INFO") -> None:
     if not token or not chat:
         logger.info(f"[TELEGRAM would send | {level}]: {msg[:120]}")
         return
+
+    # ── Quiet mode (default) ──────────────────────────────────────────────
+    # Owner wants a clean Telegram: NO routine supervisor chatter. Unless
+    # TELEGRAM_VERBOSE=True, only genuinely critical alerts (CRIT) go out.
+    verbose = os.getenv("TELEGRAM_VERBOSE", "False") == "True"
+    if not verbose and level not in ("CRIT",):
+        logger.info(f"[supervisor quiet | {level}]: {msg[:120]}")
+        return
+
+    # ── Benign-noise filter ───────────────────────────────────────────────
+    # These are NORMAL in manual/paper mode — never alert on them.
+    _benign = (
+        "dhan not connected", "running in paper mode", "no api key",
+        "not set in .env", "manual review", "manual /review",
+        "paper mode", "novel error detected",
+    )
+    low = msg.lower()
+    if not verbose and any(b in low for b in _benign):
+        logger.info(f"[supervisor benign-skip]: {msg[:100]}")
+        return
+
     try:
         import requests
         emoji_map = {
@@ -202,11 +223,19 @@ def _telegram_send(msg: str, level: str = "INFO") -> None:
         }
         emoji = emoji_map.get(level, "📌")
         full  = f"{emoji} *AI Supervisor*\n{msg}"
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": full, "parse_mode": "Markdown"},
-            timeout=10,
-        )
+        # Multi-chat: comma/space-separated TELEGRAM_CHAT_ID -> broadcast to all
+        # (e.g. two people on the same bot: "111111,222222").
+        chat_ids = [c.strip() for c in str(chat).replace(" ", ",").split(",") if c.strip()]
+        import requests as _rq
+        for cid in chat_ids:
+            try:
+                _rq.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": cid, "text": full, "parse_mode": "Markdown"},
+                    timeout=10,
+                )
+            except Exception as _ce:
+                logger.debug(f"Telegram chat {cid}: {_ce}")
     except Exception as exc:
         logger.debug(f"Telegram send error: {exc}")
 

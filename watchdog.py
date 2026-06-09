@@ -134,6 +134,11 @@ def _telegram_send(msg: str, level: str = "INFO"):
     if not token or not chat:
         logger.info(f"[TELEGRAM would send] {level}: {msg[:100]}")
         return
+    # Quiet by default: only CRIT escapes unless TELEGRAM_VERBOSE=True.
+    verbose = os.getenv("TELEGRAM_VERBOSE", "False") == "True"
+    if not verbose and level not in ("CRIT",):
+        logger.info(f"[watchdog quiet | {level}] {msg[:100]}")
+        return
     try:
         import requests
         emoji = {"INFO": "ℹ️", "OK": "✅", "WARN": "⚠️", "CRIT": "🚨", "FIX": "🔧"}.get(level, "📌")
@@ -142,11 +147,16 @@ def _telegram_send(msg: str, level: str = "INFO"):
         except Exception:
             _wdog_name = "PSEB"
         full  = f"{emoji} *{_wdog_name} Watchdog*\n{msg}"
-        requests.post(
-            f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": full, "parse_mode": "Markdown"},
-            timeout=10,
-        )
+        chat_ids = [c.strip() for c in str(chat).replace(" ", ",").split(",") if c.strip()]
+        for cid in chat_ids:
+            try:
+                requests.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": cid, "text": full, "parse_mode": "Markdown"},
+                    timeout=10,
+                )
+            except Exception as _ce:
+                logger.debug(f"telegram chat {cid}: {_ce}")
     except Exception as e:
         logger.debug(f"telegram: {e}")
 
