@@ -3,11 +3,26 @@ watchlist_india.py — NSE liquid stock watchlist
 Top 80 Nifty/Nifty Next 50 stocks, filtered daily by liquidity.
 """
 import logging
+import os
 from typing import Dict, List, Optional
 from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("watchlist_india")
 IST = ZoneInfo("Asia/Kolkata")
+
+# ── Curated ULTRA-LIQUID core (research: KingEdge hit 57% WR on these) ────────
+# Tightest spreads + deepest volume on NSE = least slippage, best fill quality.
+# Default trading universe — frequent trading on thin names LOSES after costs.
+_LIQUID_CORE: List[str] = [
+    "RELIANCE", "HDFCBANK", "ICICIBANK", "INFY", "TCS",
+    "SBIN", "AXISBANK", "BHARTIARTL", "LT", "ITC",
+    "KOTAKBANK", "TATAMOTORS",
+]
+
+# Liquid-only mode ON by default (per nse_research.py — accuracy was highest and
+# cost drag lowest on the most liquid names). Set INDIA_LIQUID_ONLY=False to use
+# the full 80-symbol universe.
+LIQUID_ONLY_MODE = os.getenv("INDIA_LIQUID_ONLY", "True") != "False"
 
 # ── Core NSE liquid universe (80 symbols) ────────────────────────────────────
 _CORE_WATCHLIST: List[str] = [
@@ -128,6 +143,12 @@ def get_active_watchlist(dhan_client=None) -> List[str]:
     Return watchlist filtered by minimum liquidity, ordered by priority tier.
     Falls back to full priority list if data unavailable (fail-open).
     """
+    # Liquid-only mode: trade ONLY the ultra-liquid core (best accuracy, least
+    # slippage — see nse_research.py). This is the default profitable-defense.
+    if LIQUID_ONLY_MODE:
+        logger.info(f"Watchlist: LIQUID-ONLY mode — {len(_LIQUID_CORE)} ultra-liquid names")
+        return list(_LIQUID_CORE)
+
     ordered = get_priority_watchlist()
 
     if dhan_client is None:
