@@ -99,6 +99,18 @@ def _tg(msg: str, parse_mode: str = "Markdown"):
         logger.debug(f"telegram: {e}")
 
 
+def _tg_verbose(msg: str, parse_mode: str = "Markdown"):
+    """
+    Non-essential notification. Silent by default so Telegram shows ONLY:
+    (1) trade to take / taken, (2) command replies, (3) bot-start message.
+    Set INDIA_TELEGRAM_VERBOSE=True to re-enable all the operational chatter.
+    """
+    if getattr(config, "TELEGRAM_VERBOSE", False):
+        _tg(msg, parse_mode)
+    else:
+        logger.info(f"[quiet] {msg[:120]}")
+
+
 # -- Open position tracking ---------------------------------------------------
 
 @dataclass
@@ -165,7 +177,7 @@ class KingTradesIndia:
         if not verify_connection(self._dhan):
             if config.LIVE_TRADING_ENABLED:
                 logger.error("Dhan connection failed -- cannot start in live mode")
-                _tg("India Bot failed to connect to Dhan -- check DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN")
+                _tg_verbose("India Bot failed to connect to Dhan -- check DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN")
                 return False
             logger.warning("Dhan not connected -- running in paper mode")
 
@@ -212,9 +224,9 @@ class KingTradesIndia:
                     logger.info(f"India VIX: {_vix:.1f}")
                     if _vix >= getattr(config, 'INDIA_VIX_EXTREME_THRESHOLD', 28.0):
                         self._stats.circuit_hit = True
-                        _tg(f"India VIX {_vix:.1f} EXTREME -- no new trades today")
+                        _tg_verbose(f"India VIX {_vix:.1f} EXTREME -- no new trades today")
                     elif _vix >= getattr(config, 'INDIA_VIX_HIGH_THRESHOLD', 22.0):
-                        _tg(f"India VIX {_vix:.1f} HIGH -- sizes reduced")
+                        _tg_verbose(f"India VIX {_vix:.1f} HIGH -- sizes reduced")
             except Exception:
                 pass
 
@@ -237,13 +249,13 @@ class KingTradesIndia:
         # If today is 1st of month, auto-send last month's P&L summary
         try:
             from trade_journal_india import maybe_send_monthly_summary
-            maybe_send_monthly_summary(_tg)
+            maybe_send_monthly_summary(_tg_verbose)
         except Exception:
             pass
         # On Mondays, auto-send the 90-day forward-test GO/NO-GO proof report
         try:
             from trade_journal_india import maybe_send_weekly_forward_test
-            maybe_send_weekly_forward_test(_tg)
+            maybe_send_weekly_forward_test(_tg_verbose)
         except Exception:
             pass
         return True
@@ -272,7 +284,7 @@ class KingTradesIndia:
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if self._positions:
                         syms = ", ".join(self._positions.keys())
-                        _tg(f"INDIA BOT Square-off Warning\n"
+                        _tg_verbose(f"INDIA BOT Square-off Warning\n"
                             f"3:15 PM IST -- {len(self._positions)} open: {syms}\n"
                             f"Auto-closing at 3:20 PM IST")
 
@@ -396,7 +408,7 @@ class KingTradesIndia:
             logger.warning("NSE OHLCV data: 0/3 sample symbols loaded — NSE charting API may be down")
             if _time.monotonic() - _ss["data_warn_ts"] > 1800:  # alert max every 30 min
                 _ss["data_warn_ts"] = _time.monotonic()
-                _tg(
+                _tg_verbose(
                     "⚠️ INDIA BOT — NSE Data Alert\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "NSE charting API returning NO data for 3 sample symbols.\n"
@@ -555,7 +567,7 @@ class KingTradesIndia:
             )
             if not stop_result.success:
                 logger.error(f"{symbol}: stop FAILED -- reversing entry")
-                _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
+                _tg_verbose(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
                 try:
                     self._executor.square_off_all(self._executor.get_open_positions())
                 except Exception as _rev_e:
@@ -563,7 +575,7 @@ class KingTradesIndia:
                     # position. This needs a human NOW.
                     logger.error(f"{symbol}: REVERSAL FAILED -- naked position! {_rev_e}",
                                  exc_info=True)
-                    _tg(f"🚨 INDIA BOT URGENT: {symbol} has NO STOP and reversal "
+                    _tg_verbose(f"🚨 INDIA BOT URGENT: {symbol} has NO STOP and reversal "
                         f"FAILED. You may hold an unhedged position — square it "
                         f"off MANUALLY in Dhan NOW. ({_rev_e})")
                 continue
@@ -939,7 +951,7 @@ class KingTradesIndia:
                             partial_pnl = (ltp - pos.entry_price) * partial_qty if pos.direction == "LONG" else (pos.entry_price - ltp) * partial_qty
                             self._stats.total_pnl += partial_pnl
                             pos.stop_loss = pos.entry_price  # trail runner to breakeven
-                            _tg(f"INDIA T1 Partial Exit -- {symbol}\n{partial_qty} shares @ Rs.{ltp:.2f} | Runner to T2=Rs.{pos.target_2:.2f}")
+                            _tg_verbose(f"INDIA T1 Partial Exit -- {symbol}\n{partial_qty} shares @ Rs.{ltp:.2f} | Runner to T2=Rs.{pos.target_2:.2f}")
 
             # Stage 3: Trail runner at 0.3 ATR after T1 exit
             if pos.t1_exited and pos.atr > 0 and getattr(config, 'TRAILING_STOP_ENABLED', True):
@@ -986,7 +998,7 @@ class KingTradesIndia:
             daily_pnl_pct = self._stats.total_pnl / _capital
             if daily_pnl_pct <= -config.DAILY_LOSS_LIMIT_PCT:
                 logger.warning("Daily loss limit hit -- closing all positions")
-                _tg("Daily loss limit hit -- all positions being closed")
+                _tg_verbose("Daily loss limit hit -- all positions being closed")
                 self._stats.circuit_hit = True
                 to_close = list(self._positions.keys())
                 break
@@ -1010,7 +1022,7 @@ class KingTradesIndia:
             if self._stats.loss_guard_active:
                 self._stats.loss_guard_active = False
                 logger.info("Loss guard lifted after win")
-                _tg("INDIA BOT Loss guard lifted -- win after losing streak, resuming normal trading")
+                _tg_verbose("INDIA BOT Loss guard lifted -- win after losing streak, resuming normal trading")
         else:
             self._stats.losses += 1
             self._stats.consecutive_losses += 1
@@ -1018,7 +1030,7 @@ class KingTradesIndia:
             if self._stats.consecutive_losses >= 3 and not self._stats.loss_guard_active:
                 self._stats.loss_guard_active = True
                 logger.warning(f"3 consecutive losses -- loss guard activated")
-                _tg(
+                _tg_verbose(
                     f"INDIA BOT Loss Guard Activated\n"
                     f"3 consecutive losses today.\n"
                     f"Pausing new entries. Bot will resume when:\n"
@@ -1066,7 +1078,7 @@ class KingTradesIndia:
         except Exception as e:
             logger.warning(f"journal write failed for {symbol}: {e}")
 
-        _tg(
+        _tg_verbose(
             f"INDIA BOT Position Closed -- {symbol}\n"
             f"--------------------------------\n"
             f"Entry: Rs.{pos.entry_price:.2f} -> Exit: Rs.{exit_price:.2f}\n"
@@ -1082,7 +1094,7 @@ class KingTradesIndia:
         if not self._positions:
             return
         logger.info(f"Force square-off: {len(self._positions)} positions")
-        _tg(f"INDIA BOT Force Square-off -- {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
+        _tg_verbose(f"INDIA BOT Force Square-off -- {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
 
         open_pos_dhan = self._executor.get_open_positions()
         self._executor.square_off_all(open_pos_dhan)
@@ -1098,7 +1110,7 @@ class KingTradesIndia:
         win_rate = s.wins / s.trades if s.trades else 0
         filled = max(0, min(10, int(round(win_rate * 10))))
         bar = "X" * filled + "." * (10 - filled)
-        _tg(
+        _tg_verbose(
             f"INDIA BOT -- EOD Report\n"
             f"--------------------------------\n"
             f"{datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
@@ -1108,16 +1120,17 @@ class KingTradesIndia:
             f"{'Profitable session!' if s.total_pnl > 0 else ('Loss day -- watchdog reviewing' if s.trades else 'No trades -- filters held')}\n"
             f"--------------------------------"
         )
-        # Also trigger the full detailed EOD from daily intelligence
+        # Also trigger the full detailed EOD from daily intelligence (verbose only)
         try:
-            from daily_intelligence_india import send_eod_report as _eod
-            _eod()
+            if getattr(config, "TELEGRAM_VERBOSE", False):
+                from daily_intelligence_india import send_eod_report as _eod
+                _eod()
         except Exception:
             pass
         # Monthly auto-report: send on the 1st of the month
         try:
             from trade_journal_india import maybe_send_monthly_summary
-            maybe_send_monthly_summary(_tg)
+            maybe_send_monthly_summary(_tg_verbose)
         except Exception:
             pass
 
@@ -1619,7 +1632,7 @@ class KingTradesIndia:
         try:
             from tradingview_webhook import start_webhook_server, WEBHOOK_PORT
             start_webhook_server()
-            _tg(
+            _tg_verbose(
                 f"📡 TradingView webhook ready\n"
                 f"URL: http://YOUR_VPS_IP:{WEBHOOK_PORT}/tv\n"
                 f"Commands: /buy SYMBOL QTY [PRICE] | /sell | /chart | /close"
