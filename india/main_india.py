@@ -14,6 +14,7 @@ import os
 import signal
 import sys
 import time as _time
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, time
 from pathlib import Path
@@ -216,6 +217,12 @@ class KingTradesIndia:
             f"Broker: Dhan | Market: NSE | Opens 9:15 AM IST\n"
             f"--------------------------------"
         )
+        # If today is 1st of month, auto-send last month's P&L summary
+        try:
+            from trade_journal_india import maybe_send_monthly_summary
+            maybe_send_monthly_summary(_tg)
+        except Exception:
+            pass
         return True
 
     # -- Main loop -------------------------------------------------------------
@@ -386,131 +393,154 @@ class KingTradesIndia:
         except Exception:
             pass
 
-        for symbol in self._watchlist:
-            if symbol in self._positions:
-                continue
+        # -- Parallel signal generation (CPU-bound analysis) -------------------
+        # generate_signal() reads data but does NOT write shared state, so it
+        # is safe to run in parallel. Order dispatch (buy/sell) stays sequential.
+        _candidates_to_scan = [
+            sym for sym in self._watchlist
+            if sym not in self._positions
+        ]
+
+        def _gen_signal_safe(sym):
+            try:
+                ltp = ltp_map.get(sym, 0.0)
+                return sym, self._generator.generate_signal(sym, current_price=ltp)
+            except Exception as _e:
+                logger.error(f"Signal scan {sym}: {_e}")
+                return sym, None
+
+        _max_workers = min(8, len(_candidates_to_scan)) if _candidates_to_scan else 1
+        _signal_results: list = []
+        with ThreadPoolExecutor(max_workers=_max_workers) as _pool:
+            _futures = {_pool.submit(_gen_signal_safe, sym): sym
+                        for sym in _candidates_to_scan}
+            for _fut in as_completed(_futures):
+                _signal_results.append(_fut.result())
+
+        # Sort by signal score descending so strongest trades go first
+        _signal_results.sort(
+            key=lambda x: getattr(x[1], "signal_score", 0) if x[1] else 0,
+            reverse=True,
+        )
+
+        for symbol, signal_obj in _signal_results:
             if len(self._positions) >= config.MAX_POSITIONS:
                 break
             if self._stats.circuit_hit:
                 break
 
-            try:
-                _ss["scanned"] += 1
-                ltp = ltp_map.get(symbol, 0.0)
-                signal_obj = self._generator.generate_signal(symbol, current_price=ltp)
-                if signal_obj is None:
-                    _ss["rejected_no_sig"] += 1
+            _ss["scanned"] += 1
+
+            if signal_obj is None:
+                _ss["rejected_no_sig"] += 1
+                continue
+
+            # ORB-only: skip non-ORB signals during 9:15-9:30 IST
+            if _orb_only:
+                has_orb = any("orb" in str(p).lower()
+                              for p in getattr(signal_obj, "patterns", []))
+                if not has_orb:
+                    logger.info(f"{symbol}: skipped (ORB-only window 9:15-9:30)")
+                    _ss["rejected_orb"] += 1
                     continue
 
-                # ORB-only: skip non-ORB signals during 9:15-9:30 IST
-                if _orb_only:
-                    has_orb = any("orb" in str(p).lower()
-                                  for p in getattr(signal_obj, "patterns", []))
-                    if not has_orb:
-                        logger.info(f"{symbol}: skipped (ORB-only window 9:15-9:30)")
-                        _ss["rejected_orb"] += 1
-                        continue
+            # Nifty regime filter: don't fight the market
+            if regime == "BEARISH" and signal_obj.direction == "LONG":
+                logger.info(f"{symbol}: LONG skipped (Nifty BEARISH regime)")
+                _ss["rejected_regime"] += 1
+                continue
+            if regime == "BULLISH" and signal_obj.direction == "SHORT":
+                logger.info(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
+                _ss["rejected_regime"] += 1
+                continue
 
-                # Nifty regime filter: don't fight the market
-                if regime == "BEARISH" and signal_obj.direction == "LONG":
-                    logger.info(f"{symbol}: LONG skipped (Nifty BEARISH regime)")
-                    _ss["rejected_regime"] += 1
-                    continue
-                if regime == "BULLISH" and signal_obj.direction == "SHORT":
-                    logger.info(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
-                    _ss["rejected_regime"] += 1
-                    continue
+            _ss["signals"] += 1
+            logger.info(
+                f"✅ SIGNAL: {symbol} {signal_obj.direction} "
+                f"score={signal_obj.signal_score:.1f} "
+                f"grade={signal_obj.quality_grade} "
+                f"entry=Rs.{signal_obj.entry_price:.2f} "
+                f"sl=Rs.{signal_obj.stop_loss:.2f} "
+                f"tp=Rs.{signal_obj.target_1:.2f}"
+            )
 
-                _ss["signals"] += 1
-                logger.info(
-                    f"✅ SIGNAL: {symbol} {signal_obj.direction} "
-                    f"score={signal_obj.signal_score:.1f} "
-                    f"grade={signal_obj.quality_grade} "
-                    f"entry=Rs.{signal_obj.entry_price:.2f} "
-                    f"sl=Rs.{signal_obj.stop_loss:.2f} "
-                    f"tp=Rs.{signal_obj.target_1:.2f}"
-                )
+            # Position sizing
+            qty = self._calculate_qty(signal_obj)
+            if qty <= 0:
+                logger.info(f"{symbol}: qty=0 -- capital Rs.{config.MAX_DAILY_CAPITAL:,.0f} insufficient")
+                _ss["rejected_qty"] += 1
+                continue
 
-                # Position sizing
-                qty = self._calculate_qty(signal_obj)
-                if qty <= 0:
-                    logger.info(f"{symbol}: qty=0 -- capital Rs.{config.MAX_DAILY_CAPITAL:,.0f} insufficient")
+            # ── MANUAL SIGNALS MODE: alert Telegram, user places in Dhan ──
+            if getattr(config, 'MANUAL_SIGNALS_ONLY', True):
+                self._send_manual_signal_alert(signal_obj, qty)
+                self._last_trade_ts = _time.monotonic()
+                continue
+
+            # ── AUTO-EXECUTION (MANUAL_SIGNALS_ONLY=False in .env) ────────
+            # Guard: security_id required for LIVE orders; paper mode uses fallback
+            if not signal_obj.security_id:
+                if config.LIVE_TRADING_ENABLED:
+                    logger.warning(f"{symbol}: no security_id -- skipping live order")
                     _ss["rejected_qty"] += 1
                     continue
+                else:
+                    signal_obj.security_id = f"PAPER-{symbol}"
 
-                # ── MANUAL SIGNALS MODE: alert Telegram, user places in Dhan ──
-                if getattr(config, 'MANUAL_SIGNALS_ONLY', True):
-                    self._send_manual_signal_alert(signal_obj, qty)
-                    self._last_trade_ts = _time.monotonic()
-                    continue
+            result = self._executor.place_entry_order(
+                symbol=symbol, direction=signal_obj.direction,
+                qty=qty, price=signal_obj.entry_price,
+                security_id=signal_obj.security_id,
+            )
+            if not result.success:
+                logger.warning(f"{symbol}: entry failed -- {result.message}")
+                continue
 
-                # ── AUTO-EXECUTION (MANUAL_SIGNALS_ONLY=False in .env) ────────
-                # Guard: security_id required for LIVE orders; paper mode uses fallback
-                if not signal_obj.security_id:
-                    if config.LIVE_TRADING_ENABLED:
-                        logger.warning(f"{symbol}: no security_id -- skipping live order")
-                        _ss["rejected_qty"] += 1
-                        continue
-                    else:
-                        signal_obj.security_id = f"PAPER-{symbol}"
+            fill_price = result.fill_price or signal_obj.entry_price
+            fill_qty   = result.quantity or qty
+            if fill_qty <= 0 or fill_price <= 0:
+                logger.warning(f"{symbol}: fill not confirmed -- skipping")
+                continue
 
-                result = self._executor.place_entry_order(
-                    symbol=symbol, direction=signal_obj.direction,
-                    qty=qty, price=signal_obj.entry_price,
-                    security_id=signal_obj.security_id,
-                )
-                if not result.success:
-                    logger.warning(f"{symbol}: entry failed -- {result.message}")
-                    continue
-
-                fill_price = result.fill_price or signal_obj.entry_price
-                fill_qty   = result.quantity or qty
-                if fill_qty <= 0 or fill_price <= 0:
-                    logger.warning(f"{symbol}: fill not confirmed -- skipping")
-                    continue
-
-                stop_result = self._executor.place_stop_order(
-                    symbol=symbol, direction=signal_obj.direction,
-                    qty=fill_qty, stop_price=signal_obj.stop_loss,
-                    security_id=signal_obj.security_id,
-                )
-                if not stop_result.success:
-                    logger.error(f"{symbol}: stop FAILED -- reversing entry")
-                    _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
-                    try:
-                        self._executor.square_off_all(self._executor.get_open_positions())
-                    except Exception:
-                        pass
-                    continue
-
-                pos = OpenPosition(
-                    symbol=symbol, direction=signal_obj.direction,
-                    entry_price=fill_price, stop_loss=signal_obj.stop_loss,
-                    target_1=signal_obj.target_1, target_2=signal_obj.target_2,
-                    quantity=int(fill_qty), security_id=signal_obj.security_id,
-                    stop_order_id=stop_result.order_id, atr=signal_obj.atr,
-                    is_scalp=getattr(signal_obj, 'is_scalp', False),
-                    time_stop_min=getattr(signal_obj, 'time_stop_min', 0),
-                )
-                self._positions[symbol] = pos
-                self._stats.trades += 1
-                self._last_trade_ts = _time.monotonic()
-                _tg(
-                    f"INDIA BOT Auto-Executed -- {symbol}\n"
-                    f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
-                    f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
-                    f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
-                )
+            stop_result = self._executor.place_stop_order(
+                symbol=symbol, direction=signal_obj.direction,
+                qty=fill_qty, stop_price=signal_obj.stop_loss,
+                security_id=signal_obj.security_id,
+            )
+            if not stop_result.success:
+                logger.error(f"{symbol}: stop FAILED -- reversing entry")
+                _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
                 try:
-                    from daily_intelligence_india import explain_trade as _explain
-                    signal_obj.quantity = int(fill_qty)
-                    _tg(_explain(signal_obj))
+                    self._executor.square_off_all(self._executor.get_open_positions())
                 except Exception:
                     pass
-                self._write_state_file()
+                continue
 
-            except Exception as e:
-                logger.error(f"Signal scan {symbol}: {e}")
+            pos = OpenPosition(
+                symbol=symbol, direction=signal_obj.direction,
+                entry_price=fill_price, stop_loss=signal_obj.stop_loss,
+                target_1=signal_obj.target_1, target_2=signal_obj.target_2,
+                quantity=int(fill_qty), security_id=signal_obj.security_id,
+                stop_order_id=stop_result.order_id, atr=signal_obj.atr,
+                is_scalp=getattr(signal_obj, 'is_scalp', False),
+                time_stop_min=getattr(signal_obj, 'time_stop_min', 0),
+            )
+            self._positions[symbol] = pos
+            self._stats.trades += 1
+            self._last_trade_ts = _time.monotonic()
+            _tg(
+                f"INDIA BOT Auto-Executed -- {symbol}\n"
+                f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
+                f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
+                f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
+            )
+            try:
+                from daily_intelligence_india import explain_trade as _explain
+                signal_obj.quantity = int(fill_qty)
+                _tg(_explain(signal_obj))
+            except Exception:
+                pass
+            self._write_state_file()
 
         # -- Scan summary: log always, Telegram every 30 min ------------------
         _total = len(self._watchlist)
@@ -863,6 +893,20 @@ class KingTradesIndia:
         except Exception:
             pass
 
+        # Persistent trade journal (SQLite) for /monthly and /weekly reports
+        try:
+            from trade_journal_india import record_trade as _jrec
+            _jrec(
+                symbol      = symbol,
+                direction   = pos.direction,
+                entry_price = pos.entry_price,
+                exit_price  = exit_price,
+                quantity    = pos.quantity,
+                pnl         = pnl,
+            )
+        except Exception:
+            pass
+
         _tg(
             f"INDIA BOT Position Closed -- {symbol}\n"
             f"--------------------------------\n"
@@ -909,6 +953,12 @@ class KingTradesIndia:
         try:
             from daily_intelligence_india import send_eod_report as _eod
             _eod()
+        except Exception:
+            pass
+        # Monthly auto-report: send on the 1st of the month
+        try:
+            from trade_journal_india import maybe_send_monthly_summary
+            maybe_send_monthly_summary(_tg)
         except Exception:
             pass
 
@@ -1470,6 +1520,37 @@ class KingTradesIndia:
                         _tg("🔍 Scanning for today's A-grade setups… (a few seconds)")
                         _tg(self._build_today_setups())
 
+                    elif txt == "/monthly":
+                        try:
+                            now_ist = datetime.now(IST)
+                            from trade_journal_india import format_monthly_report
+                            _tg(format_monthly_report(now_ist.year, now_ist.month))
+                        except Exception as _me:
+                            _tg(f"Monthly report error: {_me}")
+
+                    elif txt.startswith("/monthly "):
+                        # /monthly 2026-05 or /monthly 5 or /monthly May
+                        try:
+                            arg = raw_txt.split(None, 1)[1].strip()
+                            if "-" in arg:
+                                yr, mo = arg.split("-", 1)
+                                year_q, month_q = int(yr), int(mo)
+                            else:
+                                import calendar as _cal
+                                month_q = int(arg) if arg.isdigit() else list(_cal.month_abbr).index(arg.capitalize()[:3])
+                                year_q  = datetime.now(IST).year
+                            from trade_journal_india import format_monthly_report
+                            _tg(format_monthly_report(year_q, month_q))
+                        except Exception as _me:
+                            _tg(f"Usage: /monthly or /monthly 2026-05\nError: {_me}")
+
+                    elif txt == "/weekly":
+                        try:
+                            from trade_journal_india import format_weekly_report
+                            _tg(format_weekly_report())
+                        except Exception as _we:
+                            _tg(f"Weekly report error: {_we}")
+
                     # -- Manual order commands ---
                     elif txt.startswith("/buy ") or txt.startswith("/b "):
                         parts = raw_txt.split()[1:]
@@ -1522,9 +1603,17 @@ class KingTradesIndia:
                             "/confirm — execute pending order\n"
                             "/cancel  — abort pending order\n"
                             "/close SYMBOL — exit open position\n"
-                            "/chart SYMBOL — TradingView link\n"
-                            "/status — portfolio + India OODA\n"
-                            "/today — scan for today's A-grade setups now\n\n"
+                            "/chart SYMBOL — TradingView link\n\n"
+                            "📊 REPORTS\n"
+                            "/status  — live P&L + open positions\n"
+                            "/today   — scan for today's A-grade setups\n"
+                            "/weekly  — this week's P&L + win rate\n"
+                            "/monthly — this month's P&L + win rate\n"
+                            "/monthly 2026-05 — specific month report\n\n"
+                            "⚙️ CONTROLS\n"
+                            "/pause  — pause new entries\n"
+                            "/resume — resume after pause\n"
+                            "/kill   — emergency stop + square off\n\n"
                             "📡 TradingView webhooks also supported\n"
                             "Set alert webhook to your VPS IP:8888/tv"
                         )
