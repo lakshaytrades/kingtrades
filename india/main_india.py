@@ -1729,6 +1729,18 @@ class KingTradesIndia:
                         except Exception as _de:
                             _tg(f"Data status error: {_de}")
 
+                    elif txt == "/invest":
+                        _tg("💼 Building your momentum portfolio (the strategy that "
+                            "beat buy-and-hold in 15y research)… ~60s")
+                        def _do_invest():
+                            try:
+                                from momentum_invest import format_invest_report
+                                _tg(format_invest_report())
+                            except Exception as _ie:
+                                _tg(f"Invest report error: {_ie}")
+                        import threading as _th
+                        _th.Thread(target=_do_invest, daemon=True).start()
+
                     elif txt == "/research":
                         _tg("🔬 Running NSE strategy research on real 15y data… "
                             "(~60-90s, you'll get the verdict here)")
@@ -1802,7 +1814,8 @@ class KingTradesIndia:
                             "/monthly 2026-05 — specific month report\n"
                             "/proof   — 90-day forward-test GO/NO-GO report\n"
                             "/research — re-run NSE backtest after real costs\n"
-                            "/data    — active data feed + live price sample\n\n"
+                            "/data    — active data feed + live price sample\n"
+                            "/invest  — yearly momentum portfolio (~21% backtest)\n\n"
                             "⚙️ CONTROLS\n"
                             "/pause  — pause new entries\n"
                             "/resume — resume after pause\n"
