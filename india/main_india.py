@@ -145,6 +145,7 @@ class KingTradesIndia:
         self._generator = None
         self._watchlist : List[str]             = []
         self._positions : Dict[str, OpenPosition] = {}
+        self._shadow_positions : Dict[str, dict] = {}   # manual-mode signal tracking
         self._scanned   : set                   = set()
         self._stats     = DayStats()
         self._running   = True
@@ -262,6 +263,7 @@ class KingTradesIndia:
                 # -- Force square-off -----------------------------------------
                 if t >= config.SQUAREOFF_TIME_IST:
                     self._force_square_off()
+                    self._square_off_shadows()   # journal open manual-mode signals
                     self._send_eod_report()
                     logger.info("Square-off complete. Shutting down for the day.")
                     break
@@ -271,6 +273,7 @@ class KingTradesIndia:
                     if not self._stats.circuit_hit:
                         self._scan_for_signals(t)
                     self._manage_positions()
+                    self._manage_shadow_positions()   # track manual-mode signal edge
                     self._write_state_file()
 
                 # -- Adaptive scan interval ------------------------------------
@@ -485,8 +488,22 @@ class KingTradesIndia:
 
             # ── MANUAL SIGNALS MODE: alert Telegram, user places in Dhan ──
             if getattr(config, 'MANUAL_SIGNALS_ONLY', True):
-                self._send_manual_signal_alert(signal_obj, qty)
+                sent = self._send_manual_signal_alert(signal_obj, qty)
                 self._last_trade_ts = _time.monotonic()
+                # Shadow-track the signal so /proof, /monthly, /weekly measure
+                # the bot's REAL edge even though we place no order ourselves.
+                if sent and symbol not in self._shadow_positions:
+                    self._shadow_positions[symbol] = {
+                        "direction": signal_obj.direction,
+                        "entry":     signal_obj.entry_price,
+                        "sl":        signal_obj.stop_loss,
+                        "t1":        signal_obj.target_1,
+                        "t2":        signal_obj.target_2,
+                        "qty":       qty,
+                        "score":     getattr(signal_obj, "signal_score", 0.0),
+                        "grade":     getattr(signal_obj, "quality_grade", ""),
+                        "ts":        _time.monotonic(),
+                    }
                 continue
 
             # ── AUTO-EXECUTION (MANUAL_SIGNALS_ONLY=False in .env) ────────
@@ -524,8 +541,14 @@ class KingTradesIndia:
                 _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
                 try:
                     self._executor.square_off_all(self._executor.get_open_positions())
-                except Exception:
-                    pass
+                except Exception as _rev_e:
+                    # Reversal itself failed -> we may hold a NAKED unhedged
+                    # position. This needs a human NOW.
+                    logger.error(f"{symbol}: REVERSAL FAILED -- naked position! {_rev_e}",
+                                 exc_info=True)
+                    _tg(f"🚨 INDIA BOT URGENT: {symbol} has NO STOP and reversal "
+                        f"FAILED. You may hold an unhedged position — square it "
+                        f"off MANUALLY in Dhan NOW. ({_rev_e})")
                 continue
 
             pos = OpenPosition(
@@ -635,11 +658,12 @@ class KingTradesIndia:
 
     # -- Manual signal alert --------------------------------------------------
 
-    def _send_manual_signal_alert(self, sig, qty: int) -> None:
+    def _send_manual_signal_alert(self, sig, qty: int) -> bool:
         """
         Send a rich Telegram alert with everything needed to place the order
         manually in Dhan app. Called instead of auto-execution when
-        MANUAL_SIGNALS_ONLY=True.
+        MANUAL_SIGNALS_ONLY=True. Returns True if an alert was actually sent,
+        False if suppressed by the dedup window.
         """
         # Dedup: don't alert the same symbol twice within 10 minutes
         if not hasattr(self, "_alerted_symbols"):
@@ -647,7 +671,7 @@ class KingTradesIndia:
         last_alert = self._alerted_symbols.get(sig.symbol, 0)
         if _time.monotonic() - last_alert < 600:
             logger.info(f"{sig.symbol}: signal alert suppressed (sent <10 min ago)")
-            return
+            return False
         self._alerted_symbols[sig.symbol] = _time.monotonic()
 
         symbol    = sig.symbol
@@ -750,6 +774,73 @@ class KingTradesIndia:
 
         _tg(msg)
         logger.info(f"[MANUAL ALERT] {direction} {symbol} score={score:.0f} qty={qty} sent to Telegram")
+        return True
+
+    # -- Shadow tracking (manual mode edge measurement) -----------------------
+
+    def _journal_shadow(self, sym: str, sp: dict, exit_price: float) -> None:
+        """Journal a shadow (manual-mode) signal outcome for the proof reports."""
+        if sp["direction"] == "LONG":
+            pnl = (exit_price - sp["entry"]) * sp["qty"]
+        else:
+            pnl = (sp["entry"] - exit_price) * sp["qty"]
+        try:
+            from trade_journal_india import record_trade as _jrec
+            _jrec(symbol=sym, direction=sp["direction"], entry_price=sp["entry"],
+                  exit_price=exit_price, quantity=sp["qty"], pnl=pnl,
+                  score=sp.get("score", 0.0), grade=sp.get("grade", ""))
+        except Exception as e:
+            logger.warning(f"shadow journal write failed for {sym}: {e}")
+        logger.info(f"[SHADOW] {sym} {sp['direction']} closed @ Rs.{exit_price:.2f} "
+                    f"P&L Rs.{pnl:+.2f} (signal-quality estimate)")
+
+    def _manage_shadow_positions(self):
+        """
+        In MANUAL_SIGNALS_ONLY mode the bot places no orders, so it can't see
+        real P&L. To still measure the live EDGE for /proof, shadow-track every
+        alerted signal: follow price to SL or T1 and journal the hypothetical
+        outcome. Conservative model — exit at T1 (win) or SL (loss). This is a
+        SIGNAL-QUALITY estimate of the bot's edge, not your actual fills.
+        """
+        if not self._shadow_positions:
+            return
+        try:
+            ltp_map = get_multiple_ltp(list(self._shadow_positions.keys()), self._dhan)
+        except Exception:
+            ltp_map = {}
+        for sym in list(self._shadow_positions.keys()):
+            sp  = self._shadow_positions[sym]
+            ltp = ltp_map.get(sym, 0.0)
+            if ltp <= 0:
+                continue
+            exit_price = None
+            if sp["direction"] == "LONG":
+                if ltp <= sp["sl"]:
+                    exit_price = sp["sl"]
+                elif ltp >= sp["t1"]:
+                    exit_price = sp["t1"]
+            else:  # SHORT
+                if ltp >= sp["sl"]:
+                    exit_price = sp["sl"]
+                elif ltp <= sp["t1"]:
+                    exit_price = sp["t1"]
+            if exit_price is not None:
+                self._journal_shadow(sym, sp, exit_price)
+                del self._shadow_positions[sym]
+
+    def _square_off_shadows(self):
+        """At EOD, journal any open shadow signals at the last traded price."""
+        if not self._shadow_positions:
+            return
+        try:
+            ltp_map = get_multiple_ltp(list(self._shadow_positions.keys()), self._dhan)
+        except Exception:
+            ltp_map = {}
+        for sym in list(self._shadow_positions.keys()):
+            sp  = self._shadow_positions[sym]
+            ltp = ltp_map.get(sym, 0.0) or sp["entry"]
+            self._journal_shadow(sym, sp, ltp)
+            del self._shadow_positions[sym]
 
     # -- Position management --------------------------------------------------
 
@@ -916,8 +1007,8 @@ class KingTradesIndia:
                 quantity    = pos.quantity,
                 pnl         = pnl,
             )
-        except Exception:
-            pass
+        except Exception as e:
+            logger.warning(f"journal write failed for {symbol}: {e}")
 
         _tg(
             f"INDIA BOT Position Closed -- {symbol}\n"
