@@ -66,8 +66,13 @@ FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "78.0"))
 GRAND_SLAM_MIN_SCORE  = float(os.getenv("INDIA_GRAND_SLAM_MIN_SCORE", "82.0"))
 
 # -- ATR-based SL / TP --------------------------------------------------------
-ATR_SL_MULTIPLIER      = float(os.getenv("INDIA_ATR_SL_MULTIPLIER",     "1.5"))
-ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "3.0"))
+# SMALL/FAST-PROFIT mode (owner request): T1=1.1 ATR, T2=1.5 ATR — quick exits.
+# SL TIGHTENED to 0.75 ATR so the runner (T2) still keeps a 2:1 reward:risk;
+# without this, T2=1.5 vs SL=1.5 would be only 1:1, which loses after costs.
+# WARNING: tight stops get hit more by intraday noise -> lower win rate. Small
+# fast profits are mathematically the HARDEST style to make profitable.
+ATR_SL_MULTIPLIER      = float(os.getenv("INDIA_ATR_SL_MULTIPLIER",     "0.75"))
+ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "1.5"))
 
 # -- Live trading gate --------------------------------------------------------
 LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
@@ -117,8 +122,8 @@ NEWS_SENTIMENT_ENABLED  = _flag("INDIA_NEWS_SENTIMENT_ENABLED")  # MoneyControl/
 ML_INDIA_ENABLED        = _flag("INDIA_ML_INDIA_ENABLED")        # NSE-specific ML models
 
 # -- R:R + target config ------------------------------------------------------
-ATR_T1_MULTIPLIER       = float(os.getenv("INDIA_ATR_T1_MULT", "1.0"))   # T1 at 1:1
-MIN_RISK_REWARD         = float(os.getenv("INDIA_MIN_RR", "2.0"))
+ATR_T1_MULTIPLIER       = float(os.getenv("INDIA_ATR_T1_MULT", "1.1"))   # T1 = 1.1 ATR (small/fast)
+MIN_RISK_REWARD         = float(os.getenv("INDIA_MIN_RR", "1.4"))         # lowered so fast-profit signals pass
 MONTHLY_TARGET_PCT      = float(os.getenv("INDIA_MONTHLY_TARGET", "10.0"))
 DAILY_TARGET_PCT        = float(os.getenv("INDIA_DAILY_TARGET", "0.5"))
 
