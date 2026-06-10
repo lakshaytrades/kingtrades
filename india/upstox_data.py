@@ -100,12 +100,24 @@ def get_ohlcv(symbol: str, interval_min: int = 5) -> Optional[pd.DataFrame]:
         return None
     try:
         import requests
+        # 1) Intraday (works during market hours)
         url = f"{_API}/v3/historical-candle/intraday/{key}/minutes/{int(interval_min)}"
         r = requests.get(url, headers=_headers(), timeout=12)
-        if r.status_code != 200:
-            logger.debug(f"upstox ohlcv {symbol}: HTTP {r.status_code}")
-            return None
-        candles = r.json().get("data", {}).get("candles", [])
+        candles = []
+        if r.status_code == 200:
+            candles = r.json().get("data", {}).get("candles", []) or []
+
+        # 2) Fallback to HISTORICAL candles (works after hours / weekends / backtests)
+        if not candles:
+            import datetime as _dt
+            to_d = _dt.date.today().isoformat()
+            from_d = (_dt.date.today() - _dt.timedelta(days=10)).isoformat()
+            hurl = (f"{_API}/v3/historical-candle/{key}/minutes/"
+                    f"{int(interval_min)}/{to_d}/{from_d}")
+            hr = requests.get(hurl, headers=_headers(), timeout=12)
+            if hr.status_code == 200:
+                candles = hr.json().get("data", {}).get("candles", []) or []
+
         if not candles:
             return None
         rows = list(reversed(candles))   # Upstox returns newest-first
