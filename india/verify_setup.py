@@ -13,6 +13,11 @@ _BASE = Path(__file__).parent.parent
 sys.path.insert(0, str(_BASE))
 sys.path.insert(0, str(Path(__file__).parent))
 
+import logging as _lg
+for _n in ("data_fetch_alpaca", "auth_alpaca", "alpaca", "bar_cache",
+           "risk_manager", "signal_generator"):
+    _lg.getLogger(_n).setLevel(_lg.CRITICAL)
+
 try:
     from dotenv import load_dotenv
     load_dotenv(_BASE / ".env")

@@ -71,6 +71,10 @@ logging.basicConfig(
 logger = logging.getLogger("main_india")
 logging.getLogger("yfinance").setLevel(logging.CRITICAL)
 logging.getLogger("peewee").setLevel(logging.CRITICAL)
+# Silence US-bot Alpaca modules pulled in transitively — India doesn't use them.
+for _noisy in ("data_fetch_alpaca", "auth_alpaca", "alpaca", "bar_cache",
+               "risk_manager", "signal_generator"):
+    logging.getLogger(_noisy).setLevel(logging.CRITICAL)
 
 
 # -- Telegram helper ----------------------------------------------------------
