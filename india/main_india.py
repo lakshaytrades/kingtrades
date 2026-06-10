@@ -363,6 +363,18 @@ class KingTradesIndia:
         if len(self._positions) >= config.MAX_POSITIONS:
             return
 
+        # -- Supervisor halt: capital-protection layer stops new trades -------
+        # supervisor_india.py writes this flag when a hard loss limit is hit.
+        try:
+            from pathlib import Path as _P
+            if _P("/tmp/india_halt.flag").exists():
+                if not self._stats.circuit_hit:
+                    self._stats.circuit_hit = True
+                    logger.warning("Supervisor HALT flag set — no new trades today")
+                return
+        except Exception:
+            pass
+
         # -- Idle scalp state -------------------------------------------------
         _now_mono = _time.monotonic()
         _idle_min = (_now_mono - self._last_trade_ts) / 60 if self._last_trade_ts > 0 else 999

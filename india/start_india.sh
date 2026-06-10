@@ -95,6 +95,16 @@ else
     echo $! > "$WATCHDOG_PID_FILE"
 fi
 
+# Start capital-protection supervisor (halts trading on hard loss limits)
+SUPERVISOR_PID_FILE="$ROOT_DIR/logs/india_supervisor.pid"
+if [ -f "$SUPERVISOR_PID_FILE" ] && kill -0 "$(cat "$SUPERVISOR_PID_FILE")" 2>/dev/null; then
+    :  # already running
+else
+    rm -f "$SUPERVISOR_PID_FILE"
+    nohup python3 "$BOT_DIR/supervisor_india.py" >> "$ROOT_DIR/logs/india_supervisor.log" 2>&1 &
+    echo $! > "$SUPERVISOR_PID_FILE"
+fi
+
 if [ "$CRON_MODE" -eq 0 ]; then
     sleep 2
     if screen -list | grep -q "$SESSION"; then
