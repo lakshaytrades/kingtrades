@@ -76,6 +76,10 @@ ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "2.5"))
 # -- Live trading gate --------------------------------------------------------
 LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
 
+# Hard cap on any single live order's rupee value. A bug or runaway can NEVER
+# place an order bigger than this. With a tiny test account keep it low.
+MAX_LIVE_ORDER_VALUE = float(os.getenv("INDIA_MAX_LIVE_ORDER_VALUE", "2000"))
+
 # -- Manual signals mode: bot sends alerts, YOU place orders in Dhan app -----
 # True  = bot detects setups and messages you → you trade manually in Dhan
 # False = bot auto-executes in Dhan (requires LIVE_TRADING_ENABLED=True)

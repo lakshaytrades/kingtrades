@@ -185,7 +185,14 @@ class KingTradesIndia:
         import data_fetch_dhan as _dfd
         _dfd.set_dhan_client(self._dhan)
 
-        self._executor = get_executor(self._dhan, config.LIVE_TRADING_ENABLED)
+        # Executor: use Upstox for live orders when an Upstox token is set,
+        # else Dhan (or paper). Upstox = no IP-whitelist problem.
+        if config.LIVE_TRADING_ENABLED and getattr(config, "UPSTOX_ENABLED", False):
+            from execution_upstox import get_executor as _get_ux_exec
+            self._executor = _get_ux_exec(config.LIVE_TRADING_ENABLED)
+            logger.info("Executor: Upstox (LIVE orders)")
+        else:
+            self._executor = get_executor(self._dhan, config.LIVE_TRADING_ENABLED)
 
         # Watchlist
         self._watchlist = get_active_watchlist(self._dhan)
