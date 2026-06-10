@@ -294,6 +294,10 @@ def build_report(capital: float = 5000.0) -> str:
 
 
 def send_to_telegram(text: str) -> bool:
+    # US bot disabled by owner — never send unless explicitly re-enabled
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return False
     """Send the report to Telegram."""
     try:
         import requests

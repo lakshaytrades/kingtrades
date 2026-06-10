@@ -360,6 +360,10 @@ class TelegramAlerter:
     def _send(self, text: str, image_buf: Optional[io.BytesIO] = None,
               parse_mode: str = "Markdown") -> bool:
         """Broadcast a message to every configured chat. True if any succeed."""
+        # US bot disabled by owner — never send unless explicitly re-enabled
+        import os as _os_g
+        if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+            return False
         if not self._ready:
             logger.debug("Telegram not ready — alert suppressed")
             return False

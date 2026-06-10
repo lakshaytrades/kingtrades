@@ -36,6 +36,9 @@ _last_india_ts    = 0.0
 
 
 def _tg(text: str) -> bool:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return False
     token = os.getenv("TELEGRAM_BOT_TOKEN", "")
     chat  = os.getenv("TELEGRAM_CHAT_ID", "")
     if not token or not chat:

@@ -72,6 +72,9 @@ NSE_BROKERAGE_PCT    = 0.0003  # Zerodha/Groww ~0.03% per side (NSE intraday MIS
 
 # ── Telegram ────────────────────────────────────────────────────────────────
 def _tg(text: str) -> bool:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return False
     if not TELEGRAM_TOKEN or not TELEGRAM_CHAT:
         return False
     try:

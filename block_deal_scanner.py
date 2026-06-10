@@ -36,6 +36,9 @@ _NSE_BLOCK_URL = "https://nseindia.com/api/block-deals"
 
 
 def _tg(text: str) -> None:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return
     if not _TELEGRAM_TOKEN or not _TELEGRAM_CHAT:
         return
     try:

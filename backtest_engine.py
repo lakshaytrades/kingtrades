@@ -872,6 +872,9 @@ def format_backtest_report(results: Dict) -> str:
 # =============================================================================
 
 def save_and_send_report(report_text: str) -> None:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return
     """Save to logs/backtest_YYYY-MM-DD.txt and send to Telegram."""
     try:
         # Save to file

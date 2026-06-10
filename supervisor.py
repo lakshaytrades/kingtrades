@@ -84,6 +84,9 @@ logger = logging.getLogger("supervisor")
 # ── Telegram helper ──────────────────────────────────────────────────────────
 
 def tg(msg: str, emoji: str = "🤖") -> None:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return
     """Send message to Telegram (supervisor channel — same chat as bot)."""
     if not BOT_TOKEN or not CHAT_ID:
         logger.warning("Telegram not configured — skipping alert")

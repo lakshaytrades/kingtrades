@@ -301,6 +301,9 @@ def broadcast_trade_plan(signal, alerter=None) -> bool:
 
 
 def broadcast_scalp_plan(signal, alerter=None, scalp_type: str = "EXPERT SCALP") -> bool:
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return False
     """
     Lightweight pre-trade broadcast specifically for scalp signals.
     Compact format — scalps are fast, message must be read instantly.

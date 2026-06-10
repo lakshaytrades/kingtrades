@@ -50,6 +50,10 @@ logger = logging.getLogger(__name__)
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
 def _send(msg: str):
+    # US bot disabled by owner — never send unless explicitly re-enabled
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return
     try:
         try:
             from dotenv import load_dotenv

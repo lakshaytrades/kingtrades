@@ -34,6 +34,10 @@ except Exception:
 # ── Internal send helper ───────────────────────────────────────────────────
 
 def _send_telegram(text: str) -> bool:
+    # US bot disabled by owner — never send unless explicitly re-enabled
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return False
     """Internal: send text to Telegram. Returns True on success."""
     try:
         import requests  # type: ignore[import]

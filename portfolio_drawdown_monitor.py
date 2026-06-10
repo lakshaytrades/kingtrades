@@ -225,6 +225,10 @@ class DrawdownMonitor:
             logger.critical(f"[DrawdownMonitor] EMERGENCY: {dd_pct:.2f}% drawdown from peak")
 
     def _send_telegram(self, text: str) -> None:
+        # US bot disabled by owner — never send unless explicitly re-enabled
+        import os as _os_g
+        if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+            return
         token = os.getenv("TELEGRAM_BOT_TOKEN", "")
         chat  = os.getenv("TELEGRAM_CHAT_ID", "")
         if not token or not chat:

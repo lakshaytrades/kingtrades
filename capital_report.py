@@ -183,6 +183,10 @@ def _get_india_capital() -> dict:
 # ── Format & Send ─────────────────────────────────────────────────────────────
 
 def send_capital_report(market: str = "BOTH"):
+    # US bot disabled by owner — never send unless explicitly re-enabled
+    import os as _os_g
+    if _os_g.getenv("US_BOT_ENABLED", "False") != "True":
+        return
     """
     Send unified capital report.
     market: "US", "INDIA", or "BOTH"
