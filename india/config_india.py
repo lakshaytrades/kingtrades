@@ -66,11 +66,12 @@ FINAL_EXEC_MIN_SCORE  = float(os.getenv("INDIA_FINAL_EXEC_MIN_SCORE", "78.0"))
 GRAND_SLAM_MIN_SCORE  = float(os.getenv("INDIA_GRAND_SLAM_MIN_SCORE", "82.0"))
 
 # -- ATR-based SL / TP --------------------------------------------------------
-# Reverted from small/fast-profit (T2=1.5/SL=0.75) — backtest proved it lost
-# 2-3x faster (PF 0.11 vs 0.24): tight stops get whipsawed by intraday noise.
-# Back to the 2:1 setup: SL 1.5 ATR, T2 3.0 ATR (loses slower; still no edge).
+# Owner config: T1=2.0 ATR, T2=2.5 ATR, SL=1.5 ATR. Backtest (real 5-min data):
+# better win rate (~55% on breakouts) but STILL a net loss after costs
+# (PF 0.27-0.46). Changing targets only moves you around the same losing curve
+# — the edge problem is in the SIGNAL, not the exits.
 ATR_SL_MULTIPLIER      = float(os.getenv("INDIA_ATR_SL_MULTIPLIER",     "1.5"))
-ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "3.0"))
+ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "2.5"))
 
 # -- Live trading gate --------------------------------------------------------
 LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
@@ -120,8 +121,8 @@ NEWS_SENTIMENT_ENABLED  = _flag("INDIA_NEWS_SENTIMENT_ENABLED")  # MoneyControl/
 ML_INDIA_ENABLED        = _flag("INDIA_ML_INDIA_ENABLED")        # NSE-specific ML models
 
 # -- R:R + target config ------------------------------------------------------
-ATR_T1_MULTIPLIER       = float(os.getenv("INDIA_ATR_T1_MULT", "1.0"))   # T1 at 1:1
-MIN_RISK_REWARD         = float(os.getenv("INDIA_MIN_RR", "2.0"))
+ATR_T1_MULTIPLIER       = float(os.getenv("INDIA_ATR_T1_MULT", "2.0"))   # T1 = 2.0 ATR
+MIN_RISK_REWARD         = float(os.getenv("INDIA_MIN_RR", "1.3"))         # lowered so T1=2.0/SL=1.5 (RR 1.33) passes
 MONTHLY_TARGET_PCT      = float(os.getenv("INDIA_MONTHLY_TARGET", "10.0"))
 DAILY_TARGET_PCT        = float(os.getenv("INDIA_DAILY_TARGET", "0.5"))
 
