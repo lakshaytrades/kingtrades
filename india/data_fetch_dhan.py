@@ -231,11 +231,9 @@ _OHLCV_CACHE_TTL = 290.0   # cache just under scan interval (5 min)
 def _get_nse_session():
     """
     Return a warmed-up requests.Session with valid NSE cookies.
-    3-step warmup mirrors what a real browser does before loading charts:
-      1. Main site → base cookies (nsit, nseappid, etc.)
-      2. Market data page → trading-specific cookies
-      3. Charting subdomain main page → charting-specific cookies
-    Referer must always be nseindia.com (not charting subdomain) for CORS.
+    2-step warmup for nseindia.com (allIndices, VIX, sector data).
+    NOTE: charting.nseindia.com is Akamai-blocked on datacenter IPs —
+    do NOT add it to warmup or it taints this session for allIndices.
     """
     global _nse_session, _nse_session_ts
     import requests as _req
@@ -246,28 +244,14 @@ def _get_nse_session():
     sess = _req.Session()
     sess.headers.update(_NSE_CHART_HDR)
     try:
-        # Step 1: main NSE page — gets nsit, nseappid, ak_bmsc cookies
+        # Step 1: main NSE page — base cookies (nsit, nseappid etc.)
         sess.get(_NSE_MAIN, timeout=12)
-        _time.sleep(0.6)
-        # Step 2: market data page — gets additional trading cookies
+        _time.sleep(0.5)
+        # Step 2: market data page — trading-specific cookies
         sess.get(
             f"{_NSE_MAIN}/market-data/live-equity-market",
             timeout=12,
             headers={"Referer": _NSE_MAIN + "/"},
-        )
-        _time.sleep(0.6)
-        # Step 3: charting subdomain — gets charting-specific session token
-        # Referer = nseindia.com (same-site origin, required by NSE CORS policy)
-        sess.get(
-            _NSE_CHART_BASE,
-            timeout=12,
-            headers={
-                "Referer":        _NSE_MAIN + "/",
-                "Origin":         _NSE_MAIN,
-                "sec-fetch-site": "same-site",
-                "sec-fetch-mode": "navigate",
-                "sec-fetch-dest": "document",
-            },
         )
         _time.sleep(0.3)
     except Exception as e:
@@ -389,11 +373,53 @@ def _fetch_nse_chart(symbol: str, interval_min: int) -> Optional[pd.DataFrame]:
     return None
 
 
+def _dhan_ohlcv(symbol: str, interval_min: int, client) -> Optional[pd.DataFrame]:
+    """Fetch OHLCV from Dhan intraday_minute_data API. Returns DataFrame or None."""
+    security_id = get_security_id(symbol)
+    if not security_id:
+        return None
+    dhan_iv   = str(interval_min) if interval_min in (1, 5, 15, 25, 60) else "5"
+    from_date = (datetime.now(IST) - timedelta(days=7)).strftime("%Y-%m-%d")
+    to_date   = datetime.now(IST).strftime("%Y-%m-%d")
+    for attempt in range(3):
+        try:
+            resp = client.intraday_minute_data(
+                security_id=security_id, exchange_segment="NSE_EQ",
+                instrument_type="EQUITY", interval=dhan_iv,
+                from_date=from_date, to_date=to_date,
+            )
+            if resp and resp.get("status") == "success":
+                raw = resp.get("data", {})
+                ts  = raw.get("timestamp") or raw.get("start_Time") or []
+                if ts:
+                    idx = (
+                        pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
+                        if isinstance(ts[0], (int, float))
+                        else pd.to_datetime(ts, utc=True).tz_convert("Asia/Kolkata")
+                    )
+                    df2 = pd.DataFrame({
+                        "open":   raw.get("open",   []),
+                        "high":   raw.get("high",   []),
+                        "low":    raw.get("low",    []),
+                        "close":  raw.get("close",  []),
+                        "volume": raw.get("volume", []),
+                    }, index=idx).dropna()
+                    if not df2.empty:
+                        return df2
+            break
+        except Exception as e:
+            _time.sleep(2 ** attempt)
+            logger.debug(f"Dhan OHLCV {symbol}: {e}")
+    return None
+
+
 def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional[pd.DataFrame]:
     """
-    Fetch OHLCV candles from NSE charting API (primary) or Dhan (fallback).
-    Returns DataFrame: lowercase columns open/high/low/close/volume, IST-indexed.
-    Cached for ~5 minutes to stay well within NSE's rate limits.
+    Fetch OHLCV candles.
+    Priority: Dhan API (primary, works on any server IP) →
+              NSE charting (fallback, Akamai-blocked on datacenter IPs).
+    Returns DataFrame with open/high/low/close/volume, IST-indexed.
+    Cached ~5 minutes.
     """
     cache_key = f"{symbol}_{interval}"
     now_mono  = _time.monotonic()
@@ -403,53 +429,21 @@ def get_ohlcv(symbol: str, interval: str = "5m", period: str = "5d") -> Optional
 
     interval_min = int(_NSE_INTERVAL_MAP.get(interval, "5"))
 
-    # ── Primary: NSE charting API ─────────────────────────────────────────────
+    # ── Primary: Dhan intraday API ────────────────────────────────────────────
+    client = _dhan_client_ref
+    if client is not None:
+        df = _dhan_ohlcv(symbol, interval_min, client)
+        if df is not None and not df.empty:
+            _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
+            return df
+
+    # ── Fallback: NSE charting API (works if not Akamai-blocked) ─────────────
     df = _fetch_nse_chart(symbol, interval_min)
     if df is not None and not df.empty:
         _ohlcv_cache[cache_key] = {"df": df, "ts": now_mono}
         return df
 
-    # ── Fallback: Dhan intraday API (if credentials available) ────────────────
-    client = _dhan_client_ref
-    if client is not None:
-        security_id = get_security_id(symbol)
-        if security_id:
-            dhan_iv   = str(interval_min) if interval_min in (1,5,15,25,60) else "5"
-            lookback  = 7
-            from_date = (datetime.now(IST) - timedelta(days=lookback)).strftime("%Y-%m-%d")
-            to_date   = datetime.now(IST).strftime("%Y-%m-%d")
-            for attempt in range(3):
-                try:
-                    resp = client.intraday_minute_data(
-                        security_id=security_id, exchange_segment="NSE_EQ",
-                        instrument_type="EQUITY", interval=dhan_iv,
-                        from_date=from_date, to_date=to_date,
-                    )
-                    if resp and resp.get("status") == "success":
-                        raw = resp.get("data", {})
-                        ts   = raw.get("timestamp") or raw.get("start_Time") or []
-                        if ts:
-                            idx = (
-                                pd.to_datetime(ts, unit="s", utc=True).tz_convert("Asia/Kolkata")
-                                if isinstance(ts[0], (int, float))
-                                else pd.to_datetime(ts, utc=True).tz_convert("Asia/Kolkata")
-                            )
-                            df2 = pd.DataFrame({
-                                "open":   raw.get("open",   []),
-                                "high":   raw.get("high",   []),
-                                "low":    raw.get("low",    []),
-                                "close":  raw.get("close",  []),
-                                "volume": raw.get("volume", []),
-                            }, index=idx).dropna()
-                            if not df2.empty:
-                                _ohlcv_cache[cache_key] = {"df": df2, "ts": now_mono}
-                                return df2
-                    break
-                except Exception as e:
-                    _time.sleep(2 ** attempt)
-                    logger.debug(f"Dhan OHLCV fallback {symbol}: {e}")
-
-    logger.debug(f"{symbol}: OHLCV unavailable from both NSE and Dhan")
+    logger.debug(f"{symbol}: OHLCV unavailable from Dhan and NSE charting")
     return None
 
 
