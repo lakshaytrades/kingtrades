@@ -1770,6 +1770,51 @@ class KingTradesIndia:
                         import threading as _th
                         _th.Thread(target=_do_invest, daemon=True).start()
 
+                    elif txt in ("/upstox_login", "/upstoxlogin", "/uplogin"):
+                        # Step 1: send the Upstox login link (refresh from phone)
+                        try:
+                            from auth_upstox import _load_cfg, _login_url
+                            _load_cfg()
+                            import os as _os
+                            ak = _os.getenv("UPSTOX_API_KEY", "")
+                            rd = _os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1")
+                            if not ak:
+                                _tg("Set UPSTOX_API_KEY + UPSTOX_API_SECRET in .env first.")
+                            else:
+                                _tg("🔑 UPSTOX TOKEN REFRESH (Step 1/2)\n"
+                                    "Tap this link, log into Upstox:\n\n"
+                                    f"{_login_url(ak, rd)}\n\n"
+                                    "After login your browser shows a URL with code=XXXX\n"
+                                    "(page may say 'can't reach site' — that's fine).\n"
+                                    "Step 2: send  /upstox_token XXXX")
+                        except Exception as _ue:
+                            _tg(f"Upstox login error: {_ue}")
+
+                    elif txt.startswith("/upstox_token ") or txt.startswith("/uptoken "):
+                        # Step 2: exchange the code -> save token to .env
+                        try:
+                            import re as _re, os as _os
+                            from auth_upstox import _load_cfg, _exchange, _save_token
+                            _load_cfg()
+                            code = raw_txt.split(None, 1)[1].strip()
+                            m = _re.search(r"code=([^&\s]+)", code)
+                            if m:
+                                code = m.group(1)
+                            ak = _os.getenv("UPSTOX_API_KEY", "")
+                            sk = _os.getenv("UPSTOX_API_SECRET", "")
+                            rd = _os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1")
+                            resp = _exchange(code, ak, sk, rd)
+                            tok = resp.get("access_token")
+                            if tok:
+                                _save_token(tok)
+                                _os.environ["UPSTOX_ACCESS_TOKEN"] = tok
+                                _tg("✅ Upstox token refreshed & saved. Good for today.\n"
+                                    "Restart not needed for data; for live orders restart the bot.")
+                            else:
+                                _tg(f"❌ Token exchange failed: {resp}")
+                        except Exception as _te:
+                            _tg(f"Upstox token error: {_te}")
+
                     elif txt == "/research":
                         _tg("🔬 Running NSE strategy research on real 15y data… "
                             "(~60-90s, you'll get the verdict here)")
@@ -1844,7 +1889,8 @@ class KingTradesIndia:
                             "/proof   — 90-day forward-test GO/NO-GO report\n"
                             "/research — re-run NSE backtest after real costs\n"
                             "/data    — active data feed + live price sample\n"
-                            "/invest  — yearly momentum portfolio (~21% backtest)\n\n"
+                            "/invest  — yearly momentum portfolio (~21% backtest)\n"
+                            "/upstox_login — refresh Upstox token from phone (30s)\n\n"
                             "⚙️ CONTROLS\n"
                             "/pause  — pause new entries\n"
                             "/resume — resume after pause\n"
