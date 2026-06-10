@@ -748,8 +748,12 @@ class KingTradesIndia:
         # Dedup: don't alert the same symbol twice within 10 minutes
         if not hasattr(self, "_alerted_symbols"):
             self._alerted_symbols: dict = {}
-        last_alert = self._alerted_symbols.get(sig.symbol, 0)
-        if _time.monotonic() - last_alert < 600:
+        # Only suppress if this symbol was ACTUALLY alerted recently. Using a
+        # default of 0 was a bug: right after startup monotonic() < 600, so
+        # `monotonic() - 0 < 600` was True and the FIRST alert for every symbol
+        # got silently suppressed for the bot's first 10 minutes.
+        last_alert = self._alerted_symbols.get(sig.symbol)
+        if last_alert is not None and _time.monotonic() - last_alert < 600:
             logger.info(f"{sig.symbol}: signal alert suppressed (sent <10 min ago)")
             return False
         self._alerted_symbols[sig.symbol] = _time.monotonic()
