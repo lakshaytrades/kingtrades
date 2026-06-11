@@ -343,13 +343,18 @@ def health_check():
             _restart_bot()
 
     # ── Signal drought ────────────────────────────────────────────────────────
-    if _count_recent_signals(SIGNAL_DROUGHT_MINS) == 0:
-        threshold = _read_current_threshold()
-        if threshold > SCORE_MIN_FLOOR + SCORE_STEP_DOWN:
-            new_thresh = threshold - SCORE_STEP_DOWN
-            _apply_threshold(new_thresh,
-                             f"no signals in {SIGNAL_DROUGHT_MINS}min — loosening gate",
-                             state)
+    # DISABLED by owner: auto-loosening the quality gate to force trades is the
+    # exact behavior that causes low-quality losing trades. No signals usually
+    # means no good setups (or data issue) — the fix is NOT to lower standards.
+    # Re-enable only with INDIA_WATCHDOG_AUTOLOOSEN=True (not recommended).
+    if os.getenv("INDIA_WATCHDOG_AUTOLOOSEN", "False") == "True":
+        if _count_recent_signals(SIGNAL_DROUGHT_MINS) == 0:
+            threshold = _read_current_threshold()
+            if threshold > SCORE_MIN_FLOOR + SCORE_STEP_DOWN:
+                new_thresh = threshold - SCORE_STEP_DOWN
+                _apply_threshold(new_thresh,
+                                 f"no signals in {SIGNAL_DROUGHT_MINS}min — loosening gate",
+                                 state)
 
     # ── Low win rate ──────────────────────────────────────────────────────────
     win_rate = _get_recent_win_rate()
