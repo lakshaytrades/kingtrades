@@ -13,18 +13,18 @@ CRON_MODE=0
 mkdir -p "$ROOT_DIR/logs"
 cd "$BOT_DIR"
 
-# Dependency preflight: the dhanhq SDK is mandatory for live data + orders.
-# Without it the bot silently falls back to paper mode with no market data,
-# so install requirements before launching if it's missing.
-if ! python3 -c "import dhanhq" >/dev/null 2>&1; then
-    echo "Installing India bot dependencies (dhanhq missing)..."
+# Dependency preflight: the bot needs `requests` (for Upstox/Yahoo data) and
+# pandas. dhanhq is OPTIONAL (only for Dhan, which we don't use — Upstox+Yahoo
+# provide all data). Only warn if the CORE deps are missing.
+if ! python3 -c "import requests, pandas" >/dev/null 2>&1; then
+    echo "Installing India bot dependencies (requests/pandas missing)..."
     python3 -m pip install -q -r "$BOT_DIR/requirements_india.txt" 2>&1 | tail -3
-    if ! python3 -c "import dhanhq" >/dev/null 2>&1; then
-        echo "❌ dhanhq still not importable after install. Fix manually:"
-        echo "   python3 -m pip install dhanhq"
-        echo "   (the bot will run in PAPER mode with no live data until this is fixed)"
+    if ! python3 -c "import requests, pandas" >/dev/null 2>&1; then
+        echo "⚠️  requests/pandas not importable. Try:"
+        echo "   python3 -m pip install --break-system-packages requests pandas"
     fi
 fi
+# (dhanhq intentionally NOT required — data comes from Upstox + Yahoo)
 
 # If screen session exists and is alive, do nothing
 if screen -list 2>/dev/null | grep -q "$SESSION"; then
