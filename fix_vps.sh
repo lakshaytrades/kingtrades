@@ -30,7 +30,7 @@ cd "$BOT_DIR"
 # ─────────────────────────────────────────────────────────────
 # 2. Git fetch and reset to origin branch
 # ─────────────────────────────────────────────────────────────
-TARGET_BRANCH="claude/nse-momentum-groww-bot-hvkv9"
+TARGET_BRANCH="claude/live-market-code-recovery-b6Wsw"
 echo "[fix_vps] Fetching latest code from origin..."
 git fetch origin
 

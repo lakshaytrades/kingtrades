@@ -13,7 +13,7 @@ for _d in /opt/kingtrades /root/kingtrades ~/kingtrades; do
 done
 [ -z "$INSTALL_DIR" ] && exit 1
 
-BRANCH="claude/nse-momentum-groww-bot-hvkv9"
+BRANCH="claude/live-market-code-recovery-b6Wsw"
 SERVICE="kingtrades"
 LOG="/var/log/kingtrades-deploy.log"
 

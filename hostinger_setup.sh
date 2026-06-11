@@ -9,7 +9,7 @@
 set -e
 
 INSTALL_DIR="/opt/kingtrades"
-BRANCH="claude/nse-momentum-groww-bot-hvkv9"
+BRANCH="claude/live-market-code-recovery-b6Wsw"
 REPO="https://github.com/lakshaytrades/kingtrades.git"
 
 echo ""
