@@ -1802,27 +1802,36 @@ class KingTradesIndia:
                             _tg(f"Upstox login error: {_ue}")
 
                     elif txt.startswith("/upstox_token ") or txt.startswith("/uptoken "):
-                        # Step 2: exchange the code -> save token to .env
+                        # Accepts EITHER a short OAuth code (exchanges it) OR a
+                        # full access token pasted directly (saves it as-is).
                         try:
                             import re as _re, os as _os
                             from auth_upstox import _load_cfg, _exchange, _save_token
                             _load_cfg()
-                            code = raw_txt.split(None, 1)[1].strip()
-                            m = _re.search(r"code=([^&\s]+)", code)
-                            if m:
-                                code = m.group(1)
-                            ak = _os.getenv("UPSTOX_API_KEY", "")
-                            sk = _os.getenv("UPSTOX_API_SECRET", "")
-                            rd = _os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1")
-                            resp = _exchange(code, ak, sk, rd)
-                            tok = resp.get("access_token")
-                            if tok:
-                                _save_token(tok)
-                                _os.environ["UPSTOX_ACCESS_TOKEN"] = tok
-                                _tg("✅ Upstox token refreshed & saved. Good for today.\n"
-                                    "Restart not needed for data; for live orders restart the bot.")
+                            arg = raw_txt.split(None, 1)[1].strip().strip("<>").strip()
+                            # If it's already a JWT access token (eyJ... with 2 dots), save directly
+                            if arg.startswith("eyJ") and arg.count(".") == 2:
+                                _save_token(arg)
+                                _os.environ["UPSTOX_ACCESS_TOKEN"] = arg
+                                _tg("✅ Upstox access token saved directly to .env.\n"
+                                    "Restart the bot for live orders: it'll use this token.")
                             else:
-                                _tg(f"❌ Token exchange failed: {resp}")
+                                # Treat as an OAuth code (extract from a full URL if pasted)
+                                m = _re.search(r"code=([^&\s]+)", arg)
+                                code = m.group(1) if m else arg
+                                ak = _os.getenv("UPSTOX_API_KEY", "")
+                                sk = _os.getenv("UPSTOX_API_SECRET", "")
+                                rd = _os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1")
+                                resp = _exchange(code, ak, sk, rd)
+                                tok = resp.get("access_token")
+                                if tok:
+                                    _save_token(tok)
+                                    _os.environ["UPSTOX_ACCESS_TOKEN"] = tok
+                                    _tg("✅ Upstox token saved. Restart bot for live orders.")
+                                else:
+                                    _tg(f"❌ Exchange failed: {resp}\n"
+                                        "If you pasted a full token (eyJ...), I'll save it directly "
+                                        "next time — just resend it.")
                         except Exception as _te:
                             _tg(f"Upstox token error: {_te}")
 
