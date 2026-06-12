@@ -243,7 +243,133 @@ def _get_today_decisions() -> List[Dict]:
     return []
 
 
-# ── Morning brief ─────────────────────────────────────────────────────────────
+# ── Morning brief 2.0 ────────────────────────────────────────────────────────
+
+def build_morning_brief_v2() -> str:
+    """Build comprehensive pre-market intelligence message. Returns plain text string."""
+    now = datetime.now(IST)
+    lines = [
+        f"🌅 KINGTRADES MORNING INTELLIGENCE — {now.strftime('%H:%M IST')}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 {now.strftime('%A, %d %b %Y')} | NSE India",
+        "",
+    ]
+
+    bias_score = 0
+
+    # ── Global overnight ──────────────────────────────────────────────────────
+    try:
+        import global_cues_india
+        cues = global_cues_india.fetch()
+        lines.append("🌍 GLOBAL OVERNIGHT:")
+        lines.append(f"  • SGX Nifty: {cues['sgx_nifty_chg']:+.2f}%")
+        lines.append(f"  • Dow Jones: {cues['dow_chg']:+.2f}% | S&P 500: {cues['sp500_chg']:+.2f}%")
+        lines.append(f"  • USD/INR: {cues['usdinr_chg']:+.2f}%")
+        lines.append(f"  • Global Bias: {cues['bias']}")
+        bias_score += cues.get("bias_score", 0) // 2  # half weight
+        lines.append("")
+    except Exception:
+        pass
+
+    # ── India VIX ─────────────────────────────────────────────────────────────
+    vix = _get_india_vix()
+    if vix > 0:
+        lines.append("📊 INDIA VIX:")
+        lines.append(f"  • VIX: {vix:.1f} — {_vix_regime(vix)}")
+        if vix < 18:
+            bias_score += 1
+        elif vix > 24:
+            bias_score -= 2
+        lines.append("")
+
+    # ── FII/DII ───────────────────────────────────────────────────────────────
+    try:
+        from fii_dii_india import get_fii_dii_score
+        fii_result = get_fii_dii_score()
+        if fii_result:
+            lines.append("💰 FII/DII:")
+            lines.append(f"  • {fii_result.get('summary', 'N/A')}")
+            fii_adj = fii_result.get("score_delta", 0)
+            if fii_adj > 0:
+                bias_score += 2
+            elif fii_adj < 0:
+                bias_score -= 2
+            lines.append("")
+    except Exception:
+        pass
+
+    # ── Corporate events ──────────────────────────────────────────────────────
+    try:
+        from corporate_events_india import get_today_events
+        events = get_today_events()
+        if events:
+            lines.append("📅 TODAY'S KEY EVENTS:")
+            for ev in events[:3]:
+                lines.append(f"  • {ev}")
+            lines.append("")
+    except Exception:
+        pass
+
+    # ── Nifty key levels ──────────────────────────────────────────────────────
+    try:
+        nifty = _get_nifty_info()
+        if nifty["level"] > 0:
+            n = nifty["level"]
+            chg = nifty["chg_pct"]
+            lines.append("📍 NIFTY 50:")
+            lines.append(f"  • Level: {n:,.0f} ({chg:+.2f}%)")
+            if chg > 0.5:
+                bias_score += 1
+            elif chg < -0.5:
+                bias_score -= 1
+            lines.append("")
+    except Exception:
+        pass
+
+    # ── Recommended bias ─────────────────────────────────────────────────────
+    if bias_score >= 3:
+        bias_label = "🟢 BULLISH"
+        bias_detail = "Global + domestic momentum aligned"
+    elif bias_score <= -3:
+        bias_label = "🔴 BEARISH"
+        bias_detail = "Global weakness + selling pressure"
+    else:
+        bias_label = "⚪ NEUTRAL"
+        bias_detail = "Mixed signals — be selective"
+
+    lines.append(f"🎯 TODAY'S RECOMMENDED BIAS: {bias_label}")
+    lines.append(f"   {bias_detail}")
+    lines.append("")
+    lines.append("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━")
+    lines.append("Scanning 80 NSE symbols | 7 gates | 17 signal sources")
+
+    # Store day bias for main bot to read
+    try:
+        DAY_BIAS["bias"]  = bias_label.split()[-1]
+        DAY_BIAS["score"] = bias_score
+    except Exception:
+        pass
+
+    return "\n".join(lines)
+
+
+DAY_BIAS: dict = {"bias": "NEUTRAL", "score": 0}
+
+
+def send_morning_brief_v2():
+    """Send the enhanced morning briefing to Telegram."""
+    if getattr(cfg, "MORNING_INTEL_ENABLED", True):
+        try:
+            msg = build_morning_brief_v2()
+            _send(msg)
+            logger.info("Morning brief 2.0 sent")
+            return
+        except Exception as e:
+            logger.debug(f"send_morning_brief_v2: {e}")
+    send_morning_brief()
+
+
+# ── Morning brief (legacy) ────────────────────────────────────────────────────
 
 def send_morning_brief():
     nifty   = _get_nifty_info()

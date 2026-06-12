@@ -66,7 +66,7 @@ class IndiaTradeSignal:
 class IndiaSignalGenerator:
     """
     High-conviction NSE intraday signal generator.
-    7 quality gates + 12 signal sources.
+    7 quality gates + 17 signal sources (God Mode enhancements included).
     """
 
     def __init__(self, config, watchlist: List[str] = None):
@@ -74,6 +74,23 @@ class IndiaSignalGenerator:
         self._watchlist = watchlist or []
         self._recognizer = PatternRecognizer()
         self._signals_today: List[IndiaTradeSignal] = []
+
+        # ── God Mode modules (lazy, fail-open) ───────────────────────────────
+        self._vol_profile   = None
+        self._confluence    = None
+        self._global_cues   = None   # cached dict from global_cues_india.fetch()
+        try:
+            if getattr(config, "VOLUME_PROFILE_GODMODE", False):
+                from volume_profile_india import VolumeProfile
+                self._vol_profile = VolumeProfile()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "SECTOR_CONFLUENCE_ENABLED", False):
+                from sector_confluence_india import SectorConfluence
+                self._confluence = SectorConfluence()
+        except Exception:
+            pass
 
     # ── Main signal method ────────────────────────────────────────────────────
 
@@ -175,12 +192,79 @@ class IndiaSignalGenerator:
             if score <= -990:  # shock event flag from NLP god mode
                 return None
 
+            # ── God Mode boosts ───────────────────────────────────────────────
+            now_ist = datetime.now(IST)
+            _phase_min_add = 0
+            _phase_size_mult = 1.0
+            _phase_sl_mult   = 1.0
+
+            # Phase-of-Day
+            if getattr(self._config, "PHASE_ENGINE_ENABLED", False):
+                try:
+                    from phase_of_day_india import get_multipliers
+                    pm = get_multipliers(now_ist)
+                    score += pm["score_boost"] - pm["score_penalty"]
+                    _phase_min_add   = pm["min_score_add"]
+                    _phase_size_mult = pm["size_mult"]
+                    _phase_sl_mult   = pm["sl_mult"]
+                except Exception:
+                    pass
+
+            # Volume Profile VPOC
+            if self._vol_profile is not None:
+                try:
+                    vp_profile = self._vol_profile.compute(df_5m)
+                    score += self._vol_profile.score_signal(ltp, direction, vp_profile)
+                except Exception:
+                    pass
+
+            # Global Cues (pre-fetched into self._global_cues by main_india)
+            if getattr(self._config, "GLOBAL_CUES_ENABLED", False):
+                try:
+                    import global_cues_india
+                    score += global_cues_india.get_signal_adjustment(
+                        direction, self._global_cues
+                    )
+                except Exception:
+                    pass
+
+            # Sector Confluence
+            if self._confluence is not None:
+                try:
+                    from watchlist_india import _SECTOR_MAP
+                    score += self._confluence.get_confluence_score(
+                        symbol, direction, _SECTOR_MAP
+                    )
+                except Exception:
+                    pass
+
+            # ── Structural stop-loss override ─────────────────────────────────
+            if getattr(self._config, "STRUCTURAL_SL_ENABLED", False):
+                try:
+                    struct_sl = self._structural_sl(df_5m, direction, atr, ltp)
+                    if struct_sl > 0:
+                        stop_loss = struct_sl
+                        sl_dist   = abs(ltp - stop_loss)
+                        tp_dist   = atr * self._config.ATR_TP_MULTIPLIER
+                        rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else rr
+                except Exception:
+                    pass
+
+            # Apply phase SL multiplier
+            if _phase_sl_mult != 1.0:
+                dist = abs(stop_loss - ltp)
+                if direction == "LONG":
+                    stop_loss = ltp - dist * _phase_sl_mult
+                else:
+                    stop_loss = ltp + dist * _phase_sl_mult
+
             # ── Gate 8: Final score threshold ─────────────────────────────────
             _final_min = (
                 getattr(self._config, 'IDLE_SCALP_MIN_SCORE', 55.0)
                 if _is_scalp_mode
                 else self._config.FINAL_EXEC_MIN_SCORE
             )
+            _final_min += _phase_min_add  # midday chop adds +8
             if score < _final_min:
                 logger.debug(f"{symbol}: final score {score:.1f} < {_final_min}")
                 return None
@@ -224,6 +308,17 @@ class IndiaSignalGenerator:
                 vix_level     = _vix_now,
             )
 
+            # Apply phase size multiplier
+            if _phase_size_mult != 1.0:
+                sig.size_multiplier = round(sig.size_multiplier * _phase_size_mult, 3)
+
+            # Update sector confluence cache
+            if self._confluence is not None:
+                try:
+                    self._confluence.update_signal(symbol, direction, score)
+                except Exception:
+                    pass
+
             # ── Idle scalp mode adjustments ───────────────────────────────────
             if _is_scalp_mode:
                 _scalp_min = getattr(self._config, 'IDLE_SCALP_MIN_SCORE', 55.0)
@@ -242,6 +337,48 @@ class IndiaSignalGenerator:
         except Exception as e:
             logger.debug(f"generate_signal {symbol}: {e}")
             return None
+
+    # ── Structural stop-loss ─────────────────────────────────────────────────
+
+    def _structural_sl(self, df: pd.DataFrame, direction: str,
+                       atr: float, entry: float) -> float:
+        """
+        LONG: SL = last swing low in last 10 bars, floored at entry - 1.0*ATR.
+        SHORT: SL = last swing high in last 10 bars, capped at entry + 1.0*ATR.
+        Falls back to 1.5*ATR if no swing point found.
+        """
+        try:
+            window = df.tail(12)
+            if len(window) < 3:
+                raise ValueError("not enough bars")
+
+            if direction == "LONG":
+                swing_lows = []
+                for i in range(1, len(window) - 1):
+                    lo = float(window["low"].iloc[i])
+                    if lo < float(window["low"].iloc[i - 1]) and lo < float(window["low"].iloc[i + 1]):
+                        swing_lows.append(lo)
+                atr_floor = entry - 1.0 * atr
+                if swing_lows:
+                    swing_sl = max(swing_lows)   # highest swing low = tightest valid stop
+                    return max(swing_sl, atr_floor)
+                return atr_floor
+
+            else:  # SHORT
+                swing_highs = []
+                for i in range(1, len(window) - 1):
+                    hi = float(window["high"].iloc[i])
+                    if hi > float(window["high"].iloc[i - 1]) and hi > float(window["high"].iloc[i + 1]):
+                        swing_highs.append(hi)
+                atr_ceil = entry + 1.0 * atr
+                if swing_highs:
+                    swing_sl = min(swing_highs)  # lowest swing high = tightest valid stop
+                    return min(swing_sl, atr_ceil)
+                return atr_ceil
+
+        except Exception:
+            fallback = entry - 1.5 * atr if direction == "LONG" else entry + 1.5 * atr
+            return fallback
 
     # ── Gate 1: Direction ─────────────────────────────────────────────────────
 

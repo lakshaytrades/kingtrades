@@ -337,3 +337,74 @@ def get_put_wall(symbol: str, price: float) -> Optional[float]:
     except Exception as e:
         logger.debug(f"get_put_wall {symbol}: {e}")
         return None
+
+
+def _bsm_gamma(S: float, K: float, sigma: float, T: float) -> float:
+    """Approximate Black-Scholes gamma for a strike."""
+    import math
+    if S <= 0 or K <= 0 or sigma <= 0 or T <= 0:
+        return 0.0
+    try:
+        d1 = (math.log(S / K) + 0.5 * sigma ** 2 * T) / (sigma * math.sqrt(T))
+        nd1 = math.exp(-0.5 * d1 ** 2) / math.sqrt(2 * math.pi)
+        return nd1 / (S * sigma * math.sqrt(T))
+    except Exception:
+        return 0.0
+
+
+def get_gex(symbol: str, spot: float = 0.0) -> dict:
+    """
+    Gamma Exposure = Σ(call_gamma × call_OI - put_gamma × put_OI).
+    Positive GEX → market makers stabilise price (bad for breakouts).
+    Negative GEX → market makers amplify moves (good for breakouts).
+    Returns: {"gex": float, "regime": str, "breakout_adj": int}
+    Fail-open returns zeros.
+    """
+    try:
+        data = _fetch_chain(symbol)
+        if not data:
+            return {"gex": 0.0, "regime": "UNKNOWN", "breakout_adj": 0}
+
+        strikes_data = data.get("strikes", [])
+        s = spot or data.get("spot", 0.0)
+        if not strikes_data or s <= 0:
+            return {"gex": 0.0, "regime": "UNKNOWN", "breakout_adj": 0}
+
+        # Days to next weekly expiry (approximate — assume Thursday, max 7 days)
+        import datetime as _dt
+        today = _dt.date.today()
+        days_to_expiry = max(1, (3 - today.weekday()) % 7 + 1)  # next Thursday
+        T = days_to_expiry / 252.0
+
+        total_gex = 0.0
+        for entry in strikes_data:
+            ce = entry.get("CE", {}) or {}
+            pe = entry.get("PE", {}) or {}
+            K  = float(entry.get("strikePrice", 0) or 0)
+            if K <= 0:
+                continue
+
+            ce_iv = float(ce.get("impliedVolatility", 0) or 0) / 100.0 or 0.2
+            pe_iv = float(pe.get("impliedVolatility", 0) or 0) / 100.0 or 0.2
+            ce_oi = float(ce.get("openInterest", 0) or 0)
+            pe_oi = float(pe.get("openInterest", 0) or 0)
+
+            call_g = _bsm_gamma(s, K, ce_iv, T)
+            put_g  = _bsm_gamma(s, K, pe_iv, T)
+            total_gex += (call_g * ce_oi - put_g * pe_oi)
+
+        if total_gex > 0:
+            regime = "POSITIVE_GEX"
+            breakout_adj = -4  # MMs stabilise → bad for breakouts
+        elif total_gex < 0:
+            regime = "NEGATIVE_GEX"
+            breakout_adj = 6   # MMs amplify → good for breakouts
+        else:
+            regime = "NEUTRAL_GEX"
+            breakout_adj = 0
+
+        return {"gex": round(total_gex, 2), "regime": regime, "breakout_adj": breakout_adj}
+
+    except Exception as e:
+        logger.debug(f"get_gex {symbol}: {e}")
+        return {"gex": 0.0, "regime": "UNKNOWN", "breakout_adj": 0}

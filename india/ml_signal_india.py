@@ -18,12 +18,26 @@ logger = logging.getLogger("ml_signal_india")
 
 _MODEL_PATH   = Path(__file__).parent.parent / "logs" / "india_ml_model.pkl"
 _DATA_PATH    = Path(__file__).parent.parent / "logs" / "india_ml_training.jsonl"
-_MIN_SAMPLES  = 30
+_MIN_SAMPLES  = 15
 _model        = None
 _model_loaded = False
+_vix_history: list = []
+_trade_count_since_fi_log = 0
 
 
 # ── Feature extraction ────────────────────────────────────────────────────────
+
+FEATURE_NAMES = [
+    "rsi", "macd_hist", "adx", "atr_pct", "vwap_gap_pct",
+    "bb_width_pct", "ema_gap_pct", "vol_ratio",
+    "tod_hour", "tod_minute_bin", "direction_enc", "is_power_hour",
+    "close_vs_open_pct", "session_wins_capped", "session_losses_capped", "vix_level",
+    # New features (God Mode):
+    "time_of_day_slot", "breadth_pct", "sector_momentum_score",
+    "vix_percentile", "ema_ribbon_alignment", "vol_profile_position",
+    "global_bias_score", "consecutive_bars_direction",
+]
+
 
 def _extract_features(
     symbol: str,
@@ -32,13 +46,13 @@ def _extract_features(
     direction: str,
     session_wins: int = 0,
     session_losses: int = 0,
+    breadth_pct: float = 0.5,
+    sector_momentum: float = 0.0,
+    global_bias_score: float = 0.0,
+    vol_profile_position: float = 0.0,
 ) -> Optional[np.ndarray]:
     """
-    Return 16-element float32 feature vector:
-    [rsi, macd_hist, adx, atr_pct, vwap_gap_pct, bb_width_pct, ema_gap_pct, vol_ratio,
-     tod_hour, tod_minute_bin, direction_enc, is_power_hour, close_vs_open_pct,
-     session_wins_capped, session_losses_capped, vix_level]
-
+    Return 24-element float32 feature vector (16 original + 8 new God Mode features).
     Handles ind=None and df_5m=None gracefully — uses safe defaults.
     """
     try:
@@ -143,6 +157,72 @@ def _extract_features(
         except Exception:
             pass
 
+        # ── God Mode extra features ───────────────────────────────────────────
+        # time_of_day_slot: 0=ORB, 1=morning, 2=midday, 3=afternoon, 4=power_close
+        h, m = now_ist.hour, now_ist.minute
+        if h == 9 and m < 45:
+            tod_slot = 0.0
+        elif (h == 9 and m >= 45) or h == 10 or h == 11:
+            tod_slot = 1.0
+        elif (h == 11 and m >= 30) or h == 12 or (h == 13 and m < 30):
+            tod_slot = 2.0
+        elif (h == 13 and m >= 30) or h == 14:
+            tod_slot = 3.0
+        else:
+            tod_slot = 4.0
+
+        # EMA ribbon alignment
+        ema_ribbon = 0.0
+        if ind is not None:
+            try:
+                e9  = float(getattr(ind, "ema9",  0) or 0)
+                e21 = float(getattr(ind, "ema21", 0) or 0)
+                e50 = float(getattr(ind, "ema50", 0) or 0)
+                if e9 > 0 and e21 > 0 and e50 > 0:
+                    if e9 > e21 > e50:
+                        ema_ribbon = 1.0
+                    elif e9 < e21 < e50:
+                        ema_ribbon = -1.0
+            except Exception:
+                pass
+
+        # VIX percentile (simple cache — uses module-level list)
+        vix_pct = 50.0
+        try:
+            if vix_level > 0:
+                _vix_history.append(vix_level)
+                if len(_vix_history) > 30:
+                    _vix_history.pop(0)
+                if len(_vix_history) >= 3:
+                    vix_pct = float(
+                        sum(1 for v in _vix_history if v <= vix_level) / len(_vix_history) * 100
+                    )
+        except Exception:
+            pass
+
+        # Consecutive bars direction
+        consec = 0.0
+        if df_5m is not None and len(df_5m) >= 3:
+            try:
+                closes = list(df_5m["close"].tail(5))
+                streak = 0
+                for i in range(len(closes) - 1, 0, -1):
+                    if closes[i] > closes[i - 1]:
+                        if streak >= 0:
+                            streak += 1
+                        else:
+                            break
+                    elif closes[i] < closes[i - 1]:
+                        if streak <= 0:
+                            streak -= 1
+                        else:
+                            break
+                    else:
+                        break
+                consec = float(streak)
+            except Exception:
+                pass
+
         # ── Assemble feature vector ───────────────────────────────────────────
         features = np.array([
             rsi,
@@ -161,6 +241,15 @@ def _extract_features(
             session_wins_capped,
             session_losses_capped,
             vix_level,
+            # God Mode features
+            tod_slot,
+            float(breadth_pct),
+            float(sector_momentum),
+            vix_pct,
+            ema_ribbon,
+            float(vol_profile_position),
+            float(global_bias_score),
+            consec,
         ], dtype=np.float32)
 
         # Replace any NaN/Inf with 0
@@ -220,9 +309,21 @@ def _retrain_if_ready():
         X = np.array([r["features"] for r in records], dtype=np.float32)
         y = np.array([int(r["label"]) for r in records], dtype=np.int32)
 
-        # Validate shapes
+        # Validate shapes — pad/trim features if vector length changed
         if X.shape[0] != y.shape[0] or X.shape[0] < _MIN_SAMPLES:
             return
+        expected_features = len(FEATURE_NAMES)
+        if X.shape[1] < expected_features:
+            pad = np.zeros((X.shape[0], expected_features - X.shape[1]), dtype=np.float32)
+            X = np.hstack([X, pad])
+        elif X.shape[1] > expected_features:
+            X = X[:, :expected_features]
+
+        # Recent 20 trades get 2x weight
+        n = len(records)
+        weights = np.ones(n, dtype=np.float32)
+        if n > 20:
+            weights[n - 20:] = 2.0
 
         trained_model = None
 
@@ -236,7 +337,7 @@ def _retrain_if_ready():
                 random_state=42,
                 verbose=-1,
             )
-            trained_model.fit(X, y)
+            trained_model.fit(X, y, sample_weight=weights)
             logger.info(f"ML: trained LightGBM on {len(records)} samples")
         except Exception as lgb_err:
             logger.debug(f"LightGBM failed ({lgb_err}), trying XGBoost")
@@ -251,7 +352,7 @@ def _retrain_if_ready():
                     random_state=42,
                     verbosity=0,
                 )
-                trained_model.fit(X, y)
+                trained_model.fit(X, y, sample_weight=weights)
                 logger.info(f"ML: trained XGBoost on {len(records)} samples")
             except Exception as xgb_err:
                 logger.debug(f"XGBoost failed ({xgb_err}), falling back to LogisticRegression")
@@ -280,6 +381,15 @@ def _retrain_if_ready():
         _model = trained_model
         _model_loaded = True
         logger.info(f"ML model saved to {_MODEL_PATH}")
+
+        # Feature importance logging every 50 trades
+        try:
+            fi = getattr(trained_model, "feature_importances_", None)
+            if fi is not None and len(fi) == len(FEATURE_NAMES):
+                ranked = sorted(zip(FEATURE_NAMES, fi), key=lambda x: x[1], reverse=True)[:5]
+                logger.info("ML top features: " + ", ".join(f"{n}={v:.3f}" for n, v in ranked))
+        except Exception:
+            pass
 
     except Exception as e:
         logger.debug(f"_retrain_if_ready: {e}")
@@ -353,8 +463,11 @@ def record_trade_outcome(
     try:
         features = _extract_features(symbol, ind, df_5m, direction, session_wins, session_losses)
         if features is None:
-            # Use zero vector as fallback so the label is still recorded
-            features = np.zeros(16, dtype=np.float32)
+            features = np.zeros(len(FEATURE_NAMES), dtype=np.float32)
+        # Ensure consistent vector length
+        if len(features) < len(FEATURE_NAMES):
+            pad = np.zeros(len(FEATURE_NAMES) - len(features), dtype=np.float32)
+            features = np.concatenate([features, pad])
 
         record = {
             "symbol":   symbol,

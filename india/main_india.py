@@ -133,6 +133,22 @@ class KingTradesIndia:
         self._last_trade_ts: float = 0.0
         self._daily_target_pct: float = 0.005  # 0.5%
 
+        # ── God Mode modules ─────────────────────────────────────────────────
+        self._breadth   = None
+        self._threshold = None
+        try:
+            if getattr(config, "MARKET_BREADTH_ENABLED", False):
+                from market_breadth_india import MarketBreadth
+                self._breadth = MarketBreadth()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "ADAPTIVE_THRESHOLD_ENABLED", False):
+                from adaptive_threshold_india import AdaptiveThreshold
+                self._threshold = AdaptiveThreshold(config.FINAL_EXEC_MIN_SCORE)
+        except Exception:
+            pass
+
     # -- Startup ---------------------------------------------------------------
 
     def initialize(self) -> bool:
@@ -166,6 +182,7 @@ class KingTradesIndia:
         # Balance
         balance = self._get_balance()
         self._stats.daily_start = balance
+        self._morning_brief_sent = False  # reset for each session
         logger.info(f"Available balance: Rs.{balance:,.2f}")
 
         # India VIX circuit breaker
@@ -220,6 +237,26 @@ class KingTradesIndia:
                     self._write_state_file()
                     _time.sleep(60)
                     continue
+
+                # -- 9:00-9:05 AM IST: global cues + morning brief 2.0 --------
+                if not hasattr(self, "_morning_brief_sent"):
+                    self._morning_brief_sent = False
+                if not self._morning_brief_sent and time(9, 0) <= t < time(9, 10):
+                    try:
+                        if getattr(config, "GLOBAL_CUES_ENABLED", False):
+                            import global_cues_india
+                            cues = global_cues_india.fetch()
+                            if self._generator:
+                                self._generator._global_cues = cues
+                            logger.info(f"Global cues: {cues.get('summary', '')}")
+                    except Exception as _e:
+                        logger.debug(f"global_cues: {_e}")
+                    try:
+                        from daily_intelligence_india import send_morning_brief_v2
+                        send_morning_brief_v2()
+                    except Exception as _e:
+                        logger.debug(f"morning_brief: {_e}")
+                    self._morning_brief_sent = True
 
                 # -- Square-off warning ---------------------------------------
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
@@ -355,6 +392,23 @@ class KingTradesIndia:
         _t = current_time or datetime.now(IST).time()
         _orb_only = time(9, 15) <= _t < time(9, 30)
 
+        # -- Market Breadth Gate -----------------------------------------------
+        _breadth_status = {"longs_allowed": True, "shorts_allowed": True, "breadth_pct": 0.5}
+        if self._breadth is not None:
+            try:
+                self._breadth.update()
+                _breadth_status = self._breadth.get_status()
+            except Exception:
+                pass
+
+        # -- Adaptive threshold -----------------------------------------------
+        _adaptive_min = config.FINAL_EXEC_MIN_SCORE
+        if self._threshold is not None:
+            try:
+                _adaptive_min = self._threshold.get_threshold(datetime.now(IST))
+            except Exception:
+                pass
+
         # Loss guard: 3 consecutive losses today -> skip signals
         if self._stats.loss_guard_active and not self._stats.circuit_hit:
             logger.info("Loss guard active -- pausing new entries")
@@ -402,6 +456,27 @@ class KingTradesIndia:
                 if regime == "BULLISH" and signal_obj.direction == "SHORT":
                     logger.info(f"{symbol}: SHORT skipped (Nifty BULLISH regime)")
                     _ss["rejected_regime"] += 1
+                    continue
+
+                # Market Breadth Gate
+                if (signal_obj.direction == "LONG" and
+                        not _breadth_status.get("longs_allowed", True)):
+                    logger.info(f"{symbol}: LONG blocked by breadth gate "
+                                f"({_breadth_status['breadth_pct']:.0%} advancing)")
+                    _ss["rejected_regime"] += 1
+                    continue
+                if (signal_obj.direction == "SHORT" and
+                        not _breadth_status.get("shorts_allowed", True)):
+                    logger.info(f"{symbol}: SHORT blocked by breadth gate "
+                                f"({_breadth_status['breadth_pct']:.0%} advancing)")
+                    _ss["rejected_regime"] += 1
+                    continue
+
+                # Adaptive threshold filter
+                if signal_obj.signal_score < _adaptive_min:
+                    logger.debug(f"{symbol}: score {signal_obj.signal_score:.1f} < "
+                                 f"adaptive threshold {_adaptive_min:.1f}")
+                    _ss["rejected_no_sig"] += 1
                     continue
 
                 _ss["signals"] += 1
@@ -516,10 +591,33 @@ class KingTradesIndia:
             _ss["last_tg_ts"] = _now_ts
             _now_ist = datetime.now(IST)
             _mode_tag = "LIVE" if config.LIVE_TRADING_ENABLED else "PAPER"
+            _breadth_tag = ""
+            if self._breadth is not None:
+                try:
+                    bs = self._breadth.get_status()
+                    _regime_icon = {"BULL": "🟢", "BEAR": "🔴", "NEUTRAL": "⚪"}.get(
+                        bs["regime"], "⚪")
+                    _breadth_tag = (f"\nBreadth: {_regime_icon} {bs['breadth_pct']:.0%} "
+                                    f"{bs['regime']} | "
+                                    f"L:{'✅' if bs['longs_allowed'] else '🚫'} "
+                                    f"S:{'✅' if bs['shorts_allowed'] else '🚫'}")
+                except Exception:
+                    pass
+            _thresh_tag = ""
+            if self._threshold is not None:
+                try:
+                    ts = self._threshold.get_status()
+                    _thresh_tag = (f"\nThreshold: {ts['threshold']} "
+                                   f"(adj {ts['adjustment']}) | WR: {ts['rolling_wr']:.0%} "
+                                   f"over {ts['trade_count']} trades")
+                except Exception:
+                    pass
             _tg(
                 f"📊 INDIA BOT — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
                 f"Mode: {_mode_tag} | Regime: {regime} | Scalp: {'ON' if _scalp else 'off'}\n"
-                f"NSE Data: {_data_tag}\n"
+                f"NSE Data: {_data_tag}"
+                f"{_breadth_tag}"
+                f"{_thresh_tag}\n"
                 f"Scanned: {_total} | Signals found: {_sigs}\n"
                 f"Rejected → no signal: {_no_sig} | regime: {_regime} | ORB window: {_orb_r} | qty: {_qty_r}\n"
                 f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
@@ -750,6 +848,12 @@ class KingTradesIndia:
 
         pnl = self._calc_pnl(pos, exit_price)
         self._stats.total_pnl += pnl
+        # Record outcome for adaptive threshold
+        if self._threshold is not None:
+            try:
+                self._threshold.record_trade(pnl > 0)
+            except Exception:
+                pass
         if pnl > 0:
             self._stats.wins += 1
             self._stats.consecutive_losses = 0      # win resets the streak
