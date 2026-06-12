@@ -90,4 +90,37 @@ At 4-6 trades/day × 21 days with 20% position sizes: you pay ~2-2.5% of capital
 2. If logged WR ≥ 58% over ≥60 signals → enable auto-execution with small capital so elite tracker, PEAD tracker, and Sortino systems start learning.
 3. Only after 200+ auto trades at ≥62% WR, consider allowing MIS leverage expansion.
 
-*Run the simulation yourself: `python3 india/backtest_satavector_india.py`*
+*Run the Monte Carlo yourself: `python3 india/backtest_satavector_india.py`*
+
+---
+
+## 6. REAL Historical Replay (run on the VPS)
+
+`backtest_replay_india.py` is a **true historical replay** (not Monte Carlo). It
+fetches real past NSE candles from the Dhan API, steps through them bar-by-bar
+with **no look-ahead**, runs the actual `IndiaSignalGenerator`, and reports the
+**real win rate as an output** (Monte Carlo takes WR as an input).
+
+**Why it can't run in the dev sandbox:** this environment blocks all market-data
+egress (Yahoo, NSE archives, Dhan — all return `403 Host not in allowlist`). It
+must run on the **production VPS** where `DHAN_CLIENT_ID` + `DHAN_ACCESS_TOKEN`
+and Dhan network access exist.
+
+**What it replays:** the price-based signal core (direction gates, ATR/ADX,
+base score, multi-timeframe alignment, ORB, Wyckoff VSA, microstructure, phase,
+structural SL). **Live-only boosters** (option chain, delivery %, FII/DII, news,
+block deals, UOA, futures OI, cross-asset, VIX-regime, PEAD, Kalman, MOM12) are
+**disabled** — they have no historical feed. So the replay WR is a **conservative
+floor**; production adds those boosters on top.
+
+```bash
+# On the VPS:
+python3 india/backtest_replay_india.py --days 60
+python3 india/backtest_replay_india.py --symbols RELIANCE,INFY,TCS,HDFCBANK --days 90
+python3 india/backtest_replay_india.py --from 2026-01-01 --to 2026-03-31
+```
+
+Output: real trades, win rate, profit factor, avg win/loss, expectancy per
+trade, total + monthly return, max drawdown. Exit mechanics (50% partial at
+T1=1R, runner to T2=2R / breakeven, 15:20 square-off, 0.15% costs) are unit-
+validated against synthetic bars.
