@@ -485,3 +485,94 @@ def get_gex(symbol: str, spot: float = 0.0) -> dict:
     except Exception as e:
         logger.debug(f"get_gex {symbol}: {e}")
         return {"gex": 0.0, "regime": "UNKNOWN", "breakout_adj": 0}
+
+
+def get_change_in_oi_pcr(symbol: str) -> Tuple[float, str]:
+    """
+    Change-in-OI PCR: ratio of net NEW put OI added vs net NEW call OI added.
+    More sensitive than total-OI PCR for intraday positioning shifts.
+
+    Research: Change-in-OI PCR > 1.2 and rising = institutional bullish (more puts
+    being WRITTEN = hedging = confidence). < 0.8 and falling = bearish shift.
+    Returns (pcr_value, regime_str). Fail-open: (1.0, "NEUTRAL").
+    """
+    try:
+        data = _fetch_chain(symbol)
+        if not data:
+            return (1.0, "NEUTRAL")
+        strikes = data.get("strikes", [])
+        if not strikes:
+            return (1.0, "NEUTRAL")
+
+        total_call_chg = 0.0
+        total_put_chg  = 0.0
+        for entry in strikes:
+            ce = entry.get("CE", {}) or {}
+            pe = entry.get("PE", {}) or {}
+            ce_chg = float(ce.get("changeinOpenInterest", 0) or 0)
+            pe_chg = float(pe.get("changeinOpenInterest", 0) or 0)
+            # Only count POSITIVE changes (new positions being added)
+            if ce_chg > 0:
+                total_call_chg += ce_chg
+            if pe_chg > 0:
+                total_put_chg += pe_chg
+
+        if total_call_chg <= 0:
+            return (1.0, "NEUTRAL")
+
+        pcr = total_put_chg / total_call_chg
+
+        if pcr >= 1.3:
+            regime = "BULLISH_BIAS"   # more puts being written = institutional hedging = bullish
+        elif pcr <= 0.7:
+            regime = "BEARISH_BIAS"   # more calls being written = calls bought = bearish
+        elif pcr >= 1.1:
+            regime = "MILD_BULLISH"
+        elif pcr <= 0.9:
+            regime = "MILD_BEARISH"
+        else:
+            regime = "NEUTRAL"
+
+        return (round(pcr, 3), regime)
+
+    except Exception as e:
+        logger.debug(f"get_change_in_oi_pcr {symbol}: {e}")
+        return (1.0, "NEUTRAL")
+
+
+def get_chng_pcr_score(symbol: str, direction: str) -> Tuple[float, str]:
+    """
+    Score signal from change-in-OI PCR. Score: -8 to +8. Fail-open: (0, "").
+    """
+    try:
+        pcr, regime = get_change_in_oi_pcr(symbol)
+        if regime == "NEUTRAL":
+            return (0.0, "")
+
+        score = 0.0
+        if direction == "LONG":
+            if regime == "BULLISH_BIAS":
+                score = 8.0
+            elif regime == "MILD_BULLISH":
+                score = 4.0
+            elif regime == "BEARISH_BIAS":
+                score = -7.0
+            elif regime == "MILD_BEARISH":
+                score = -3.0
+        else:  # SHORT
+            if regime == "BEARISH_BIAS":
+                score = 8.0
+            elif regime == "MILD_BEARISH":
+                score = 4.0
+            elif regime == "BULLISH_BIAS":
+                score = -7.0
+            elif regime == "MILD_BULLISH":
+                score = -3.0
+
+        if score == 0.0:
+            return (0.0, "")
+        return (score, f"CHNG_PCR={pcr:.2f}_{regime}:{score:+.0f}")
+
+    except Exception as e:
+        logger.debug(f"get_chng_pcr_score {symbol}: {e}")
+        return (0.0, "")

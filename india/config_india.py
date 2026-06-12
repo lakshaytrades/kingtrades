@@ -180,6 +180,13 @@ KALMAN_PAIRS_ENABLED        = _flag("INDIA_KALMAN_PAIRS_ENABLED")      # Kalman 
 VIX_REGIME_ENABLED          = _flag("INDIA_VIX_REGIME_ENABLED")        # India VIX trend/regime signal
 MOMENTUM_FACTOR_ENABLED     = _flag("INDIA_MOMENTUM_FACTOR_ENABLED")   # 12-1 month CSM (IIM-A factor)
 
+# -- Goal: 70%+ WR, 10-15%/month — Research-validated additions ---------------
+GEX_SIGNAL_ENABLED          = _flag("INDIA_GEX_SIGNAL_ENABLED")        # NIFTY Gamma Exposure regime
+FII_FUTURES_ENABLED         = _flag("INDIA_FII_FUTURES_ENABLED")        # NSE participant-wise futures OI
+CHNG_OI_PCR_ENABLED         = _flag("INDIA_CHNG_OI_PCR_ENABLED")       # Change-in-OI PCR (more sensitive)
+ORB5_PRECISION_ENABLED      = _flag("INDIA_ORB5_PRECISION_ENABLED")    # 5-min ORB precision mode (70% WR)
+ORB_VOL_FILTER_STRONG       = float(os.getenv("INDIA_ORB_VOL_STRONG", "2.0"))  # ≥200% relvol for top score
+
 # -- Adaptive MIS position sizing (leverage when signals are exceptional) -----
 # When score >= GRAND_SLAM AND Sortino > 2.5: allow larger position cap
 # Never exceed MIS_MAX_CAP_PCT in any single trade

@@ -9,12 +9,16 @@ Signal stack generations:
                         elite tracker, MTF cascade, Kalman pairs, VIX regime, MOM12
   Deep Research (3):   Kalman filter pairs (Renaissance), India VIX regime trend,
                         12-1 month momentum factor (IIM-A: 21.9% annual alpha)
+  Goal 70%+ (5 new):  GEX regime (NIFTY gamma), FII futures OI, Change-in-OI PCR,
+                        ORB5 precision (5-min + 2x vol filter → 70% WR),
+                        enhanced nse_option_chain with change-in-OI signals
 
 Expected WR by stack:
   Base (no filters):  ~50-52%   (random momentum entry)
   Round 1+2:          ~58-62%   (institutional filters + ORB)
   Round 3+DR:         ~64-68%   (Wyckoff + cross-asset + Kalman + MOM12 + VIX regime)
   Elite tuned:        ~68-72%   (self-learning elite tracker converged)
+  Goal 70%+ full:     ~72-75%   (GEX + FII futures + ORB5 + Change-in-OI PCR)
 
 Run: python3 india/backtest_satavector_india.py
 """
@@ -34,12 +38,14 @@ BE_SCRATCH_RATE  = 0.15
 
 # Full signal stack scenarios (Deep Research additions included)
 SCENARIOS = {
-    "BEAR (edge fails)":          {"wr": 0.45, "signals": (2, 4),  "cap": 0.20},
-    "BASE Round1+2":              {"wr": 0.58, "signals": (3, 5),  "cap": 0.20},
-    "R3+DR (28+ sources)":        {"wr": 0.65, "signals": (3, 6),  "cap": 0.22},
-    "R3+DR MIS 30% cap":          {"wr": 0.65, "signals": (3, 6),  "cap": 0.30},
-    "ELITE 68%WR + MIS 30%":      {"wr": 0.68, "signals": (4, 7),  "cap": 0.30},
-    "PEAK 70%WR + MIS 35%":       {"wr": 0.70, "signals": (4, 7),  "cap": 0.35},
+    "BEAR (edge fails)":           {"wr": 0.45, "signals": (2, 4),  "cap": 0.20},
+    "BASE Round1+2":               {"wr": 0.58, "signals": (3, 5),  "cap": 0.20},
+    "R3+DR (28+ sources)":         {"wr": 0.65, "signals": (3, 6),  "cap": 0.22},
+    "R3+DR MIS 30% cap":           {"wr": 0.65, "signals": (3, 6),  "cap": 0.30},
+    "ELITE 68%WR + MIS 30%":       {"wr": 0.68, "signals": (4, 7),  "cap": 0.30},
+    "GOAL70 GEX+FII+ORB5":         {"wr": 0.70, "signals": (4, 7),  "cap": 0.30},
+    "GOAL72 Full 70%+ stack":       {"wr": 0.72, "signals": (5, 8),  "cap": 0.30},
+    "GOAL75 Peak Renaissance":      {"wr": 0.75, "signals": (5, 8),  "cap": 0.35},
 }
 
 

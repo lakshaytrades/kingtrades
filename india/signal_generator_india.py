@@ -553,6 +553,45 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
+            # ── Goal 70%+ WR: GEX + FII Futures + Change-in-OI PCR ──────────────
+
+            # NIFTY Gamma Exposure regime signal (positive=range, negative=trending)
+            if getattr(self._config, "GEX_SIGNAL_ENABLED", False):
+                try:
+                    from gex_signal_india import get_gex_score
+                    _sig_type = "MEAN_REVERSION" if (
+                        direction == "LONG" and
+                        abs(float(getattr(ind, "vwap_gap_pct", 0) or 0)) < 0.5
+                    ) else "MOMENTUM"
+                    gex_adj, gex_reason = get_gex_score(direction, _sig_type)
+                    score += gex_adj
+                    if gex_adj != 0:
+                        sig.rationale += f" | {gex_reason}"
+                except Exception:
+                    pass
+
+            # FII participant-wise index futures positioning (pre-market bias)
+            if getattr(self._config, "FII_FUTURES_ENABLED", False):
+                try:
+                    from fii_futures_india import get_fii_futures_score
+                    fii_fut_adj, fii_fut_reason = get_fii_futures_score(direction)
+                    score += fii_fut_adj
+                    if fii_fut_adj != 0:
+                        sig.rationale += f" | {fii_fut_reason}"
+                except Exception:
+                    pass
+
+            # Change-in-OI PCR (more sensitive than total-OI PCR)
+            if getattr(self._config, "CHNG_OI_PCR_ENABLED", False):
+                try:
+                    from nse_option_chain import get_chng_pcr_score
+                    chng_pcr_adj, chng_pcr_reason = get_chng_pcr_score(symbol, direction)
+                    score += chng_pcr_adj
+                    if chng_pcr_adj != 0:
+                        sig.rationale += f" | {chng_pcr_reason}"
+                except Exception:
+                    pass
+
             # Update final score on signal
             sig.signal_score = round(score, 1)
             sig.is_high_confidence = score >= 80
