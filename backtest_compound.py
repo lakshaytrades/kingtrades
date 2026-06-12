@@ -1,5 +1,5 @@
 """
-backtest_compound.py — KingTrades Compounding Backtest Report
+backtest_compound.py — SataVector Compounding Backtest Report
 =============================================================
 
 TRUE COMPOUNDING: today's closing balance = tomorrow's starting capital
@@ -162,7 +162,7 @@ def run_backtest(
 
     print()
     print("=" * 70)
-    print("  KINGTRADES COMPOUNDING BACKTEST REPORT")
+    print("  SATAVECTOR COMPOUNDING BACKTEST REPORT")
     print("=" * 70)
     print(f"  Starting capital   : ${capital:,.2f}")
     print(f"  Period             : {months} months ({n_days} trading days)")
@@ -393,7 +393,7 @@ def run_backtest(
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="KingTrades Compounding Backtest")
+    p = argparse.ArgumentParser(description="SataVector Compounding Backtest")
     p.add_argument("--capital",       type=float, default=1000,
                    help="Starting capital in USD (default: 1000)")
     p.add_argument("--months",        type=int,   default=6,

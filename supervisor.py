@@ -1,5 +1,5 @@
 """
-supervisor.py — KingTrades Autonomous Supervisor Agent
+supervisor.py — SataVector Autonomous Supervisor Agent
 
 Runs alongside the trading bot as a separate process. Responsibilities:
   1. Process watchdog   — restart bot if it crashes (circuit breaker: 5 restarts/hr)
@@ -443,7 +443,7 @@ class BotSupervisor:
 
     def run(self) -> None:
         logger.info("=" * 60)
-        logger.info("KingTrades Autonomous Supervisor started")
+        logger.info("SataVector Autonomous Supervisor started")
         logger.info(f"Monitoring: {BOT_SCRIPT}")
         logger.info(f"Circuit breaker: max {MAX_RESTARTS_PER_HOUR} restarts/hr")
         logger.info("=" * 60)

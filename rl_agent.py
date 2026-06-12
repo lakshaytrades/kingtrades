@@ -1,5 +1,5 @@
 """
-rl_agent.py — Reinforcement Learning Brain for KingTrades
+rl_agent.py — Reinforcement Learning Brain for SataVector
 
 Architecture (as designed):
   StateBuilder         → Eyes. Encodes market into a discrete state string like "12201102"

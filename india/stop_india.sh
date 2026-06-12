@@ -2,7 +2,7 @@
 SESSION="kingtrades-india"
 ROOT_DIR="$(dirname "$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)")"
 
-echo "Stopping KingTrades India Bot..."
+echo "Stopping SataVector India Bot..."
 
 if screen -list | grep -q "$SESSION"; then
     screen -X -S "$SESSION" quit

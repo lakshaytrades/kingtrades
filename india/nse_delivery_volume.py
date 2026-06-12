@@ -185,11 +185,14 @@ def get_delivery_pct(symbol: str) -> Optional[float]:
 
 # ── Delivery V2: 5-day trend analysis ────────────────────────────────────── #
 
-_hist_cache: Dict[str, list] = {}   # {symbol: [pct_day1, pct_day2, ...]} newest last
+# Per-DATE full maps {date_key: {symbol: pct}} — one download per trading day,
+# shared across the whole watchlist (NOT per symbol).
+_day_maps: Dict[str, Dict[str, float]] = {}
+_day_maps_failed: set = set()   # dates that failed download — don't retry all day
 
 
 def _get_hist_dates(n: int = 5) -> list:
-    """Return last n trading day date strings (DMY format) and (YMD format)."""
+    """Return last n trading day date strings as (DMY, YMD) tuples, oldest first."""
     now = datetime.now(IST)
     dates = []
     d = now.date()
@@ -203,52 +206,61 @@ def _get_hist_dates(n: int = 5) -> list:
     return list(reversed(dates))   # oldest first
 
 
-def _load_delivery_history(symbol: str, days: int = 5) -> list:
-    """Return list of delivery % values for last `days` trading days (oldest→newest)."""
-    sym = symbol.upper()
-    cached = _hist_cache.get(sym)
-    if cached and len(cached) >= days:
-        return cached[-days:]
+def _load_day_map(dmy: str, ymd: str) -> Dict[str, float]:
+    """Download + parse one day's bhav copy → {symbol: delivery_pct}. Cached."""
+    if ymd in _day_maps:
+        return _day_maps[ymd]
+    if ymd in _day_maps_failed:
+        return {}
 
     import requests, io
     import pandas as pd
 
-    results = []
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
         "Referer": "https://www.nseindia.com/",
     }
+    urls = [
+        f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{dmy}.csv",
+        f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{ymd}_F.CSV",
+    ]
+    for url in urls:
+        try:
+            r = requests.get(url, headers=headers, timeout=10)
+            r.raise_for_status()
+            df = pd.read_csv(io.StringIO(r.text))
+            df.columns = [c.strip().upper() for c in df.columns]
+            sym_col   = next((c for c in df.columns if "SYMBOL" in c), None)
+            deliv_col = next((c for c in df.columns if "DELIV_PER" in c
+                              or "DELPER" in c or "DELIVERYPERC" in c), None)
+            if not sym_col or not deliv_col:
+                continue
+            day_map: Dict[str, float] = {}
+            for _, row in df.iterrows():
+                try:
+                    pct = float(str(row[deliv_col]).replace(",", "").strip())
+                    if 0 <= pct <= 100:
+                        day_map[str(row[sym_col]).strip().upper()] = pct
+                except (ValueError, TypeError):
+                    pass
+            if day_map:
+                _day_maps[ymd] = day_map
+                return day_map
+        except Exception:
+            pass
 
+    _day_maps_failed.add(ymd)
+    return {}
+
+
+def _load_delivery_history(symbol: str, days: int = 5) -> list:
+    """Return delivery % for last `days` trading days (oldest→newest)."""
+    sym = symbol.upper()
+    results = []
     for dmy, ymd in _get_hist_dates(days):
-        urls = [
-            f"https://archives.nseindia.com/products/content/sec_bhavdata_full_{dmy}.csv",
-            f"https://nsearchives.nseindia.com/content/cm/BhavCopy_NSE_CM_0_0_0_{ymd}_F.CSV",
-        ]
-        for url in urls:
-            try:
-                r = requests.get(url, headers=headers, timeout=10)
-                r.raise_for_status()
-                df = pd.read_csv(io.StringIO(r.text))
-                df.columns = [c.strip().upper() for c in df.columns]
-                sym_col   = next((c for c in df.columns if "SYMBOL" in c), None)
-                deliv_col = next((c for c in df.columns if "DELIV_PER" in c
-                                  or "DELPER" in c or "DELIVERYPERC" in c), None)
-                if sym_col and deliv_col:
-                    row = df[df[sym_col].astype(str).str.strip().str.upper() == sym]
-                    if not row.empty:
-                        try:
-                            pct = float(str(row[deliv_col].iloc[0]).replace(",", "").strip())
-                            if 0 <= pct <= 100:
-                                results.append(pct)
-                                break
-                        except Exception:
-                            pass
-            except Exception:
-                pass
-        else:
-            continue
-
-    _hist_cache[sym] = results
+        day_map = _load_day_map(dmy, ymd)
+        if sym in day_map:
+            results.append(day_map[sym])
     return results
 
 

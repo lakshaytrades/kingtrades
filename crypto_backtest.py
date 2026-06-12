@@ -172,7 +172,7 @@ SEP2 = "─" * 72
 def main():
     print()
     print(SEP)
-    print("  KINGTRADES CRYPTO — HONEST BACKTESTING REPORT (Monte Carlo)")
+    print("  SATAVECTOR CRYPTO — HONEST BACKTESTING REPORT (Monte Carlo)")
     print("  10,000 scenarios × 30 days, seed=42, realistic P&L math")
     print(SEP)
 

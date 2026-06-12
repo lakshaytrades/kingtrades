@@ -37,7 +37,7 @@ def get_insider_signal(symbol: str, direction: str) -> Tuple[float, str]:
             f"&dateRange=custom&startdt={_days_ago(30)}&enddt={_today()}"
             f"&forms=4&hits.hits._source=period_of_report,entity_name,file_num"
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "KingTrades research@kingtrades.local"})
+        req = urllib.request.Request(url, headers={"User-Agent": "SataVector research@kingtrades.local"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = resp.read().decode()
 

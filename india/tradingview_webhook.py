@@ -1,5 +1,5 @@
 """
-tradingview_webhook.py — TradingView webhook receiver for PSEB India Bot
+tradingview_webhook.py — TradingView webhook receiver for SATAVECTOR India Bot
 
 Listens on INDIA_WEBHOOK_PORT (default 8888) for POST /tv alerts.
 
@@ -127,7 +127,7 @@ class _TVHandler(BaseHTTPRequestHandler):
         self.send_response(200)
         self.end_headers()
         now_ist = datetime.now(IST).strftime("%H:%M IST")
-        self.wfile.write(f"PSEB India Webhook — {now_ist}".encode())
+        self.wfile.write(f"SATAVECTOR India Webhook — {now_ist}".encode())
 
     def log_message(self, fmt, *args):
         logger.debug(f"[TV HTTP] {fmt % args}")

@@ -1,5 +1,5 @@
 """
-alerts_telegram.py — KingTrades Bloomberg Terminal Alert Engine
+alerts_telegram.py — SataVector Bloomberg Terminal Alert Engine
 Professional-grade Telegram alerts modelled on Bloomberg / institutional trading desk output.
 
 Features:
@@ -251,7 +251,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax1.fill_between(x, cumulative, alpha=0.15, color=color)
         ax1.axhline(0, color="#555555", linestyle="--", lw=1)
         ax1.set_facecolor("#0D1117")
-        ax1.set_title("KingTrades — Equity Curve", color="white", fontsize=11)
+        ax1.set_title("SataVector — Equity Curve", color="white", fontsize=11)
         ax1.set_ylabel(f"Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax1.tick_params(colors="#AAAAAA")
         ax1.grid(True, color="#333333", linestyle=":", alpha=0.5)
@@ -497,7 +497,7 @@ class TelegramAlerter:
         stats      = self._live_stats_line()
 
         text = (
-            f"👑 <b>KING</b> — lakshaytrades\n"
+            f"👑 <b>SATAVECTOR</b> — lakshaytrades\n"
             f"{emoji} <b>ORDER EXECUTED — {dir_word}</b>\n"
             f"{_sep()}\n"
             f"  <b>{symbol}</b>  |  <code>{direction}</code>\n"
@@ -539,7 +539,7 @@ class TelegramAlerter:
         reason_clean = reason.replace("_", " ").upper()
 
         text = (
-            f"👑 <b>KING</b> — lakshaytrades\n"
+            f"👑 <b>SATAVECTOR</b> — lakshaytrades\n"
             f"{pnl_emoji} <b>POSITION CLOSED — {reason_clean}</b>\n"
             f"{_sep()}\n"
             f"  <b>{symbol}</b>  |  <code>{direction}</code>  |  <code>{reason_clean}</code>\n"
@@ -815,7 +815,7 @@ class TelegramAlerter:
                 )
 
         text = (
-            f"⏱ *KING HOURLY UPDATE*\n"
+            f"⏱ *SATAVECTOR HOURLY UPDATE*\n"
             f"{_sep()}\n"
             f"  {format_ist_timestamp()}\n"
             f"{_sep()}\n"

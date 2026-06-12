@@ -78,7 +78,7 @@ def _fetch_edgar_sentiment(symbol: str) -> Tuple[float, str]:
             + "&forms=8-K"
         )
         headers = {
-            "User-Agent": "KingTrades research@kingtrades.ai",
+            "User-Agent": "SataVector research@kingtrades.ai",
             "Accept": "application/json",
         }
         resp = requests.get(url, headers=headers, timeout=8)

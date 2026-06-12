@@ -191,7 +191,7 @@ class Watchdog:
         )
         save_status(f"SLEEPING — {day_type}")
         send_telegram(
-            f"🌙 <b>KingTrades Watchdog</b>\n"
+            f"🌙 <b>SataVector Watchdog</b>\n"
             f"Today is a {day_type}. Bot will resume on\n"
             f"<b>{wake.strftime('%A, %d %b %Y at %H:%M IST')}</b>"
         )
@@ -348,14 +348,14 @@ class Watchdog:
     def run(self) -> None:
         """Main watchdog loop."""
         log.info("=" * 60)
-        log.info("  KingTrades Watchdog starting")
+        log.info("  SataVector Watchdog starting")
         log.info(f"  Bot dir:  {BOT_DIR}")
         log.info(f"  Python:   {PYTHON}")
         log.info(f"  IST time: {ist_now().strftime('%Y-%m-%d %H:%M:%S')}")
         log.info("=" * 60)
 
         send_telegram(
-            f"🤖 <b>KingTrades Watchdog Started</b>\n"
+            f"🤖 <b>SataVector Watchdog Started</b>\n"
             f"Time: {ist_now().strftime('%d %b %Y %H:%M IST')}\n"
             f"Will trade on next market day automatically."
         )
@@ -394,7 +394,7 @@ class Watchdog:
                 log.warning("Kill-switch exit (code 42) — not restarting today")
                 save_status("KILLED — manual stop")
                 send_telegram(
-                    "🛑 <b>KingTrades KILL-SWITCH activated</b>\n"
+                    "🛑 <b>SataVector KILL-SWITCH activated</b>\n"
                     "Bot will not restart until next trading day."
                 )
                 self._wait_after_market_close()
@@ -412,7 +412,7 @@ class Watchdog:
 
                 if self.crashes >= self.CRASH_ALERT_THRESHOLD:
                     send_telegram(
-                        f"⚠️ <b>KingTrades Crash Alert</b>\n"
+                        f"⚠️ <b>SataVector Crash Alert</b>\n"
                         f"Crash #{self.crashes} at {now_ist.strftime('%H:%M IST')}\n"
                         f"Exit code: {exit_code}\n"
                         f"Restarting in {backoff}s...\n"
@@ -441,7 +441,7 @@ def print_status() -> None:
     if not s:
         print("No status file found. Has the bot run yet?")
         return
-    print("\nKingTrades Bot Status")
+    print("\nSataVector Bot Status")
     print("─" * 40)
     for k, v in s.items():
         print(f"  {k:<12}: {v}")
@@ -449,7 +449,7 @@ def print_status() -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser(description="KingTrades Watchdog")
+    parser = argparse.ArgumentParser(description="SataVector Watchdog")
     parser.add_argument("--once",   action="store_true", help="Run once, no auto-restart")
     parser.add_argument("--status", action="store_true", help="Show bot status and exit")
     args = parser.parse_args()

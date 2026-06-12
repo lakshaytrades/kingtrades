@@ -194,14 +194,17 @@ class IndiaSignalGenerator:
 
             sl_dist = atr * self._config.ATR_SL_MULTIPLIER
             tp_dist = atr * self._config.ATR_TP_MULTIPLIER
+            # T1 at 1R (partial 50% exit), T2 at 2R (runner) — previously both
+            # were at 2R, making the partial-exit/runner split a no-op
+            t1_dist = sl_dist * getattr(self._config, "ATR_T1_MULTIPLIER", 1.0)
 
             if direction == "LONG":
                 stop_loss = ltp - sl_dist
-                target_1  = ltp + sl_dist * 2
+                target_1  = ltp + t1_dist
                 target_2  = ltp + tp_dist
             else:
                 stop_loss = ltp + sl_dist
-                target_1  = ltp - sl_dist * 2
+                target_1  = ltp - t1_dist
                 target_2  = ltp - tp_dist
 
             rr = round(tp_dist / sl_dist, 2) if sl_dist > 0 else 0.0
@@ -402,6 +405,9 @@ class IndiaSignalGenerator:
                         score += uoa_adj
                     elif uoa_sig == "PUT_ACCUMULATION" and direction == "SHORT":
                         score += uoa_adj
+                    elif uoa_sig in ("CALL_ACCUMULATION", "PUT_ACCUMULATION"):
+                        score -= 6   # smart money positioned against signal direction
+                        uoa_adj = -6
                     if uoa_adj != 0:
                         sig.rationale += f" | UOA_{uoa_sig}:{uoa_adj:+d}"
                 except Exception:
@@ -424,6 +430,24 @@ class IndiaSignalGenerator:
             # Update final score on signal
             sig.signal_score = round(score, 1)
             sig.is_high_confidence = score >= 80
+
+            # Re-check threshold: Round 2 boosters can be negative (macro -20,
+            # RS -6, gap -8, UOA -6) and must be able to reject the signal
+            if score < _final_min:
+                logger.debug(f"{symbol}: score {score:.1f} fell below "
+                             f"{_final_min} after Round 2 adjustments")
+                return None
+
+            # Re-grade with final score (Round 2 boosts can cross grade bands)
+            if score >= grand_slam:
+                sig.quality_grade, _base_mult = "A+", 1.35
+            elif score >= 78:
+                sig.quality_grade, _base_mult = "A", 1.00
+            elif score >= 72:
+                sig.quality_grade, _base_mult = "B+", 0.80
+            else:
+                sig.quality_grade, _base_mult = "B", 0.65
+            sig.size_multiplier = round(_base_mult * _phase_size_mult, 3)
 
             # ── Idle scalp mode adjustments ───────────────────────────────────
             if _is_scalp_mode:

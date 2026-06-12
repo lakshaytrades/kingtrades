@@ -1,5 +1,5 @@
 """
-watchdog_india.py — Self-healing monitor for KingTrades India Bot
+watchdog_india.py — Self-healing monitor for SataVector India Bot
 India specialist: watches main_india.py, IST market hours, INR thresholds.
 
 Auto-fixes (no human needed):

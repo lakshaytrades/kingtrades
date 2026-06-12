@@ -74,7 +74,7 @@ CAPITAL_LEVELS         = [4_000, 10_000, 25_000]
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# KING SCORE — Honest self-assessment
+# SATAVECTOR SCORE — Honest self-assessment
 # ─────────────────────────────────────────────────────────────────────────────
 
 KING_SCORE_COMPONENTS = {
@@ -301,7 +301,7 @@ def print_section(title: str):
 
 
 def print_king_score():
-    print_section("KING SCORE — Honest Self-Assessment (0-100)")
+    print_section("SATAVECTOR SCORE — Honest Self-Assessment (0-100)")
     print()
     total = 0
     max_total = 0
@@ -314,7 +314,7 @@ def print_king_score():
         max_total += max_score
         print()
 
-    print(f"  {'TOTAL KING SCORE':<28} {total:>2}/{max_total}")
+    print(f"  {'TOTAL SATAVECTOR SCORE':<28} {total:>2}/{max_total}")
     grade = "F" if total < 40 else "D" if total < 50 else "C" if total < 60 else "B" if total < 70 else "A" if total < 80 else "A+"
     print(f"  Grade: {grade}")
     print()

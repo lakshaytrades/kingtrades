@@ -1,5 +1,5 @@
 """
-update_token.py — Auth Diagnostic & Manual Override for KingTrades Bot
+update_token.py — Auth Diagnostic & Manual Override for SataVector Bot
 
 The bot is now FULLY AUTOMATIC. You should NEVER need to run this.
   • GROWW_AUTH_TOKEN  = permanent JWT from developer.groww.in (set once, never changes)

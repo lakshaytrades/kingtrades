@@ -207,7 +207,7 @@ def send_capital_report(market: str = "BOTH"):
     india_mode = india.get("mode", "paper").upper()
 
     lines = [
-        f"📊 *KingTrades — Daily Capital Report*",
+        f"📊 *SataVector — Daily Capital Report*",
         f"📅 {date_str}",
         f"",
         f"🇺🇸 *US Bot (Alpaca {us_mode})*",

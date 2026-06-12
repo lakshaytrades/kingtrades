@@ -448,7 +448,7 @@ def train_models(X: np.ndarray, y: np.ndarray, output_dir: str):
 
 
 def main():
-    parser = argparse.ArgumentParser(description="Pre-train KingTrades ML models")
+    parser = argparse.ArgumentParser(description="Pre-train SataVector ML models")
     parser.add_argument("--symbols", nargs="+", default=TRAINING_SYMBOLS,
                         help="Symbols to train on")
     parser.add_argument("--period", default="max", help="Data period (1y, 2y, 5y, max)")
@@ -456,7 +456,7 @@ def main():
                         help="Output directory for models")
     args = parser.parse_args()
 
-    logger.info(f"KingTrades ML Pre-trainer")
+    logger.info(f"SataVector ML Pre-trainer")
     logger.info(f"Symbols: {len(args.symbols)} | Period: {args.period} | Output: {args.output}")
 
     logger.info("Downloading market data...")

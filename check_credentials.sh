@@ -25,7 +25,7 @@ check() {
 
 echo ""
 echo "======================================"
-echo "  KingTrades Credential Check"
+echo "  SataVector Credential Check"
 echo "======================================"
 echo ""
 

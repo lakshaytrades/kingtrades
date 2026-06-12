@@ -1,5 +1,5 @@
 [Unit]
-Description=KingTrades Autonomous Supervisor — watchdog + auto-restart + P&L monitor
+Description=SataVector Autonomous Supervisor — watchdog + auto-restart + P&L monitor
 After=network-online.target kingtrades.service
 # Supervisor manages the kingtrades process itself — don't run both services
 

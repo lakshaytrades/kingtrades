@@ -1,12 +1,12 @@
 #!/bin/bash
-# KingTrades — One-command fresh install
+# SataVector — One-command fresh install
 set -e
 
 REPO="https://github.com/lakshaytrades/kingtrades"
 BRANCH="claude/nse-momentum-groww-bot-hvkv9"
 INSTALL_DIR="/home/user/kingtrades"
 
-echo "=== KingTrades Installer ==="
+echo "=== SataVector Installer ==="
 
 # 1. Clone or update
 if [ -d "$INSTALL_DIR/.git" ]; then
@@ -43,7 +43,7 @@ echo "[4/4] Done."
 
 echo ""
 echo "=============================="
-echo "  KingTrades installed OK"
+echo "  SataVector installed OK"
 echo "=============================="
 echo ""
 echo "Next: fill in your credentials:"

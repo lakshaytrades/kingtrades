@@ -1,5 +1,5 @@
 """
-config_india.py — KingTrades India Bot Configuration
+config_india.py — SataVector India Bot Configuration
 Dhan broker | NSE equity | IST timezone | INR capital
 """
 from datetime import time

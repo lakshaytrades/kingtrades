@@ -52,7 +52,7 @@ def _edgar_13f_score(symbol: str, direction: str) -> Tuple[float, str]:
             f"&forms=13F-HR&dateRange=custom&startdt={start}&enddt={end}"
         )
         req = urllib.request.Request(
-            url, headers={"User-Agent": "KingTradesBot research@kingtrades.ai"}
+            url, headers={"User-Agent": "SataVectorBot research@kingtrades.ai"}
         )
         with urllib.request.urlopen(req, timeout=6) as resp:
             data = json.loads(resp.read().decode())

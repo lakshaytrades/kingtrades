@@ -1923,7 +1923,7 @@ class SignalGenerator:
             except Exception as _tod_e:
                 logger.debug(f"[suppressed] optimal_entry_timing: {_tod_e}")
 
-            # ── KING KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
+            # ── SATAVECTOR KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
             # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
             # Each framework validates the setup independently. Consensus = conviction.
             try:
@@ -1944,7 +1944,7 @@ class SignalGenerator:
                             logger.debug(f"{symbol}: KB {_kb_delta:+.1f} — {_r}")
                         if abs(_kb_delta) >= 8.0:
                             logger.info(
-                                f"[{format_ist_timestamp()}] KING KB {symbol}: "
+                                f"[{format_ist_timestamp()}] SATAVECTOR KB {symbol}: "
                                 f"{_kb_delta:+.1f}pts | {' | '.join(_kb_reasons[:3])}"
                             )
             except Exception as _kb_e:

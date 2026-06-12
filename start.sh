@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# start.sh — KingTrades US Bot Launcher (autonomous-safe)
+# start.sh — SataVector US Bot Launcher (autonomous-safe)
 # Pass --cron to skip interactive prompts (for crontab use).
 # ============================================================
 
@@ -37,7 +37,7 @@ fi
 # Clean up stale PID file so single-instance guard doesn't block
 rm -f "$BOT_DIR/logs/kingtrades.pid" 2>/dev/null
 
-[ "$CRON_MODE" -eq 0 ] && echo "Starting KingTrades US bot..."
+[ "$CRON_MODE" -eq 0 ] && echo "Starting SataVector US bot..."
 
 # Runner script (handles crash loop with backoff)
 RUNNER="$BOT_DIR/logs/.runner.sh"

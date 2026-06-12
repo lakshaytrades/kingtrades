@@ -1,5 +1,5 @@
 """
-watchdog.py — KingTrades Self-Healing Watchdog v1.0
+watchdog.py — SataVector Self-Healing Watchdog v1.0
 
 Runs as a separate process. Does everything it safely can without human involvement.
 Sends Telegram ONLY when a real human decision is needed.
@@ -140,7 +140,7 @@ def _telegram_send(msg: str, level: str = "INFO"):
         try:
             import config as _c; _wdog_name = _c.BOT_DISPLAY_NAME
         except Exception:
-            _wdog_name = "PSEB"
+            _wdog_name = "SATAVECTOR"
         full  = f"{emoji} *{_wdog_name} Watchdog*\n{msg}"
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
@@ -468,7 +468,7 @@ def _send_weekly_digest():
     total_fixes = _state.get("total_auto_fixes", 0)
 
     lines = [
-        "*Weekly Status — KingTrades Watchdog*",
+        "*Weekly Status — SataVector Watchdog*",
         "",
         f"Score threshold: `{threshold:.0f}` (safe range {SCORE_MIN_FLOOR:.0f}–{SCORE_MAX_CEIL:.0f})",
         f"Auto-fixes this week: `{len(fixes)}`",
@@ -647,7 +647,7 @@ def main():
     signal.signal(signal.SIGINT,  _handle_signal)
 
     logger.info("=" * 60)
-    logger.info("KingTrades Watchdog started")
+    logger.info("SataVector Watchdog started")
     logger.info(f"Score auto-adjust range: {SCORE_MIN_FLOOR}–{SCORE_MAX_CEIL}")
     logger.info(f"Max crashes/hour before alert: {MAX_CRASHES_PER_HOUR}")
     logger.info(f"Signal drought threshold: {SIGNAL_DROUGHT_MINS} min")

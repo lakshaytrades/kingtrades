@@ -1,4 +1,4 @@
-# KingTrades Log Monitoring Setup
+# SataVector Log Monitoring Setup
 
 ## Overview
 
@@ -25,7 +25,7 @@ hours (8 AM – 5 PM ET), it:
 ## live_status.txt Format
 
 ```
-=== KingTrades Live Status ===
+=== SataVector Live Status ===
 Timestamp: YYYY-MM-DD HH:MM:SS ET
 Log: /path/to/logs/trading_YYYY-MM-DD.log
 

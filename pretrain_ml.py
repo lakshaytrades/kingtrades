@@ -628,7 +628,7 @@ def train_and_save(
 
 def main():
     print("=" * 60)
-    print("KingTrades ML Pre-trainer v22.0")
+    print("SataVector ML Pre-trainer v22.0")
     print(f"Downloading 10yr OHLCV history (from {START_DATE})...")
     print("Regime-aware: 8 models (BULL × 4 + BEAR × 4)")
     print("=" * 60)

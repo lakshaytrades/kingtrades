@@ -219,7 +219,7 @@ def get_fear_greed_index() -> int:
         import urllib.request
         import json
         url  = "https://api.alternative.me/fng/?limit=1"
-        req  = urllib.request.Request(url, headers={"User-Agent": "KingTrades/1.0"})
+        req  = urllib.request.Request(url, headers={"User-Agent": "SataVector/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         val = int(data["data"][0]["value"])
@@ -279,7 +279,7 @@ def get_funding_rate(symbol: str) -> Dict:
         import urllib.request
         import json
         url = f"https://fapi.binance.com/fapi/v1/premiumIndex?symbol={binance_sym}"
-        req = urllib.request.Request(url, headers={"User-Agent": "KingTrades/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "SataVector/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read())
         rate = float(data.get("lastFundingRate", 0))

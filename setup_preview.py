@@ -329,7 +329,7 @@ def send_setup_preview(
         window = ""
 
     lines = [
-        f"🔭 <b>KINGTRADES SETUP SCAN</b>  {now_str}",
+        f"🔭 <b>SATAVECTOR SETUP SCAN</b>  {now_str}",
         f"  {window}",
         "",
     ]
@@ -397,7 +397,7 @@ def send_india_open_brief(
         pass
 
     lines = [
-        f"🌅 <b>KINGTRADES NSE OPEN BRIEF</b>",
+        f"🌅 <b>SATAVECTOR NSE OPEN BRIEF</b>",
         f"   {now_str}",
         "━━━━━━━━━━━━━━━━━━━━━━━",
         "",

@@ -82,7 +82,7 @@ if [ "$_ET_HOUR" -ge 8 ] && [ "$_ET_HOUR" -le 17 ]; then
         # Extract last 60 lines, keep only ERROR/WARNING/CRITICAL/FILLED/SIGNAL/BLOCKED lines
         _ERRORS=$(tail -200 "$_TODAY_LOG" 2>/dev/null | grep -E "ERROR|WARNING|CRITICAL|BLOCKED|REJECTED|failed|exception" | tail -20 || true)
         _SIGNALS=$(tail -200 "$_TODAY_LOG" 2>/dev/null | grep -E "FILLED|SCALP|SIGNAL|BarCache refreshed|PAPER|BRACKET" | tail -15 || true)
-        _STATUS_CONTENT="=== KingTrades Live Status ===
+        _STATUS_CONTENT="=== SataVector Live Status ===
 Timestamp: $_TS_ET
 Log: $_TODAY_LOG
 
@@ -95,7 +95,7 @@ ${_SIGNALS:-none}
 === LAST 30 LOG LINES ===
 $(tail -30 "$_TODAY_LOG" 2>/dev/null || echo 'log not found')"
     else
-        _STATUS_CONTENT="=== KingTrades Live Status ===
+        _STATUS_CONTENT="=== SataVector Live Status ===
 Timestamp: $_TS_ET
 Log file not found: $_TODAY_LOG
 Bot may not have started yet or log dir missing."

@@ -1,5 +1,5 @@
 """
-ai_supervisor.py — Autonomous Claude-powered supervisor for KingTrades bots.
+ai_supervisor.py — Autonomous Claude-powered supervisor for SataVector bots.
 
 Runs alongside watchdog.py. Every 5 minutes (market hours) it reads recent
 bot logs, detects novel errors, calls Claude to diagnose and fix them, then

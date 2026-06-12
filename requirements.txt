@@ -1,5 +1,5 @@
 # ============================================================
-# KingTrades — US Momentum Bot (Alpaca)
+# SataVector — US Momentum Bot (Alpaca)
 # Install: pip install -r requirements.txt
 # ============================================================
 

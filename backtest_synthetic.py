@@ -1,5 +1,5 @@
 """
-backtest_synthetic.py — KingTrades Strategy Backtest (No Internet Required)
+backtest_synthetic.py — SataVector Strategy Backtest (No Internet Required)
 
 Simulates the MTF + momentum breakout strategy using statistically realistic
 synthetic OHLCV data calibrated to US large-cap momentum stocks (2020-2025).
@@ -237,7 +237,7 @@ def run_backtest(
     n_days = months * 21
 
     print(f"\n{'='*62}")
-    print(f"  KingTrades Backtest — Monte Carlo ({runs} runs)")
+    print(f"  SataVector Backtest — Monte Carlo ({runs} runs)")
     print(f"{'='*62}")
     print(f"  Capital       : ${capital:,.0f}")
     print(f"  Period        : {months} months ({n_days} trading days)")

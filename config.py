@@ -40,7 +40,7 @@ ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.marke
 # ============================================================
 TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
-BOT_DISPLAY_NAME     = os.getenv("BOT_DISPLAY_NAME", "PSEB")
+BOT_DISPLAY_NAME     = os.getenv("BOT_DISPLAY_NAME", "SATAVECTOR")
 
 # ============================================================
 # NEWS / SENTIMENT
@@ -634,7 +634,7 @@ ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60
 # Raise to 0.70 for ultra-selective mode (fewer trades, higher WR)
 # Lower to 0.50 to effectively disable the gate (returns neutral prob)
 
-# KING Knowledge Base v15.0 — 8 legendary trading frameworks
+# SATAVECTOR Knowledge Base v15.0 — 8 legendary trading frameworks
 # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
 KNOWLEDGE_BASE_ENABLED:   bool  = os.getenv("KNOWLEDGE_BASE_ENABLED", "True").lower() in ("true","1","yes")
 

@@ -1,7 +1,7 @@
 """
-market_standing.py — KingTrades Market Positioning Intelligence
+market_standing.py — SataVector Market Positioning Intelligence
 
-Answers: "Where does KingTrades stand in the market RIGHT NOW?"
+Answers: "Where does SataVector stand in the market RIGHT NOW?"
   - Market regime (Bull/Bear/Chop/Volatile) for NSE + US
   - Today's setup quality score vs historical average
   - How the bot compares to: Nifty50, S&P500, top algo traders
@@ -30,9 +30,9 @@ BENCHMARKS = {
     "SP500_annual_avg":     10.5,
     "Top_HFT_daily":         0.15,  # % per day (Jane Street / Citadel tier)
     "Top_retail_daily":      0.25,  # % per day (top 5% retail algo)
-    "KingTrades_target_daily": 0.50, # % per day target
-    "KingTrades_target_monthly": 5.0,
-    "KingTrades_target_annual": 60.0,
+    "SataVector_target_daily": 0.50, # % per day target
+    "SataVector_target_monthly": 5.0,
+    "SataVector_target_annual": 60.0,
 }
 
 # ── Strategy quality thresholds (institutional standards) ───────────────────
@@ -276,7 +276,7 @@ def compute_setup_quality() -> Dict:
 
 def compute_percentile_ranking() -> Dict:
     """
-    Estimate where KingTrades sits vs common benchmarks.
+    Estimate where SataVector sits vs common benchmarks.
     Based on target metrics and actual if available.
     """
     ranking = {
@@ -308,7 +308,7 @@ def compute_percentile_ranking() -> Dict:
         except Exception:
             pass
 
-    daily_pct = actual_daily_pct if actual_daily_pct else BENCHMARKS["KingTrades_target_daily"] * 0.6
+    daily_pct = actual_daily_pct if actual_daily_pct else BENCHMARKS["SataVector_target_daily"] * 0.6
 
     # Annualize
     annual_pct = ((1 + daily_pct / 100) ** 252 - 1) * 100
@@ -436,7 +436,7 @@ def scan_opportunity_radar() -> Dict:
 
 
 def what_is_missing() -> List[str]:
-    """Return actionable list of what KingTrades is missing vs Level-99."""
+    """Return actionable list of what SataVector is missing vs Level-99."""
     missing = []
     for feature, detail in LEVEL99_COMPONENTS.items():
         missing.append(f"• {feature}: {detail}")
@@ -471,7 +471,7 @@ def build_morning_briefing() -> str:
 
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"🌅 <b>KINGTRADES MORNING BRIEFING</b>",
+        f"🌅 <b>SATAVECTOR MORNING BRIEFING</b>",
         f"   {date_str}",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
@@ -524,7 +524,7 @@ def build_morning_briefing() -> str:
 
 
 def build_standing_report() -> str:
-    """Full 'where does KingTrades stand' report — for /report command."""
+    """Full 'where does SataVector stand' report — for /report command."""
     try:
         from zoneinfo import ZoneInfo
         IST = ZoneInfo("Asia/Kolkata")
@@ -539,7 +539,7 @@ def build_standing_report() -> str:
 
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"🏆 <b>KINGTRADES — WHERE WE STAND</b>",
+        f"🏆 <b>SATAVECTOR — WHERE WE STAND</b>",
         f"   Generated: {now_str}",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",

@@ -1,5 +1,5 @@
 #!/bin/bash
-# stop.sh — Cleanly stop the KingTrades bot
+# stop.sh — Cleanly stop the SataVector bot
 
 SESSION="kingtrades"
 

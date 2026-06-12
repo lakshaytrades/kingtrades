@@ -199,7 +199,7 @@ def _fetch_reddit(symbol: str) -> Tuple[float, str]:
     try:
         import requests
 
-        headers = {"User-Agent": "KingTrades/1.0 (research bot)"}
+        headers = {"User-Agent": "SataVector/1.0 (research bot)"}
 
         # Search WSB for the ticker
         url = (

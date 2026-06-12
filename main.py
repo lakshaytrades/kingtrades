@@ -1467,7 +1467,7 @@ class TradingBot:
             print_banner()
         except Exception:
             pass
-        logger.info(f"[{format_ist_timestamp()}] KING v15.0 — lakshaytrades | 26 gates | 8 frameworks | ML-scored")
+        logger.info(f"[{format_ist_timestamp()}] SATAVECTOR v15.0 — lakshaytrades | 26 gates | 8 frameworks | ML-scored")
 
         try:
             while self.running:
@@ -4589,14 +4589,14 @@ class TradingBot:
                     if _ist_t < _dt_time(9, 0):
                         _eta_min = int((_dt_time(9, 15).hour * 60 + _dt_time(9, 15).minute) - (_ist_t.hour * 60 + _ist_t.minute))
                         _india_lines = [
-                            f"\n🇮🇳 <b>PSEB — INDIA BOT</b>",
+                            f"\n🇮🇳 <b>SATAVECTOR INDIA</b>",
                             f"⏳ PRE-MARKET — NSE opens in ~{_eta_min} min (9:15 AM IST)",
                             f"⚠️ India bot not detected running",
                             f"Start it: <code>cd /root/kingtrades/india && python3 main_india.py</code>",
                         ]
                     else:
                         _india_lines = [
-                            f"\n🇮🇳 <b>PSEB — INDIA BOT</b>",
+                            f"\n🇮🇳 <b>SATAVECTOR INDIA</b>",
                             f"⚠️ OFFLINE — state file not found",
                             f"Ensure India bot is running on VPS",
                         ]
@@ -4637,7 +4637,7 @@ class TradingBot:
                         _state_str = "ACTIVE ✅"
 
                     _india_lines = [
-                        f"\n🇮🇳 <b>PSEB — INDIA BOT</b> | {_ind_mode}",
+                        f"\n🇮🇳 <b>SATAVECTOR INDIA</b> | {_ind_mode}",
                         f"📅 {_ind_ts} IST{_stale_tag}",
                         f"NSE: {_mkt_label}",
                         "─" * 28,
@@ -4930,7 +4930,7 @@ class TradingBot:
                         uptime_hrs = (_t.time() - getattr(self, '_start_time', _t.time())) / 3600
                         mem = psutil.virtual_memory()
                         msg = (
-                            f"🏥 <b>KING Health Report</b>\n"
+                            f"🏥 <b>SATAVECTOR Health Report</b>\n"
                             f"{'─'*30}\n"
                             f"Uptime: {uptime_hrs:.1f}h\n"
                             f"Memory: {mem.percent:.0f}% used\n"
@@ -5555,7 +5555,7 @@ class TradingBot:
             # Detailed diagnostics (score histogram, ML stats) as separate message
             if _filter_lines:
                 self.alerter.send_html(
-                    f"📡 <b>KING Diagnostics</b> — {format_ist_timestamp()}\n"
+                    f"📡 <b>SATAVECTOR Diagnostics</b> — {format_ist_timestamp()}\n"
                     f"Status: {status}\n"
                     f"Balance: {bal_line}"
                     f"{_filter_lines}"
@@ -5674,7 +5674,7 @@ def main():
         fcntl.flock(_pid_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
         print(
-            f"[KingTrades] Another instance is already running (PID {_existing_pid}). "
+            f"[SataVector] Another instance is already running (PID {_existing_pid}). "
             "Stop it first with: pkill -f main.py",
             flush=True,
         )
@@ -5706,7 +5706,7 @@ def main():
     logger.info("  ██║  ██╗██║██║ ╚████║╚██████╔╝   ██║   ██║  ██║██║  ██║██████╔╝███████╗███████║")
     logger.info("  ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
     logger.info(_SEP)
-    logger.info("  [BLOOMBERG TERMINAL] KingTrades v3.0 — Institutional Momentum Engine")
+    logger.info("  [BLOOMBERG TERMINAL] SataVector v3.0 — Institutional Momentum Engine")
     logger.info(f"  [BROKER]   NYSE/NASDAQ via Alpaca  |  [MARKET] US Equities")
     logger.info(f"  [CLOCK]    {format_ist_timestamp()}")
     logger.info(f"  [MODE]     {'⚡ LIVE TRADING ENABLED — REAL MONEY' if config.LIVE_TRADING_ENABLED else '🔒 PAPER TRADING — safe mode'}")

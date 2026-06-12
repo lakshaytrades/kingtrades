@@ -1,5 +1,5 @@
 """
-daily_intelligence.py — Daily Intelligence Reports for KingTrades
+daily_intelligence.py — Daily Intelligence Reports for SataVector
 
 Sends three things every day automatically:
 
@@ -174,7 +174,7 @@ def explain_trade(signal) -> str:
     action_emoji = "🟢" if dir_ == "LONG" else "🔴"
 
     lines = [
-        f"🇺🇸 {action_emoji} *[US BOT] {dir_word} {qty} {sym} @ ${entry:.2f}*",
+        f"🇺🇸 {action_emoji} *[SATAVECTOR US] {dir_word} {qty} {sym} @ ${entry:.2f}*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
         "*WHY the bot took this trade:*",
@@ -384,7 +384,7 @@ def send_morning_brief():
         regime_str = "🟡 NEUTRAL"
 
     msg = (
-        f"🇺🇸 ☀️ *US BOT — Morning Brief*\n"
+        f"🇺🇸 ☀️ *SATAVECTOR US — Morning Brief*\n"
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
         f"📅 {now} | NYSE/NASDAQ | Alpaca\n"
         f"{'─' * 30}\n"
@@ -466,7 +466,7 @@ def send_eod_report():
     pnl_emoji = "🟢" if today_pnl >= 0 else "🔴"
 
     msg_parts = [
-        f"🇺🇸 📋 *US BOT — EOD Report*",
+        f"🇺🇸 📋 *SATAVECTOR US — EOD Report*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"📅 {now} | NYSE/NASDAQ | Alpaca",
         f"{'─' * 30}",

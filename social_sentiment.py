@@ -52,7 +52,7 @@ def _wsb_score(symbol: str, direction: str) -> float:
             f"https://www.reddit.com/r/wallstreetbets/search.json"
             f"?q={symbol}&sort=new&limit=25&t=day"
         )
-        req = urllib.request.Request(url, headers={"User-Agent": "KingTradesBot/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "SataVectorBot/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
 
@@ -100,7 +100,7 @@ def _stocktwits_score(symbol: str, direction: str) -> float:
         import json
 
         url = f"https://api.stocktwits.com/api/2/streams/symbol/{symbol}.json"
-        req = urllib.request.Request(url, headers={"User-Agent": "KingTradesBot/1.0"})
+        req = urllib.request.Request(url, headers={"User-Agent": "SataVectorBot/1.0"})
         with urllib.request.urlopen(req, timeout=5) as resp:
             data = json.loads(resp.read().decode())
 

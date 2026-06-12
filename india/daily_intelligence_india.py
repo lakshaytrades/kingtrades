@@ -108,7 +108,7 @@ def explain_trade(signal) -> str:
         dir_word = "BOUGHT" if direction == "LONG" else "SHORTED"
         action_emoji = "🟢" if direction == "LONG" else "🔴"
         lines = [
-            f"🇮🇳 {action_emoji} *[INDIA BOT] WHY this trade*",
+            f"🇮🇳 {action_emoji} *[SATAVECTOR INDIA] WHY this trade*",
             f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
             f"*{dir_word} {symbol}* | Grade: {grade} | Score: {score:.0f}/100",
             f"Entry: ₹{entry:.2f} | SL: ₹{sl:.2f} | Target: ₹{tp:.2f}",
@@ -249,7 +249,7 @@ def build_morning_brief_v2() -> str:
     """Build comprehensive pre-market intelligence message. Returns plain text string."""
     now = datetime.now(IST)
     lines = [
-        f"🌅 KINGTRADES MORNING INTELLIGENCE — {now.strftime('%H:%M IST')}",
+        f"🌅 SATAVECTOR MORNING INTELLIGENCE — {now.strftime('%H:%M IST')}",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"📅 {now.strftime('%A, %d %b %Y')} | NSE India",
         "",
@@ -424,7 +424,7 @@ def send_morning_brief():
     filled = max(0, min(18, int(monthly_pct * 18)))
     bar = "█" * filled + "░" * (18 - filled)
     lines = [
-        f"🇮🇳 🌅 *INDIA BOT — Morning Brief*",
+        f"🇮🇳 🌅 *SATAVECTOR INDIA — Morning Brief*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"📅 {datetime.now(IST).strftime('%A, %d %b %Y')} | NSE | Dhan",
         f"{'─' * 30}",
@@ -469,7 +469,7 @@ def send_eod_report():
     wr_bar = "█" * wr_filled + "░" * (10 - wr_filled)
 
     lines = [
-        f"🇮🇳 📊 *INDIA BOT — EOD Report*",
+        f"🇮🇳 📊 *SATAVECTOR INDIA — EOD Report*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan",
         f"{'─' * 30}",

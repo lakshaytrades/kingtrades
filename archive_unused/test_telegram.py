@@ -27,7 +27,7 @@ _h = "api" + ".telegr" + "am.org"
 _u = "https://" + _h + "/bot" + token + "/sendMessage"
 
 try:
-    r = requests.post(_u, json={"chat_id": chat_id, "text": "KingTrades bot is LIVE and connected!"}, timeout=10)
+    r = requests.post(_u, json={"chat_id": chat_id, "text": "SataVector bot is LIVE and connected!"}, timeout=10)
     if r.ok:
         print("SUCCESS — check your Telegram now!")
     else:

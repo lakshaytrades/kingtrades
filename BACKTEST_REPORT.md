@@ -1,4 +1,4 @@
-# KingTrades v9.0 — Backtest Report & Live Expectations
+# SataVector v9.0 — Backtest Report & Live Expectations
 ## 100/100 Score · 23-Gate System · 70+ Components · Top 1% US Market
 
 **Generated:** 2026-05-29 | **Capital:** $4,000 paper (Alpaca) | **Market:** US equities (NYSE/NASDAQ)
@@ -128,9 +128,9 @@ Signal Pipeline (40+ stages):
 
 ---
 
-## Where KingTrades v9.0 Stands in the US Market
+## Where SataVector v9.0 Stands in the US Market
 
-| Capability | Retail Average | KingTrades v9.0 |
+| Capability | Retail Average | SataVector v9.0 |
 |---|---|---|
 | Scoring components | 5-15 | 70+ |
 | Gate filters | 0-3 | 23 |
@@ -147,7 +147,7 @@ Signal Pipeline (40+ stages):
 | Self-learning threshold | No | Yes (JSON persistence) |
 | **Percentile rank** | — | **Top 1%** |
 
-**Why top 1%:** Most retail bots use 1-2 indicators with market orders. KingTrades v9.0
+**Why top 1%:** Most retail bots use 1-2 indicators with market orders. SataVector v9.0
 combines 70+ scoring components across 8 free data sources with 23 filters that eliminate
 low-probability setups before execution. Options flow and short squeeze detection reveal
 institutional positioning before it shows in price action.
@@ -176,4 +176,4 @@ institutional positioning before it shows in price action.
 
 ---
 
-*KingTrades v9.0 | Branch: claude/nse-momentum-groww-bot-hvkv9 | 2026-05-29*
+*SataVector v9.0 | Branch: claude/nse-momentum-groww-bot-hvkv9 | 2026-05-29*

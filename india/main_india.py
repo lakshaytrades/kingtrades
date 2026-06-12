@@ -1,5 +1,5 @@
 """
-main_india.py -- KingTrades India Bot
+main_india.py -- SataVector India Bot
 Dhan broker | NSE equity | IST timezone | INR capital
 
 Architecture: parallel to US bot -- zero shared state.
@@ -100,6 +100,7 @@ class OpenPosition:
     t1_exited:     bool  = False
     is_scalp:      bool  = False
     time_stop_min: int   = 0
+    signal_score:  float = 0.0
     signal_contributions: dict = field(default_factory=dict)
 
 
@@ -120,7 +121,7 @@ class DayStats:
 
 # -- Main bot -----------------------------------------------------------------
 
-class KingTradesIndia:
+class SataVectorIndia:
 
     def __init__(self):
         self._dhan      = None
@@ -186,7 +187,7 @@ class KingTradesIndia:
 
     def initialize(self) -> bool:
         logger.info("=" * 60)
-        logger.info(f"KingTrades India Bot starting -- {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
+        logger.info(f"SataVector India Bot starting -- {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
         logger.info(f"Live trading: {config.LIVE_TRADING_ENABLED}")
         logger.info(f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max positions: {config.MAX_POSITIONS}")
 
@@ -239,7 +240,7 @@ class KingTradesIndia:
 
         mode = "LIVE TRADING" if config.LIVE_TRADING_ENABLED else "PAPER MODE"
         _tg(
-            f"INDIA BOT -- Session Started\n"
+            f"SATAVECTOR INDIA -- Session Started\n"
             f"--------------------------------\n"
             f"{datetime.now(IST).strftime('%d %b %Y, %H:%M IST')}\n"
             f"Mode: {mode}\n"
@@ -299,13 +300,29 @@ class KingTradesIndia:
                             logger.info("RS scores updated for %d symbols", len(self._watchlist))
                     except Exception as _e:
                         logger.debug(f"rs_update: {_e}")
+                    # Monday walk-forward optimization (pre-market)
+                    try:
+                        if self._optimizer is not None and now.weekday() == 0:
+                            best = self._optimizer.run(now)
+                            if best.get("n_trades", 0) >= 5:
+                                config.MIN_SIGNAL_SCORE  = float(best["MIN_SIGNAL_SCORE"])
+                                config.ATR_SL_MULTIPLIER = float(best["ATR_SL_MULT"])
+                                _tg(
+                                    f"SATAVECTOR INDIA — Walk-Forward Optimizer\n"
+                                    f"New params: score>={config.MIN_SIGNAL_SCORE:.0f} "
+                                    f"sl×{config.ATR_SL_MULTIPLIER:.2f} "
+                                    f"Sharpe={best.get('sharpe', 0):.2f} "
+                                    f"({best.get('n_trades', 0)} trades)"
+                                )
+                    except Exception as _e:
+                        logger.debug(f"optimizer: {_e}")
                     self._morning_brief_sent = True
 
                 # -- Square-off warning ---------------------------------------
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if self._positions:
                         syms = ", ".join(self._positions.keys())
-                        _tg(f"INDIA BOT Square-off Warning\n"
+                        _tg(f"SATAVECTOR INDIA Square-off Warning\n"
                             f"3:15 PM IST -- {len(self._positions)} open: {syms}\n"
                             f"Auto-closing at 3:20 PM IST")
 
@@ -421,7 +438,7 @@ class KingTradesIndia:
             if _time.monotonic() - _ss["data_warn_ts"] > 1800:  # alert max every 30 min
                 _ss["data_warn_ts"] = _time.monotonic()
                 _tg(
-                    "⚠️ INDIA BOT — NSE Data Alert\n"
+                    "⚠️ SATAVECTOR INDIA — NSE Data Alert\n"
                     "━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
                     "NSE charting API returning NO data for 3 sample symbols.\n"
                     "This is why 0 signals are found — no OHLCV candles to analyse.\n\n"
@@ -577,7 +594,7 @@ class KingTradesIndia:
                 )
                 if not stop_result.success:
                     logger.error(f"{symbol}: stop FAILED -- reversing entry")
-                    _tg(f"INDIA BOT Stop failed for {symbol} -- reversing entry")
+                    _tg(f"SATAVECTOR INDIA Stop failed for {symbol} -- reversing entry")
                     try:
                         self._executor.square_off_all(self._executor.get_open_positions())
                     except Exception:
@@ -592,6 +609,7 @@ class KingTradesIndia:
                     stop_order_id=stop_result.order_id, atr=signal_obj.atr,
                     is_scalp=getattr(signal_obj, 'is_scalp', False),
                     time_stop_min=getattr(signal_obj, 'time_stop_min', 0),
+                    signal_score=signal_obj.signal_score,
                 )
                 self._positions[symbol] = pos
                 self._stats.trades += 1
@@ -620,7 +638,7 @@ class KingTradesIndia:
                         pass
 
                 _tg(
-                    f"INDIA BOT Auto-Executed -- {symbol}\n"
+                    f"SATAVECTOR INDIA Auto-Executed -- {symbol}\n"
                     f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
                     f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
                     f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
@@ -689,7 +707,7 @@ class KingTradesIndia:
                 except Exception:
                     pass
             _tg(
-                f"📊 INDIA BOT — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
+                f"📊 SATAVECTOR INDIA — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
                 f"Mode: {_mode_tag} | Regime: {regime} | Scalp: {'ON' if _scalp else 'off'}\n"
                 f"NSE Data: {_data_tag}"
                 f"{_breadth_tag}"
@@ -897,7 +915,7 @@ class KingTradesIndia:
                     pyr = self._pyramid.on_price_update(symbol, ltp)
                     if pyr:
                         _tg(
-                            f"INDIA BOT PYRAMID — {symbol}\n"
+                            f"SATAVECTOR INDIA PYRAMID — {symbol}\n"
                             f"{pyr['direction']} {pyr['qty']} shares\n"
                             f"SL: Rs.{pyr['sl']:.2f} | TP: Rs.{pyr['tp']:.2f}\n"
                             f"Reason: {pyr['reason']}"
@@ -971,19 +989,9 @@ class KingTradesIndia:
                 pnl_pct_o = pnl / max(pos.entry_price * pos.quantity, 1)
                 self._optimizer.record_trade(
                     pnl_pct=pnl_pct_o,
-                    signal_score=0,   # not stored in pos; OK — optimizer filters by score
+                    signal_score=int(getattr(pos, "signal_score", 0)),
                     sl_mult=config.ATR_SL_MULTIPLIER,
                 )
-                if self._optimizer.should_run():
-                    best = self._optimizer.run()
-                    config.MIN_SIGNAL_SCORE  = float(best.get("MIN_SIGNAL_SCORE", config.MIN_SIGNAL_SCORE))
-                    config.ATR_SL_MULTIPLIER = float(best.get("ATR_SL_MULT", config.ATR_SL_MULTIPLIER))
-                    _tg(
-                        f"INDIA BOT — Walk-Forward Optimizer\n"
-                        f"New params: score>={config.MIN_SIGNAL_SCORE:.0f} "
-                        f"sl×{config.ATR_SL_MULTIPLIER:.2f} "
-                        f"Sharpe={best.get('sharpe', 0):.2f}"
-                    )
             except Exception:
                 pass
 
@@ -999,7 +1007,7 @@ class KingTradesIndia:
             if self._stats.loss_guard_active:
                 self._stats.loss_guard_active = False
                 logger.info("Loss guard lifted after win")
-                _tg("INDIA BOT Loss guard lifted -- win after losing streak, resuming normal trading")
+                _tg("SATAVECTOR INDIA Loss guard lifted -- win after losing streak, resuming normal trading")
         else:
             self._stats.losses += 1
             self._stats.consecutive_losses += 1
@@ -1008,7 +1016,7 @@ class KingTradesIndia:
                 self._stats.loss_guard_active = True
                 logger.warning(f"3 consecutive losses -- loss guard activated")
                 _tg(
-                    f"INDIA BOT Loss Guard Activated\n"
+                    f"SATAVECTOR INDIA Loss Guard Activated\n"
                     f"3 consecutive losses today.\n"
                     f"Pausing new entries. Bot will resume when:\n"
                     f"  * Next scan finds strong setup (guard auto-lifts on win)\n"
@@ -1054,7 +1062,7 @@ class KingTradesIndia:
             pass
 
         _tg(
-            f"INDIA BOT Position Closed -- {symbol}\n"
+            f"SATAVECTOR INDIA Position Closed -- {symbol}\n"
             f"--------------------------------\n"
             f"Entry: Rs.{pos.entry_price:.2f} -> Exit: Rs.{exit_price:.2f}\n"
             f"P&L: Rs.{pnl:+,.2f} | Qty: {pos.quantity}\n"
@@ -1069,7 +1077,7 @@ class KingTradesIndia:
         if not self._positions:
             return
         logger.info(f"Force square-off: {len(self._positions)} positions")
-        _tg(f"INDIA BOT Force Square-off -- {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
+        _tg(f"SATAVECTOR INDIA Force Square-off -- {len(self._positions)} positions closing at 3:20 PM IST | NSE MIS auto-squared")
 
         open_pos_dhan = self._executor.get_open_positions()
         self._executor.square_off_all(open_pos_dhan)
@@ -1086,7 +1094,7 @@ class KingTradesIndia:
         filled = max(0, min(10, int(round(win_rate * 10))))
         bar = "X" * filled + "." * (10 - filled)
         _tg(
-            f"INDIA BOT -- EOD Report\n"
+            f"SATAVECTOR INDIA -- EOD Report\n"
             f"--------------------------------\n"
             f"{datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
             f"Trades: {s.trades}  Wins: {s.wins}  Losses: {s.losses}\n"
@@ -1126,6 +1134,10 @@ class KingTradesIndia:
     def _sortino_size_mult(self) -> float:
         """Returns size multiplier and updates MAX_POSITIONS based on Sortino."""
         if not getattr(config, "SORTINO_SIZING_ENABLED", False):
+            return 1.0
+        # Cold start: with < 5 trades there is no edge estimate — stay neutral
+        # (otherwise Sortino=0.0 would wrongly trigger drawdown-protection sizing)
+        if len(self._stats.pnl_pct_history) < 5:
             return 1.0
         sortino = self._compute_sortino()
         high = getattr(config, "SORTINO_HIGH_THRESHOLD", 2.0)
@@ -1261,7 +1273,7 @@ class KingTradesIndia:
         guard_str  = "🛡 LOSS GUARD ON" if s.loss_guard_active else "OFF ✅"
 
         lines = [
-            f"🇮🇳 <b>PSEB — INDIA BOT</b>",
+            f"🇮🇳 <b>SATAVECTOR INDIA</b>",
             f"📅 {now.strftime('%d %b %Y')} | {now.strftime('%H:%M')} IST | {mode_str}",
             "─" * 30,
             f"STATUS  {state_str}",
@@ -1682,7 +1694,7 @@ class KingTradesIndia:
 
                     # -- Existing commands ---
                     if txt == "/kill":
-                        _tg("INDIA BOT /kill -- squaring off all India positions")
+                        _tg("SATAVECTOR INDIA /kill -- squaring off all India positions")
                         self._handle_shutdown()
                     elif txt == "/pause":
                         self._stats.circuit_hit = True
@@ -1762,7 +1774,7 @@ class KingTradesIndia:
 
     def _handle_shutdown(self, *_):
         logger.info("Shutdown signal received -- squaring off")
-        _tg("INDIA BOT Emergency Shutdown -- squaring off all NSE positions now")
+        _tg("SATAVECTOR INDIA Emergency Shutdown -- squaring off all NSE positions now")
         self._force_square_off()
         self._running = False
 
@@ -1786,7 +1798,7 @@ def main():
     pid_file.write_text(str(os.getpid()))
 
     try:
-        bot = KingTradesIndia()
+        bot = SataVectorIndia()
         bot.run()
     finally:
         pid_file.unlink(missing_ok=True)

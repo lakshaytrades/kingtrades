@@ -1,5 +1,5 @@
 """
-auto_improver.py — KingTrades Weekly AI Self-Improvement Agent
+auto_improver.py — SataVector Weekly AI Self-Improvement Agent
 
 Runs every Sunday at 9 PM ET (via crontab — no Claude Code session needed).
 Uses the Claude API directly (Haiku model ~$0.003/week = $0.16/year).
@@ -336,7 +336,7 @@ def _telegram_send(msg: str):
 
 def run():
     logger.info("=" * 60)
-    logger.info("KingTrades Auto-Improver starting")
+    logger.info("SataVector Auto-Improver starting")
     logger.info(f"Date: {datetime.now(ET).strftime('%Y-%m-%d %H:%M ET')}")
 
     # 1. Collect performance data

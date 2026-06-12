@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# fix_vps.sh — One-shot VPS repair script for KingTrades bot
+# fix_vps.sh — One-shot VPS repair script for SataVector bot
 # Run once as root (or with sudo) to reset git, install deps,
 # create/fix systemd services, and send a Telegram confirmation.
 #
@@ -71,7 +71,7 @@ if [ ! -f "$SERVICE_FILE" ]; then
     echo "[fix_vps] Creating $SERVICE_FILE..."
     cat > "$SERVICE_FILE" << EOF
 [Unit]
-Description=KingTrades US Momentum Trading Bot
+Description=SataVector US Momentum Trading Bot
 After=network-online.target
 Wants=network-online.target
 
@@ -104,7 +104,7 @@ if [ ! -f "$AUTODEPLOY_TIMER" ]; then
     echo "[fix_vps] Creating $AUTODEPLOY_TIMER..."
     cat > "$AUTODEPLOY_TIMER" << EOF
 [Unit]
-Description=KingTrades Auto-Deploy Timer (5-min code update check)
+Description=SataVector Auto-Deploy Timer (5-min code update check)
 
 [Timer]
 OnBootSec=2min
@@ -123,7 +123,7 @@ if [ ! -f "$AUTODEPLOY_SERVICE" ]; then
     echo "[fix_vps] Creating $AUTODEPLOY_SERVICE..."
     cat > "$AUTODEPLOY_SERVICE" << EOF
 [Unit]
-Description=KingTrades Auto-Deploy (git pull + restart)
+Description=SataVector Auto-Deploy (git pull + restart)
 After=network-online.target
 
 [Service]

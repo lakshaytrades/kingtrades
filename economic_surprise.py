@@ -61,7 +61,7 @@ def _fetch_fred_series(series_id: str, limit: int = 7) -> Optional[List[float]]:
             f"&limit={limit}&sort_order=desc"
         )
         req = urllib.request.Request(
-            url, headers={"User-Agent": "KingTradesBot research@kingtrades.ai"}
+            url, headers={"User-Agent": "SataVectorBot research@kingtrades.ai"}
         )
         with urllib.request.urlopen(req, timeout=6) as resp:
             data = json.loads(resp.read().decode())

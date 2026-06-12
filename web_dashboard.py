@@ -1,5 +1,5 @@
 """
-web_dashboard.py — KingTrades Web Dashboard
+web_dashboard.py — SataVector Web Dashboard
 Lightweight Flask single-page dashboard showing live positions, P&L, signals,
 and AdaptiveBrain state. Runs in a background daemon thread on port 8080.
 
@@ -42,7 +42,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
   <meta charset="UTF-8">
   <meta http-equiv="refresh" content="5">
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>KingTrades Dashboard</title>
+  <title>SataVector Dashboard</title>
   <style>
     *, *::before, *::after {{ box-sizing: border-box; margin: 0; padding: 0; }}
 
@@ -273,7 +273,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 
 <!-- ── Header ─────────────────────────────────────────────────────────────── -->
 <header class="header">
-  <span class="logo">&#9650; KingTrades</span>
+  <span class="logo">&#9650; SataVector</span>
 
   <span class="badge {status_class}">
     <span class="dot"></span>
@@ -381,7 +381,7 @@ _HTML_TEMPLATE = """<!DOCTYPE html>
 </div>
 
 <footer class="footer">
-  Auto-refreshes every 5 seconds &middot; KingTrades &copy; 2026
+  Auto-refreshes every 5 seconds &middot; SataVector &copy; 2026
 </footer>
 
 </body>
@@ -585,7 +585,7 @@ def _render_dashboard(state: Dict[str, Any]) -> str:
 
 class WebDashboard:
     """
-    Lightweight Flask web dashboard for the KingTrades bot.
+    Lightweight Flask web dashboard for the SataVector bot.
 
     Parameters
     ----------
@@ -737,7 +737,7 @@ if __name__ == "__main__":
     def demo_provider() -> Dict[str, Any]:
         return _DEMO_STATE
 
-    print(f"Starting KingTrades dashboard on http://0.0.0.0:8080 — Ctrl+C to stop")
+    print(f"Starting SataVector dashboard on http://0.0.0.0:8080 — Ctrl+C to stop")
     dash = WebDashboard(state_provider=demo_provider, port=8080)
     dash.start()
 

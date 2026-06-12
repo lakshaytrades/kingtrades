@@ -1,5 +1,5 @@
 """
-l99_gate.py — KingTrades Level-99 Ultra-High Conviction Gate
+l99_gate.py — SataVector Level-99 Ultra-High Conviction Gate
 
 This is THE final gate before any order executes. It enforces that we ONLY trade
 when an extraordinary number of independent signals all agree.

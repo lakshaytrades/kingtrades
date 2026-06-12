@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_full_report.py — KingTrades Master Backtest + Live Expectations Report
+run_full_report.py — SataVector Master Backtest + Live Expectations Report
 
 Run this on your VPS to get a full analysis sent to Telegram:
     python3 /home/user/kingtrades/run_full_report.py
@@ -625,7 +625,7 @@ def format_report(results: Dict, days: int) -> str:
 
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📊 <b>KINGTRADES BACKTEST REPORT</b>",
+        f"📊 <b>SATAVECTOR BACKTEST REPORT</b>",
         f"   {now}  |  {days}-day test  |  ${cap:,.0f} capital",
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
         "",
@@ -766,7 +766,7 @@ def build_master_report(results_us: Dict, results_nse: Optional[Dict], days: int
 
 # ── Entry point ──────────────────────────────────────────────────────────────
 def main():
-    parser = argparse.ArgumentParser(description="KingTrades Master Report")
+    parser = argparse.ArgumentParser(description="SataVector Master Report")
     parser.add_argument("--quick",    action="store_true", help="Fast test: 30 days, 5 symbols")
     parser.add_argument("--live",     action="store_true", help="Live expectations + standing only")
     parser.add_argument("--standing", action="store_true", help="Market standing report only")
@@ -776,13 +776,13 @@ def main():
     args = parser.parse_args()
 
     if args.standing:
-        print("📍 KingTrades — Where We Stand")
+        print("📍 SataVector — Where We Stand")
         from market_standing import run_standing_report_and_send
         run_standing_report_and_send()
         return
 
     if args.live:
-        print("📊 KingTrades Live Expectations + Market Standing")
+        print("📊 SataVector Live Expectations + Market Standing")
         section = build_live_expectations_section() + build_market_standing_section()
         print(section.replace("<b>", "").replace("</b>", ""))
         if TELEGRAM_TOKEN and TELEGRAM_CHAT:
@@ -796,7 +796,7 @@ def main():
     symbols_us  = QUICK_SYMBOLS_US  if args.quick else FULL_SYMBOLS_US
     symbols_nse = QUICK_SYMBOLS_NSE if args.quick else FULL_SYMBOLS_NSE
 
-    print(f"\n🚀 KingTrades Master Report — {days} days")
+    print(f"\n🚀 SataVector Master Report — {days} days")
     print(f"   US symbols: {len(symbols_us)}  |  NSE symbols: {len(symbols_nse) if args.nse else 0}")
     print(f"   Strategies: ORB, VWAP Reclaim, Momentum, Z-Score, Gap-and-Go, Power Hour")
     print(f"   US commission: ${COMMISSION_PER_SHARE}/share + {SLIPPAGE_PCT*100:.2f}% slippage")
@@ -805,7 +805,7 @@ def main():
     print("   Downloading data...\n")
 
     _tg(
-        f"⏳ <b>KingTrades Master Report starting</b>\n"
+        f"⏳ <b>SataVector Master Report starting</b>\n"
         f"{days} days | US:{len(symbols_us)} + NSE:{len(symbols_nse) if args.nse else 0} symbols"
     )
 

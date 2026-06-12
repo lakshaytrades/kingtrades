@@ -1,5 +1,5 @@
 """
-autonomous_optimizer.py — KingTrades Self-Optimizing Parameter Engine
+autonomous_optimizer.py — SataVector Self-Optimizing Parameter Engine
 
 Reads decision_log + trade_outcomes, identifies bottlenecks, and writes
 adjusted parameters to data/optimizer_config.json which main.py reads

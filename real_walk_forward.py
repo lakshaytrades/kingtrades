@@ -182,7 +182,7 @@ def run_walk_forward(
 def print_wf_report(results: Dict[str, WFResult]) -> None:
     SEP = "─" * 88
     print(f"\n{'═'*88}")
-    print("  KING WALK-FORWARD VALIDATION REPORT")
+    print("  SATAVECTOR WALK-FORWARD VALIDATION REPORT")
     print(f"{'═'*88}")
     print(f"  {'Symbol':<8} {'IS WR':>7} {'OOS WR':>8} {'Degrad':>8} {'Edge%':>7} {'Overfit':>8} {'Grade':>6}")
     print(SEP)

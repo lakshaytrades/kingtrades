@@ -1,6 +1,6 @@
 #!/bin/bash
 # ============================================================
-# start_india.sh — KingTrades India Bot Launcher (autonomous-safe)
+# start_india.sh — SataVector India Bot Launcher (autonomous-safe)
 # Pass --cron to skip interactive prompts (for crontab use).
 # ============================================================
 
@@ -38,7 +38,7 @@ fi
 # Clean stale PID so instance guard doesn't block
 rm -f "$ROOT_DIR/logs/india_bot.pid" 2>/dev/null
 
-[ "$CRON_MODE" -eq 0 ] && echo "Starting KingTrades India Bot (Dhan / NSE)..."
+[ "$CRON_MODE" -eq 0 ] && echo "Starting SataVector India Bot (Dhan / NSE)..."
 
 # Runner script (handles crash loop with backoff)
 RUNNER="$ROOT_DIR/logs/.runner_india.sh"
