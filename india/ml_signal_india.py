@@ -1,9 +1,16 @@
 """
-ml_signal_india.py — ML Ensemble Signal Scorer (God Mode)
+ml_signal_india.py — ML Ensemble Signal Scorer (God Mode + Institutional Features)
 Tries LightGBM → XGBoost → LogisticRegression (in order).
 Trains on labeled trade outcomes. Returns (score_delta, reason).
 Score: -10 to +15. Fail-open: (0.0, "") until 30 trades collected.
 Online learning: retrains every 10 new samples.
+
+Feature vector v2 (28 features):
+  Original 24: RSI, MACD-hist, ADX, ATR%, VWAP-gap, BB-width, EMA-gap, vol-ratio,
+               time features, direction, session stats, VIX level,
+               God-mode: tod-slot, breadth, sector-momentum, VIX-pct, EMA-ribbon,
+               vol-profile, global-bias, consec-bars
+  +4 Institutional: gex_regime_enc, gex_pct, chng_oi_pcr, vix_regime_enc
 """
 import json
 import logging
@@ -32,11 +39,18 @@ FEATURE_NAMES = [
     "bb_width_pct", "ema_gap_pct", "vol_ratio",
     "tod_hour", "tod_minute_bin", "direction_enc", "is_power_hour",
     "close_vs_open_pct", "session_wins_capped", "session_losses_capped", "vix_level",
-    # New features (God Mode):
+    # God Mode:
     "time_of_day_slot", "breadth_pct", "sector_momentum_score",
     "vix_percentile", "ema_ribbon_alignment", "vol_profile_position",
     "global_bias_score", "consecutive_bars_direction",
+    # Institutional regime features (+1% WR target):
+    "gex_regime_enc",   # -1=POSITIVE_GEX(range), 0=neutral, +1=NEGATIVE_GEX(trending)
+    "gex_pct",          # GEX magnitude percentile 0-100
+    "chng_oi_pcr",      # change-in-OI put/call ratio (1.0=neutral, >1.3=bullish)
+    "vix_regime_enc",   # -2=PANIC_RISING … 0=NORMAL … +2=PANIC_REVERSAL
 ]
+
+_FEATURE_VERSION = 2   # bump when FEATURE_NAMES changes to invalidate old models
 
 
 def _extract_features(
@@ -52,7 +66,7 @@ def _extract_features(
     vol_profile_position: float = 0.0,
 ) -> Optional[np.ndarray]:
     """
-    Return 24-element float32 feature vector (16 original + 8 new God Mode features).
+    Return 28-element float32 feature vector (16 original + 8 God Mode + 4 institutional regime).
     Handles ind=None and df_5m=None gracefully — uses safe defaults.
     """
     try:
@@ -223,6 +237,47 @@ def _extract_features(
             except Exception:
                 pass
 
+        # ── Institutional regime features ─────────────────────────────────────
+        # GEX regime: NEGATIVE=+1 (momentum amplified), POSITIVE=-1 (range), NEUTRAL=0
+        gex_regime_enc = 0.0
+        gex_pct_val    = 50.0
+        try:
+            from gex_signal_india import get_nifty_gex
+            _gex = get_nifty_gex()
+            _r   = _gex.get("regime", "NEUTRAL")
+            gex_regime_enc = 1.0 if _r == "NEGATIVE" else (-1.0 if _r == "POSITIVE" else 0.0)
+            gex_pct_val    = float(_gex.get("gex_percentile", 50.0))
+        except Exception:
+            pass
+
+        # Change-in-OI PCR: >1.3 bullish, <0.7 bearish, 1.0 neutral
+        chng_pcr_val = 1.0
+        try:
+            from nse_option_chain import get_change_in_oi_pcr
+            _pcr, _ = get_change_in_oi_pcr("NIFTY")
+            chng_pcr_val = float(_pcr)
+        except Exception:
+            pass
+
+        # VIX regime: PANIC_REVERSAL=+2, ELEVATED_FALLING=+1, NORMAL/STABLE=0,
+        #             LOW_RISING=-0.5, ELEVATED_RISING=-1, PANIC_RISING=-2
+        _VIX_REGIME_MAP = {
+            "PANIC_REVERSAL":   2.0,
+            "ELEVATED_FALLING": 1.0,
+            "NORMAL":           0.0,
+            "ELEVATED_STABLE":  0.0,
+            "LOW_RISING":       -0.5,
+            "ELEVATED_RISING":  -1.0,
+            "PANIC_RISING":     -2.0,
+        }
+        vix_regime_enc = 0.0
+        try:
+            from vix_regime_india import get_vix_regime
+            _vr = get_vix_regime()
+            vix_regime_enc = _VIX_REGIME_MAP.get(_vr.get("regime", "NORMAL"), 0.0)
+        except Exception:
+            pass
+
         # ── Assemble feature vector ───────────────────────────────────────────
         features = np.array([
             rsi,
@@ -250,6 +305,11 @@ def _extract_features(
             float(vol_profile_position),
             float(global_bias_score),
             consec,
+            # Institutional regime features (v2)
+            gex_regime_enc,
+            gex_pct_val,
+            chng_pcr_val,
+            vix_regime_enc,
         ], dtype=np.float32)
 
         # Replace any NaN/Inf with 0
@@ -272,8 +332,26 @@ def _get_model():
     try:
         if _MODEL_PATH.exists():
             with open(_MODEL_PATH, "rb") as f:
-                _model = pickle.load(f)
-            logger.info(f"ML model loaded from {_MODEL_PATH} ({type(_model).__name__})")
+                saved = pickle.load(f)
+            # Version check: if saved model was trained on fewer features, discard it
+            expected_n = len(FEATURE_NAMES)
+            n_feat = getattr(saved, "n_features_in_", None)
+            if n_feat is None:
+                # Pipeline: check the inner estimator
+                try:
+                    n_feat = saved.named_steps["lr"].n_features_in_
+                except Exception:
+                    n_feat = expected_n
+            if n_feat != expected_n:
+                logger.warning(
+                    f"ML model has {n_feat} features but current vector is {expected_n} — "
+                    f"discarding old model; will retrain after {_MIN_SAMPLES} samples"
+                )
+                _MODEL_PATH.unlink(missing_ok=True)
+                _model = None
+            else:
+                _model = saved
+                logger.info(f"ML model loaded from {_MODEL_PATH} ({type(_model).__name__})")
         else:
             _model = None
     except Exception as e:
@@ -372,6 +450,13 @@ def _retrain_if_ready():
 
         if trained_model is None:
             return
+
+        # Tag Pipeline models with n_features_in_ for version check
+        if not hasattr(trained_model, "n_features_in_"):
+            try:
+                trained_model.n_features_in_ = expected_features
+            except Exception:
+                pass
 
         # Save model
         _MODEL_PATH.parent.mkdir(parents=True, exist_ok=True)
