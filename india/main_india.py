@@ -115,6 +115,7 @@ class DayStats:
     circuit_hit:        bool  = False
     consecutive_losses: int   = 0   # resets on each win
     loss_guard_active:  bool  = False  # raised after 3 consecutive losses
+    pnl_pct_history:    list  = field(default_factory=list)  # last 20 trade returns %
 
 
 # -- Main bot -----------------------------------------------------------------
@@ -133,7 +134,7 @@ class KingTradesIndia:
         self._last_trade_ts: float = 0.0
         self._daily_target_pct: float = 0.005  # 0.5%
 
-        # ── God Mode modules ─────────────────────────────────────────────────
+        # ── God Mode modules (Round 1) ────────────────────────────────────────
         self._breadth   = None
         self._threshold = None
         try:
@@ -146,6 +147,38 @@ class KingTradesIndia:
             if getattr(config, "ADAPTIVE_THRESHOLD_ENABLED", False):
                 from adaptive_threshold_india import AdaptiveThreshold
                 self._threshold = AdaptiveThreshold(config.FINAL_EXEC_MIN_SCORE)
+        except Exception:
+            pass
+
+        # ── Round 2 modules ───────────────────────────────────────────────────
+        self._pyramid   = None
+        self._chandelier = None
+        self._optimizer = None
+        try:
+            if getattr(config, "PYRAMID_ENABLED", False):
+                from pyramid_india import PyramidManager
+                self._pyramid = PyramidManager()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "CHANDELIER_EXIT_ENABLED", False):
+                from chandelier_exit_india import ChandelierExit
+                self._chandelier = ChandelierExit()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "WALK_FORWARD_OPT_ENABLED", False):
+                from optimizer_india import WalkForwardOptimizer, load_optimal_params
+                self._optimizer = WalkForwardOptimizer()
+                # Override config with previously optimised params
+                _opt_params = load_optimal_params()
+                if _opt_params.get("MIN_SIGNAL_SCORE"):
+                    config.MIN_SIGNAL_SCORE   = float(_opt_params["MIN_SIGNAL_SCORE"])
+                    config.ATR_SL_MULTIPLIER  = float(_opt_params["ATR_SL_MULT"])
+                    logger.info(
+                        "Loaded optimal params: score>=%s sl×%s",
+                        config.MIN_SIGNAL_SCORE, config.ATR_SL_MULTIPLIER,
+                    )
         except Exception:
             pass
 
@@ -256,6 +289,16 @@ class KingTradesIndia:
                         send_morning_brief_v2()
                     except Exception as _e:
                         logger.debug(f"morning_brief: {_e}")
+                    # Prime RS ranking scores for the session
+                    try:
+                        if (getattr(config, "RS_RANKING_ENABLED", False)
+                                and self._generator and self._generator._rs):
+                            self._generator._rs.update_rs_scores(
+                                self._watchlist, self._dhan
+                            )
+                            logger.info("RS scores updated for %d symbols", len(self._watchlist))
+                    except Exception as _e:
+                        logger.debug(f"rs_update: {_e}")
                     self._morning_brief_sent = True
 
                 # -- Square-off warning ---------------------------------------
@@ -553,6 +596,29 @@ class KingTradesIndia:
                 self._positions[symbol] = pos
                 self._stats.trades += 1
                 self._last_trade_ts = _time.monotonic()
+
+                # Register with pyramid and chandelier trackers
+                if self._pyramid is not None:
+                    try:
+                        self._pyramid.register_position(
+                            symbol=symbol, direction=signal_obj.direction,
+                            qty=int(fill_qty), entry=fill_price,
+                            sl=signal_obj.stop_loss, target_1=signal_obj.target_1,
+                            target_2=signal_obj.target_2, atr=signal_obj.atr,
+                            grade=signal_obj.quality_grade,
+                        )
+                    except Exception:
+                        pass
+                if self._chandelier is not None:
+                    try:
+                        self._chandelier.register(
+                            symbol=symbol, direction=signal_obj.direction,
+                            entry=fill_price, atr=signal_obj.atr,
+                            initial_stop=signal_obj.stop_loss, target_1=signal_obj.target_1,
+                        )
+                    except Exception:
+                        pass
+
                 _tg(
                     f"INDIA BOT Auto-Executed -- {symbol}\n"
                     f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
@@ -612,12 +678,23 @@ class KingTradesIndia:
                                    f"over {ts['trade_count']} trades")
                 except Exception:
                     pass
+            _sortino_tag = ""
+            if getattr(config, "SORTINO_SIZING_ENABLED", False):
+                try:
+                    _s_ratio = self._compute_sortino()
+                    _s_mult  = self._sortino_size_mult()
+                    _sortino_tag = (f"\nSortino: {_s_ratio:.2f} | "
+                                    f"MaxPos: {config.MAX_POSITIONS} | "
+                                    f"Size: {_s_mult:.2f}x")
+                except Exception:
+                    pass
             _tg(
                 f"📊 INDIA BOT — Scan Pulse ({_now_ist.strftime('%H:%M IST')})\n"
                 f"Mode: {_mode_tag} | Regime: {regime} | Scalp: {'ON' if _scalp else 'off'}\n"
                 f"NSE Data: {_data_tag}"
                 f"{_breadth_tag}"
-                f"{_thresh_tag}\n"
+                f"{_thresh_tag}"
+                f"{_sortino_tag}\n"
                 f"Scanned: {_total} | Signals found: {_sigs}\n"
                 f"Rejected → no signal: {_no_sig} | regime: {_regime} | ORB window: {_orb_r} | qty: {_qty_r}\n"
                 f"Day P&L: Rs.{self._stats.total_pnl:+,.0f} | Trades: {self._stats.trades} | "
@@ -785,19 +862,48 @@ class KingTradesIndia:
                             pos.stop_loss = pos.entry_price  # trail runner to breakeven
                             _tg(f"INDIA T1 Partial Exit -- {symbol}\n{partial_qty} shares @ Rs.{ltp:.2f} | Runner to T2=Rs.{pos.target_2:.2f}")
 
-            # Stage 3: Trail runner at 0.3 ATR after T1 exit
-            if pos.t1_exited and pos.atr > 0 and getattr(config, 'TRAILING_STOP_ENABLED', True):
-                trail = pos.atr * getattr(config, 'TRAILING_TIGHT_ATR', 0.3)
-                if pos.direction == "LONG":
-                    new_sl = ltp - trail
-                    if new_sl > pos.stop_loss:
-                        pos.stop_loss = new_sl
-                        self._executor.modify_stop_loss(symbol, new_sl)
-                else:
-                    new_sl = ltp + trail
-                    if new_sl < pos.stop_loss:
-                        pos.stop_loss = new_sl
-                        self._executor.modify_stop_loss(symbol, new_sl)
+            # Stage 3: Chandelier Exit trailing (replaces fixed ATR trail if enabled)
+            if pos.t1_exited and pos.atr > 0:
+                if self._chandelier is not None and getattr(config, "CHANDELIER_EXIT_ENABLED", False):
+                    try:
+                        from data_fetch_dhan import get_india_vix as _gvix
+                        _vix_now = _gvix()
+                    except Exception:
+                        _vix_now = 18.0
+                    new_sl = self._chandelier.update(symbol, ltp, pos.atr, _vix_now)
+                    if new_sl is not None:
+                        if pos.direction == "LONG" and new_sl > pos.stop_loss:
+                            pos.stop_loss = new_sl
+                            self._executor.modify_stop_loss(symbol, new_sl)
+                        elif pos.direction == "SHORT" and new_sl < pos.stop_loss:
+                            pos.stop_loss = new_sl
+                            self._executor.modify_stop_loss(symbol, new_sl)
+                elif getattr(config, 'TRAILING_STOP_ENABLED', True):
+                    trail = pos.atr * getattr(config, 'TRAILING_TIGHT_ATR', 0.3)
+                    if pos.direction == "LONG":
+                        new_sl = ltp - trail
+                        if new_sl > pos.stop_loss:
+                            pos.stop_loss = new_sl
+                            self._executor.modify_stop_loss(symbol, new_sl)
+                    else:
+                        new_sl = ltp + trail
+                        if new_sl < pos.stop_loss:
+                            pos.stop_loss = new_sl
+                            self._executor.modify_stop_loss(symbol, new_sl)
+
+            # Pyramid check (add to winner after T1)
+            if self._pyramid is not None and getattr(config, "PYRAMID_ENABLED", False):
+                try:
+                    pyr = self._pyramid.on_price_update(symbol, ltp)
+                    if pyr:
+                        _tg(
+                            f"INDIA BOT PYRAMID — {symbol}\n"
+                            f"{pyr['direction']} {pyr['qty']} shares\n"
+                            f"SL: Rs.{pyr['sl']:.2f} | TP: Rs.{pyr['tp']:.2f}\n"
+                            f"Reason: {pyr['reason']}"
+                        )
+                except Exception:
+                    pass
 
             # Target 2 hit -- close runner
             if pos.direction == "LONG" and ltp >= pos.target_2:
@@ -848,6 +954,39 @@ class KingTradesIndia:
 
         pnl = self._calc_pnl(pos, exit_price)
         self._stats.total_pnl += pnl
+
+        # Record P&L % for Sortino sizing
+        try:
+            trade_val = pos.entry_price * max(pos.quantity, 1)
+            pnl_pct_trade = pnl / trade_val if trade_val > 0 else 0.0
+            self._stats.pnl_pct_history.append(pnl_pct_trade)
+            if len(self._stats.pnl_pct_history) > 50:
+                self._stats.pnl_pct_history = self._stats.pnl_pct_history[-50:]
+        except Exception:
+            pass
+
+        # Record for walk-forward optimizer
+        if self._optimizer is not None:
+            try:
+                pnl_pct_o = pnl / max(pos.entry_price * pos.quantity, 1)
+                self._optimizer.record_trade(
+                    pnl_pct=pnl_pct_o,
+                    signal_score=0,   # not stored in pos; OK — optimizer filters by score
+                    sl_mult=config.ATR_SL_MULTIPLIER,
+                )
+                if self._optimizer.should_run():
+                    best = self._optimizer.run()
+                    config.MIN_SIGNAL_SCORE  = float(best.get("MIN_SIGNAL_SCORE", config.MIN_SIGNAL_SCORE))
+                    config.ATR_SL_MULTIPLIER = float(best.get("ATR_SL_MULT", config.ATR_SL_MULTIPLIER))
+                    _tg(
+                        f"INDIA BOT — Walk-Forward Optimizer\n"
+                        f"New params: score>={config.MIN_SIGNAL_SCORE:.0f} "
+                        f"sl×{config.ATR_SL_MULTIPLIER:.2f} "
+                        f"Sharpe={best.get('sharpe', 0):.2f}"
+                    )
+            except Exception:
+                pass
+
         # Record outcome for adaptive threshold
         if self._threshold is not None:
             try:
@@ -894,6 +1033,18 @@ class KingTradesIndia:
             record_trade_result(symbol, pnl / (pos.entry_price * pos.quantity + 1e-9))
         except Exception:
             pass
+
+        # Cleanup pyramid/chandelier trackers
+        if self._pyramid is not None:
+            try:
+                self._pyramid.remove_position(symbol)
+            except Exception:
+                pass
+        if self._chandelier is not None:
+            try:
+                self._chandelier.remove(symbol)
+            except Exception:
+                pass
 
         # Record P&L for EOD report and monthly tracking
         try:
@@ -953,6 +1104,43 @@ class KingTradesIndia:
 
     # -- Helpers --------------------------------------------------------------
 
+    def _compute_sortino(self) -> float:
+        """
+        Sortino ratio from last 20 trade P&L %.
+        Returns ratio; 0.0 if < 5 trades.
+        """
+        returns = self._stats.pnl_pct_history[-20:]
+        if len(returns) < 5:
+            return 0.0
+        try:
+            mean = sum(returns) / len(returns)
+            neg  = [r for r in returns if r < 0]
+            if not neg:
+                return 3.0   # no losing trades → excellent
+            downside_sq = sum(r ** 2 for r in neg) / len(neg)
+            downside_dev = downside_sq ** 0.5
+            return mean / downside_dev if downside_dev > 0 else 0.0
+        except Exception:
+            return 0.0
+
+    def _sortino_size_mult(self) -> float:
+        """Returns size multiplier and updates MAX_POSITIONS based on Sortino."""
+        if not getattr(config, "SORTINO_SIZING_ENABLED", False):
+            return 1.0
+        sortino = self._compute_sortino()
+        high = getattr(config, "SORTINO_HIGH_THRESHOLD", 2.0)
+        low  = getattr(config, "SORTINO_LOW_THRESHOLD",  1.0)
+        if sortino >= high:
+            if getattr(config, "SORTINO_MAX_POSITIONS_EXPANSION", True):
+                config.MAX_POSITIONS = getattr(config, "SORTINO_HIGH_MAX_POS", 7)
+            return getattr(config, "SORTINO_HIGH_SIZE_MULT", 1.25)
+        elif sortino >= low:
+            config.MAX_POSITIONS = getattr(config, "SORTINO_MID_MAX_POS", 6)
+            return 1.0
+        else:
+            config.MAX_POSITIONS = getattr(config, "SORTINO_LOW_MAX_POS", 4)
+            return getattr(config, "SORTINO_LOW_SIZE_MULT", 0.75)
+
     def _kelly_fraction(self) -> float:
         """
         Fractional Kelly position sizing based on rolling session win rate.
@@ -1011,8 +1199,11 @@ class KingTradesIndia:
             # Signal size multiplier (from HAF / vol targeting)
             sig_mult = getattr(sig, "size_multiplier", 1.0) or 1.0
 
+            # Sortino multiplier
+            sortino_mult = self._sortino_size_mult()
+
             # Base quantity
-            qty = int(risk_inr / sl_dist * grade_mult * sig_mult)
+            qty = int(risk_inr / sl_dist * grade_mult * sig_mult * sortino_mult)
             qty = max(1, qty)
 
             # Loss guard: if 3 consecutive losses, trade at 50% size

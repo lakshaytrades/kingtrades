@@ -79,6 +79,10 @@ class IndiaSignalGenerator:
         self._vol_profile   = None
         self._confluence    = None
         self._global_cues   = None   # cached dict from global_cues_india.fetch()
+        # Round 2 modules
+        self._rs            = None
+        self._gap           = None
+        self._macro         = None
         try:
             if getattr(config, "VOLUME_PROFILE_GODMODE", False):
                 from volume_profile_india import VolumeProfile
@@ -89,6 +93,24 @@ class IndiaSignalGenerator:
             if getattr(config, "SECTOR_CONFLUENCE_ENABLED", False):
                 from sector_confluence_india import SectorConfluence
                 self._confluence = SectorConfluence()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "RS_RANKING_ENABLED", True):
+                from relative_strength_india import RelativeStrength
+                self._rs = RelativeStrength()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "GAP_ANALYSIS_ENABLED", True):
+                from gap_analysis_india import GapAnalysis
+                self._gap = GapAnalysis()
+        except Exception:
+            pass
+        try:
+            if getattr(config, "MACRO_SCORING_ENABLED", True):
+                from macro_india import MacroScoring
+                self._macro = MacroScoring()
         except Exception:
             pass
 
@@ -318,6 +340,90 @@ class IndiaSignalGenerator:
                     self._confluence.update_signal(symbol, direction, score)
                 except Exception:
                     pass
+
+            # ── Round 2 God Mode boosters ─────────────────────────────────────
+            now_ist2 = datetime.now(IST)
+
+            # Relative Strength (IBD-style RS 1-99)
+            if self._rs is not None and getattr(self._config, "RS_RANKING_ENABLED", False):
+                try:
+                    rs_adj = self._rs.score_signal(symbol, direction)
+                    score += rs_adj
+                    if rs_adj != 0:
+                        sig.rationale += f" | RS{self._rs.get_rs_score(symbol)}:{rs_adj:+d}"
+                except Exception:
+                    pass
+
+            # Gap Analysis
+            if self._gap is not None and getattr(self._config, "GAP_ANALYSIS_ENABLED", False):
+                try:
+                    gap_info = self._gap.compute_gap(symbol, df_5m)
+                    gap_adj  = self._gap.score_signal(gap_info, direction, now_ist2)
+                    score += gap_adj
+                    if gap_adj != 0:
+                        sig.rationale += f" | GAP_{gap_info.get('gap_type','?')}:{gap_adj:+d}"
+                except Exception:
+                    pass
+
+            # Futures OI Intelligence
+            if getattr(self._config, "FUTURES_OI_ENABLED", False):
+                try:
+                    from futures_oi_india import get_futures_oi_score
+                    foi_adj = get_futures_oi_score(symbol, direction)
+                    score += foi_adj
+                    if foi_adj != 0:
+                        sig.rationale += f" | FOI:{foi_adj:+d}"
+                except Exception:
+                    pass
+
+            # Delivery V2 — 5-day accumulation trend
+            if getattr(self._config, "DELIVERY_V2_ENABLED", False):
+                try:
+                    from nse_delivery_volume import get_delivery_score_v2
+                    d_adj, d_reason = get_delivery_score_v2(symbol, direction)
+                    if d_adj == 0 and "NOISE" in d_reason:
+                        return None   # speculation-only stock — skip
+                    score += d_adj
+                    if d_adj != 0:
+                        sig.rationale += f" | DLV:{d_adj:+.0f}"
+                except Exception:
+                    pass
+
+            # Unusual Options Activity
+            if getattr(self._config, "UOA_ENABLED", False):
+                try:
+                    from nse_option_chain import get_unusual_options_activity
+                    uoa = get_unusual_options_activity(symbol)
+                    uoa_adj = uoa.get("score_adj", 0)
+                    uoa_sig = uoa.get("signal")
+                    if uoa_sig == "WASHOUT":
+                        score += uoa_adj
+                    elif uoa_sig == "CALL_ACCUMULATION" and direction == "LONG":
+                        score += uoa_adj
+                    elif uoa_sig == "PUT_ACCUMULATION" and direction == "SHORT":
+                        score += uoa_adj
+                    if uoa_adj != 0:
+                        sig.rationale += f" | UOA_{uoa_sig}:{uoa_adj:+d}"
+                except Exception:
+                    pass
+
+            # Macro Scoring (blackout + FII MTD)
+            if self._macro is not None and getattr(self._config, "MACRO_SCORING_ENABLED", False):
+                try:
+                    blackout, evt = self._macro.is_blackout(now_ist2)
+                    if blackout:
+                        logger.debug("%s: MACRO BLACKOUT event=%s — skipped", symbol, evt)
+                        return None
+                    macro_adj = self._macro.score_signal(direction, now_ist=now_ist2)
+                    score += macro_adj
+                    if macro_adj != 0:
+                        sig.rationale += f" | MACRO:{macro_adj:+d}"
+                except Exception:
+                    pass
+
+            # Update final score on signal
+            sig.signal_score = round(score, 1)
+            sig.is_high_confidence = score >= 80
 
             # ── Idle scalp mode adjustments ───────────────────────────────────
             if _is_scalp_mode:

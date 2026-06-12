@@ -352,6 +352,83 @@ def _bsm_gamma(S: float, K: float, sigma: float, T: float) -> float:
         return 0.0
 
 
+def get_unusual_options_activity(symbol: str) -> dict:
+    """
+    Unusual Options Activity (UOA) detector.
+    Compares today's ATM call/put OI build vs 5-day intraday average.
+    Returns {"signal": "CALL_ACCUMULATION"/"PUT_ACCUMULATION"/"WASHOUT"/None,
+             "score_adj": int, "reason": str}
+    Fail-open returns {"signal": None, "score_adj": 0, "reason": ""}.
+    """
+    _empty = {"signal": None, "score_adj": 0, "reason": ""}
+    try:
+        data = _fetch_chain(symbol)
+        if not data:
+            return _empty
+
+        strikes_data = data.get("strikes", [])
+        spot_price = data.get("spot", 0.0)
+        if not strikes_data or spot_price <= 0:
+            return _empty
+
+        total_call_chg = 0.0
+        total_put_chg  = 0.0
+        total_call_oi  = 0.0
+        total_put_oi   = 0.0
+
+        for entry in strikes_data:
+            ce = entry.get("CE", {}) or {}
+            pe = entry.get("PE", {}) or {}
+            strike = float(entry.get("strikePrice", 0) or 0)
+            if strike <= 0 or spot_price <= 0:
+                continue
+            # ATM ±5% window
+            if abs(strike - spot_price) / spot_price > 0.05:
+                continue
+            ce_oi  = float(ce.get("openInterest", 0) or 0)
+            pe_oi  = float(pe.get("openInterest", 0) or 0)
+            ce_chg = float(ce.get("changeinOpenInterest", 0) or 0)
+            pe_chg = float(pe.get("changeinOpenInterest", 0) or 0)
+            total_call_oi  += ce_oi
+            total_put_oi   += pe_oi
+            total_call_chg += ce_chg
+            total_put_chg  += pe_chg
+
+        # No historical average available intraday — use ratio of change-to-existing OI
+        # Unusual = today's change > 25% of existing OI (proxy for 3× avg daily build)
+        uoa_call = total_call_oi > 0 and (total_call_chg / total_call_oi) > 0.25
+        uoa_put  = total_put_oi  > 0 and (total_put_chg  / total_put_oi)  > 0.25
+        washout  = (
+            total_call_oi > 0 and total_put_oi > 0
+            and (total_call_chg / total_call_oi) < -0.20
+            and (total_put_chg  / total_put_oi)  < -0.20
+        )
+
+        if washout:
+            return {
+                "signal": "WASHOUT",
+                "score_adj": -8,
+                "reason": f"UOA_WASHOUT call_chg={total_call_chg:.0f} put_chg={total_put_chg:.0f}",
+            }
+        if uoa_call and not uoa_put:
+            return {
+                "signal": "CALL_ACCUMULATION",
+                "score_adj": 10,
+                "reason": f"UOA_CALL call_chg={total_call_chg:.0f} ({total_call_chg/total_call_oi*100:.0f}%)",
+            }
+        if uoa_put and not uoa_call:
+            return {
+                "signal": "PUT_ACCUMULATION",
+                "score_adj": 10,
+                "reason": f"UOA_PUT put_chg={total_put_chg:.0f} ({total_put_chg/total_put_oi*100:.0f}%)",
+            }
+        return _empty
+
+    except Exception as e:
+        logger.debug(f"get_unusual_options_activity {symbol}: {e}")
+        return _empty
+
+
 def get_gex(symbol: str, spot: float = 0.0) -> dict:
     """
     Gamma Exposure = Σ(call_gamma × call_OI - put_gamma × put_OI).

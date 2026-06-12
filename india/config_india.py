@@ -132,7 +132,7 @@ MAX_SECTOR_CONCENTRATION    = int(os.getenv("INDIA_MAX_SECTOR_CONC", "2"))
 MAX_CORRELATION_THRESHOLD   = float(os.getenv("INDIA_MAX_CORR", "0.75"))
 MAX_PORTFOLIO_HEAT_PCT      = float(os.getenv("INDIA_PORTFOLIO_HEAT", "4.0")) / 100
 
-# -- God Mode enhancement flags (Unit 1–10) -----------------------------------
+# -- God Mode enhancement flags (Round 1, Units 1–10) -------------------------
 PHASE_ENGINE_ENABLED        = _flag("INDIA_PHASE_ENGINE_ENABLED")
 VOLUME_PROFILE_GODMODE      = _flag("INDIA_VOL_PROFILE_GODMODE")
 STRUCTURAL_SL_ENABLED       = _flag("INDIA_STRUCTURAL_SL_ENABLED")
@@ -142,3 +142,25 @@ GEX_ENABLED                 = _flag("INDIA_GEX_ENABLED")
 SECTOR_CONFLUENCE_ENABLED   = _flag("INDIA_SECTOR_CONFLUENCE_ENABLED")
 MARKET_BREADTH_ENABLED      = _flag("INDIA_MARKET_BREADTH_ENABLED")
 MORNING_INTEL_ENABLED       = _flag("INDIA_MORNING_INTEL_ENABLED")
+
+# -- Round 2 God Mode flags (Units 1–10, 20% monthly target) ------------------
+RS_RANKING_ENABLED          = _flag("INDIA_RS_RANKING_ENABLED")       # IBD-style RS 1-99
+GAP_ANALYSIS_ENABLED        = _flag("INDIA_GAP_ANALYSIS_ENABLED")     # gap-fill / continuation
+PYRAMID_ENABLED             = _flag("INDIA_PYRAMID_ENABLED")          # add to winners after T1
+CHANDELIER_EXIT_ENABLED     = _flag("INDIA_CHANDELIER_EXIT_ENABLED")  # VIX-adaptive trailing stop
+FUTURES_OI_ENABLED          = _flag("INDIA_FUTURES_OI_ENABLED")       # NSE futures OI intelligence
+DELIVERY_V2_ENABLED         = _flag("INDIA_DELIVERY_V2_ENABLED")      # 5-day accumulation trend
+WALK_FORWARD_OPT_ENABLED    = _flag("INDIA_WALK_FORWARD_OPT_ENABLED") # weekly param optimizer
+MACRO_SCORING_ENABLED       = _flag("INDIA_MACRO_SCORING_ENABLED")    # RBI/PMI/CPI blackouts
+UOA_ENABLED                 = _flag("INDIA_UOA_ENABLED")              # unusual options activity
+SORTINO_SIZING_ENABLED      = _flag("INDIA_SORTINO_SIZING_ENABLED")   # Sortino-optimised sizing
+
+# -- Sortino dynamic position sizing config -----------------------------------
+SORTINO_MAX_POSITIONS_EXPANSION = _flag("INDIA_SORTINO_EXPAND")   # allow 7 pos when Sortino>2
+SORTINO_HIGH_THRESHOLD      = float(os.getenv("INDIA_SORTINO_HIGH", "2.0"))
+SORTINO_LOW_THRESHOLD       = float(os.getenv("INDIA_SORTINO_LOW",  "1.0"))
+SORTINO_HIGH_SIZE_MULT      = float(os.getenv("INDIA_SORTINO_HIGH_MULT", "1.25"))
+SORTINO_LOW_SIZE_MULT       = float(os.getenv("INDIA_SORTINO_LOW_MULT",  "0.75"))
+SORTINO_HIGH_MAX_POS        = int(os.getenv("INDIA_SORTINO_HIGH_MAX_POS", "7"))
+SORTINO_MID_MAX_POS         = int(os.getenv("INDIA_SORTINO_MID_MAX_POS",  "6"))
+SORTINO_LOW_MAX_POS         = int(os.getenv("INDIA_SORTINO_LOW_MAX_POS",  "4"))
