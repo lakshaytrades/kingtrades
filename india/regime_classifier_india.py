@@ -19,7 +19,7 @@ def _compute_regime() -> dict:
     try:
         import numpy as np
         import pandas as pd
-        from data_fetch_dhan import get_nifty_intraday as _get_nifty
+        from data_fetch_upstox import get_nifty_intraday as _get_nifty
 
         df = _get_nifty(interval="15m")
         if df is None or df.empty or len(df) < 30:
@@ -43,7 +43,7 @@ def _compute_regime() -> dict:
         vol_ratio  = recent_vol / (hist_vol + 1e-9)
 
         try:
-            from data_fetch_dhan import get_india_vix
+            from data_fetch_upstox import get_india_vix
             vix = get_india_vix()
         except Exception:
             vix = 0.0

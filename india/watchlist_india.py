@@ -135,7 +135,7 @@ def get_active_watchlist(dhan_client=None) -> List[str]:
         return ordered
 
     try:
-        from data_fetch_dhan import get_multiple_ltp
+        from data_fetch_upstox import get_multiple_ltp
         ltp_map = get_multiple_ltp(_CORE_WATCHLIST, dhan_client)
 
         # Filter: price > Rs.50, has LTP data — preserve priority order

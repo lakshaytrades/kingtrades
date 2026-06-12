@@ -54,7 +54,7 @@ def _compute_momentum_return(symbol: str, dhan_client=None) -> Optional[float]:
         # Try Dhan first
         if dhan_client is not None:
             try:
-                from data_fetch_dhan import get_ohlcv
+                from data_fetch_upstox import get_ohlcv
                 df = get_ohlcv(symbol, interval="1d")
                 if df is not None and len(df) >= _LOOKBACK_LONG:
                     closes = df["close"].values.astype(float)

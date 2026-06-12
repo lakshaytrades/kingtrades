@@ -200,7 +200,7 @@ def _target_bar(pct: float, width: int = 18) -> str:
 
 def _get_nifty_info() -> dict:
     try:
-        from data_fetch_dhan import get_nifty_level as _nifty
+        from data_fetch_upstox import get_nifty_level as _nifty
         info = _nifty()
         if info.get("level", 0) > 0:
             return {"level": info["level"], "chg_pct": info["change_pct"]}
@@ -211,7 +211,7 @@ def _get_nifty_info() -> dict:
 
 def _get_india_vix() -> float:
     try:
-        from data_fetch_dhan import get_india_vix as _vix
+        from data_fetch_upstox import get_india_vix as _vix
         return _vix()
     except Exception:
         pass
@@ -426,7 +426,7 @@ def send_morning_brief():
     lines = [
         f"🇮🇳 🌅 *SATAVECTOR INDIA — Morning Brief*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📅 {datetime.now(IST).strftime('%A, %d %b %Y')} | NSE | Dhan",
+        f"📅 {datetime.now(IST).strftime('%A, %d %b %Y')} | NSE | Upstox",
         f"{'─' * 30}",
         nifty_str,
         vix_str,
@@ -471,7 +471,7 @@ def send_eod_report():
     lines = [
         f"🇮🇳 📊 *SATAVECTOR INDIA — EOD Report*",
         f"━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan",
+        f"📅 {datetime.now(IST).strftime('%d %b %Y')} | NSE | Upstox",
         f"{'─' * 30}",
         f"{pnl_emoji} Day P&L: `₹{day_pnl:+,.0f}`",
         f"Trades: {total}  Wins: {wins}  Losses: {losses}",

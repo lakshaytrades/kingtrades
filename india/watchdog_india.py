@@ -340,14 +340,14 @@ def health_check():
                              f"win rate {win_rate:.0%} below threshold — tightening",
                              state)
 
-    # ── Dhan auth failure alert ───────────────────────────────────────────────
+    # ── Upstox auth failure alert ─────────────────────────────────────────────
     lines = _get_log_tail(100)
     if any("auth" in l.lower() and "failed" in l.lower() for l in lines):
         if _should_alert(state, "auth_fail"):
             _telegram_send(
-                "🇮🇳 Dhan auth failure detected.\n"
+                "🇮🇳 Upstox auth failure detected.\n"
                 "Send `/newtoken YOUR_TOKEN` here to fix without VPS.\n"
-                "Get token: https://dhanhq.co → API → Generate Token",
+                "Get new token via Upstox OAuth2 daily flow.",
                 "CRIT"
             )
             _mark_alerted(state, "auth_fail")
@@ -389,7 +389,7 @@ def main():
     pid_file.write_text(str(os.getpid()))
 
     try:
-        from auth_dhan import get_days_until_expiry
+        from auth_upstox import get_days_until_expiry
         days_left = get_days_until_expiry()
         expiry_info = f" | Token expires in ~{days_left:.0f}d" if days_left >= 0 else ""
     except Exception:
@@ -409,7 +409,7 @@ def main():
         try:
             # ── Poll Telegram for /newtoken command (every loop = 30s) ─────────
             try:
-                from auth_dhan import poll_telegram_commands
+                from auth_upstox import poll_telegram_commands
                 poll_telegram_commands(restart_callback=_restart_from_token_update)
             except Exception as e:
                 logger.debug(f"telegram poll: {e}")
@@ -419,7 +419,7 @@ def main():
             today_str = now.strftime("%Y-%m-%d")
             if now.hour == 8 and now.minute < 1 and _last_expiry_check_day != today_str:
                 try:
-                    from auth_dhan import check_token_expiry_and_warn
+                    from auth_upstox import check_token_expiry_and_warn
                     check_token_expiry_and_warn()
                     _last_expiry_check_day = today_str
                 except Exception as e:

@@ -56,7 +56,7 @@ def fetch() -> dict:
     # If SGX not available, fall back to Nifty 50 proxy
     if sgx_chg == 0.0:
         try:
-            from data_fetch_dhan import get_nifty_level
+            from data_fetch_upstox import get_nifty_level
             nifty = get_nifty_level()
             sgx_chg = nifty.get("change_pct", 0.0)
         except Exception:

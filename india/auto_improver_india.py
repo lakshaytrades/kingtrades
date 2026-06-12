@@ -178,7 +178,7 @@ def _call_claude_api(performance: Dict, params: Dict) -> Optional[str]:
     try:
         import anthropic
         client = anthropic.Anthropic(api_key=api_key)
-        prompt = f"""You are a quant analyst for a live NSE India intraday trading bot (Dhan broker, INR capital).
+        prompt = f"""You are a quant analyst for a live NSE India intraday trading bot (Upstox broker, INR capital).
 Analyze weekly performance and suggest INDIA_* parameter changes. ONLY return JSON.
 
 PERFORMANCE (last 7 days, INR):

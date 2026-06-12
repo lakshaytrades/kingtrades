@@ -27,7 +27,7 @@ def get_correlation(sym_a: str, sym_b: str) -> float:
             return cached["corr"]
 
         import pandas as pd
-        from data_fetch_dhan import get_ohlcv as _get_ohlcv
+        from data_fetch_upstox import get_ohlcv as _get_ohlcv
 
         df_a = _get_ohlcv(sym_a, interval="1h", period="30d")
         df_b = _get_ohlcv(sym_b, interval="1h", period="30d")

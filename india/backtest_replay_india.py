@@ -93,7 +93,7 @@ def _fetch_history(client, symbol: str, from_date: str, to_date: str,
     chunks (Dhan caps the intraday window per request). Returns IST-indexed
     OHLCV DataFrame or None.
     """
-    from data_fetch_dhan import get_security_id
+    from data_fetch_upstox import get_security_id
     sec_id = get_security_id(symbol)
     if not sec_id:
         logger.warning(f"{symbol}: no security_id")
@@ -239,17 +239,17 @@ def _simulate_exit(trade: Trade, future_bars: pd.DataFrame) -> float:
 
 def run_replay(symbols: List[str], from_date: str, to_date: str,
                capital: float = 500_000.0):
-    from auth_dhan import get_dhan_client, verify_connection
+    from auth_upstox import get_upstox_client, verify_connection
     cfg = _make_replay_config()
 
-    client = get_dhan_client()
+    client = get_upstox_client()
     if not verify_connection(client):
         print("ERROR: Dhan connection failed. This harness needs the production "
               "VPS with DHAN_CLIENT_ID + DHAN_ACCESS_TOKEN and Dhan network access.")
         return
 
-    import data_fetch_dhan as dfd
-    dfd.set_dhan_client(client)
+    import data_fetch_upstox as dfd
+    dfd.set_upstox_client(client)
     from signal_generator_india import IndiaSignalGenerator
 
     print(f"Loading historical 5-min data: {len(symbols)} symbols, {from_date} → {to_date}")
@@ -389,9 +389,9 @@ def main():
         symbols = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
     else:
         try:
-            from auth_dhan import get_dhan_client
+            from auth_upstox import get_upstox_client
             from watchlist_india import get_active_watchlist
-            symbols = get_active_watchlist(get_dhan_client())
+            symbols = get_active_watchlist(get_upstox_client())
         except Exception:
             symbols = ["RELIANCE", "INFY", "TCS", "HDFCBANK", "ICICIBANK"]
 

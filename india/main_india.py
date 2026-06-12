@@ -1,11 +1,11 @@
 """
 main_india.py -- SataVector India Bot
-Dhan broker | NSE equity | IST timezone | INR capital
+Upstox broker | NSE equity | IST timezone | INR capital
 
 Architecture: parallel to US bot -- zero shared state.
 Reuses: pattern_recognition, high_accuracy_filter, neural_predictor,
         volatility_targeting, institutional_strategies (IST-adapted)
-India-specific: auth_dhan, data_fetch_dhan, execution_dhan,
+India-specific: auth_upstox, data_fetch_upstox, execution_upstox,
                 watchlist_india, signal_generator_india
 """
 import json
@@ -37,9 +37,9 @@ except ImportError:
 
 # -- Local imports ------------------------------------------------------------
 import config_india as config
-from auth_dhan              import get_dhan_client, verify_connection
-from data_fetch_dhan        import get_ohlcv, get_multiple_ltp
-from execution_dhan         import DhanExecutor, get_executor
+from auth_upstox              import get_upstox_client, verify_connection
+from data_fetch_upstox        import get_ohlcv, get_multiple_ltp
+from execution_upstox         import UpstoxExecutor, get_executor
 from watchlist_india        import get_active_watchlist, get_sector
 from signal_generator_india import IndiaSignalGenerator, IndiaTradeSignal
 
@@ -191,18 +191,18 @@ class SataVectorIndia:
         logger.info(f"Live trading: {config.LIVE_TRADING_ENABLED}")
         logger.info(f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max positions: {config.MAX_POSITIONS}")
 
-        # Dhan connection
-        self._dhan = get_dhan_client()
+        # Upstox connection
+        self._dhan = get_upstox_client()
         if not verify_connection(self._dhan):
             if config.LIVE_TRADING_ENABLED:
-                logger.error("Dhan connection failed -- cannot start in live mode")
-                _tg("India Bot failed to connect to Dhan -- check DHAN_CLIENT_ID / DHAN_ACCESS_TOKEN")
+                logger.error("Upstox connection failed -- cannot start in live mode")
+                _tg("India Bot failed to connect to Upstox -- check UPSTOX_ACCESS_TOKEN in .env")
                 return False
-            logger.warning("Dhan not connected -- running in paper mode")
+            logger.warning("Upstox not connected -- running in paper mode")
 
-        # Register client with data module so OHLCV/VIX/Nifty use Dhan API
-        import data_fetch_dhan as _dfd
-        _dfd.set_dhan_client(self._dhan)
+        # Register client with data module so OHLCV/VIX/Nifty use Upstox API
+        import data_fetch_upstox as _dfd
+        _dfd.set_upstox_client(self._dhan)
 
         self._executor = get_executor(self._dhan, config.LIVE_TRADING_ENABLED)
 
@@ -223,7 +223,7 @@ class SataVectorIndia:
         # India VIX circuit breaker
         if getattr(config, 'INDIA_VIX_ENABLED', True):
             try:
-                from data_fetch_dhan import get_india_vix as _get_vix
+                from data_fetch_upstox import get_india_vix as _get_vix
                 _vix = _get_vix()
                 if _vix > 0:
                     logger.info(f"India VIX: {_vix:.1f}")
@@ -248,7 +248,7 @@ class SataVectorIndia:
             f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max pos: {config.MAX_POSITIONS}\n"
             f"Watchlist: {len(self._watchlist)} NSE symbols\n"
             f"Engine: 25+ sources | 30 gates | Renaissance R3 | ORB\n"
-            f"Broker: Dhan | Market: NSE | Opens 9:15 AM IST\n"
+            f"Broker: Upstox | Market: NSE | Opens 9:15 AM IST\n"
             f"--------------------------------"
         )
         return True
@@ -349,7 +349,7 @@ class SataVectorIndia:
                     try:
                         if getattr(config, "PEAD_ENABLED", False):
                             from pead_india import auto_detect_earnings_reactions
-                            from data_fetch_dhan import get_ohlcv as _get_ohlcv_daily
+                            from data_fetch_upstox import get_ohlcv as _get_ohlcv_daily
                             def _d_getter(sym):
                                 return _get_ohlcv_daily(sym, interval="1d")
                             n_pead = auto_detect_earnings_reactions(self._watchlist, _d_getter)
@@ -416,7 +416,7 @@ class SataVectorIndia:
 
                 # -- Adaptive scan interval ------------------------------------
                 # 60s during high-volume windows (open + power close).
-                # 300s otherwise -- reduces Dhan API load mid-day.
+                # 300s otherwise -- reduces Upstox API load mid-day.
                 _in_power = (time(9, 15) <= t <= time(9, 59)) or \
                             (time(14, 30) <= t <= time(15, 20))
                 _time.sleep(60 if _in_power else config.SCAN_INTERVAL_SECONDS)
@@ -443,7 +443,7 @@ class SataVectorIndia:
             if self._nifty_cache.get("ts", 0) > now_ts - 900:
                 return self._nifty_cache.get("regime", "NEUTRAL")
 
-            from data_fetch_dhan import get_nifty_intraday as _get_nifty
+            from data_fetch_upstox import get_nifty_intraday as _get_nifty
             df = _get_nifty(interval="15m")
             if df is None or df.empty or len(df) < 21:
                 return "NEUTRAL"
@@ -498,7 +498,7 @@ class SataVectorIndia:
         _data_ok_count = 0
         for _dsym in _sample_syms:
             try:
-                from data_fetch_dhan import get_ohlcv as _gohlcv
+                from data_fetch_upstox import get_ohlcv as _gohlcv
                 _df = _gohlcv(_dsym, interval="5m", period="5d")
                 if _df is not None and not _df.empty and len(_df) >= 20:
                     _data_ok_count += 1
@@ -630,7 +630,7 @@ class SataVectorIndia:
                     _ss["rejected_qty"] += 1
                     continue
 
-                # ── MANUAL SIGNALS MODE: alert Telegram, user places in Dhan ──
+                # ── MANUAL SIGNALS MODE: alert Telegram, user places in Upstox ──
                 if getattr(config, 'MANUAL_SIGNALS_ONLY', True):
                     self._send_manual_signal_alert(signal_obj, qty)
                     self._last_trade_ts = _time.monotonic()
@@ -798,7 +798,7 @@ class SataVectorIndia:
     def _send_manual_signal_alert(self, sig, qty: int) -> None:
         """
         Send a rich Telegram alert with everything needed to place the order
-        manually in Dhan app. Called instead of auto-execution when
+        manually in Upstox app. Called instead of auto-execution when
         MANUAL_SIGNALS_ONLY=True.
         """
         # Dedup: don't alert the same symbol twice within 10 minutes
@@ -863,7 +863,7 @@ class SataVectorIndia:
 
         vix_str = ""
         try:
-            from data_fetch_dhan import get_india_vix as _vix
+            from data_fetch_upstox import get_india_vix as _vix
             vix = _vix()
             if vix > 0:
                 vix_tag = "🔴HIGH" if vix >= 22 else ("🟡" if vix >= 17 else "🟢")
@@ -874,14 +874,14 @@ class SataVectorIndia:
         context_parts = [p for p in [vix_str, fii_str, f"Sector: {sector}"] if p]
         context_str = "  |  ".join(context_parts)
 
-        # Dhan order instruction
+        # Order instruction
         if direction == "LONG":
-            dhan_action = "BUY"
-            dhan_order = f"BUY {symbol} | MIS | Market | {qty} qty"
+            order_action = "BUY"
+            order_note = f"BUY {symbol} | MIS | Market | {qty} qty"
             sl_note = f"After filling: place SL order SELL {symbol} SL-M trigger Rs.{sl:.2f}"
         else:
-            dhan_action = "SELL"
-            dhan_order = f"SELL {symbol} | MIS | Market | {qty} qty"
+            order_action = "SELL"
+            order_note = f"SELL {symbol} | MIS | Market | {qty} qty"
             sl_note = f"After filling: place SL order BUY {symbol} SL-M trigger Rs.{sl:.2f}"
 
         sep = "━" * 28
@@ -891,7 +891,7 @@ class SataVectorIndia:
             f"{arrow}  NSE:{symbol}\n"
             f"{sep}\n"
             f"Entry:  Rs.{entry:,.2f}  (market)\n"
-            f"Stop:   Rs.{sl:,.2f}  ({sl_pct:.1f}% away) ← SET THIS IN DHAN\n"
+            f"Stop:   Rs.{sl:,.2f}  ({sl_pct:.1f}% away) ← SET THIS IN UPSTOX\n"
             f"T1:     Rs.{t1:,.2f}  (+{t1_pct:.1f}%) ← exit 50%\n"
             f"T2:     Rs.{t2:,.2f}  (+{t2_pct:.1f}%) ← trail rest\n"
             f"R:R     {rr:.1f} : 1\n"
@@ -904,7 +904,7 @@ class SataVectorIndia:
             f"Risk:   Rs.{risk_inr:,.0f}  ({risk_inr/max(config.MAX_DAILY_CAPITAL,1)*100:.2f}% of capital)\n"
             f"{sep}\n"
             f"📈 tradingview.com/chart/?symbol=NSE:{symbol}\n"
-            f"🏦 Dhan: {dhan_order}\n"
+            f"🏦 Upstox: {order_note}\n"
             f"🛡 {sl_note}"
         )
 
@@ -958,7 +958,7 @@ class SataVectorIndia:
             if pos.t1_exited and pos.atr > 0:
                 if self._chandelier is not None and getattr(config, "CHANDELIER_EXIT_ENABLED", False):
                     try:
-                        from data_fetch_dhan import get_india_vix as _gvix
+                        from data_fetch_upstox import get_india_vix as _gvix
                         _vix_now = _gvix()
                     except Exception:
                         _vix_now = 18.0
@@ -1014,7 +1014,7 @@ class SataVectorIndia:
                     to_close.append(symbol)
                     continue
 
-            # Stop hit (live mode -- Dhan SLM handles it; paper mode: check manually)
+            # Stop hit (live mode -- Upstox SLM handles it; paper mode: check manually)
             elif not config.LIVE_TRADING_ENABLED:
                 if pos.direction == "LONG" and ltp <= pos.stop_loss:
                     logger.info(f"{symbol}: stop hit at Rs.{ltp:.2f}")
@@ -1135,7 +1135,7 @@ class SataVectorIndia:
         if getattr(config, "PEAD_ENABLED", False):
             try:
                 from pead_india import auto_detect_earnings_reactions
-                from data_fetch_dhan import get_ohlcv as _get_ohlcv
+                from data_fetch_upstox import get_ohlcv as _get_ohlcv
                 def _daily_getter(sym):
                     return _get_ohlcv(sym, interval="1d")
                 if len(self._watchlist) > 0:
@@ -1197,7 +1197,7 @@ class SataVectorIndia:
         _tg(
             f"SATAVECTOR INDIA -- EOD Report\n"
             f"--------------------------------\n"
-            f"{datetime.now(IST).strftime('%d %b %Y')} | NSE | Dhan\n\n"
+            f"{datetime.now(IST).strftime('%d %b %Y')} | NSE | Upstox\n\n"
             f"Trades: {s.trades}  Wins: {s.wins}  Losses: {s.losses}\n"
             f"Win rate: {win_rate:.0%} [{bar}]\n"
             f"Day P&L: Rs.{s.total_pnl:+,.2f}\n\n"
@@ -1354,9 +1354,19 @@ class SataVectorIndia:
         if not config.LIVE_TRADING_ENABLED or self._dhan is None:
             return config.MAX_DAILY_CAPITAL
         try:
-            resp = self._dhan.get_fund_limits()
-            if resp and resp.get("status") == "success":
-                return float(resp.get("data", {}).get("availabelBalance", 0))
+            resp = self._dhan.user.get_user_fund_margin(api_version="2.0")
+            data = getattr(resp, "data", None)
+            if data is None and isinstance(resp, dict):
+                data = resp.get("data")
+            if data is not None:
+                equity = getattr(data, "equity", None)
+                if equity is None and isinstance(data, dict):
+                    equity = data.get("equity")
+                if equity is not None:
+                    avail = (equity.get("available_margin") if isinstance(equity, dict)
+                             else getattr(equity, "available_margin", None))
+                    if avail is not None:
+                        return float(avail)
         except Exception:
             pass
         return config.MAX_DAILY_CAPITAL
@@ -1497,7 +1507,7 @@ class SataVectorIndia:
         # -- Next setups watching (top candidates via base score proxy) ---
         try:
             if self._generator and self._watchlist:
-                from data_fetch_dhan import get_ohlcv as _gohlcv
+                from data_fetch_upstox import get_ohlcv as _gohlcv
                 _top = [s for s in self._watchlist if s not in self._positions][:10]
                 _candidates = []
                 _rec = self._generator._recognizer
@@ -1610,14 +1620,14 @@ class SataVectorIndia:
         # Fetch current LTP
         ltp = 0.0
         try:
-            from data_fetch_dhan import get_multiple_ltp as _gltp
+            from data_fetch_upstox import get_multiple_ltp as _gltp
             ltp_map = _gltp([symbol], self._dhan)
             ltp = ltp_map.get(symbol, 0.0)
         except Exception:
             pass
         if ltp <= 0:
             try:
-                from data_fetch_dhan import get_ohlcv as _gohlcv
+                from data_fetch_upstox import get_ohlcv as _gohlcv
                 df = _gohlcv(symbol, "5m", "5d")
                 if df is not None and not df.empty:
                     ltp = float(df["close"].iloc[-1])
@@ -1674,7 +1684,7 @@ class SataVectorIndia:
         qty       = o["qty"]
         price     = o["price"]
 
-        from data_fetch_dhan import get_security_id as _gsid
+        from data_fetch_upstox import get_security_id as _gsid
         security_id = _gsid(symbol) or (f"PAPER-{symbol}" if not config.LIVE_TRADING_ENABLED else "")
 
         if config.LIVE_TRADING_ENABLED and not security_id:
@@ -1733,7 +1743,7 @@ class SataVectorIndia:
 
         if price <= 0:
             try:
-                from data_fetch_dhan import get_ohlcv as _gohlcv
+                from data_fetch_upstox import get_ohlcv as _gohlcv
                 df = _gohlcv(symbol, "5m", "5d")
                 if df is not None and not df.empty:
                     price = float(df["close"].iloc[-1])

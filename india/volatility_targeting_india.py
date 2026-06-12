@@ -36,7 +36,7 @@ def _get_india_vix() -> float:
     if _india_vix_cache and now - _india_vix_cache.get("ts", 0) < _INDIA_VIX_TTL:
         return _india_vix_cache["vix"]
     try:
-        from data_fetch_dhan import get_india_vix as _get_vix
+        from data_fetch_upstox import get_india_vix as _get_vix
         vix = _get_vix()
         if vix > 0:
             _india_vix_cache.update({"vix": vix, "ts": now})

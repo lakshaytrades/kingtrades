@@ -150,7 +150,7 @@ def _extract_features(
         # ── VIX level ─────────────────────────────────────────────────────────
         vix_level = 0.0
         try:
-            from data_fetch_dhan import get_india_vix
+            from data_fetch_upstox import get_india_vix
             v = get_india_vix()
             if v:
                 vix_level = float(v)

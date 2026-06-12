@@ -6,7 +6,7 @@ Research finding (Macrosynergy, confirmed): when VIX is in backwardation
 equity returns are strongly positive. When VIX is rising from low levels,
 equity returns deteriorate.
 
-India VIX is published by NSE and fetched via data_fetch_dhan.get_india_vix().
+India VIX is published by NSE and fetched via data_fetch_upstox.get_india_vix().
 We store a rolling 10-day history to compute:
   1. VIX trend (slope of last 5 days)
   2. VIX level regime (panic / elevated / normal / calm)
@@ -38,7 +38,7 @@ IST = ZoneInfo("Asia/Kolkata")
 _HISTORY_FILE = Path(__file__).parent.parent / "data" / "vix_history.json"
 _vix_history: List[float] = []   # rolling last 10 readings
 _last_fetch_ts: float = 0.0
-_FETCH_TTL = 1800.0   # 30 minutes (matches data_fetch_dhan VIX TTL)
+_FETCH_TTL = 1800.0   # 30 minutes (matches data_fetch_upstox VIX TTL)
 
 
 def _load_history():
@@ -66,7 +66,7 @@ def _update_vix():
         return
 
     try:
-        from data_fetch_dhan import get_india_vix
+        from data_fetch_upstox import get_india_vix
         vix = get_india_vix()
         if vix > 0:
             _vix_history.append(float(vix))

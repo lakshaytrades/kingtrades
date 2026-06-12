@@ -32,17 +32,13 @@ class MarketBreadth:
         return self._breadth
 
     def _fetch_breadth(self) -> float:
-        """Fetch NSE allIndices and count % of equity indices advancing."""
-        from data_fetch_dhan import _get_nse_session, _NSE_MAIN
-        import requests as _req
+        """Fraction of NSE sector indices advancing, via Upstox index quotes."""
+        from data_fetch_upstox import get_market_breadth
+        return get_market_breadth()
 
-        sess = _get_nse_session()
-        r = sess.get(
-            f"{_NSE_MAIN}/api/allIndices",
-            headers={"Referer": f"{_NSE_MAIN}/"},
-            timeout=10,
-        )
-        data = r.json().get("data", [])
+    def _fetch_breadth_legacy_unused(self) -> float:
+        """Deprecated NSE-allIndices path (kept for reference, not called)."""
+        data = []
 
         # Focus on equity sector indices only
         _EQUITY_KEYWORDS = (

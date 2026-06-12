@@ -119,7 +119,7 @@ def _get_log_prices(symbol: str, dhan_client=None, lookback_days: int = 60) -> O
         # Try Dhan first
         if dhan_client is not None:
             try:
-                from data_fetch_dhan import get_ohlcv
+                from data_fetch_upstox import get_ohlcv
                 df = get_ohlcv(symbol, interval="1d")
                 if df is not None and len(df) >= 20:
                     prices = df["close"].tail(lookback_days)

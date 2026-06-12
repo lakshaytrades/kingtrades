@@ -123,7 +123,7 @@ class IndiaSignalGenerator:
         Returns IndiaTradeSignal if all gates pass, None otherwise.
         """
         try:
-            from data_fetch_dhan import get_ohlcv_multi_tf, get_security_id
+            from data_fetch_upstox import get_ohlcv_multi_tf, get_security_id
             bars = get_ohlcv_multi_tf(symbol)
             df_5m  = bars.get("5m")
             df_15m = bars.get("15m")
@@ -638,9 +638,9 @@ class IndiaSignalGenerator:
                 if _ema_direction(df_1h) == direction:
                     aligned += 1
 
-            # 1m (try to get it from data_fetch_dhan)
+            # 1m (try to get it from data_fetch_upstox)
             try:
-                from data_fetch_dhan import get_ohlcv
+                from data_fetch_upstox import get_ohlcv
                 df_1m = get_ohlcv(df_5m.index[0] if hasattr(df_5m, 'index') else None,
                                   interval="1m") if df_5m is not None else None
                 if df_1m is not None and len(df_1m) >= 10:
@@ -887,7 +887,7 @@ class IndiaSignalGenerator:
             if cache_valid:
                 vix = self._vix_cache_value
             else:
-                from data_fetch_dhan import get_india_vix as _get_vix
+                from data_fetch_upstox import get_india_vix as _get_vix
                 vix = _get_vix()
                 if vix <= 0:
                     self._last_india_vix = 0.0

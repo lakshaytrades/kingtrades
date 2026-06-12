@@ -98,7 +98,7 @@ def get_nifty_open() -> float:
     Fail-open: returns 0.
     """
     try:
-        from data_fetch_dhan import get_nifty_level as _nifty
+        from data_fetch_upstox import get_nifty_level as _nifty
         info = _nifty()
         if info.get("open", 0) > 0:
             return info["open"]
@@ -110,7 +110,7 @@ def get_nifty_open() -> float:
 def get_nifty_current() -> float:
     """Fetch current Nifty level. Fail-open: returns 0."""
     try:
-        from data_fetch_dhan import get_nifty_level as _nifty
+        from data_fetch_upstox import get_nifty_level as _nifty
         return _nifty().get("level", 0.0)
     except Exception as e:
         logger.debug(f"Nifty current fetch: {e}")

@@ -29,7 +29,7 @@ class RelativeStrength:
             return _rs_scores
 
         try:
-            from data_fetch_dhan import get_ohlcv, get_nifty_level
+            from data_fetch_upstox import get_ohlcv, get_nifty_level
 
             nifty_info = get_nifty_level()
             nifty_chg = nifty_info.get("change_pct", 0.0)

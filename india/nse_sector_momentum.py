@@ -69,7 +69,7 @@ def _get_sector_returns() -> Dict[str, float]:
         return _sector_returns_cache[today]["returns"]
 
     try:
-        from data_fetch_dhan import get_all_sector_returns as _sector_returns
+        from data_fetch_upstox import get_all_sector_returns as _sector_returns
         sector_returns = _sector_returns()
 
         if sector_returns:

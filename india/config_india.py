@@ -1,6 +1,6 @@
 """
 config_india.py — SataVector India Bot Configuration
-Dhan broker | NSE equity | IST timezone | INR capital
+Upstox broker | NSE equity | IST timezone | INR capital
 """
 from datetime import time
 from zoneinfo import ZoneInfo
@@ -21,9 +21,10 @@ MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",        "0.5")) /
 DAILY_LOSS_LIMIT_PCT    = float(os.getenv("INDIA_DAILY_LOSS_LIMIT_PCT","2.0")) / 100
 MAX_POSITIONS           = int(os.getenv(  "INDIA_MAX_POSITIONS",       "5"))
 
-# -- Dhan credentials (from env only -- never hardcode) -----------------------
-DHAN_CLIENT_ID    = os.getenv("DHAN_CLIENT_ID",    "")
-DHAN_ACCESS_TOKEN = os.getenv("DHAN_ACCESS_TOKEN", "")
+# -- Upstox credentials (from env only -- never hardcode) ---------------------
+UPSTOX_API_KEY      = os.getenv("UPSTOX_API_KEY",      "")
+UPSTOX_API_SECRET   = os.getenv("UPSTOX_API_SECRET",   "")
+UPSTOX_ACCESS_TOKEN = os.getenv("UPSTOX_ACCESS_TOKEN", "")
 
 # -- Telegram (shared with US bot if using same channel) ----------------------
 TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
@@ -45,9 +46,9 @@ ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "3.0"))
 # -- Live trading gate --------------------------------------------------------
 LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
 
-# -- Manual signals mode: bot sends alerts, YOU place orders in Dhan app -----
-# True  = bot detects setups and messages you → you trade manually in Dhan
-# False = bot auto-executes in Dhan (requires LIVE_TRADING_ENABLED=True)
+# -- Manual signals mode: bot sends alerts, YOU place orders in Upstox app ---
+# True  = bot detects setups and messages you → you trade manually in Upstox
+# False = bot auto-executes in Upstox (requires LIVE_TRADING_ENABLED=True)
 MANUAL_SIGNALS_ONLY = os.getenv("INDIA_MANUAL_SIGNALS_ONLY", "True") != "False"
 
 # -- Feature flags (all on by default) ----------------------------------------
@@ -65,10 +66,10 @@ PAIRS_SIGNAL_ENABLED      = _flag("INDIA_PAIRS_SIGNAL_ENABLED")
 TOD_RVOL_ENABLED          = _flag("INDIA_TOD_RVOL_ENABLED")
 SORTINO_SIZING_ENABLED    = _flag("INDIA_SORTINO_SIZING_ENABLED")
 
-# -- Dhan exchange constants --------------------------------------------------
+# -- Upstox exchange constants ------------------------------------------------
 EXCHANGE        = "NSE_EQ"
-PRODUCT_TYPE    = "INTRADAY"   # MIS equivalent on Dhan
-NSE_SUFFIX = "-EQ"             # Dhan security ID suffix for NSE equity
+PRODUCT_TYPE    = "I"          # MIS equivalent on Upstox (intraday)
+NSE_SUFFIX      = ""           # Upstox uses full instrument keys (NSE_EQ|ISIN)
 
 # -- Scan interval ------------------------------------------------------------
 SCAN_INTERVAL_SECONDS = 300   # scan watchlist every 5 minutes

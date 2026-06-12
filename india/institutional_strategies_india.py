@@ -104,7 +104,7 @@ def get_gap_fade_score_india(symbol: str, direction: str,
         # Fetch prev close via NSE charting API if not cached
         if symbol not in _gap_cache:
             try:
-                from data_fetch_dhan import get_ohlcv as _get_ohlcv
+                from data_fetch_upstox import get_ohlcv as _get_ohlcv
                 hist = _get_ohlcv(symbol, interval="1h", period="5d")
                 if hist is not None and len(hist) >= 2:
                     # Use second-to-last close as previous day close proxy
@@ -164,7 +164,7 @@ def get_pairs_signal_india(symbol: str, direction: str) -> Tuple[float, str]:
             return cached_val
 
     try:
-        from data_fetch_dhan import get_ohlcv as _get_ohlcv
+        from data_fetch_upstox import get_ohlcv as _get_ohlcv
         for sym_a, sym_b in relevant_pairs:
             try:
                 df_a = _get_ohlcv(sym_a, interval="1h", period="30d")
