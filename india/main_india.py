@@ -246,7 +246,7 @@ class SataVectorIndia:
             f"Mode: {mode}\n"
             f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max pos: {config.MAX_POSITIONS}\n"
             f"Watchlist: {len(self._watchlist)} NSE symbols\n"
-            f"Engine: 12 sources | 26 gates | ML-scored | ORB\n"
+            f"Engine: 25+ sources | 30 gates | Renaissance R3 | ORB\n"
             f"Broker: Dhan | Market: NSE | Opens 9:15 AM IST\n"
             f"--------------------------------"
         )
@@ -300,6 +300,53 @@ class SataVectorIndia:
                             logger.info("RS scores updated for %d symbols", len(self._watchlist))
                     except Exception as _e:
                         logger.debug(f"rs_update: {_e}")
+                    # Round 3: cross-asset regime pre-fetch (warm up cache before market)
+                    try:
+                        if getattr(config, "CROSS_ASSET_ENABLED", False):
+                            from cross_asset_india import get_cross_asset_regime
+                            regime = get_cross_asset_regime()
+                            bias = regime.get("global_bias", "NEUTRAL")
+                            score_adj = regime.get("score_adj", 0)
+                            vix_us = regime.get("us_vix", 0.0)
+                            sgx = regime.get("sgx_nifty_prem", 0.0)
+                            _tg(
+                                f"SATAVECTOR Cross-Asset Regime\n"
+                                f"Bias: {bias} | Adj: {score_adj:+d}\n"
+                                f"US VIX: {vix_us:.1f} | SGX: {sgx:+.1f}%\n"
+                                f"{regime.get('reason', '')}"
+                            )
+                    except Exception as _e:
+                        logger.debug(f"cross_asset_premarket: {_e}")
+
+                    # Round 3: PEAD auto-detect for all watchlist symbols
+                    try:
+                        if getattr(config, "PEAD_ENABLED", False):
+                            from pead_india import auto_detect_earnings_reactions
+                            from data_fetch_dhan import get_ohlcv as _get_ohlcv_daily
+                            def _d_getter(sym):
+                                return _get_ohlcv_daily(sym, interval="1d")
+                            n_pead = auto_detect_earnings_reactions(self._watchlist, _d_getter)
+                            if n_pead > 0:
+                                logger.info(f"PEAD: {n_pead} new earnings drift signals detected")
+                    except Exception as _e:
+                        logger.debug(f"pead_premarket: {_e}")
+
+                    # Round 3: Block/bulk deal pre-fetch
+                    try:
+                        if getattr(config, "BLOCK_DEAL_ENABLED", False):
+                            from block_deal_india import _fetch_nse_deals
+                            _fetch_nse_deals()
+                    except Exception as _e:
+                        logger.debug(f"block_deal_premarket: {_e}")
+
+                    # Round 3: Elite tracker daily summary
+                    try:
+                        if getattr(config, "ELITE_TRACKER_ENABLED", False):
+                            from elite_tracker_india import get_stats_summary
+                            _tg(f"Elite Tracker: {get_stats_summary()}")
+                    except Exception as _e:
+                        logger.debug(f"elite_tracker_summary: {_e}")
+
                     # Monday walk-forward optimization (pre-market)
                     try:
                         if self._optimizer is not None and now.weekday() == 0:
@@ -1042,6 +1089,33 @@ class SataVectorIndia:
         except Exception:
             pass
 
+        # Round 3: record for elite pattern tracker (self-learning WR feedback)
+        if getattr(config, "ELITE_TRACKER_ENABLED", False):
+            try:
+                from elite_tracker_india import record_trade_outcome
+                _patterns = getattr(pos, "signal_contributions", {}).get("patterns", [])
+                record_trade_outcome(
+                    patterns=_patterns,
+                    direction=pos.direction,
+                    signal_score=getattr(pos, "signal_score", 0.0),
+                    grade=getattr(pos, "quality_grade", "B") if hasattr(pos, "quality_grade") else "B",
+                    win=pnl > 0,
+                )
+            except Exception:
+                pass
+
+        # Round 3: PEAD auto-detect on position close (record earnings reactions)
+        if getattr(config, "PEAD_ENABLED", False):
+            try:
+                from pead_india import auto_detect_earnings_reactions
+                from data_fetch_dhan import get_ohlcv as _get_ohlcv
+                def _daily_getter(sym):
+                    return _get_ohlcv(sym, interval="1d")
+                if len(self._watchlist) > 0:
+                    auto_detect_earnings_reactions([symbol], _daily_getter)
+            except Exception:
+                pass
+
         # Cleanup pyramid/chandelier trackers
         if self._pyramid is not None:
             try:
@@ -1222,11 +1296,29 @@ class SataVectorIndia:
             if self._stats.loss_guard_active:
                 qty = max(1, qty // 2)
 
-            # Cap: Grand Slam (A+) allowed 25% capital; others 20%
+            # Cap: adaptive MIS leverage for exceptional signals
             is_grand_slam = getattr(sig, "quality_grade", "") == "A+"
-            cap_pct = 0.25 if is_grand_slam else 0.20
-            max_qty = int(config.MAX_DAILY_CAPITAL * cap_pct / (sig.entry_price + 1))
+            cap_pct = config.GRAND_SLAM_MAX_PCT if is_grand_slam else config.MAX_POSITION_PCT
 
+            # Round 3: MIS leverage expansion for elite setups
+            if (getattr(config, "MIS_LEVERAGE_ENABLED", False)
+                    and is_grand_slam
+                    and not self._stats.loss_guard_active):
+                sortino = self._compute_sortino()
+                # Only expand leverage when risk metrics are healthy
+                if sortino >= getattr(config, "MIS_SORTINO_MIN", 2.5):
+                    # Calculate 7-day WR from recent history
+                    recent_hist = self._stats.pnl_pct_history[-14:]
+                    if len(recent_hist) >= 7:
+                        recent_wins = sum(1 for p in recent_hist if p > 0)
+                        recent_wr = recent_wins / len(recent_hist)
+                        mis_wr_min = getattr(config, "MIS_WEEKLY_WR_MIN", 0.62)
+                        if recent_wr >= mis_wr_min and sig.signal_score >= 88:
+                            cap_pct = getattr(config, "MIS_ELITE_CAP_PCT", 0.35)
+                        elif sig.signal_score >= 82:
+                            cap_pct = getattr(config, "MIS_GRAND_SLAM_CAP_PCT", 0.30)
+
+            max_qty = int(config.MAX_DAILY_CAPITAL * cap_pct / (sig.entry_price + 1))
             return min(qty, max_qty)
         except Exception:
             return 0

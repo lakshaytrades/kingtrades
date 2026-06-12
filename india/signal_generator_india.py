@@ -66,7 +66,7 @@ class IndiaTradeSignal:
 class IndiaSignalGenerator:
     """
     High-conviction NSE intraday signal generator.
-    7 quality gates + 17 signal sources (God Mode enhancements included).
+    7 quality gates + 25+ signal sources (Renaissance Round 3 enhancements).
     """
 
     def __init__(self, config, watchlist: List[str] = None):
@@ -427,18 +427,107 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
+            # ── Round 3 Renaissance Boosters ─────────────────────────────────
+
+            # Wyckoff VSA (Volume Spread Analysis)
+            if getattr(self._config, "WYCKOFF_VSA_ENABLED", False):
+                try:
+                    from wyckoff_vsa_india import get_wyckoff_score
+                    w_adj, w_reason = get_wyckoff_score(df_5m, direction)
+                    score += w_adj
+                    if w_adj != 0:
+                        sig.rationale += f" | {w_reason}"
+                except Exception:
+                    pass
+
+            # Microstructure tape engine
+            if getattr(self._config, "MICROSTRUCTURE_ENABLED", False):
+                try:
+                    from microstructure_india import get_microstructure_score
+                    ms_adj, ms_reason = get_microstructure_score(df_5m, direction)
+                    score += ms_adj
+                    if ms_adj != 0:
+                        sig.rationale += f" | {ms_reason}"
+                except Exception:
+                    pass
+
+            # Cross-asset correlation engine
+            if getattr(self._config, "CROSS_ASSET_ENABLED", False):
+                try:
+                    from cross_asset_india import get_cross_asset_score
+                    from watchlist_india import get_sector
+                    sector = get_sector(symbol)
+                    ca_adj, ca_reason = get_cross_asset_score(direction, sector)
+                    score += ca_adj
+                    if ca_adj != 0:
+                        sig.rationale += f" | CA:{ca_adj:+d}({ca_reason[:20]})"
+                except Exception:
+                    pass
+
+            # PEAD alpha
+            if getattr(self._config, "PEAD_ENABLED", False):
+                try:
+                    from pead_india import get_pead_score
+                    pead_adj, pead_reason = get_pead_score(symbol, direction)
+                    score += pead_adj
+                    if pead_adj != 0:
+                        sig.rationale += f" | {pead_reason}"
+                except Exception:
+                    pass
+
+            # Block/bulk deal institutional signal
+            if getattr(self._config, "BLOCK_DEAL_ENABLED", False):
+                try:
+                    from block_deal_india import get_block_deal_score
+                    bd_adj, bd_reason = get_block_deal_score(symbol, direction)
+                    score += bd_adj
+                    if bd_adj != 0:
+                        sig.rationale += f" | {bd_reason}"
+                except Exception:
+                    pass
+
+            # Multi-timeframe cascade bonus
+            if getattr(self._config, "MTF_CASCADE_ENABLED", False):
+                try:
+                    aligned_tfs = self._count_aligned_tfs(direction, df_5m, df_15m, df_1h)
+                    if aligned_tfs >= 4:
+                        mtf_bonus = getattr(self._config, "MTF_FULL_CASCADE_BONUS", 15)
+                        score += mtf_bonus
+                        sig.rationale += f" | MTF_CASCADE_4TF:{mtf_bonus:+d}"
+                    elif aligned_tfs >= 3:
+                        mtf_bonus = getattr(self._config, "MTF_THREE_TF_BONUS", 8)
+                        score += mtf_bonus
+                        sig.rationale += f" | MTF_3TF:{mtf_bonus:+d}"
+                    elif aligned_tfs <= 1:
+                        mtf_pen = getattr(self._config, "MTF_CONFLICT_PENALTY", -10)
+                        score += mtf_pen
+                        sig.rationale += f" | MTF_CONFLICT:{mtf_pen:+d}"
+                except Exception:
+                    pass
+
+            # Elite self-learning pattern tracker
+            if getattr(self._config, "ELITE_TRACKER_ENABLED", False):
+                try:
+                    from elite_tracker_india import get_elite_score
+                    _patterns = getattr(ind, "_patterns", []) or sig.patterns
+                    elite_adj, elite_reason = get_elite_score(_patterns, direction, score)
+                    score += elite_adj
+                    if elite_adj != 0:
+                        sig.rationale += f" | {elite_reason}"
+                except Exception:
+                    pass
+
             # Update final score on signal
             sig.signal_score = round(score, 1)
             sig.is_high_confidence = score >= 80
 
-            # Re-check threshold: Round 2 boosters can be negative (macro -20,
-            # RS -6, gap -8, UOA -6) and must be able to reject the signal
+            # Re-check threshold: all boosters (Rounds 2+3) must be able to reject
             if score < _final_min:
                 logger.debug(f"{symbol}: score {score:.1f} fell below "
-                             f"{_final_min} after Round 2 adjustments")
+                             f"{_final_min} after Round 3 adjustments")
                 return None
 
-            # Re-grade with final score (Round 2 boosts can cross grade bands)
+            # Re-grade with final score (cross all grade bands after all boosters)
             if score >= grand_slam:
                 sig.quality_grade, _base_mult = "A+", 1.35
             elif score >= 78:
@@ -459,7 +548,6 @@ class IndiaSignalGenerator:
                         self._config, 'IDLE_SCALP_SIZE_MULT', 0.40
                     )
                 else:
-                    # Score too low even for scalp mode threshold
                     return None
 
             return sig
@@ -467,6 +555,72 @@ class IndiaSignalGenerator:
         except Exception as e:
             logger.debug(f"generate_signal {symbol}: {e}")
             return None
+
+    # ── Multi-timeframe alignment counter ────────────────────────────────────
+
+    def _count_aligned_tfs(self, direction: str,
+                           df_5m: Optional[pd.DataFrame],
+                           df_15m: Optional[pd.DataFrame],
+                           df_1h: Optional[pd.DataFrame]) -> int:
+        """
+        Count how many timeframes (1m, 5m, 15m, 1h) align with direction.
+        Returns 0-4 aligned count.
+        """
+        aligned = 0
+        try:
+            def _ema_direction(df: pd.DataFrame) -> Optional[str]:
+                if df is None or len(df) < 21:
+                    return None
+                close = df["close"].values.astype(float)
+                ema9  = _ema_calc(close, 9)
+                ema21 = _ema_calc(close, 21)
+                if ema9[-1] > ema21[-1]:
+                    return "LONG"
+                elif ema9[-1] < ema21[-1]:
+                    return "SHORT"
+                return None
+
+            def _ema_calc(prices, period):
+                alpha = 2.0 / (period + 1)
+                ema = [prices[0]]
+                for p in prices[1:]:
+                    ema.append(alpha * p + (1 - alpha) * ema[-1])
+                return ema
+
+            # 5m
+            if df_5m is not None and len(df_5m) >= 21:
+                if _ema_direction(df_5m) == direction:
+                    aligned += 1
+
+            # 15m
+            if df_15m is not None and len(df_15m) >= 21:
+                if _ema_direction(df_15m) == direction:
+                    aligned += 1
+
+            # 1h
+            if df_1h is not None and len(df_1h) >= 21:
+                if _ema_direction(df_1h) == direction:
+                    aligned += 1
+
+            # 1m (try to get it from data_fetch_dhan)
+            try:
+                from data_fetch_dhan import get_ohlcv
+                df_1m = get_ohlcv(df_5m.index[0] if hasattr(df_5m, 'index') else None,
+                                  interval="1m") if df_5m is not None else None
+                if df_1m is not None and len(df_1m) >= 10:
+                    close_1m = df_1m["close"].values.astype(float)
+                    if len(close_1m) >= 3:
+                        if direction == "LONG" and close_1m[-1] > close_1m[-2] > close_1m[-3]:
+                            aligned += 1
+                        elif direction == "SHORT" and close_1m[-1] < close_1m[-2] < close_1m[-3]:
+                            aligned += 1
+            except Exception:
+                pass
+
+        except Exception as e:
+            logger.debug(f"_count_aligned_tfs: {e}")
+
+        return aligned
 
     # ── Structural stop-loss ─────────────────────────────────────────────────
 

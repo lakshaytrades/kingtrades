@@ -164,3 +164,26 @@ SORTINO_LOW_SIZE_MULT       = float(os.getenv("INDIA_SORTINO_LOW_MULT",  "0.75")
 SORTINO_HIGH_MAX_POS        = int(os.getenv("INDIA_SORTINO_HIGH_MAX_POS", "7"))
 SORTINO_MID_MAX_POS         = int(os.getenv("INDIA_SORTINO_MID_MAX_POS",  "6"))
 SORTINO_LOW_MAX_POS         = int(os.getenv("INDIA_SORTINO_LOW_MAX_POS",  "4"))
+
+# -- Round 3 Renaissance flags (Units 1–10, 7-10% monthly target) --------------
+CROSS_ASSET_ENABLED         = _flag("INDIA_CROSS_ASSET_ENABLED")       # USD/INR, crude, gold, SGX
+WYCKOFF_VSA_ENABLED         = _flag("INDIA_WYCKOFF_VSA_ENABLED")       # Volume Spread Analysis
+PEAD_ENABLED                = _flag("INDIA_PEAD_ENABLED")              # Post-Earnings Drift
+BLOCK_DEAL_ENABLED          = _flag("INDIA_BLOCK_DEAL_ENABLED")        # NSE block/bulk deals
+MICROSTRUCTURE_ENABLED      = _flag("INDIA_MICROSTRUCTURE_ENABLED")    # tape velocity + urgency
+ELITE_TRACKER_ENABLED       = _flag("INDIA_ELITE_TRACKER_ENABLED")     # self-learning WR tracker
+MTF_CASCADE_ENABLED         = _flag("INDIA_MTF_CASCADE_ENABLED")       # 1m+5m+15m+1h cascade bonus
+
+# -- Adaptive MIS position sizing (leverage when signals are exceptional) -----
+# When score >= GRAND_SLAM AND Sortino > 2.5: allow larger position cap
+# Never exceed MIS_MAX_CAP_PCT in any single trade
+MIS_LEVERAGE_ENABLED        = _flag("INDIA_MIS_LEVERAGE_ENABLED")      # allow >20% cap for A+
+MIS_GRAND_SLAM_CAP_PCT      = float(os.getenv("INDIA_MIS_GS_CAP",  "30.0")) / 100  # 30% for A+
+MIS_ELITE_CAP_PCT           = float(os.getenv("INDIA_MIS_ELITE_CAP","35.0")) / 100  # 35% for perfect
+MIS_SORTINO_MIN             = float(os.getenv("INDIA_MIS_SORTINO_MIN", "2.5"))       # min Sortino for MIS
+MIS_WEEKLY_WR_MIN           = float(os.getenv("INDIA_MIS_WR_MIN", "0.62"))           # min 7-day WR for MIS
+
+# -- Multi-timeframe cascade config -------------------------------------------
+MTF_FULL_CASCADE_BONUS      = int(os.getenv("INDIA_MTF_FULL_BONUS",   "15"))   # 1m+5m+15m+1h all aligned
+MTF_THREE_TF_BONUS          = int(os.getenv("INDIA_MTF_3TF_BONUS",    "8"))    # 3 of 4 TFs aligned
+MTF_CONFLICT_PENALTY        = int(os.getenv("INDIA_MTF_CONFLICT_PEN", "-10"))  # TFs in conflict
