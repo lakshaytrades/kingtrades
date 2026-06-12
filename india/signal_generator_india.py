@@ -517,6 +517,42 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
+            # ── Deep Research Additions (Kalman Pairs, VIX Regime, 12-month MOM) ──
+
+            # Kalman Filter Pairs Trading (Renaissance-level cointegration signal)
+            if getattr(self._config, "KALMAN_PAIRS_ENABLED", False):
+                try:
+                    from kalman_pairs_india import get_kalman_pairs_score
+                    _dhan = getattr(self, "_dhan_client", None)
+                    kp_adj, kp_reason = get_kalman_pairs_score(symbol, direction, _dhan)
+                    score += kp_adj
+                    if kp_adj != 0:
+                        sig.rationale += f" | {kp_reason}"
+                except Exception:
+                    pass
+
+            # India VIX Regime Signal
+            if getattr(self._config, "VIX_REGIME_ENABLED", False):
+                try:
+                    from vix_regime_india import get_vix_regime_score
+                    vix_adj, vix_reason = get_vix_regime_score(direction)
+                    score += vix_adj
+                    if vix_adj != 0:
+                        sig.rationale += f" | {vix_reason}"
+                except Exception:
+                    pass
+
+            # 12-1 Month Cross-Sectional Momentum Factor (IIM-A: 21.9% annual)
+            if getattr(self._config, "MOMENTUM_FACTOR_ENABLED", False):
+                try:
+                    from momentum_factor_india import get_momentum_factor_score
+                    mf_adj, mf_reason = get_momentum_factor_score(symbol, direction)
+                    score += mf_adj
+                    if mf_adj != 0:
+                        sig.rationale += f" | {mf_reason}"
+                except Exception:
+                    pass
+
             # Update final score on signal
             sig.signal_score = round(score, 1)
             sig.is_high_confidence = score >= 80

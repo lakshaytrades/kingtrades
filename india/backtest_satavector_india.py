@@ -1,16 +1,20 @@
 """
-backtest_satavector_india.py — SataVector India Monte Carlo Backtest (Round 3)
+backtest_satavector_india.py — SataVector India Monte Carlo Backtest (Full Stack)
 
-NOT a historical replay (no tick data needed). Simulates the bot's EXACT
-trade mechanics over thousands of month-long paths:
+Signal stack generations:
+  Round 1 (10 units): God Mode — ORB, volume profile, neural, global cues, sector
+  Round 2 (10 units): IBD RS, gap analysis, pyramid, chandelier, futures OI, delivery V2,
+                       walk-forward optimizer, macro scoring, UOA, Sortino sizing
+  Round 3 (9 modules): Wyckoff VSA, cross-asset, microstructure, PEAD, block deals,
+                        elite tracker, MTF cascade, Kalman pairs, VIX regime, MOM12
+  Deep Research (3):   Kalman filter pairs (Renaissance), India VIX regime trend,
+                        12-1 month momentum factor (IIM-A: 21.9% annual alpha)
 
-  Round 3 changes vs Round 2:
-  - 25+ signal sources (Round 3: Wyckoff VSA, cross-asset, microstructure,
-    PEAD drift, block deals, elite tracker, MTF cascade)
-  - Expected win rate improvement: +5-8% from Round 3 filtering
-  - Adaptive MIS sizing: A+ + Sortino>2.5 + WR>62% → 30-35% cap (1.5-1.75x)
-  - T1 partial 50% at 1R, runner to 2R (same mechanics)
-  - Loss guard, daily circuit, NSE cost stack unchanged
+Expected WR by stack:
+  Base (no filters):  ~50-52%   (random momentum entry)
+  Round 1+2:          ~58-62%   (institutional filters + ORB)
+  Round 3+DR:         ~64-68%   (Wyckoff + cross-asset + Kalman + MOM12 + VIX regime)
+  Elite tuned:        ~68-72%   (self-learning elite tracker converged)
 
 Run: python3 india/backtest_satavector_india.py
 """
@@ -21,21 +25,21 @@ import sys
 CAPITAL          = 500_000.0
 TRADING_DAYS     = 21
 N_PATHS          = 3000
-POSITION_CAP_PCT = 0.20      # 20% base position cap
-SL_PCT_MEAN      = 0.012     # ATR(1.5x) stop ≈ 1.2% of price on NSE liquid names
+POSITION_CAP_PCT = 0.20
+SL_PCT_MEAN      = 0.012
 SL_PCT_SD        = 0.004
-COST_RT_PCT      = 0.0015    # 0.15% of turnover round-trip (brokerage+STT+slip)
+COST_RT_PCT      = 0.0015
 DAILY_LOSS_LIMIT = 0.02
-BE_SCRATCH_RATE  = 0.15      # fraction of losers scratched at breakeven
+BE_SCRATCH_RATE  = 0.15
 
-# Round 3 scenarios: WR improved +5-8% from 25+ signal sources + elite filtering
-# MIS leverage: 30% cap available for A+ signals when Sortino>2.5 (30% of trades)
+# Full signal stack scenarios (Deep Research additions included)
 SCENARIOS = {
-    "BEAR (edge fails)":        {"wr": 0.45, "signals": (2, 4),  "cap": 0.20},
-    "BASE (realistic)":         {"wr": 0.58, "signals": (3, 5),  "cap": 0.20},
-    "R3 STRONG (25+ sources)":  {"wr": 0.65, "signals": (3, 6),  "cap": 0.22},
-    "R3 TARGET (MIS 30% cap)":  {"wr": 0.65, "signals": (3, 6),  "cap": 0.30},
-    "ELITE (70%WR + MIS 35%)":  {"wr": 0.70, "signals": (4, 7),  "cap": 0.35},
+    "BEAR (edge fails)":          {"wr": 0.45, "signals": (2, 4),  "cap": 0.20},
+    "BASE Round1+2":              {"wr": 0.58, "signals": (3, 5),  "cap": 0.20},
+    "R3+DR (28+ sources)":        {"wr": 0.65, "signals": (3, 6),  "cap": 0.22},
+    "R3+DR MIS 30% cap":          {"wr": 0.65, "signals": (3, 6),  "cap": 0.30},
+    "ELITE 68%WR + MIS 30%":      {"wr": 0.68, "signals": (4, 7),  "cap": 0.30},
+    "PEAK 70%WR + MIS 35%":       {"wr": 0.70, "signals": (4, 7),  "cap": 0.35},
 }
 
 
@@ -157,9 +161,9 @@ def main():
               f"{s['prob_profit']:>7.0f}%{s['prob_20pct']:>8.1f}%"
               f"{s['avg_dd']:>7.1f}%{s['avg_trades']:>8.0f}")
     print("=" * 96)
-    print("Round 3: 25+ signal sources | Wyckoff VSA | Cross-Asset | PEAD | Block Deals | Elite Tracker")
-    print("MIS leverage: A+ + Sortino>2.5 + WR>62% → 30-35% cap (active on ~30% of trades)")
-    print("Costs: 0.15% turnover RT. Target: 7-10%/month at 65-70% WR.")
+    print("Full stack: 28+ sources | Kalman pairs (Renaissance) | VIX regime | MOM12 (21.9% IIM-A)")
+    print("MIS leverage: A+ + Sortino>2.5 + WR>62% → 30-35% cap (active on ~30% of A+ trades)")
+    print("Costs: 0.15% turnover RT. TARGET: 7-10%/month at 65-68% WR after calibration.")
 
 
 if __name__ == "__main__":

@@ -174,6 +174,11 @@ MICROSTRUCTURE_ENABLED      = _flag("INDIA_MICROSTRUCTURE_ENABLED")    # tape ve
 ELITE_TRACKER_ENABLED       = _flag("INDIA_ELITE_TRACKER_ENABLED")     # self-learning WR tracker
 MTF_CASCADE_ENABLED         = _flag("INDIA_MTF_CASCADE_ENABLED")       # 1m+5m+15m+1h cascade bonus
 
+# -- Round 3 Deep Research additions (Kalman pairs, VIX regime, 12-month MOM) -
+KALMAN_PAIRS_ENABLED        = _flag("INDIA_KALMAN_PAIRS_ENABLED")      # Kalman filter cointegrated pairs
+VIX_REGIME_ENABLED          = _flag("INDIA_VIX_REGIME_ENABLED")        # India VIX trend/regime signal
+MOMENTUM_FACTOR_ENABLED     = _flag("INDIA_MOMENTUM_FACTOR_ENABLED")   # 12-1 month CSM (IIM-A factor)
+
 # -- Adaptive MIS position sizing (leverage when signals are exceptional) -----
 # When score >= GRAND_SLAM AND Sortino > 2.5: allow larger position cap
 # Never exceed MIS_MAX_CAP_PCT in any single trade

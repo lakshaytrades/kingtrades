@@ -212,6 +212,7 @@ class SataVectorIndia:
 
         # Signal generator
         self._generator = IndiaSignalGenerator(config, self._watchlist)
+        self._generator._dhan_client = self._dhan   # passed to Kalman pairs for price data
 
         # Balance
         balance = self._get_balance()
@@ -300,6 +301,32 @@ class SataVectorIndia:
                             logger.info("RS scores updated for %d symbols", len(self._watchlist))
                     except Exception as _e:
                         logger.debug(f"rs_update: {_e}")
+                    # Deep Research: 12-1 month momentum factor pre-compute
+                    try:
+                        if getattr(config, "MOMENTUM_FACTOR_ENABLED", False):
+                            from momentum_factor_india import update_momentum_factor, get_factor_stats
+                            n_ranked = update_momentum_factor(self._watchlist, self._dhan)
+                            if n_ranked > 0:
+                                _tg(f"MOM12 Factor: {get_factor_stats()}")
+                    except Exception as _e:
+                        logger.debug(f"momentum_factor_premarket: {_e}")
+
+                    # Deep Research: India VIX regime warm-up
+                    try:
+                        if getattr(config, "VIX_REGIME_ENABLED", False):
+                            from vix_regime_india import get_vix_regime, _update_vix
+                            _update_vix()
+                            regime = get_vix_regime()
+                            if regime.get("vix_now", 0) > 0:
+                                _tg(
+                                    f"VIX Regime: {regime['regime']}\n"
+                                    f"VIX={regime['vix_now']:.1f} | "
+                                    f"Slope={regime['vix_slope']:+.2f}/day\n"
+                                    f"{regime['reason']}"
+                                )
+                    except Exception as _e:
+                        logger.debug(f"vix_regime_premarket: {_e}")
+
                     # Round 3: cross-asset regime pre-fetch (warm up cache before market)
                     try:
                         if getattr(config, "CROSS_ASSET_ENABLED", False):
