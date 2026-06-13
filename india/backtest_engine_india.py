@@ -1918,15 +1918,597 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
     print("=" * 70)
 
 
+def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_000.0):
+    """
+    Run the backtest replay loop on a pre-loaded, indicator-computed data dict.
+
+    This is the yfinance entry-point: caller loads data via load_nse_data_yfinance,
+    applies _compute_all + _build_orb, then passes the result here.
+    All replay, exit, and reporting logic is identical to run_backtest().
+
+    Args:
+        data: Dict[symbol -> pd.DataFrame] with full indicator columns (output of
+              _compute_all + _build_orb).  Index must be IST-tz DatetimeIndex.
+        capital: Starting capital in INR.
+    """
+    # ── Breadth/sector filter (fail-open if module not present) ──────────────
+    try:
+        from breadth_sector_filter import BreadthCache
+        _breadth_cache = BreadthCache(refresh_minutes=15)
+        _use_breadth = True
+    except ImportError:
+        _breadth_cache = None
+        _use_breadth = False
+
+    # Initialize daily circuit breaker
+    try:
+        from risk_manager import set_daily_start_equity as _set_start
+        _set_start(capital)
+    except Exception:
+        pass
+
+    # Pre-compute 15-min and 1-hour resamples once per symbol
+    data_15m: Dict[str, pd.DataFrame] = {}
+    data_1h:  Dict[str, pd.DataFrame] = {}
+    for sym, df in data.items():
+        data_15m[sym] = _resample(df, "15min")
+        data_1h[sym]  = _resample(df, "1h")
+
+    # ── ML Scorer ────────────────────────────────────────────────────────────
+    _ml_scorer = None
+    try:
+        from ml_scorer_india import MLScorer
+        print("  Training ML ensemble scorer on historical data ...")
+        _ml_scorer = MLScorer()
+        train_data = {sym: df.iloc[:int(len(df) * 0.7)] for sym, df in data.items()}
+        if _ml_scorer.train_from_data(train_data):
+            print("  ML scorer ready.")
+        else:
+            _ml_scorer = None
+    except Exception as e:
+        print(f"  ML scorer skipped: {e}")
+        _ml_scorer = None
+
+    print(f"\nRunning backtest on {len(data)} symbols ...")
+
+    from_date = min(df.index[0] for df in data.values()).strftime("%Y-%m-%d")
+    to_date   = max(df.index[-1] for df in data.values()).strftime("%Y-%m-%d")
+
+    trades: List[Trade] = []
+    open_trades: Dict[str, Trade] = {}
+    equity = capital
+    peak   = capital
+    max_dd = 0.0
+    equity_curve = [capital]
+    wins = losses = 0
+    pre_filter_kills = 0
+    strategy_counts: Dict[str, int]   = {}
+    strategy_pnl:    Dict[str, float] = {}
+    recent_trades: List[float] = []
+    _win_history: list = []
+
+    try:
+        from risk_manager import reset_streak as _reset_streak
+        _reset_streak()
+    except Exception:
+        pass
+
+    all_ts = sorted(set().union(*[set(df.index) for df in data.values()]))
+    _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
+    _nifty_proxy_ts = None
+
+    for i, now_ts in enumerate(all_ts):
+        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
+            continue
+
+        # ── Exit open trades ────────────────────────────────────────────────
+        for sym in list(open_trades.keys()):
+            t = open_trades[sym]
+            if sym not in data or now_ts not in data[sym].index:
+                continue
+            bar = data[sym].loc[now_ts]
+            long = t.direction == "LONG"
+
+            if now_ts.time() >= SQUAREOFF:
+                px = bar["close"]
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
+                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                equity += pnl; t.pnl = pnl
+                t.exit_price = px; t.exit_time = now_ts
+                trades.append(t); del open_trades[sym]
+                if pnl > 0: wins += 1
+                else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
+                recent_trades.append(pnl / max(capital, 1e-9))
+                try:
+                    from risk_manager import update_streak as _upd_streak
+                    _upd_streak(pnl)
+                except Exception:
+                    pass
+                try:
+                    _update_adaptive_threshold(t.pnl)
+                except Exception:
+                    pass
+                continue
+
+            hi = bar["high"]; lo = bar["low"]
+            c_bar = bar["close"]
+            sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
+            if sl_hit:
+                px = t.sl
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
+                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                equity += pnl; t.pnl = pnl
+                t.exit_price = px; t.exit_time = now_ts
+                trades.append(t); del open_trades[sym]
+                if pnl > 0: wins += 1
+                else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
+                recent_trades.append(pnl / max(capital, 1e-9))
+                try:
+                    from risk_manager import update_streak as _upd_streak
+                    _upd_streak(pnl)
+                except Exception:
+                    pass
+                try:
+                    _update_adaptive_threshold(t.pnl)
+                except Exception:
+                    pass
+                continue
+
+            if (not t.stage1_done and t.stage1_price > 0 and t.stage1_qty > 0):
+                hit_s1 = (long and hi >= t.stage1_price) or (not long and lo <= t.stage1_price)
+                if hit_s1:
+                    pnl_s1 = ((t.stage1_price - t.entry) if long else (t.entry - t.stage1_price)) * t.stage1_qty
+                    pnl_s1 -= t.entry * t.stage1_qty * COST_RT_PCT / 2
+                    equity += pnl_s1
+                    t.pnl += pnl_s1
+                    t.stage1_done = True
+                    new_sl = t.entry
+                    if long and new_sl > t.sl:
+                        t.sl = new_sl
+                    elif not long and new_sl < t.sl:
+                        t.sl = new_sl
+
+            if not t.t1_done:
+                t1_hit = (hi >= t.t1) if long else (lo <= t.t1)
+                if t1_hit:
+                    half = int(t.qty * 0.4) or 1
+                    pnl_partial = ((t.t1 - t.entry) if long else (t.entry - t.t1)) * half
+                    equity += pnl_partial
+                    t.t1_done = True; t.sl = t.entry
+
+            if t.t1_done:
+                runner = t.qty - (int(t.qty * 0.4) or 1)
+                chandelier_triggered = False
+                if sym in data and now_ts in data[sym].index:
+                    idx2 = data[sym].index.get_loc(now_ts)
+                    lookback_22 = data[sym].iloc[max(0, idx2-22):idx2+1]
+                    atr22 = float(lookback_22["atr"].iloc[-1]) if "atr" in lookback_22.columns else t.atr_at_entry
+                    if long:
+                        chandelier = float(lookback_22["high"].max()) - 2.5 * atr22
+                        if c_bar < chandelier and chandelier > t.sl:
+                            pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
+                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            equity += pnl_r; t.pnl += pnl_r
+                            t.exit_price = c_bar; t.exit_time = now_ts
+                            trades.append(t); del open_trades[sym]
+                            if t.pnl > 0: wins += 1
+                            else: losses += 1
+                            _win_history.append(1 if t.pnl > 0 else 0)
+                            recent_trades.append(t.pnl / max(capital, 1e-9))
+                            try:
+                                from risk_manager import update_streak as _upd_streak
+                                _upd_streak(t.pnl)
+                            except Exception:
+                                pass
+                            try:
+                                _update_adaptive_threshold(t.pnl)
+                            except Exception:
+                                pass
+                            chandelier_triggered = True
+                    else:
+                        chandelier = float(lookback_22["low"].min()) + 2.5 * atr22
+                        if c_bar > chandelier and chandelier < t.sl:
+                            pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
+                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            equity += pnl_r; t.pnl += pnl_r
+                            t.exit_price = c_bar; t.exit_time = now_ts
+                            trades.append(t); del open_trades[sym]
+                            if t.pnl > 0: wins += 1
+                            else: losses += 1
+                            _win_history.append(1 if t.pnl > 0 else 0)
+                            recent_trades.append(t.pnl / max(capital, 1e-9))
+                            try:
+                                from risk_manager import update_streak as _upd_streak
+                                _upd_streak(t.pnl)
+                            except Exception:
+                                pass
+                            try:
+                                _update_adaptive_threshold(t.pnl)
+                            except Exception:
+                                pass
+                            chandelier_triggered = True
+                if chandelier_triggered:
+                    continue
+                t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
+                if t2_hit:
+                    pnl_r = ((t.t2 - t.entry) if long else (t.entry - t.t2)) * runner
+                    pnl_r -= (t.entry * t.qty + t.t2 * t.qty) * COST_RT_PCT / 2
+                    equity += pnl_r; t.pnl += pnl_r
+                    t.exit_price = t.t2; t.exit_time = now_ts
+                    trades.append(t); del open_trades[sym]
+                    if t.pnl > 0: wins += 1
+                    else: losses += 1
+                    _win_history.append(1 if t.pnl > 0 else 0)
+                    recent_trades.append(t.pnl / max(capital, 1e-9))
+                    try:
+                        from risk_manager import update_streak as _upd_streak
+                        _upd_streak(t.pnl)
+                    except Exception:
+                        pass
+                    try:
+                        _update_adaptive_threshold(t.pnl)
+                    except Exception:
+                        pass
+
+        peak   = max(peak, equity)
+        max_dd = max(max_dd, (peak - equity) / peak)
+        equity_curve.append(equity)
+
+        if len(open_trades) >= MAX_OPEN:
+            continue
+
+        bar_time_now = now_ts.time()
+        if bar_time_now > dtime(13, 30):
+            continue
+
+        try:
+            from risk_manager import check_intraday_circuit as _circuit
+            if _circuit(equity) in ('HALT', 'EMERGENCY'):
+                continue
+        except Exception:
+            pass
+
+        if _check_rolling_win_circuit(_win_history):
+            continue
+
+        _breadth_state = None
+        _sector_bias   = None
+        if _use_breadth and _breadth_cache is not None:
+            try:
+                _breadth_state = _breadth_cache.get(data, now_ts)
+                _sector_bias   = _breadth_cache.get_sector(data, now_ts)
+            except Exception:
+                pass
+
+        if (_nifty_proxy_ts is None or
+                (now_ts - _nifty_proxy_ts).total_seconds() >= 900):
+            try:
+                _nifty_proxy_cache = _compute_nifty_proxy(data, now_ts)
+                _nifty_proxy_ts = now_ts
+            except Exception:
+                pass
+
+        _mkt_trend = _nifty_proxy_cache.get("trend_score", 0)
+        _pct_vwap  = _nifty_proxy_cache.get("pct_above_vwap", 0.5)
+
+        _long_only_market  = (_pct_vwap >= 0.65) or (_mkt_trend >= 0.35)
+        _short_only_market = (_pct_vwap <= 0.35) or (_mkt_trend <= -0.35)
+        if _long_only_market and _short_only_market:
+            _long_only_market = False
+            _short_only_market = False
+
+        _stressed = 0
+        for _st in open_trades.values():
+            if _st.direction == "LONG":
+                _cur = data.get(_st.symbol)
+                if _cur is not None and now_ts in _cur.index:
+                    _px = float(_cur.loc[now_ts].get("close", _st.entry))
+                    if _px < _st.entry - 0.5 * _st.atr_at_entry:
+                        _stressed += 1
+            else:
+                _cur = data.get(_st.symbol)
+                if _cur is not None and now_ts in _cur.index:
+                    _px = float(_cur.loc[now_ts].get("close", _st.entry))
+                    if _px > _st.entry + 0.5 * _st.atr_at_entry:
+                        _stressed += 1
+        if _stressed >= 2:
+            continue
+
+        for sym, df in data.items():
+            if sym in open_trades or len(open_trades) >= MAX_OPEN:
+                continue
+            if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
+                continue
+            if now_ts not in df.index:
+                continue
+            idx = df.index.get_loc(now_ts)
+            if idx < 55:
+                continue
+
+            row  = df.iloc[idx]
+            prev = df.iloc[idx - 1]
+
+            _f15 = data_15m.get(sym)
+            df_15m = None
+            if _f15 is not None and not _f15.empty:
+                try:
+                    _slice15 = _f15.loc[:now_ts]
+                    df_15m = _slice15 if not _slice15.empty else None
+                except Exception:
+                    df_15m = _f15.tail(10) if len(_f15) > 0 else None
+
+            _f1h = data_1h.get(sym)
+            df_1h = None
+            if _f1h is not None and not _f1h.empty:
+                try:
+                    _slice1h = _f1h.loc[:now_ts]
+                    df_1h = _slice1h if not _slice1h.empty else None
+                except Exception:
+                    df_1h = _f1h.tail(5) if len(_f1h) > 0 else None
+
+            _today_d = now_ts.date()
+            _today_df_slice = df[df.index.date == _today_d]
+            _bars_today = len(_today_df_slice[_today_df_slice.index <= now_ts])
+            if _bars_today < 7:
+                continue
+
+            try:
+                _skip, _skip_r = _pre_filter(row, prev, now_ts, df_15m)
+                if _skip:
+                    pre_filter_kills += 1
+                    continue
+            except Exception:
+                pass
+
+            try:
+                net_score, direction, reason = _score_bar(row, prev, df_15m, df_1h, now_ts)
+            except Exception:
+                continue
+
+            try:
+                _today_date = now_ts.date()
+                _today_bars = df[(df.index.date == _today_date) & (df.index <= now_ts)]
+                if len(_today_bars) >= 4:
+                    _last4 = _today_bars.iloc[-4:]
+                    _bull_bars = int((_last4["close"] > _last4["open"]).sum())
+                    _bear_bars = int((_last4["close"] < _last4["open"]).sum())
+                    if _bull_bars >= 3 and direction == "SHORT":
+                        net_score += 20
+                        reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
+                    elif _bear_bars >= 3 and direction == "LONG":
+                        net_score -= 20
+                        reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
+                    elif _bull_bars >= 3 and direction == "LONG":
+                        net_score += 6
+                        reason = (reason + "+TODAY_ALIGN_BULL") if reason else "TODAY_ALIGN_BULL"
+                    elif _bear_bars >= 3 and direction == "SHORT":
+                        net_score -= 6
+                        reason = (reason + "+TODAY_ALIGN_BEAR") if reason else "TODAY_ALIGN_BEAR"
+            except Exception:
+                pass
+
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
+
+            if _ml_scorer is not None:
+                try:
+                    ml_boost, ml_reason = _ml_scorer.get_score_boost(df, idx, direction)
+                    net_score += ml_boost
+                    if ml_reason:
+                        reason = reason + "+" + ml_reason if reason else ml_reason
+                except Exception:
+                    pass
+
+            if _breadth_state is not None and _sector_bias is not None:
+                try:
+                    from breadth_sector_filter import get_breadth_score_boost
+                    b_delta, b_reason = get_breadth_score_boost(
+                        sym, _breadth_state, _sector_bias, direction)
+                    net_score += b_delta
+                    if b_reason:
+                        reason = reason + "+" + b_reason if reason else b_reason
+                except Exception:
+                    pass
+
+            if abs(net_score) < 18.0:
+                continue
+
+            try:
+                from strategies_india import (ema21_pullback_signal,
+                                               liquidity_grab_signal,
+                                               inside_bar_breakout_signal)
+                _s4, _r4 = ema21_pullback_signal(df, idx)
+                if _s4 > 0:
+                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
+                elif _s4 < 0:
+                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
+                _s5, _r5 = liquidity_grab_signal(df, idx)
+                if _s5 != 0:
+                    net_score += _s5; reason = reason + "+" + _r5 if reason else _r5
+                _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
+                if _s6 != 0:
+                    net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
+
+                if net_score > 0:
+                    direction = "LONG"
+                elif net_score < 0:
+                    direction = "SHORT"
+            except Exception:
+                pass
+
+            if abs(net_score) < _ADAPTIVE_MIN_SCORE:
+                continue
+
+            if _long_only_market and direction == "SHORT":
+                continue
+            if _short_only_market and direction == "LONG":
+                continue
+
+            atr = row.get("atr", row["close"] * 0.005)
+            if atr <= 0:
+                continue
+            entry = row["close"]
+            long  = direction == "LONG"
+            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr
+            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr
+            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr
+
+            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
+
+            try:
+                from risk_manager import time_of_day_multiplier as _tod_mult
+                tod_factor = _tod_mult(now_ts)
+                risk_pct = risk_pct * tod_factor
+            except Exception:
+                pass
+
+            try:
+                from risk_manager import apply_vol_target_to_risk as _vol_target
+                risk_pct = _vol_target(risk_pct, equity_curve)
+            except Exception:
+                pass
+
+            sl_dist = abs(entry - sl)
+            min_sl_dist = entry * 0.0015
+            if sl_dist < min_sl_dist:
+                sl_dist = min_sl_dist
+                sl = entry - sl_dist if long else entry + sl_dist
+            qty = int(min(equity * risk_pct / sl_dist,
+                          equity * MAX_POS_PCT / entry))
+            if qty < 1:
+                continue
+
+            trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
+            try:
+                from risk_manager import compute_exit_stages as _exits
+                _stages = _exits(entry, atr, direction, qty)
+                trade.stage1_price = _stages["stage1_price"]
+                trade.stage2_price = _stages["stage2_price"]
+                trade.stage1_qty   = _stages["stage1_qty"]
+                trade.stage2_qty   = _stages["stage2_qty"]
+                trade.runner_qty   = _stages["runner_qty"]
+                trade.be_sl        = _stages["be_sl"]
+                trade.sl           = _stages["sl"]
+                trade.t1 = _stages["stage2_price"]
+                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
+            except Exception:
+                pass
+            trade.reason = reason
+            open_trades[sym] = trade
+
+    # Close any still-open trades at last price
+    for sym, t in open_trades.items():
+        if sym in data:
+            px = data[sym]["close"].iloc[-1]
+            long = t.direction == "LONG"
+            partial_qty = int(t.qty * 0.4) or 1
+            qty_left = t.qty - (partial_qty if t.t1_done else 0)
+            pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
+            pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+            equity += pnl; t.pnl = pnl; t.exit_price = px
+            trades.append(t)
+            if pnl > 0: wins += 1
+            else: losses += 1
+            _win_history.append(1 if pnl > 0 else 0)
+            recent_trades.append(pnl / max(capital, 1e-9))
+
+    _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
+                   "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
+                   "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
+                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM"]
+    for t in trades:
+        r = getattr(t, "reason", "") or ""
+        matched = False
+        for key in _STRAT_KEYS:
+            if key in r:
+                strategy_counts[key] = strategy_counts.get(key, 0) + 1
+                strategy_pnl[key]    = strategy_pnl.get(key, 0.0) + t.pnl
+                matched = True
+                break
+        if not matched:
+            strategy_counts["OTHER"] = strategy_counts.get("OTHER", 0) + 1
+            strategy_pnl["OTHER"]    = strategy_pnl.get("OTHER", 0.0) + t.pnl
+
+    _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
+            pre_filter_kills=pre_filter_kills,
+            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl)
+
+
 def main():
-    ap = argparse.ArgumentParser()
-    ap.add_argument("--symbols", type=str, default="")
-    ap.add_argument("--days",    type=int, default=60)
-    ap.add_argument("--from",    dest="from_date", type=str, default="")
-    ap.add_argument("--to",      dest="to_date",   type=str, default="")
-    ap.add_argument("--capital", type=float, default=500_000.0)
+    ap = argparse.ArgumentParser(
+        description="NSE Momentum Backtest Engine",
+        formatter_class=argparse.RawDescriptionHelpFormatter,
+        epilog="""
+Examples:
+  # Default: Upstox, last 60 days
+  python3 india/backtest_engine_india.py --days 60 --capital 500000
+
+  # yfinance, 2 years of hourly data (no Upstox token needed)
+  python3 india/backtest_engine_india.py --source yfinance --years 2
+
+  # yfinance, 3 years of daily bars
+  python3 india/backtest_engine_india.py --source yfinance --years 3 --interval 1d
+""")
+    ap.add_argument("--symbols",  type=str,   default="")
+    ap.add_argument("--days",     type=int,   default=60)
+    ap.add_argument("--from",     dest="from_date", type=str, default="")
+    ap.add_argument("--to",       dest="to_date",   type=str, default="")
+    ap.add_argument("--capital",  type=float, default=500_000.0)
+    ap.add_argument("--source",   default="upstox",
+                    choices=["upstox", "yfinance"],
+                    help="Data source: upstox (default, 90 days) or yfinance (up to 3 years)")
+    ap.add_argument("--years",    type=int,   default=0,
+                    help="Years of data for yfinance source (1-5, overrides --days)")
+    ap.add_argument("--interval", default="1h",
+                    choices=["1h", "1d"],
+                    help="Bar interval for yfinance (1h=hourly, 1d=daily)")
     args = ap.parse_args()
 
+    # ── yfinance path ────────────────────────────────────────────────────────
+    if args.source == "yfinance":
+        print("Loading NSE data from Yahoo Finance (no Upstox token required) ...")
+        from data_yfinance import load_nse_data_yfinance, DEFAULT_SYMBOLS
+        period = f"{args.years}y" if args.years > 0 else "2y"
+
+        if args.symbols:
+            syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        else:
+            syms = DEFAULT_SYMBOLS
+
+        raw_data = load_nse_data_yfinance(syms, period=period, interval=args.interval,
+                                           verbose=True)
+        if not raw_data:
+            print("ERROR: No data loaded from yfinance. Check internet connection.")
+            sys.exit(1)
+
+        print(f"\nLoaded {len(raw_data)} symbols from yfinance "
+              f"({period} of {args.interval} bars)")
+        print("Computing indicators ...")
+        data: Dict[str, pd.DataFrame] = {}
+        for sym, df in raw_data.items():
+            try:
+                df2 = _compute_all(df)
+                df2 = _build_orb(df2)
+                data[sym] = df2
+            except Exception as e:
+                print(f"  {sym}: indicator error — {e}")
+
+        if not data:
+            print("ERROR: No symbols with valid indicators. Exiting.")
+            sys.exit(1)
+
+        run_backtest_from_data(data, capital=args.capital)
+        sys.exit(0)
+
+    # ── Upstox path (default) ─────────────────────────────────────────────────
     if args.from_date and args.to_date:
         from_date, to_date = args.from_date, args.to_date
     else:
