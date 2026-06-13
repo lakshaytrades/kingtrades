@@ -389,23 +389,49 @@ def get_upstox_client():
 
 
 def verify_connection(client) -> bool:
-    """Ping Upstox API (fund margin) to confirm the access token is valid."""
+    """Ping Upstox API to confirm the access token is valid.
+
+    Falls back to profile API outside market hours (9:30 AM–midnight IST),
+    since the Funds API returns HTTP 423 when the service is closed.
+    """
     if client is None:
         return False
+
+    # Check if we're in market-hours window (Funds API available 9:30–00:00 IST)
+    now_ist = datetime.now(IST)
+    in_funds_window = dtime(9, 30) <= now_ist.time() <= dtime(23, 59)
+
+    if in_funds_window:
+        try:
+            resp = client.user.get_user_fund_margin(api_version="2.0")
+            data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
+            if data:
+                equity = data.get("equity") if isinstance(data, dict) else getattr(data, "equity", None)
+                avail = 0.0
+                if equity is not None:
+                    avail = (equity.get("available_margin") if isinstance(equity, dict)
+                             else getattr(equity, "available_margin", 0)) or 0.0
+                logger.info(f"Upstox connected — available margin: ₹{float(avail):,.2f}")
+                return True
+            # 423 or empty response: funds service closed, try profile instead
+        except Exception as e:
+            err_str = str(e)
+            if "423" not in err_str and "locked" not in err_str.lower():
+                logger.error(f"Upstox connection verify failed: {e}")
+                return False
+            logger.info("Upstox Funds API locked (outside hours) — verifying via profile")
+
+    # Outside hours or Funds API locked: verify via profile endpoint instead
     try:
-        resp = client.user.get_user_fund_margin(api_version="2.0")
-        # SDK returns an object with .data or a dict depending on version
-        data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
+        profile = client.user.get_profile(api_version="2.0")
+        data = getattr(profile, "data", None) or (profile.get("data") if isinstance(profile, dict) else None)
         if data:
-            equity = data.get("equity") if isinstance(data, dict) else getattr(data, "equity", None)
-            avail = 0.0
-            if equity is not None:
-                avail = (equity.get("available_margin") if isinstance(equity, dict)
-                         else getattr(equity, "available_margin", 0)) or 0.0
-            logger.info(f"Upstox connected — available margin: ₹{float(avail):,.2f}")
+            name = (data.get("name") if isinstance(data, dict) else getattr(data, "name", "")) or ""
+            logger.info(f"Upstox connected (profile) — user: {name}")
             return True
-        logger.warning(f"Upstox fund margin unexpected response: {resp}")
+        logger.warning("Upstox profile returned no data")
         return False
-    except Exception as e:
-        logger.error(f"Upstox connection verify failed: {e}")
+    except Exception as e2:
+        logger.error(f"Upstox connection verify failed (profile fallback): {e2}")
         return False
+
