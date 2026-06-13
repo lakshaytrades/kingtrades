@@ -93,9 +93,12 @@ def _make_replay_config():
 
 def _fetch_history_upstox(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.DataFrame]:
     """
-    Fetch 5-minute OHLCV from Upstox historical API, paging in 30-day chunks
-    (Upstox caps the intraday window per request).
-    Returns IST-indexed OHLCV DataFrame or None on failure.
+    Fetch 5-minute OHLCV from Upstox historical API.
+
+    Upstox v2 supported intraday intervals: 1minute, 30minute, 60minute
+    (5minute is NOT a valid interval — we fetch 1minute and resample to 5min).
+    Pages in 30-day chunks (Upstox caps the window per request).
+    Returns IST-indexed 5-min OHLCV DataFrame or None on failure.
     """
     from data_fetch_upstox import get_security_id, _candles_to_df
     key = get_security_id(symbol)
@@ -108,38 +111,58 @@ def _fetch_history_upstox(client, symbol: str, from_date: str, to_date: str) -> 
 
     frames = []
     cur = start
-    chunk_days = 30   # Upstox 5-minute limit per request
-    attempts_total = 0
+    chunk_days = 30
+
+    # Try intervals in order — Upstox v2 supports 1minute; some SDK versions
+    # also accept "5minute". Fall back gracefully.
+    _INTERVALS_TO_TRY = ["1minute", "5minute", "30minute"]
 
     while cur <= end:
         nxt = min(cur + timedelta(days=chunk_days), end)
-        for attempt in range(4):
-            try:
-                resp = client.history.get_historical_candle_data1(
-                    instrument_key=key,
-                    interval="5minute",
-                    to_date=nxt.strftime("%Y-%m-%d"),
-                    from_date=cur.strftime("%Y-%m-%d"),
-                    api_version="2.0",
-                )
-                data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
-                candles = (getattr(data, "candles", None)
-                           or (data.get("candles") if isinstance(data, dict) else None))
-                df_chunk = _candles_to_df(candles)
-                if df_chunk is not None and not df_chunk.empty:
-                    frames.append(df_chunk)
-                break
-            except Exception as e:
-                logger.debug(f"{symbol} {cur}→{nxt} attempt {attempt+1}: {e}")
-                _time.sleep(2 ** attempt)
+        chunk_ok = False
+        for interval in _INTERVALS_TO_TRY:
+            for attempt in range(3):
+                try:
+                    resp = client.history.get_historical_candle_data1(
+                        instrument_key=key,
+                        interval=interval,
+                        to_date=nxt.strftime("%Y-%m-%d"),
+                        from_date=cur.strftime("%Y-%m-%d"),
+                        api_version="2.0",
+                    )
+                    data = getattr(resp, "data", None) or (resp.get("data") if isinstance(resp, dict) else None)
+                    candles = (getattr(data, "candles", None)
+                               or (data.get("candles") if isinstance(data, dict) else None))
+                    df_chunk = _candles_to_df(candles)
+                    if df_chunk is not None and not df_chunk.empty:
+                        # Resample 1-min or 30-min → 5-min
+                        if interval == "1minute":
+                            df_chunk = df_chunk.resample("5min").agg(
+                                {"open": "first", "high": "max", "low": "min",
+                                 "close": "last", "volume": "sum"}
+                            ).dropna()
+                        elif interval == "30minute":
+                            pass  # keep as-is, better than nothing
+                        frames.append(df_chunk)
+                        chunk_ok = True
+                    break   # break retry loop — got a response (even empty)
+                except Exception as e:
+                    err_str = str(e).lower()
+                    # If the interval is explicitly invalid, try next interval
+                    if any(x in err_str for x in ("invalid", "unsupported", "400", "422")):
+                        logger.debug(f"{symbol}: interval '{interval}' rejected, trying next")
+                        break
+                    logger.debug(f"{symbol} {cur}→{nxt} {interval} attempt {attempt+1}: {e}")
+                    _time.sleep(2 ** attempt)
+            if chunk_ok:
+                break   # got data — don't try other intervals for this chunk
         cur = nxt + timedelta(days=1)
-        attempts_total += 1
 
     if not frames:
+        logger.warning(f"{symbol}: no data returned for any interval — check token/key")
         return None
     df = pd.concat(frames).sort_index()
     df = df[~df.index.duplicated(keep="first")]
-    # Filter to market hours only
     df = df.between_time("09:15", "15:30")
     return df if not df.empty else None
 
