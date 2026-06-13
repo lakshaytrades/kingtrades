@@ -407,8 +407,8 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     orb_h = float(row.get("orb_high", 0) or 0)
     orb_l = float(row.get("orb_low",  0) or 0)
     if orb_h > 0 and bar_time > ORB_END:
-        if c > orb_h * 1.001:  score_long  += 16; reasons.append("ORB_BREAK_UP")
-        if c < orb_l * 0.999:  score_short += 16; reasons.append("ORB_BREAK_DN")
+        if c > orb_h * 1.001:  score_long  += 12; reasons.append("ORB_BREAK_UP")
+        if c < orb_l * 0.999:  score_short += 12; reasons.append("ORB_BREAK_DN")
 
     # ── Tier 3: Volume surge ────────────────────────────────────────────────
     rvol = float(row.get("rvol", 1.0) or 1.0)
@@ -485,9 +485,9 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     # ── Supertrend ──────────────────────────────────────────────────────────
     st = float(row.get("supertrend", 0) or 0)
     if st > 0:
-        score_long  += 12; reasons.append("SUPERTREND_BULL")
+        score_long  += 8; reasons.append("SUPERTREND_BULL")
     elif st < 0:
-        score_short += 12; reasons.append("SUPERTREND_BEAR")
+        score_short += 8; reasons.append("SUPERTREND_BEAR")
 
     # ── Stochastic RSI ──────────────────────────────────────────────────────
     sk = float(row.get("stoch_k", 50) or 50)
@@ -549,9 +549,9 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     # ── Break of Structure (Smart Money Concepts) ────────────────────────────
     bos, bos_reason = _detect_bos(df_15m)
     if bos == 1:
-        score_long  += 12; reasons.append(bos_reason)
+        score_long  += 6; reasons.append(bos_reason)
     elif bos == -1:
-        score_short += 12; reasons.append(bos_reason)
+        score_short += 6; reasons.append(bos_reason)
 
     # ── Intraday Seasonality Adjustment ────────────────────────────────────
     _adx_val = float(row.get("adx", 20) or 20)
@@ -1114,7 +1114,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 38.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
+MIN_SCORE    = 42.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
 MAX_OPEN     = 5      # max simultaneous positions
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
@@ -1260,8 +1260,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _nifty_proxy_ts = None
 
     for i, now_ts in enumerate(all_ts):
-        if now_ts.time() < dtime(9, 25) or now_ts.time() > dtime(15, 0):
+        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
+
+        # Lunch lull blackout: 12:30-13:30 IST (low volume, choppy price action)
+        if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
+            # Still process exits but skip new entries — set a flag
+            pass  # exits handled below; entry skip happens at new-entry block
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -1478,8 +1483,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # Strong market bias gates:
         # If > 70% of stocks above VWAP → only LONG entries (or skip)
         # If < 30% of stocks above VWAP → only SHORT entries (or skip)
-        _long_only_market  = _pct_vwap >= 0.70
-        _short_only_market = _pct_vwap <= 0.30
+        _long_only_market  = (_pct_vwap >= 0.65) or (_mkt_trend >= 0.35)
+        _short_only_market = (_pct_vwap <= 0.35) or (_mkt_trend <= -0.35)
 
         # Cap entries if too many open trades are stressed
         _stressed = 0
@@ -1501,6 +1506,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
+                continue
+            # Skip new entries during lunch lull
+            if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -1545,6 +1553,34 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 net_score, direction, reason = _score_bar(row, prev, df_15m, df_1h, now_ts)
             except Exception as e:
                 continue
+
+            # ── Today's intraday momentum confirmation ──────────────────────────
+            # Checks if the last 4 bars of today confirm the signal direction.
+            # Prevents trading against the day's established trend.
+            try:
+                _today_date = now_ts.date()
+                _today_bars = df[df.index.date == _today_date]
+                if len(_today_bars) >= 4:
+                    _last4 = _today_bars.iloc[-4:]
+                    _bull_bars = int((_last4["close"] > _last4["open"]).sum())
+                    _bear_bars = int((_last4["close"] < _last4["open"]).sum())
+                    if _bull_bars >= 3 and direction == "SHORT":
+                        # Today trending bullish but we want SHORT → penalize
+                        net_score += 20  # pushes toward positive (LONG), weakening SHORT
+                        reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
+                    elif _bear_bars >= 3 and direction == "LONG":
+                        # Today trending bearish but we want LONG → penalize
+                        net_score -= 20  # pushes toward negative (SHORT), weakening LONG
+                        reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
+                    elif _bull_bars >= 3 and direction == "LONG":
+                        # Trend alignment bonus
+                        net_score = (abs(net_score) + 6)
+                        reason = (reason + "+TODAY_ALIGN_BULL") if reason else "TODAY_ALIGN_BULL"
+                    elif _bear_bars >= 3 and direction == "SHORT":
+                        net_score = -(abs(net_score) + 6)
+                        reason = (reason + "+TODAY_ALIGN_BEAR") if reason else "TODAY_ALIGN_BEAR"
+            except Exception:
+                pass
 
             # ── ML Ensemble Boost ─────────────────────────────────────────────
             if _ml_scorer is not None:
