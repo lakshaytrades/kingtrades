@@ -505,5 +505,238 @@ def get_gex_score(direction: str, signal_type: str = "MOMENTUM") -> Tuple[int, s
         return (0, "")
 
 
+# ══════════════════════════════════════════════════════════════════════════════
+#  Unit 8: GEX Dealer Flow Inference + IV Term Structure
+# ══════════════════════════════════════════════════════════════════════════════
+
+# Rolling GEX readings for rate-of-change computation (intraday)
+_gex_roc_buffer: List[Tuple[float, float]] = []   # [(monotonic_ts, gex_value)]
+_ROC_WINDOW_MAX = 12                               # keep last 12 readings (3h at 15-min TTL)
+
+
+def _record_gex_roc(gex_total: float) -> None:
+    """Append current GEX reading to the intraday rate-of-change buffer."""
+    global _gex_roc_buffer
+    _gex_roc_buffer.append((_time.monotonic(), gex_total))
+    if len(_gex_roc_buffer) > _ROC_WINDOW_MAX:
+        _gex_roc_buffer = _gex_roc_buffer[-_ROC_WINDOW_MAX:]
+
+
+def _compute_gex_roc() -> Tuple[float, str]:
+    """
+    Compute GEX rate-of-change over the last 2 available readings.
+
+    Returns (roc_normalised, direction_str) where:
+      roc_normalised > +1.5  → DEALER_BUYING  (GEX rising fast → calls bought → bullish)
+      roc_normalised < -1.5  → DEALER_SELLING (GEX falling fast → puts bought → bearish)
+      else                   → DEALER_NEUTRAL
+    """
+    if len(_gex_roc_buffer) < 2:
+        return (0.0, "DEALER_NEUTRAL")
+    try:
+        prev_ts, prev_gex = _gex_roc_buffer[-2]
+        curr_ts, curr_gex = _gex_roc_buffer[-1]
+        age = max(curr_ts - prev_ts, 60.0)          # at least 60 s between readings
+
+        roc_raw = curr_gex - prev_gex
+        # Normalise by historical std-dev of GEX if available, else by |prev|
+        if len(_gex_history) >= 3:
+            import statistics as _stats
+            try:
+                std = _stats.stdev(_gex_history) or 1.0
+            except Exception:
+                std = max(abs(prev_gex), 1.0)
+        else:
+            std = max(abs(prev_gex), 1.0)
+
+        roc_norm = roc_raw / std
+
+        if roc_norm > 1.5:
+            return (roc_norm, "DEALER_BUYING")
+        elif roc_norm < -1.5:
+            return (roc_norm, "DEALER_SELLING")
+        return (roc_norm, "DEALER_NEUTRAL")
+    except Exception:
+        return (0.0, "DEALER_NEUTRAL")
+
+
+def get_dealer_flow_signal(direction: str) -> Tuple[int, str]:
+    """
+    Infer dealer buy/sell pressure from GEX rate-of-change.
+
+    DEALER_BUYING  (GEX rising):  dealers accumulating long gamma = bullish bias
+      → LONG +5, SHORT -4
+    DEALER_SELLING (GEX falling): dealers shedding gamma / buying puts = bearish bias
+      → SHORT +5, LONG -4
+
+    Returns (score_adj, reason).  Fail-open: (0, "").
+    """
+    try:
+        gex_data = get_nifty_gex()   # updates cache + history
+        _record_gex_roc(gex_data.get("gex_total", 0.0))
+
+        roc_norm, flow = _compute_gex_roc()
+        if flow == "DEALER_NEUTRAL":
+            return (0, "")
+
+        if flow == "DEALER_BUYING":
+            score = 5 if direction == "LONG" else -4
+            return (score, f"DEALER_FLOW_BUY roc={roc_norm:+.2f}σ:{score:+d}")
+        else:  # DEALER_SELLING
+            score = 5 if direction == "SHORT" else -4
+            return (score, f"DEALER_FLOW_SELL roc={roc_norm:+.2f}σ:{score:+d}")
+    except Exception as e:
+        logger.debug(f"get_dealer_flow_signal: {e}")
+        return (0, "")
+
+
+# ── IV Term Structure ─────────────────────────────────────────────────────────
+
+def _fetch_nifty_chain_by_expiry() -> Dict[str, List[dict]]:
+    """
+    Fetch NIFTY option chain and group strike entries by expiryDate string.
+    Returns {expiry_str: [entry, ...]}. Fail-open: {}.
+    """
+    try:
+        s = _get_session()
+        resp = s.get(
+            "https://www.nseindia.com/api/option-chain-indices?symbol=NIFTY",
+            headers={"Referer": "https://www.nseindia.com/"},
+            timeout=15,
+        )
+        resp.raise_for_status()
+        data = resp.json()
+        records = data.get("records", {}).get("data", [])
+        grouped: Dict[str, List[dict]] = {}
+        for entry in records:
+            exp = entry.get("expiryDate") or entry.get("CE", {}).get("expiryDate") or ""
+            if not exp:
+                ce = entry.get("CE") or {}
+                pe = entry.get("PE") or {}
+                exp = ce.get("expiryDate") or pe.get("expiryDate") or "UNKNOWN"
+            grouped.setdefault(exp, []).append(entry)
+        return grouped
+    except Exception as e:
+        logger.debug(f"_fetch_nifty_chain_by_expiry: {e}")
+        return {}
+
+
+def _avg_iv_for_expiry(entries: List[dict], spot: float, window_pct: float = 0.05) -> float:
+    """
+    Compute OI-weighted average ATM implied volatility for a set of option entries.
+    Uses strikes within ±window_pct of spot. Returns 0.0 if no valid data.
+    """
+    if not entries or spot <= 0:
+        return 0.0
+    iv_sum = oi_sum = 0.0
+    for entry in entries:
+        strike = float(entry.get("strikePrice") or 0)
+        if strike <= 0 or abs(strike - spot) / spot > window_pct:
+            continue
+        for side in ("CE", "PE"):
+            opt = entry.get(side) or {}
+            iv  = float(opt.get("impliedVolatility") or 0)
+            oi  = float(opt.get("openInterest") or 0)
+            if iv > 0 and oi > 0:
+                iv_sum  += iv * oi
+                oi_sum  += oi
+    return iv_sum / oi_sum if oi_sum > 0 else 0.0
+
+
+def get_iv_term_structure() -> Tuple[str, float, str]:
+    """
+    Compare near-expiry vs next-expiry ATM implied volatility.
+
+    Normal term structure  (near_iv < far_iv): calm near-term, markets healthy.
+    Inverted term structure (near_iv > far_iv): near-term fear/event risk.
+
+    Returns (regime, slope, reason) where:
+      regime: "NORMAL" | "INVERTED" | "FLAT" | "UNKNOWN"
+      slope : near_iv - far_iv  (positive = inverted, negative = normal)
+      reason: human-readable string
+
+    Fail-open returns ("UNKNOWN", 0.0, "").
+    """
+    _EMPTY = ("UNKNOWN", 0.0, "")
+    try:
+        by_expiry = _fetch_nifty_chain_by_expiry()
+        if len(by_expiry) < 2:
+            return _EMPTY
+
+        # Parse and sort expiry dates
+        sorted_expiries: List[Tuple[date, str]] = []
+        for exp_str in by_expiry:
+            d = _parse_expiry_date(exp_str)
+            if d is not None:
+                sorted_expiries.append((d, exp_str))
+        sorted_expiries.sort(key=lambda x: x[0])
+
+        if len(sorted_expiries) < 2:
+            return _EMPTY
+
+        today = datetime.now(IST).date()
+        # Near = soonest expiry on or after today; far = second
+        future_expiries = [(d, s) for d, s in sorted_expiries if d >= today]
+        if len(future_expiries) < 2:
+            return _EMPTY
+
+        near_date, near_str = future_expiries[0]
+        far_date,  far_str  = future_expiries[1]
+
+        # Need spot price — re-use main chain fetch
+        raw = _fetch_nifty_chain()
+        spot = raw.get("spot", 0.0) if raw else 0.0
+        if spot <= 0:
+            return _EMPTY
+
+        near_iv = _avg_iv_for_expiry(by_expiry[near_str], spot)
+        far_iv  = _avg_iv_for_expiry(by_expiry[far_str],  spot)
+
+        if near_iv <= 0 or far_iv <= 0:
+            return _EMPTY
+
+        slope = near_iv - far_iv           # positive = inverted, negative = normal
+
+        if abs(slope) < 0.5:
+            regime = "FLAT"
+            reason = f"IV_TS FLAT near={near_iv:.1f} far={far_iv:.1f}"
+        elif slope > 0:
+            regime = "INVERTED"
+            reason = f"IV_TS INVERTED near={near_iv:.1f}>far={far_iv:.1f} slope={slope:+.1f}"
+        else:
+            regime = "NORMAL"
+            reason = f"IV_TS NORMAL near={near_iv:.1f}<far={far_iv:.1f} slope={slope:+.1f}"
+
+        return (regime, round(slope, 2), reason)
+
+    except Exception as e:
+        logger.debug(f"get_iv_term_structure: {e}")
+        return ("UNKNOWN", 0.0, "")
+
+
+def get_iv_term_structure_score(direction: str) -> Tuple[int, str]:
+    """
+    Score signal from IV term structure.
+
+    NORMAL  (near < far)  → calm, no fear premium → slight bullish bias: LONG +3, SHORT -2
+    INVERTED (near > far) → near-term fear/event  → cautious: SHORT +4, LONG -3
+    FLAT / UNKNOWN        → no adjustment
+
+    Returns (score_adj, reason). Fail-open: (0, "").
+    """
+    try:
+        regime, slope, reason = get_iv_term_structure()
+        if regime in ("FLAT", "UNKNOWN"):
+            return (0, "")
+        if regime == "NORMAL":
+            score = 3 if direction == "LONG" else -2
+        else:  # INVERTED
+            score = 4 if direction == "SHORT" else -3
+        return (score, f"{reason}:{score:+d}")
+    except Exception as e:
+        logger.debug(f"get_iv_term_structure_score: {e}")
+        return (0, "")
+
+
 # ── Load history on import ────────────────────────────────────────────────────
 _load_gex_history()

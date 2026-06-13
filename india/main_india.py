@@ -568,6 +568,16 @@ class SataVectorIndia:
             try:
                 _ss["scanned"] += 1
                 ltp = ltp_map.get(symbol, 0.0)
+
+                # Portfolio rebalancer: track rolling price for correlation matrix
+                if getattr(config, "PORTFOLIO_REBALANCER_ENABLED", True):
+                    try:
+                        from portfolio_rebalancer_india import update_price
+                        if ltp > 0:
+                            update_price(symbol, ltp)
+                    except Exception:
+                        pass
+
                 signal_obj = self._generator.generate_signal(symbol, current_price=ltp)
                 if signal_obj is None:
                     _ss["rejected_no_sig"] += 1
@@ -612,6 +622,21 @@ class SataVectorIndia:
                                  f"adaptive threshold {_adaptive_min:.1f}")
                     _ss["rejected_no_sig"] += 1
                     continue
+
+                # Portfolio rebalancer: correlation + heat check
+                if getattr(config, "PORTFOLIO_REBALANCER_ENABLED", True):
+                    try:
+                        from portfolio_rebalancer_india import should_allow_new_entry
+                        _open_syms = list(self._positions.keys())
+                        _heat = getattr(self, "_portfolio_heat_pct", 2.0)
+                        _allowed, _reb_r = should_allow_new_entry(
+                            symbol, signal_obj.direction, _open_syms, _heat)
+                        if not _allowed:
+                            logger.info(f"{symbol}: Rebalancer blocked: {_reb_r}")
+                            _ss["rejected_regime"] += 1
+                            continue
+                    except Exception:
+                        pass
 
                 _ss["signals"] += 1
                 logger.info(
@@ -1116,6 +1141,16 @@ class SataVectorIndia:
         except Exception:
             pass
 
+        # Advanced Calmar+Omega sizing: record outcome
+        if getattr(config, "ADVANCED_SIZING_ENABLED", True):
+            try:
+                from advanced_sizing_india import record_trade as _adv_rt
+                _pnl_pct = pnl / max(pos.entry_price * pos.quantity, 1)
+                _peak = getattr(self._stats, "peak_capital", self._capital)
+                _adv_rt(_pnl_pct, _peak, self._capital)
+            except Exception:
+                pass
+
         # Round 3: record for elite pattern tracker (self-learning WR feedback)
         if getattr(config, "ELITE_TRACKER_ENABLED", False):
             try:
@@ -1304,6 +1339,20 @@ class SataVectorIndia:
 
             # Kelly-fraction risk amount
             kelly_pct = self._kelly_fraction()
+
+            # Advanced Calmar+Omega sizing multiplier
+            if getattr(config, "ADVANCED_SIZING_ENABLED", True):
+                try:
+                    from advanced_sizing_india import get_sizing_multiplier
+                    _sz_mult, _sz_maxpos, _sz_reason = get_sizing_multiplier()
+                    kelly_pct = kelly_pct * _sz_mult
+                    if hasattr(self, "_max_open_positions"):
+                        self._max_open_positions = min(self._max_open_positions, _sz_maxpos)
+                    if _sz_mult != 1.0:
+                        logger.debug(f"Advanced sizing: {_sz_reason}")
+                except Exception:
+                    pass
+
             risk_inr  = config.MAX_DAILY_CAPITAL * kelly_pct
 
             # Grade-based multiplier

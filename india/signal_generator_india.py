@@ -592,6 +592,60 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
+            # GEX dealer flow inference (rate-of-change of GEX = buy/sell pressure)
+            if getattr(self._config, "GEX_SIGNAL_ENABLED", False):
+                try:
+                    from gex_signal_india import get_dealer_flow_signal
+                    _df_adj, _df_r = get_dealer_flow_signal(direction)
+                    score += _df_adj
+                    if _df_adj != 0:
+                        sig.rationale += f" | {_df_r}"
+                except Exception:
+                    pass
+
+            # IV term structure (near vs far expiry IV comparison)
+            if getattr(self._config, "GEX_SIGNAL_ENABLED", False):
+                try:
+                    from gex_signal_india import get_iv_term_structure_score
+                    _ivts_adj, _ivts_r = get_iv_term_structure_score(direction)
+                    score += _ivts_adj
+                    if _ivts_adj != 0:
+                        sig.rationale += f" | {_ivts_r}"
+                except Exception:
+                    pass
+
+            # ── Signal Decay (freshness gate) ──────────────────────────────────
+            if getattr(self._config, "SIGNAL_DECAY_ENABLED", True):
+                try:
+                    from signal_decay_india import apply_decay, record_signal_start
+                    record_signal_start(symbol, direction)
+                    _vix_now = float(getattr(self, "_last_india_vix", 15.0))
+                    score, _decay_r = apply_decay(score, symbol, direction, _vix_now)
+                    if _decay_r:
+                        sig.rationale += f" | {_decay_r}"
+                except Exception:
+                    pass
+
+            # ── Regime-Conditional Strategy Multipliers ─────────────────────────
+            if getattr(self._config, "REGIME_SELECTOR_ENABLED", True):
+                try:
+                    from regime_strategy_selector import get_regime_score_adj, get_day_of_week_adj
+                    _adx_v = float(getattr(ind, "adx", 20.0) or 20.0)
+                    _vix_v = float(getattr(self, "_last_india_vix", 15.0))
+                    _brd_v = float(getattr(self, "_breadth_pct", 0.5))
+                    _srt = ("REVERSION" if ("FADE" in sig.rationale or "RETEST" in sig.rationale)
+                            else "MOMENTUM")
+                    _rg_adj, _rg_r = get_regime_score_adj(_srt, _adx_v, _vix_v, _brd_v)
+                    score += _rg_adj
+                    if _rg_adj != 0:
+                        sig.rationale += f" | {_rg_r}"
+                    _dow_adj, _dow_r = get_day_of_week_adj()
+                    score += _dow_adj
+                    if _dow_adj != 0:
+                        sig.rationale += f" | {_dow_r}"
+                except Exception:
+                    pass
+
             # Update final score on signal
             sig.signal_score = round(score, 1)
             sig.is_high_confidence = score >= 80

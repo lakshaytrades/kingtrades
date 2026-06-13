@@ -46,6 +46,8 @@ SCENARIOS = {
     "GOAL70 GEX+FII+ORB5":         {"wr": 0.70, "signals": (4, 7),  "cap": 0.30},
     "GOAL72 Full 70%+ stack":       {"wr": 0.72, "signals": (5, 8),  "cap": 0.30},
     "GOAL75 Peak Renaissance":      {"wr": 0.75, "signals": (5, 8),  "cap": 0.35},
+    "ENHANCED Decay+Regime":        {"wr": 0.73, "signals": (5, 8),  "cap": 0.30},
+    "ELITE Calmar+Bayes+Decay":     {"wr": 0.75, "signals": (5, 9),  "cap": 0.35},
 }
 
 
@@ -168,8 +170,10 @@ def main():
               f"{s['avg_dd']:>7.1f}%{s['avg_trades']:>8.0f}")
     print("=" * 96)
     print("Full stack: 28+ sources | Kalman pairs (Renaissance) | VIX regime | MOM12 (21.9% IIM-A)")
+    print("Elite modules: SignalDecay(τ=20min) | RegimeSelector | Calmar+Omega sizing | BayesElite")
+    print("Unit 8: GEX DealerFlow(RoC) + IV TermStructure | Unit 10: Walk-Forward Historical BT")
     print("MIS leverage: A+ + Sortino>2.5 + WR>62% → 30-35% cap (active on ~30% of A+ trades)")
-    print("Costs: 0.15% turnover RT. TARGET: 7-10%/month at 65-68% WR after calibration.")
+    print("Costs: 0.15% turnover RT. TARGET: 15-20%/month at 72-75% WR — Renaissance-class stack.")
 
 
 if __name__ == "__main__":

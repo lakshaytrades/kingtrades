@@ -20,11 +20,13 @@ from pathlib import Path
 from typing import Optional, Tuple
 
 import numpy as np
+from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("ml_signal_india")
 
-_MODEL_PATH   = Path(__file__).parent.parent / "logs" / "india_ml_model.pkl"
-_DATA_PATH    = Path(__file__).parent.parent / "logs" / "india_ml_training.jsonl"
+_MODEL_PATH              = Path(__file__).parent.parent / "logs" / "india_ml_model.pkl"
+_DATA_PATH               = Path(__file__).parent.parent / "logs" / "india_ml_training.jsonl"
+_FEATURE_IMPORTANCE_FILE = Path(__file__).parent.parent / "logs" / "india_ml_feature_importance.json"
 _MIN_SAMPLES  = 15
 _model        = None
 _model_loaded = False
@@ -360,6 +362,38 @@ def _get_model():
     return _model
 
 
+# ── Feature importance persistence ───────────────────────────────────────────
+
+def _save_feature_importance(model, n_samples: int) -> None:
+    try:
+        from datetime import datetime as _dt
+        fi = getattr(model, "feature_importances_", None)
+        if fi is None:
+            return
+        fi = list(fi[:len(FEATURE_NAMES)])
+        ranked = sorted(zip(FEATURE_NAMES[:len(fi)], fi), key=lambda x: x[1], reverse=True)
+        record = {
+            "ts":         _dt.now(ZoneInfo("Asia/Kolkata")).isoformat(),
+            "n_samples":  n_samples,
+            "model_type": type(model).__name__,
+            "top_10":     [(n, round(v, 4)) for n, v in ranked[:10]],
+        }
+        existing: list = []
+        if _FEATURE_IMPORTANCE_FILE.exists():
+            try:
+                existing = json.loads(_FEATURE_IMPORTANCE_FILE.read_text())
+            except Exception:
+                existing = []
+        existing.append(record)
+        existing = existing[-30:]
+        _FEATURE_IMPORTANCE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        _FEATURE_IMPORTANCE_FILE.write_text(json.dumps(existing, indent=2))
+        top3 = ranked[:3]
+        logger.info("ML feature importance: " + ", ".join(f"{n}={v:.3f}" for n, v in top3))
+    except Exception as e:
+        logger.debug(f"_save_feature_importance: {e}")
+
+
 # ── Training ──────────────────────────────────────────────────────────────────
 
 def _retrain_if_ready():
@@ -403,18 +437,61 @@ def _retrain_if_ready():
         if n > 20:
             weights[n - 20:] = 2.0
 
+        # Class imbalance correction (multiply with recency weights)
+        from collections import Counter
+        class_counts = Counter(y.tolist())
+        total_samples = len(y)
+        if len(class_counts) >= 2:
+            class_weight_map = {
+                cls: total_samples / (len(class_counts) * max(cnt, 1))
+                for cls, cnt in class_counts.items()
+            }
+            bal_weights = np.array([class_weight_map.get(int(lbl), 1.0) for lbl in y],
+                                   dtype=np.float32)
+            weights = weights * bal_weights
+            weights = weights / weights.sum() * len(weights)  # normalize
+
         trained_model = None
+
+        # Optuna hyperparameter search (every 25 samples after 50)
+        _lgb_params: dict = {"n_estimators": 100, "max_depth": 4, "learning_rate": 0.05}
+        if n >= 50 and n % 25 == 0:
+            try:
+                import optuna, lightgbm as lgb
+                from sklearn.model_selection import StratifiedKFold, cross_val_score
+                optuna.logging.set_verbosity(optuna.logging.WARNING)
+
+                def _objective(trial):
+                    p = {
+                        "n_estimators":      trial.suggest_int("n_estimators", 50, 200),
+                        "max_depth":         trial.suggest_int("max_depth", 3, 6),
+                        "learning_rate":     trial.suggest_float("lr", 0.01, 0.15, log=True),
+                        "num_leaves":        trial.suggest_int("num_leaves", 15, 63),
+                        "min_child_samples": trial.suggest_int("mcs", 5, 30),
+                        "random_state": 42, "verbose": -1,
+                    }
+                    m = lgb.LGBMClassifier(**p)
+                    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+                    sc = cross_val_score(m, X, y, cv=cv, scoring="roc_auc",
+                                        fit_params={"sample_weight": weights})
+                    return float(sc.mean())
+
+                study = optuna.create_study(direction="maximize")
+                study.optimize(_objective, n_trials=20, timeout=20)
+                _lgb_params = {"random_state": 42, "verbose": -1,
+                               **{k: v for k, v in study.best_params.items()
+                                  if k not in ("lr", "mcs", "num_leaves")}}
+                _lgb_params["learning_rate"] = study.best_params.get("lr", 0.05)
+                _lgb_params["num_leaves"]    = study.best_params.get("num_leaves", 31)
+                _lgb_params["min_child_samples"] = study.best_params.get("mcs", 20)
+                logger.info(f"Optuna best AUC={study.best_value:.3f} params={study.best_params}")
+            except Exception as _opt_err:
+                logger.debug(f"Optuna skipped: {_opt_err}")
 
         # ── Cascade: LightGBM → XGBoost → LogisticRegression ─────────────────
         try:
             import lightgbm as lgb
-            trained_model = lgb.LGBMClassifier(
-                n_estimators=100,
-                max_depth=4,
-                learning_rate=0.05,
-                random_state=42,
-                verbose=-1,
-            )
+            trained_model = lgb.LGBMClassifier(**_lgb_params)
             trained_model.fit(X, y, sample_weight=weights)
             logger.info(f"ML: trained LightGBM on {len(records)} samples")
         except Exception as lgb_err:
@@ -467,14 +544,8 @@ def _retrain_if_ready():
         _model_loaded = True
         logger.info(f"ML model saved to {_MODEL_PATH}")
 
-        # Feature importance logging every 50 trades
-        try:
-            fi = getattr(trained_model, "feature_importances_", None)
-            if fi is not None and len(fi) == len(FEATURE_NAMES):
-                ranked = sorted(zip(FEATURE_NAMES, fi), key=lambda x: x[1], reverse=True)[:5]
-                logger.info("ML top features: " + ", ".join(f"{n}={v:.3f}" for n, v in ranked))
-        except Exception:
-            pass
+        # Feature importance: log + persist every training
+        _save_feature_importance(trained_model, len(records))
 
     except Exception as e:
         logger.debug(f"_retrain_if_ready: {e}")
@@ -513,16 +584,20 @@ def get_ml_score_delta(
 
         proba = model.predict_proba(features.reshape(1, -1))[0][1]
 
+        # Confidence zone: 0.52-0.65 is uncertain — halve the signal
+        conf_mult = 0.5 if 0.52 <= proba <= 0.65 else 1.0
+        tag = " (low_conf)" if conf_mult < 1.0 else ""
+
         if proba >= 0.72:
-            return 15.0, f"ml_proba={proba:.2f}"
+            return 15.0 * conf_mult, f"ml_proba={proba:.2f}{tag}"
         if proba >= 0.62:
-            return 8.0, f"ml_proba={proba:.2f}"
+            return 8.0 * conf_mult,  f"ml_proba={proba:.2f}{tag}"
         if proba >= 0.55:
-            return 3.0, f"ml_proba={proba:.2f}"
+            return 3.0 * conf_mult,  f"ml_proba={proba:.2f}{tag}"
         if proba <= 0.35:
-            return -10.0, f"ml_proba={proba:.2f}"
+            return -10.0,            f"ml_proba={proba:.2f}"
         if proba <= 0.45:
-            return -4.0, f"ml_proba={proba:.2f}"
+            return -4.0,             f"ml_proba={proba:.2f}"
         return 0.0, f"ml_proba={proba:.2f}"
 
     except Exception as e:

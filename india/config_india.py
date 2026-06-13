@@ -200,3 +200,12 @@ MIS_WEEKLY_WR_MIN           = float(os.getenv("INDIA_MIS_WR_MIN", "0.62"))      
 MTF_FULL_CASCADE_BONUS      = int(os.getenv("INDIA_MTF_FULL_BONUS",   "15"))   # 1m+5m+15m+1h all aligned
 MTF_THREE_TF_BONUS          = int(os.getenv("INDIA_MTF_3TF_BONUS",    "8"))    # 3 of 4 TFs aligned
 MTF_CONFLICT_PENALTY        = int(os.getenv("INDIA_MTF_CONFLICT_PEN", "-10"))  # TFs in conflict
+
+# -- Elite enhancements: 15-20% monthly target --------------------------------
+SIGNAL_DECAY_ENABLED         = _flag("INDIA_SIGNAL_DECAY_ENABLED")          # exponential freshness decay
+EXEC_QUALITY_ENABLED         = _flag("INDIA_EXEC_QUALITY_ENABLED")          # time-of-day liquidity + slippage model
+REGIME_SELECTOR_ENABLED      = _flag("INDIA_REGIME_SELECTOR_ENABLED")       # ADX+VIX regime multipliers
+PORTFOLIO_REBALANCER_ENABLED = _flag("INDIA_PORTFOLIO_REBALANCER_ENABLED")  # correlation pruning + heat check
+ADVANCED_SIZING_ENABLED      = _flag("INDIA_ADVANCED_SIZING_ENABLED")       # Calmar+Omega adaptive sizing
+ELITE_BAYES_ENABLED          = _flag("INDIA_ELITE_BAYES_ENABLED")           # Bayesian elite tracker
+OPTIMIZER_MULTIPARAMS        = _flag("INDIA_OPTIMIZER_MULTIPARAMS")         # 6-param walk-forward sweep
