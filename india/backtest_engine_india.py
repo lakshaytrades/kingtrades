@@ -520,30 +520,31 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     p_obi   = float(prev.get("obi",     0) or 0)
 
     # Strong OBI signal (close near high/low for 10 bars)
+    # Weights halved: OBI from OHLCV is only an approximation (true OBI needs L2 data)
     if obi >= 0.55:
-        score_long  += 10; reasons.append("OBI_BULL_STRONG")
+        score_long  += 5; reasons.append("OBI_BULL_STRONG")
     elif obi >= 0.30:
-        score_long  +=  6; reasons.append("OBI_BULL")
+        score_long  +=  3; reasons.append("OBI_BULL")
     elif obi <= -0.55:
-        score_short += 10; reasons.append("OBI_BEAR_STRONG")
+        score_short += 5; reasons.append("OBI_BEAR_STRONG")
     elif obi <= -0.30:
-        score_short +=  6; reasons.append("OBI_BEAR")
+        score_short +=  3; reasons.append("OBI_BEAR")
 
     # OBI momentum (trend in buying/selling pressure)
     if obi > p_obi + 0.15 and obi > 0:
-        score_long  += 5; reasons.append("OBI_ACCEL_BULL")
+        score_long  += 2; reasons.append("OBI_ACCEL_BULL")
     elif obi < p_obi - 0.15 and obi < 0:
-        score_short += 5; reasons.append("OBI_ACCEL_BEAR")
+        score_short += 2; reasons.append("OBI_ACCEL_BEAR")
 
     # Cumulative delta divergence (price up but selling delta = exhaustion)
     c2 = float(row.get("close", 0) or 0)
     p2 = float(prev.get("close", 0) or 0)
     if c2 > p2 * 1.001 and cum_d < cum_d_e * 0.7:
         # Price rising but delta declining = distribution (SHORT signal)
-        score_short += 8; reasons.append("DELTA_DIVERGE_BEAR")
+        score_short += 4; reasons.append("DELTA_DIVERGE_BEAR")
     elif c2 < p2 * 0.999 and cum_d > cum_d_e * 1.3:
         # Price falling but delta rising = accumulation (LONG signal)
-        score_long  += 8; reasons.append("DELTA_DIVERGE_BULL")
+        score_long  += 4; reasons.append("DELTA_DIVERGE_BULL")
 
     # ── Break of Structure (Smart Money Concepts) ────────────────────────────
     bos, bos_reason = _detect_bos(df_15m)
@@ -566,6 +567,82 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         score_long  = max(0, score_long)
         score_short = max(0, score_short)
         if _seas_reason: reasons.append(_seas_reason)
+
+    # ── Direction Confluence Gate ──────────────────────────────────────────
+    # Count how many Tier 1 indicators agree with the leading direction
+    _leading_long = score_long > score_short
+    _confluences = 0
+
+    # Check RSI
+    _rsi_v = float(row.get("rsi", 50) or 50)
+    if _leading_long and _rsi_v < 65:   _confluences += 1
+    if not _leading_long and _rsi_v > 35: _confluences += 1
+
+    # Check MACD histogram
+    _mh = float(row.get("macd_hist", 0) or 0)
+    if _leading_long and _mh > 0:  _confluences += 1
+    if not _leading_long and _mh < 0: _confluences += 1
+
+    # Check EMA alignment
+    _e9  = float(row.get("ema9", 0) or 0)
+    _e21 = float(row.get("ema21", 0) or 0)
+    _c   = float(row.get("close", 0) or 0)
+    if _e9 > 0 and _e21 > 0 and _c > 0:
+        if _leading_long and _e9 > _e21 and _c > _e9:   _confluences += 1
+        if not _leading_long and _e9 < _e21 and _c < _e9: _confluences += 1
+
+    # Check VWAP
+    _vwap = float(row.get("vwap", 0) or 0)
+    if _vwap > 0 and _c > 0:
+        if _leading_long and _c > _vwap:    _confluences += 1
+        if not _leading_long and _c < _vwap: _confluences += 1
+
+    # Check Supertrend
+    _st = float(row.get("supertrend", 0) or 0)
+    if _st != 0:
+        if _leading_long and _st > 0:     _confluences += 1
+        if not _leading_long and _st < 0: _confluences += 1
+
+    # Require at least 3 out of 5 Tier 1 indicators to agree
+    if _confluences < 3:
+        # Penalize sharply — fewer than 3 confirmers means low-quality signal
+        score_long  *= 0.4
+        score_short *= 0.4
+        reasons.append(f"LOW_CONFLUENCE_{_confluences}/5")
+    elif _confluences >= 4:
+        # Bonus for high confluence
+        score_long  *= 1.15
+        score_short *= 1.15
+        reasons.append(f"HIGH_CONFLUENCE_{_confluences}/5")
+
+    # ── Mandatory 1H Trend Gate ────────────────────────────────────────────
+    # The 1h trend is the most reliable direction indicator.
+    # If 1h trend strongly contradicts signal direction, nullify the signal.
+    if df_1h is not None and len(df_1h) >= 5:
+        try:
+            r1h = df_1h.iloc[-1]
+            e9_1h  = float(r1h.get("ema9",  0) or 0)
+            e21_1h = float(r1h.get("ema21", 0) or 0)
+            e50_1h = float(r1h.get("ema50", 0) or 0)
+            c_1h   = float(r1h.get("close", 0) or 0)
+
+            if e9_1h > 0 and e21_1h > 0 and e50_1h > 0 and c_1h > 0:
+                h1_bull = (e9_1h > e21_1h > e50_1h) and (c_1h > e21_1h)
+                h1_bear = (e9_1h < e21_1h < e50_1h) and (c_1h < e21_1h)
+
+                if h1_bull:
+                    # 1h is bullish: penalize SHORT score heavily
+                    score_short *= 0.3
+                    if score_long > 0:
+                        score_long *= 1.2   # mild boost to confirmed direction
+                elif h1_bear:
+                    # 1h is bearish: penalize LONG score heavily
+                    score_long *= 0.3
+                    if score_short > 0:
+                        score_short *= 1.2
+                # If 1h is neutral: no adjustment (both directions allowed)
+        except Exception:
+            pass
 
     net = score_long - score_short
     direction = "LONG" if net > 0 else "SHORT"
@@ -955,7 +1032,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 25.0   # net score threshold (raised from 22 — expanded scoring adds supertrend/stochRSI/squeeze/BoS/breadth/strategies)
+MIN_SCORE    = 38.0   # net score threshold (raised from 25 — tighter filter to reduce false positives and improve win rate)
 MAX_OPEN     = 7      # max simultaneous positions (raised for diversification)
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
@@ -974,18 +1051,38 @@ def _update_adaptive_threshold(pnl: float):
     if len(_ADAPTIVE_WIN_HISTORY) >= _ADAPTIVE_UPDATE_EVERY:
         rolling_wr = sum(_ADAPTIVE_WIN_HISTORY[-20:]) / 20
 
-        # High win rate (>65%): relax threshold slightly to get more trades
+        # High win rate (>=65%): relax threshold slightly to get more trades
         if rolling_wr >= 0.65:
-            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 3.0, 18.0)
-        # Good win rate (55-65%): keep at base
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 30.0)
+        # Good win rate (>=55%): keep at base
         elif rolling_wr >= 0.55:
             _ADAPTIVE_MIN_SCORE = MIN_SCORE
-        # Acceptable (45-55%): tighten slightly
+        # Acceptable (>=45%): tighten moderately
         elif rolling_wr >= 0.45:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 3.0
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 5.0
         # Poor (<45%): tighten significantly
         else:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 6.0
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 10.0
+
+
+_rolling_win_halt = False
+
+def _check_rolling_win_circuit(win_history: list) -> bool:
+    """Returns True if we should halt new trades (too many consecutive losses)."""
+    global _rolling_win_halt
+    if len(win_history) < 5:
+        return False
+    last5 = win_history[-5:]
+    if sum(last5) == 0:   # 5 consecutive losses
+        _rolling_win_halt = True
+        return True
+    if len(win_history) >= 10:
+        last10_wr = sum(win_history[-10:]) / 10
+        if last10_wr < 0.25:  # <25% WR over last 10 trades
+            _rolling_win_halt = True
+            return True
+    _rolling_win_halt = False
+    return False
 
 
 def run_backtest(symbols: List[str], from_date: str, to_date: str,
@@ -1067,6 +1164,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     strategy_pnl:    Dict[str, float] = {}
     # Dynamic Kelly: rolling list of per-trade P&Ls as fraction of capital
     recent_trades: List[float] = []
+    _win_history: list = []
 
     # Initialise anti-martingale streak state for the backtest run
     try:
@@ -1101,6 +1199,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trades.append(t); del open_trades[sym]
                 if pnl > 0: wins += 1
                 else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
                 _pnl_frac = pnl / max(capital, 1e-9)
                 recent_trades.append(_pnl_frac)
                 try:
@@ -1128,6 +1227,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trades.append(t); del open_trades[sym]
                 if pnl > 0: wins += 1
                 else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
                 _pnl_frac = pnl / max(capital, 1e-9)
                 recent_trades.append(_pnl_frac)
                 try:
@@ -1183,6 +1283,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             trades.append(t); del open_trades[sym]
                             if t.pnl > 0: wins += 1
                             else: losses += 1
+                            _win_history.append(1 if t.pnl > 0 else 0)
                             _pnl_frac = t.pnl / max(capital, 1e-9)
                             recent_trades.append(_pnl_frac)
                             try:
@@ -1205,6 +1306,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             trades.append(t); del open_trades[sym]
                             if t.pnl > 0: wins += 1
                             else: losses += 1
+                            _win_history.append(1 if t.pnl > 0 else 0)
                             _pnl_frac = t.pnl / max(capital, 1e-9)
                             recent_trades.append(_pnl_frac)
                             try:
@@ -1229,6 +1331,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     trades.append(t); del open_trades[sym]
                     if t.pnl > 0: wins += 1
                     else: losses += 1
+                    _win_history.append(1 if t.pnl > 0 else 0)
                     _pnl_frac = t.pnl / max(capital, 1e-9)
                     recent_trades.append(_pnl_frac)
                     try:
@@ -1261,6 +1364,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
         except Exception:
             pass
+
+        # Rolling win rate circuit
+        if _check_rolling_win_circuit(_win_history):
+            continue
 
         # ── Market breadth gate (refresh every 15 min) ───────────────────────
         _breadth_state = None
@@ -1368,9 +1475,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr
-            t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # 1R
-            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 2R
+            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr
+            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr   # 1R
+            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr   # 2R = 2:1 R:R maintained
 
             # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
@@ -1390,6 +1497,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
             sl_dist  = abs(entry - sl)
+            # Sanity check: SL distance must be at least 0.15% of entry
+            min_sl_dist = entry * 0.0015
+            if sl_dist < min_sl_dist:
+                sl_dist = min_sl_dist
+                sl = entry - sl_dist if long else entry + sl_dist
             qty = int(min(equity * risk_pct / sl_dist,
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
@@ -1427,6 +1539,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             trades.append(t)
             if pnl > 0: wins += 1
             else: losses += 1
+            _win_history.append(1 if pnl > 0 else 0)
             recent_trades.append(pnl / max(capital, 1e-9))
 
     # Build strategy attribution from trade reasons
