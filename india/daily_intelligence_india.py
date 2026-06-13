@@ -49,7 +49,7 @@ MONTHLY_TARGET_INR = float(os.getenv("INDIA_MONTHLY_TARGET_INR", "25000"))
 
 # ── Telegram ──────────────────────────────────────────────────────────────────
 
-def _send(msg: str):
+def _send(msg: str, parse_mode: str = "Markdown"):
     try:
         token = cfg.TELEGRAM_BOT_TOKEN
         chat  = cfg.TELEGRAM_CHAT_ID
@@ -59,7 +59,7 @@ def _send(msg: str):
         import requests
         requests.post(
             f"https://api.telegram.org/bot{token}/sendMessage",
-            json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
+            json={"chat_id": chat, "text": msg, "parse_mode": parse_mode},
             timeout=10,
         )
     except Exception as e:
@@ -369,9 +369,193 @@ def send_morning_brief_v2():
     send_morning_brief()
 
 
+# ── Bloomberg-style HTML formatters ──────────────────────────────────────────
+
+def _bloomberg_morning_html() -> str:
+    """Build a Bloomberg BN-style HTML morning brief for Telegram."""
+    now_ist = datetime.now(IST)
+    date_str = now_ist.strftime("%A, %d %b %Y")
+
+    nifty  = _get_nifty_info()
+    vix    = _get_india_vix()
+
+    # Nifty line
+    nifty_arrow = "▲" if nifty["chg_pct"] >= 0 else "▼"
+    nifty_icon  = "🟢" if nifty["chg_pct"] >= 0 else "🔴"
+    nifty_line  = (f"{nifty_icon} <b>NIFTY</b>  <code>{nifty['level']:>8,.0f}</code>  "
+                   f"{nifty_arrow} <b>{nifty['chg_pct']:+.2f}%</b>"
+                   if nifty["level"] else "NIFTY: unavailable")
+
+    # VIX
+    vix_regime = "🟢 LOW" if vix < 15 else ("🔴 HIGH" if vix > 22 else "🟡 NORMAL")
+    vix_line   = f"<b>India VIX</b>  <code>{vix:>5.1f}</code>  {vix_regime}" if vix else "VIX: unavailable"
+
+    # FII/DII from cached file
+    fii_line = ""
+    try:
+        fii_cache = DATA_DIR / "fii_dii_cache.json"
+        if fii_cache.exists():
+            fii_data = json.loads(fii_cache.read_text())
+            fii_net  = float(fii_data.get("fii_net", 0))
+            dii_net  = float(fii_data.get("dii_net", 0))
+            net_icon = "🟢" if fii_net + dii_net > 0 else "🔴"
+            fii_line = (f"{net_icon} <b>FII/DII</b>  "
+                        f"FII {fii_net/1e7:+.0f}Cr  │  DII {dii_net/1e7:+.0f}Cr")
+    except Exception:
+        pass
+
+    # Global cues from cache
+    global_line = ""
+    try:
+        gc_cache = DATA_DIR / "global_cues_cache.json"
+        if gc_cache.exists():
+            gc = json.loads(gc_cache.read_text())
+            sgx_chg = float(gc.get("sgx_nifty_chg_pct", 0))
+            dow_chg = float(gc.get("dow_futures_chg_pct", 0))
+            usdinr  = float(gc.get("usdinr", 0))
+            global_line = (f"🌍 <b>GLOBAL</b>  SGX {sgx_chg:+.2f}%  "
+                           f"Dow {dow_chg:+.2f}%"
+                           + (f"  USD/INR {usdinr:.2f}" if usdinr else ""))
+    except Exception:
+        pass
+
+    # Regime
+    regime_str = "TRENDING" if vix and vix < 20 else ("HIGH_VIX" if vix and vix > 22 else "NORMAL")
+    strategy_tip = {
+        "TRENDING": "✅ Momentum &amp; ORB preferred  |  avoid mean-reversion fades",
+        "HIGH_VIX":  "⚠️  Reduce size  |  tighter SL  |  prefer SHORT setups",
+        "NORMAL":    "✅ All setups valid  |  standard parameters",
+    }.get(regime_str, "")
+
+    # Events
+    event_line = ""
+    try:
+        from news_filter_india import next_blackout_event
+        event = next_blackout_event()
+        if event:
+            event_line = f"⚠️ <b>EVENT</b>  {event}"
+    except Exception:
+        pass
+
+    # Monthly progress
+    monthly    = _get_monthly_pnl()
+    monthly_pct = min(monthly / MONTHLY_TARGET_INR, 1.0) if MONTHLY_TARGET_INR else 0
+    bar_w = 16
+    filled = max(0, min(bar_w, int(monthly_pct * bar_w)))
+    bar = "█" * filled + "░" * (bar_w - filled)
+    pct_display = f"{monthly_pct:.0%}"
+
+    sections = [
+        f"📋 <b>MORNING BRIEF</b>  {date_str}  {now_ist.strftime('%H:%M')} IST",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        nifty_line,
+        vix_line,
+    ]
+    if global_line: sections.append(global_line)
+    if fii_line:    sections.append(fii_line)
+    if event_line:  sections.append(event_line)
+    sections += [
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📐 <b>REGIME</b>  {regime_str}",
+        strategy_tip,
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📈 <b>MONTHLY</b>  ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}",
+        f"<code>[{bar}]</code> {pct_display}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"⚡ <b>Bot armed</b>  │  Market: 09:15 IST  │  Min score: {getattr(cfg, 'FINAL_EXEC_MIN_SCORE', 65)}",
+    ]
+    return "\n".join(s for s in sections if s)
+
+
+def _bloomberg_eod_html(decisions: list, day_pnl: float, wins: int, losses: int,
+                         monthly: float) -> str:
+    """Build a Bloomberg PORT-style HTML EOD report for Telegram."""
+    now_ist = datetime.now(IST)
+    date_str = now_ist.strftime("%d %b %Y")
+    total = wins + losses
+    wr    = wins / total if total else 0
+
+    pnl_icon  = "✅" if day_pnl > 0 else ("❌" if day_pnl < 0 else "⏸")
+    wr_icon   = "🟢" if wr >= 0.60 else ("🟡" if wr >= 0.50 else "🔴")
+    monthly_pct = min(monthly / MONTHLY_TARGET_INR, 1.0) if MONTHLY_TARGET_INR else 0
+    bar_w = 16
+    filled = max(0, min(bar_w, int(monthly_pct * bar_w)))
+    bar    = "█" * filled + "░" * (bar_w - filled)
+
+    # Trade ledger
+    ledger_lines = []
+    best_pnl = worst_pnl = 0.0
+    best_sym = worst_sym = ""
+    for i, d in enumerate(decisions, 1):
+        pnl_d = d.get("pnl")
+        if pnl_d is None:
+            continue
+        pnl_d = float(pnl_d)
+        sl_dist = abs(d.get("entry", 0) - d.get("sl", d.get("entry", 1))) or 1
+        r_mult  = pnl_d / max(sl_dist * d.get("qty", 1), 1)
+        row_icon = "🟢" if pnl_d > 0 else "🔴"
+        ledger_lines.append(
+            f"  {row_icon} {i}. <b>{d['symbol']}</b> {d['direction']}  "
+            f"₹{pnl_d:+,.0f}  (<code>{r_mult:+.1f}R</code>)  {d.get('grade','B')}"
+        )
+        if pnl_d > best_pnl:
+            best_pnl, best_sym = pnl_d, d["symbol"]
+        if pnl_d < worst_pnl:
+            worst_pnl, worst_sym = pnl_d, d["symbol"]
+
+    # ASCII sparkline from decisions timeline
+    pnls_seq = [float(d.get("pnl") or 0) for d in decisions if d.get("pnl") is not None]
+    if pnls_seq:
+        running = 0.0
+        equity_pts = []
+        for p in pnls_seq:
+            running += p
+            equity_pts.append(running)
+        mn, mx = min(equity_pts), max(equity_pts)
+        rng = mx - mn or 1
+        spark_chars = "▁▂▃▄▅▆▇█"
+        spark = "".join(spark_chars[int((v - mn) / rng * 7)] for v in equity_pts)
+        spark_line = f"<code>{spark}</code>"
+    else:
+        spark_line = ""
+
+    sections = [
+        f"📊 <b>EOD REPORT</b>  {date_str}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"{pnl_icon} <b>Day P&amp;L</b>   ₹{day_pnl:+,.0f}",
+        f"{wr_icon} <b>Win Rate</b>   {wr:.0%}  ({wins}W / {losses}L)",
+    ]
+    if best_sym:
+        sections.append(f"🏆 <b>Best</b>     {best_sym}  ₹{best_pnl:+,.0f}")
+    if worst_sym and worst_sym != best_sym:
+        sections.append(f"💀 <b>Worst</b>    {worst_sym}  ₹{worst_pnl:+,.0f}")
+    if spark_line:
+        sections += ["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                     f"📈 Equity curve: {spark_line}"]
+    if ledger_lines:
+        sections += ["━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+                     "<b>TRADE LEDGER</b>"] + ledger_lines
+    sections += [
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+        f"📅 <b>Monthly</b>  ₹{monthly:+,.0f} / ₹{MONTHLY_TARGET_INR:,.0f}",
+        f"<code>[{bar}]</code>  {monthly_pct:.0%}",
+        "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
+    ]
+    return "\n".join(sections)
+
+
 # ── Morning brief (legacy) ────────────────────────────────────────────────────
 
 def send_morning_brief():
+    # Try Bloomberg-style HTML first, fall back to legacy plain text
+    try:
+        html = _bloomberg_morning_html()
+        _send(html, parse_mode="HTML")
+        logger.info("Morning brief (Bloomberg-style) sent")
+        return
+    except Exception as e:
+        logger.debug(f"bloomberg morning brief failed, falling back: {e}")
+
     nifty   = _get_nifty_info()
     vix     = _get_india_vix()
     monthly = _get_monthly_pnl()
@@ -455,6 +639,19 @@ def send_eod_report():
     decisions = _get_today_decisions()
     monthly   = _get_monthly_pnl()
     monthly_pct = monthly / MONTHLY_TARGET_INR if MONTHLY_TARGET_INR else 0
+
+    day_pnl  = sum(d.get("pnl") or 0 for d in decisions)
+    wins_cnt = sum(1 for d in decisions if (d.get("pnl") or 0) > 0)
+    loss_cnt = sum(1 for d in decisions if (d.get("pnl") or 0) <= 0 and d.get("pnl") is not None)
+
+    # Try Bloomberg-style HTML first
+    try:
+        html = _bloomberg_eod_html(decisions, day_pnl, wins_cnt, loss_cnt, monthly)
+        _send(html, parse_mode="HTML")
+        logger.info(f"EOD report (Bloomberg-style) sent: {wins_cnt+loss_cnt} trades, ₹{day_pnl:+.0f}")
+        return
+    except Exception as e:
+        logger.debug(f"bloomberg eod failed, falling back: {e}")
 
     day_pnl   = sum(d.get("pnl") or 0 for d in decisions)
     wins      = sum(1 for d in decisions if (d.get("pnl") or 0) > 0)

@@ -43,6 +43,13 @@ from execution_upstox         import UpstoxExecutor, get_executor
 from watchlist_india        import get_active_watchlist, get_sector
 from signal_generator_india import IndiaSignalGenerator, IndiaTradeSignal
 
+# Bloomberg-style Telegram cards (fail-open: if module missing, use _tg fallback)
+_telegram_cards = None
+try:
+    import telegram_cards_india as _telegram_cards
+except ImportError:
+    pass
+
 # -- Logging ------------------------------------------------------------------
 LOG_DIR = _BASE / "logs"
 LOG_DIR.mkdir(exist_ok=True)
@@ -392,6 +399,22 @@ class SataVectorIndia:
                         logger.debug(f"optimizer: {_e}")
                     self._morning_brief_sent = True
 
+                # -- Bloomberg sector heatmap at 9:00 AM IST ------------------
+                if now.hour == 9 and now.minute == 0:
+                    try:
+                        from sector_heatmap_india import send_sector_heatmap_telegram
+                        send_sector_heatmap_telegram()
+                    except Exception:
+                        pass
+
+                # -- Bloomberg options intelligence screen at 9:05 AM IST -----
+                if now.hour == 9 and now.minute == 5:
+                    try:
+                        from options_screen_india import send_options_telegram
+                        send_options_telegram()
+                    except Exception:
+                        pass
+
                 # -- Square-off warning ---------------------------------------
                 if config.SQUAREOFF_WARN_IST <= t < config.SQUAREOFF_TIME_IST:
                     if self._positions:
@@ -736,12 +759,33 @@ class SataVectorIndia:
                     except Exception:
                         pass
 
-                _tg(
-                    f"SATAVECTOR INDIA Auto-Executed -- {symbol}\n"
-                    f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
-                    f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
-                    f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
-                )
+                # Bloomberg card for trade entry
+                _risk_inr = qty * abs(signal_obj.entry_price - signal_obj.stop_loss)
+                _entry_sent = False
+                if _telegram_cards:
+                    try:
+                        _entry_sent = _telegram_cards.send_trade_entry_card(
+                            symbol=symbol,
+                            direction=signal_obj.direction,
+                            entry=signal_obj.entry_price,
+                            sl=signal_obj.stop_loss,
+                            t1=signal_obj.target_1,
+                            t2=signal_obj.target_2,
+                            score=int(signal_obj.signal_score),
+                            grade=signal_obj.quality_grade,
+                            rationale=signal_obj.rationale[:200] if signal_obj.rationale else "",
+                            risk_inr=_risk_inr,
+                            rr=float(getattr(signal_obj, "risk_reward", 2.0)),
+                        )
+                    except Exception:
+                        pass
+                if not _entry_sent:
+                    _tg(
+                        f"SATAVECTOR INDIA Auto-Executed -- {symbol}\n"
+                        f"Entry: Rs.{fill_price:.2f} | Qty: {fill_qty}\n"
+                        f"SL: Rs.{signal_obj.stop_loss:.2f} | T1: Rs.{signal_obj.target_1:.2f}\n"
+                        f"Score: {signal_obj.signal_score:.0f} | Grade: {signal_obj.quality_grade}"
+                    )
                 try:
                     from daily_intelligence_india import explain_trade as _explain
                     signal_obj.quantity = int(fill_qty)
@@ -933,7 +977,24 @@ class SataVectorIndia:
             f"🛡 {sl_note}"
         )
 
-        _tg(msg)
+        _sig_sent = False
+        if _telegram_cards:
+            try:
+                _sig_sent = _telegram_cards.send_signal_alert_card(
+                    symbol=symbol,
+                    direction=direction,
+                    score=int(score),
+                    grade=grade,
+                    rationale=rationale[:200] if rationale else "",
+                    entry=entry,
+                    sl=sl,
+                    t1=t1,
+                    signal_count_today=self._stats.trades,
+                )
+            except Exception:
+                pass
+        if not _sig_sent:
+            _tg(msg)
         logger.info(f"[MANUAL ALERT] {direction} {symbol} score={score:.0f} qty={qty} sent to Telegram")
 
     # -- Position management --------------------------------------------------
@@ -1053,7 +1114,19 @@ class SataVectorIndia:
             daily_pnl_pct = self._stats.total_pnl / _capital
             if daily_pnl_pct <= -config.DAILY_LOSS_LIMIT_PCT:
                 logger.warning("Daily loss limit hit -- closing all positions")
-                _tg("Daily loss limit hit -- all positions being closed")
+                daily_dd = abs(daily_pnl_pct) * 100
+                if _telegram_cards:
+                    try:
+                        _telegram_cards.send_risk_alert_card(
+                            alert_type="DAILY_LOSS_LIMIT",
+                            message="Daily loss limit reached — pausing new entries",
+                            portfolio_heat_pct=self._portfolio_heat_pct if hasattr(self, "_portfolio_heat_pct") else 0.0,
+                            daily_dd_pct=daily_dd,
+                        )
+                    except Exception:
+                        pass
+                else:
+                    _tg("Daily loss limit hit -- all positions being closed")
                 self._stats.circuit_hit = True
                 to_close = list(self._positions.keys())
                 break
@@ -1197,14 +1270,38 @@ class SataVectorIndia:
         except Exception:
             pass
 
-        _tg(
-            f"SATAVECTOR INDIA Position Closed -- {symbol}\n"
-            f"--------------------------------\n"
-            f"Entry: Rs.{pos.entry_price:.2f} -> Exit: Rs.{exit_price:.2f}\n"
-            f"P&L: Rs.{pnl:+,.2f} | Qty: {pos.quantity}\n"
-            f"Day P&L: Rs.{self._stats.total_pnl:+,.2f} | "
-            f"W:{self._stats.wins} L:{self._stats.losses}"
-        )
+        # Bloomberg card for trade exit
+        _exit_reason = "target" if pnl >= 0 else "stop"
+        _exit_sent = False
+        if _telegram_cards:
+            try:
+                _hold_minutes = int((datetime.now(IST) - pos.entry_time).total_seconds() / 60)
+                _pnl_pct_exit = pnl / max(pos.entry_price * pos.quantity, 1) * 100
+                _sl_dist = abs(pos.entry_price - pos.stop_loss)
+                _r_multiple = pnl / max(_sl_dist * pos.quantity, 1)
+                _exit_sent = _telegram_cards.send_trade_exit_card(
+                    symbol=symbol,
+                    direction=pos.direction,
+                    entry=pos.entry_price,
+                    exit_price=exit_price,
+                    pnl_inr=pnl,
+                    pnl_pct=_pnl_pct_exit,
+                    r_multiple=_r_multiple,
+                    grade=getattr(pos, "quality_grade", "B"),
+                    hold_minutes=_hold_minutes,
+                    exit_reason=_exit_reason,
+                )
+            except Exception:
+                pass
+        if not _exit_sent:
+            _tg(
+                f"SATAVECTOR INDIA Position Closed -- {symbol}\n"
+                f"--------------------------------\n"
+                f"Entry: Rs.{pos.entry_price:.2f} -> Exit: Rs.{exit_price:.2f}\n"
+                f"P&L: Rs.{pnl:+,.2f} | Qty: {pos.quantity}\n"
+                f"Day P&L: Rs.{self._stats.total_pnl:+,.2f} | "
+                f"W:{self._stats.wins} L:{self._stats.losses}"
+            )
         self._write_state_file()
 
     # -- Force square-off -----------------------------------------------------
