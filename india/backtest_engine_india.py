@@ -249,6 +249,60 @@ def _score_bar(row: pd.Series, prev: pd.Series, df_5m: pd.DataFrame,
         except Exception:
             pass
 
+    # ── Tier 5: Proven Intraday Strategies (Gap/VWAP/Opening Drive) ──────────
+    try:
+        from strategies_india import (
+            gap_analysis_signal,
+            vwap_reversion_signal,
+            compute_vwap_bands,
+            opening_drive_signal,
+        )
+        _current_dir = "LONG" if score_long >= score_short else "SHORT"
+
+        # Strategy 1: Gap-Fill / Gap-Go
+        _prev_close = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
+        _open_price = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
+        _orb_high   = float(row.get("orb_high", 0.0) or 0.0)
+        _orb_low    = float(row.get("orb_low",  0.0) or 0.0)
+        _g_adj, _g_r = gap_analysis_signal(
+            _prev_close, _open_price, row, _orb_high, _orb_low
+        )
+        if _g_adj > 0:
+            score_long  += abs(_g_adj); reasons.append(_g_r)
+        elif _g_adj < 0:
+            score_short += abs(_g_adj); reasons.append(_g_r)
+
+        # Strategy 2: VWAP Mean Reversion
+        _close   = float(row.get("close", 0.0) or 0.0)
+        _vwap    = float(row.get("vwap",  0.0) or 0.0)
+        _rsi_val = float(row.get("rsi",  50.0) or 50.0)
+        _ub, _lb = compute_vwap_bands(df_5m)
+        if _ub > 0 and _lb > 0 and _vwap > 0:
+            _v_adj, _v_r = vwap_reversion_signal(_close, _vwap, _ub, _lb, _rsi_val)
+            if _v_adj > 0:
+                score_long  += abs(_v_adj); reasons.append(_v_r)
+            elif _v_adj < 0:
+                score_short += abs(_v_adj); reasons.append(_v_r)
+
+        # Strategy 3: Opening Drive
+        _bar_time = row.name.time() if hasattr(row, "name") else dtime(10, 0)
+        if dtime(9, 15) <= _bar_time <= dtime(9, 45):
+            try:
+                _today = row.name.date() if hasattr(row, "name") else None
+                if _today is not None:
+                    _df_open = df_5m[df_5m.index.date == _today].between_time("09:15", "09:30")
+                else:
+                    _df_open = df_5m.head(6)
+            except Exception:
+                _df_open = df_5m.head(6)
+            _od_adj, _od_r = opening_drive_signal(_df_open, _bar_time)
+            if _od_adj > 0:
+                score_long  += abs(_od_adj); reasons.append(_od_r)
+            elif _od_adj < 0:
+                score_short += abs(_od_adj); reasons.append(_od_r)
+    except Exception:
+        pass
+
     net = score_long - score_short
     direction = "LONG" if net > 0 else "SHORT"
     return net, direction, " | ".join(reasons)

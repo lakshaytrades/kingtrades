@@ -212,5 +212,8 @@ OPTIMIZER_MULTIPARAMS        = _flag("INDIA_OPTIMIZER_MULTIPARAMS")         # 6-
 
 # -- RegimeSwitcher: BULL/BEAR/CHOPPY/HIGH_VOL_FEAR detection every 30 min ---
 # Multiplies signal score based on detected regime to reduce choppy/fear trades
-# and amplify high-conviction trend trades (target: Sharpe ≥ 2)
+# and amplify high-conviction trend trades (target: Sharpe >= 2)
 REGIME_SWITCHER_ENABLED      = bool(os.getenv("INDIA_REGIME_SWITCHER", "True") == "True")
+
+# -- Proven intraday strategies (Gap-Fill/Gap-Go, VWAP reversion, Opening Drive)
+STRATEGIES_ENABLED           = _flag("INDIA_STRATEGIES_ENABLED")            # gap/VWAP/opening-drive signals

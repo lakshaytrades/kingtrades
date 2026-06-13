@@ -842,6 +842,38 @@ class IndiaSignalGenerator:
                 except Exception:
                     pass
 
+            # ── Proven Intraday Strategies (Gap-Fill/Gap-Go, VWAP Reversion, Opening Drive) ──
+            if getattr(self._config, "STRATEGIES_ENABLED", True):
+                try:
+                    from strategies_india import get_strategies_score
+                    from datetime import datetime as _dt
+                    _now_ist = _dt.now(IST)
+                    _orb_high = float(df_5m.get("orb_high", pd.Series([0.0])).iloc[-1]) if "orb_high" in df_5m.columns else 0.0
+                    _orb_low  = float(df_5m.get("orb_low",  pd.Series([0.0])).iloc[-1]) if "orb_low"  in df_5m.columns else 0.0
+                    # Estimate prev_close from first bar open (conservative proxy)
+                    _prev_close = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
+                    _open_price = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
+                    _current_row = df_5m.iloc[-1].copy()
+                    if "vwap" not in _current_row or "rsi" not in _current_row:
+                        _current_row["vwap"] = float(ind.vwap) if getattr(ind, "vwap", None) else 0.0
+                        _current_row["rsi"]  = float(ind.rsi)  if getattr(ind, "rsi",  None) else 50.0
+                    _st_adj, _st_reason = get_strategies_score(
+                        symbol=symbol,
+                        direction=direction,
+                        df_5m=df_5m,
+                        current=_current_row,
+                        orb_high=_orb_high,
+                        orb_low=_orb_low,
+                        prev_close=_prev_close,
+                        open_price=_open_price,
+                        current_time=_now_ist.time(),
+                    )
+                    if _st_adj != 0:
+                        score += _st_adj
+                        sig.rationale += f" | {_st_reason}"
+                except Exception:
+                    pass
+
             # ── Signal Decay (freshness gate) ──────────────────────────────────
             if getattr(self._config, "SIGNAL_DECAY_ENABLED", True):
                 try:
