@@ -1274,10 +1274,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
 
-        # Lunch lull blackout: 12:30-13:30 IST (low volume, choppy price action)
-        if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
-            # Still process exits but skip new entries — set a flag
-            pass  # exits handled below; entry skip happens at new-entry block
+        # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -1496,6 +1493,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # If < 30% of stocks above VWAP → only SHORT entries (or skip)
         _long_only_market  = (_pct_vwap >= 0.65) or (_mkt_trend >= 0.35)
         _short_only_market = (_pct_vwap <= 0.35) or (_mkt_trend <= -0.35)
+        # Prevent simultaneous True (conflicting signals → neutral, allow both directions)
+        if _long_only_market and _short_only_market:
+            _long_only_market = False
+            _short_only_market = False
 
         # Cap entries if too many open trades are stressed
         _stressed = 0
@@ -1577,28 +1578,34 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Prevents trading against the day's established trend.
             try:
                 _today_date = now_ts.date()
-                _today_bars = df[df.index.date == _today_date]
+                # FIX: filter to bars up to now_ts only (prevent look-ahead bias)
+                _today_bars = df[(df.index.date == _today_date) & (df.index <= now_ts)]
                 if len(_today_bars) >= 4:
                     _last4 = _today_bars.iloc[-4:]
                     _bull_bars = int((_last4["close"] > _last4["open"]).sum())
                     _bear_bars = int((_last4["close"] < _last4["open"]).sum())
                     if _bull_bars >= 3 and direction == "SHORT":
-                        # Today trending bullish but we want SHORT → penalize
-                        net_score += 20  # pushes toward positive (LONG), weakening SHORT
+                        # Today trending bullish but signal is SHORT → penalize heavily
+                        net_score += 20
                         reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
                     elif _bear_bars >= 3 and direction == "LONG":
-                        # Today trending bearish but we want LONG → penalize
-                        net_score -= 20  # pushes toward negative (SHORT), weakening LONG
+                        # Today trending bearish but signal is LONG → penalize heavily
+                        net_score -= 20
                         reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
                     elif _bull_bars >= 3 and direction == "LONG":
-                        # Trend alignment bonus
-                        net_score = (abs(net_score) + 6)
+                        net_score += 6  # alignment bonus (was assignment bug: net_score = abs+6)
                         reason = (reason + "+TODAY_ALIGN_BULL") if reason else "TODAY_ALIGN_BULL"
                     elif _bear_bars >= 3 and direction == "SHORT":
-                        net_score = -(abs(net_score) + 6)
+                        net_score -= 6  # alignment bonus
                         reason = (reason + "+TODAY_ALIGN_BEAR") if reason else "TODAY_ALIGN_BEAR"
             except Exception:
                 pass
+
+            # Re-derive direction after today momentum adjustments (score may have flipped sign)
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
 
             # ── ML Ensemble Boost ─────────────────────────────────────────────
             if _ml_scorer is not None:
