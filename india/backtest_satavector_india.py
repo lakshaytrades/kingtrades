@@ -26,6 +26,19 @@ import random
 import statistics
 import sys
 
+# -- Pre-import risk_manager functions at module level for MC performance -------
+try:
+    sys.path.insert(0, str(__import__("pathlib").Path(__file__).parent))
+    from risk_manager import (
+        dynamic_kelly_size as _rm_dynamic_kelly,
+        get_streak_multiplier as _rm_streak,
+        reset_streak as _rm_reset,
+        update_streak as _rm_update,
+    )
+    _RM_AVAILABLE = True
+except Exception:
+    _RM_AVAILABLE = False
+
 CAPITAL          = 500_000.0
 TRADING_DAYS     = 21
 N_PATHS          = 3000
@@ -52,7 +65,7 @@ SCENARIOS = {
 
 
 def _kelly_risk_pct(wins: int, losses: int) -> float:
-    """Mirror of main_india._kelly_fraction (half-Kelly, clamped 0.1–1.5%)."""
+    """Legacy half-Kelly (kept for reference).  Active path uses _dynamic_risk_pct."""
     total = wins + losses
     if total < 5:
         return 0.005
@@ -60,6 +73,32 @@ def _kelly_risk_pct(wins: int, losses: int) -> float:
     b = 2.0                       # ATR_TP 3.0 / ATR_SL 1.5
     kelly = (p * b - (1 - p)) / b
     return max(0.001, min(0.015, kelly * 0.5))
+
+
+def _dynamic_risk_pct(recent_pnl: list, score: float = 75.0,
+                      atr_pct: float = 0.015) -> float:
+    """
+    Dynamic Kelly via risk_manager.dynamic_kelly_size + anti-martingale streak.
+
+    Falls back to _kelly_risk_pct if risk_manager is unavailable.
+    Uses module-level cached imports for MC performance (no per-call import cost).
+
+    Args:
+        recent_pnl: list of per-trade P&L as fraction of capital (last 20 used)
+        score:      signal score 0-100 (simulated with wr-derived distribution)
+        atr_pct:    ATR as fraction of price (simulated; default 1.5%)
+    """
+    if _RM_AVAILABLE:
+        try:
+            base   = _rm_dynamic_kelly(recent_pnl, CAPITAL, score, atr_pct,
+                                       max_risk_pct=0.02, max_pos_pct=0.25)
+            streak = _rm_streak()
+            return min(base * streak, 0.02)
+        except Exception:
+            pass
+    wins   = sum(1 for r in recent_pnl if r > 0)
+    losses = sum(1 for r in recent_pnl if r <= 0)
+    return _kelly_risk_pct(wins, losses)
 
 
 def _runner_outcome(rng: random.Random) -> float:
@@ -78,6 +117,16 @@ def simulate_month(wr: float, sig_range: tuple, rng: random.Random,
     wins = losses = trades = 0
     peak = capital
     max_dd = 0.0
+    # Dynamic Kelly: track rolling per-trade P&Ls as fraction of capital
+    recent_pnl: list = []
+
+    # Reset anti-martingale streak state for each simulation path
+    _has_streak = _RM_AVAILABLE
+    if _has_streak:
+        try:
+            _rm_reset()
+        except Exception:
+            _has_streak = False
 
     for _day in range(TRADING_DAYS):
         day_start = capital
@@ -91,7 +140,13 @@ def simulate_month(wr: float, sig_range: tuple, rng: random.Random,
                 break                               # daily circuit
 
             sl_pct = max(0.004, rng.lognormvariate(0, 0.3) * SL_PCT_MEAN)
-            risk_pct = _kelly_risk_pct(wins, losses)
+
+            # Simulate a signal score proportional to WR (higher WR => higher avg score)
+            simulated_score = min(100.0, max(40.0, wr * 100.0 + rng.gauss(0, 8.0)))
+            # Simulate ATR as 1-2.5% with mild randomness
+            simulated_atr_pct = max(0.005, rng.lognormvariate(0, 0.3) * 0.015)
+
+            risk_pct = _dynamic_risk_pct(recent_pnl, simulated_score, simulated_atr_pct)
 
             # Adaptive cap: MIS leverage (30-35%) only for A+ signals (~30% of signals)
             effective_cap = cap_pct
@@ -122,6 +177,17 @@ def simulate_month(wr: float, sig_range: tuple, rng: random.Random,
             trades += 1
             peak = max(peak, capital)
             max_dd = max(max_dd, (peak - capital) / peak)
+
+            # Update rolling P&L history and streak
+            pnl_frac = pnl / max(CAPITAL, 1e-9)
+            recent_pnl.append(pnl_frac)
+            if len(recent_pnl) > 20:
+                recent_pnl.pop(0)
+            if _has_streak:
+                try:
+                    _rm_update(pnl)
+                except Exception:
+                    pass
 
     return {
         "return_pct": (capital - CAPITAL) / CAPITAL * 100,

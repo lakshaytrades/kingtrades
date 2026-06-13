@@ -217,3 +217,8 @@ REGIME_SWITCHER_ENABLED      = bool(os.getenv("INDIA_REGIME_SWITCHER", "True") =
 
 # -- Proven intraday strategies (Gap-Fill/Gap-Go, VWAP reversion, Opening Drive)
 STRATEGIES_ENABLED           = _flag("INDIA_STRATEGIES_ENABLED")            # gap/VWAP/opening-drive signals
+
+# -- Dynamic Kelly + Anti-martingale sizing (Sharpe >= 2 / 15-20% monthly) ----
+DYNAMIC_KELLY_ENABLED   = bool(os.getenv("INDIA_DYNAMIC_KELLY",    "True") == "True")
+MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",    "0.02"))   # 2% hard cap per trade
+ANTI_MARTINGALE_ENABLED = bool(os.getenv("INDIA_ANTI_MARTINGALE",  "True") == "True")

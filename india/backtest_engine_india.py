@@ -470,7 +470,7 @@ def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
 # ── Kelly sizing ──────────────────────────────────────────────────────────────
 
 def _kelly_size(wins: int, losses: int, capital: float, max_pct: float = 0.20) -> float:
-    """Half-Kelly position size as fraction of capital."""
+    """Half-Kelly position size as fraction of capital (legacy — kept for compatibility)."""
     total = wins + losses
     if total < 10:
         return 0.005   # cold start: risk 0.5%
@@ -478,6 +478,53 @@ def _kelly_size(wins: int, losses: int, capital: float, max_pct: float = 0.20) -
     b = 2.0            # avg win/loss ratio (1R SL, 2R TP)
     kelly = max(0, (p * b - (1 - p)) / b)
     return min(kelly * 0.5, 0.01)  # half-Kelly, cap at 1% risk per trade
+
+
+def _dynamic_kelly_size(recent_trades: list, capital: float,
+                         net_score: float, atr: float, entry: float) -> float:
+    """
+    Dynamic Kelly sizing using risk_manager.dynamic_kelly_size.
+
+    Wraps the risk_manager function with the feature flag check so the
+    backtest degrades gracefully to the legacy _kelly_size if the flag is
+    disabled or the import fails.
+
+    Args:
+        recent_trades: list of per-trade P&Ls as fraction of capital (last 20 used)
+        capital:       current equity
+        net_score:     absolute signal net score (0-100 scale)
+        atr:           ATR value in price units
+        entry:         entry price
+
+    Returns:
+        risk_fraction — fraction of capital to risk on this trade.
+    """
+    try:
+        import config_india as _cfg
+        if not getattr(_cfg, "DYNAMIC_KELLY_ENABLED", True):
+            # Feature flag off: fall back to legacy sizing
+            wins   = sum(1 for r in recent_trades if r > 0)
+            losses = sum(1 for r in recent_trades if r <= 0)
+            return _kelly_size(wins, losses, capital)
+
+        from risk_manager import dynamic_kelly_size, get_streak_multiplier
+        atr_pct = atr / max(entry, 1e-9)
+        # Normalise net_score to 0-100 (it can exceed 100 in scoring engine)
+        score_norm = min(abs(net_score), 100.0)
+        max_risk = getattr(_cfg, "MAX_RISK_PER_TRADE_PCT", 0.02)
+
+        base = dynamic_kelly_size(
+            recent_trades, capital, score_norm, atr_pct,
+            max_risk_pct=max_risk, max_pos_pct=0.25,
+        )
+        if getattr(_cfg, "ANTI_MARTINGALE_ENABLED", True):
+            base = min(base * get_streak_multiplier(), max_risk)
+        return base
+    except Exception as e:
+        logger.debug("_dynamic_kelly_size fallback: %s", e)
+        wins   = sum(1 for r in recent_trades if r > 0)
+        losses = sum(1 for r in recent_trades if r <= 0)
+        return _kelly_size(wins, losses, capital)
 
 
 # ── Resample helpers ──────────────────────────────────────────────────────────
@@ -598,6 +645,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     max_dd = 0.0
     equity_curve = [capital]
     wins = losses = 0
+    # Dynamic Kelly: rolling list of per-trade P&Ls as fraction of capital
+    recent_trades: List[float] = []
+
+    # Initialise anti-martingale streak state for the backtest run
+    try:
+        from risk_manager import reset_streak as _reset_streak
+        _reset_streak()
+    except Exception:
+        pass
 
     all_ts = sorted(set().union(*[set(df.index) for df in data.values()]))
 
@@ -622,9 +678,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
-                (wins if pnl > 0 else losses).__class__  # dummy
                 if pnl > 0: wins += 1
                 else: losses += 1
+                _pnl_frac = pnl / max(capital, 1e-9)
+                recent_trades.append(_pnl_frac)
+                try:
+                    from risk_manager import update_streak as _upd_streak
+                    _upd_streak(pnl)
+                except Exception:
+                    pass
                 continue
 
             hi = bar["high"]; lo = bar["low"]
@@ -639,6 +701,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trades.append(t); del open_trades[sym]
                 if pnl > 0: wins += 1
                 else: losses += 1
+                _pnl_frac = pnl / max(capital, 1e-9)
+                recent_trades.append(_pnl_frac)
+                try:
+                    from risk_manager import update_streak as _upd_streak
+                    _upd_streak(pnl)
+                except Exception:
+                    pass
                 continue
 
             if not t.t1_done:
@@ -660,6 +729,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     trades.append(t); del open_trades[sym]
                     if t.pnl > 0: wins += 1
                     else: losses += 1
+                    _pnl_frac = t.pnl / max(capital, 1e-9)
+                    recent_trades.append(_pnl_frac)
+                    try:
+                        from risk_manager import update_streak as _upd_streak
+                        _upd_streak(t.pnl)
+                    except Exception:
+                        pass
 
         peak   = max(peak, equity)
         max_dd = max(max_dd, (peak - equity) / peak)
@@ -703,8 +779,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # 1R
             t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 2R
 
-            # Kelly-based sizing
-            risk_pct = _kelly_size(wins, losses, equity)
+            # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
+            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
             sl_dist  = abs(entry - sl)
             qty = int(min(equity * risk_pct / sl_dist,
                           equity * MAX_POS_PCT / entry))
@@ -726,6 +802,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             trades.append(t)
             if pnl > 0: wins += 1
             else: losses += 1
+            recent_trades.append(pnl / max(capital, 1e-9))
 
     _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data))
 
