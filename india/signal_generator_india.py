@@ -32,6 +32,202 @@ from pattern_recognition import PatternRecognizer, IndicatorSet
 logger = logging.getLogger("signal_india")
 IST = ZoneInfo("Asia/Kolkata")
 
+# ── Regime names ──────────────────────────────────────────────────────────────
+REGIME_BULL_TREND    = "BULL_TREND"
+REGIME_BEAR_TREND    = "BEAR_TREND"
+REGIME_CHOPPY        = "CHOPPY"
+REGIME_HIGH_VOL_FEAR = "HIGH_VOL_FEAR"
+
+# Multipliers per (regime, direction):  {regime: {direction: multiplier}}
+_REGIME_MULTIPLIERS: Dict[str, Dict[str, float]] = {
+    REGIME_BULL_TREND:    {"LONG": 1.3, "SHORT": 0.7},
+    REGIME_BEAR_TREND:    {"SHORT": 1.3, "LONG": 0.7},
+    REGIME_CHOPPY:        {"LONG": 0.5, "SHORT": 0.5},
+    REGIME_HIGH_VOL_FEAR: {"LONG": 0.3, "SHORT": 0.3},
+}
+
+
+class RegimeSwitcher:
+    """
+    Detects NSE market regime every 30 minutes using:
+      - Nifty50 5-day vs 20-day EMA slope
+      - India VIX level  (<15 = calm, 15-22 = normal, >22 = fear)
+      - Advance-Decline ratio from NSE breadth (>0.65 = broad bull, <0.35 = broad bear)
+      - ADX(14) on Nifty50  (<20 = choppy, >25 = trending)
+
+    Regimes:
+      BULL_TREND    — EMA upslope + ADX>25 + breadth >60% advancing
+      BEAR_TREND    — EMA downslope + ADX>25 + breadth <40% advancing
+      CHOPPY        — ADX<20 (no directional conviction)
+      HIGH_VOL_FEAR — VIX>22 regardless of other conditions
+
+    Multipliers applied to signal score before MIN_SIGNAL_SCORE comparison:
+      BULL_TREND    → LONG ×1.3 / SHORT ×0.7
+      BEAR_TREND    → SHORT ×1.3 / LONG  ×0.7
+      CHOPPY        → all ×0.5
+      HIGH_VOL_FEAR → all ×0.3
+
+    Fail-open: returns (None, 1.0) on any error so signal pipeline is unaffected.
+    All timestamps in IST. All external calls wrapped in try/except.
+    """
+
+    _TTL_SECONDS = 1800.0  # refresh every 30 minutes
+
+    def __init__(self):
+        self._regime:      Optional[str] = None
+        self._multipliers: Dict[str, float] = {"LONG": 1.0, "SHORT": 1.0}
+        self._last_update: float = 0.0
+        self._last_vix:    float = 0.0
+        self._last_adx:    float = 20.0
+        self._last_breadth: float = 0.5
+        self._last_ema_slope: float = 0.0
+
+    # ── Public API ────────────────────────────────────────────────────────────
+
+    def get_regime(self) -> Optional[str]:
+        """Return current regime name, refreshing if stale. Fail-open: None."""
+        self._maybe_refresh()
+        return self._regime
+
+    def get_multiplier(self, direction: str) -> float:
+        """
+        Return score multiplier for the given direction in the current regime.
+        Fail-open: 1.0 (no effect).
+        """
+        self._maybe_refresh()
+        return self._multipliers.get(direction, 1.0)
+
+    def get_regime_and_multiplier(self, direction: str) -> Tuple[Optional[str], float]:
+        """Combined getter — returns (regime_name, multiplier)."""
+        self._maybe_refresh()
+        return self._regime, self._multipliers.get(direction, 1.0)
+
+    # ── Internal refresh logic ─────────────────────────────────────────────────
+
+    def _maybe_refresh(self):
+        import time as _time_mod
+        if _time_mod.monotonic() - self._last_update < self._TTL_SECONDS:
+            return
+        try:
+            regime = self._compute_regime()
+        except Exception as e:
+            logger.debug(f"RegimeSwitcher._compute_regime error (fail-open): {e}")
+            regime = None
+
+        if regime is None:
+            # Fail-open: keep previous regime if available, else no-op multipliers
+            if self._regime is None:
+                self._multipliers = {"LONG": 1.0, "SHORT": 1.0}
+        else:
+            self._regime = regime
+            self._multipliers = _REGIME_MULTIPLIERS.get(regime, {"LONG": 1.0, "SHORT": 1.0})
+
+        import time as _time_mod2
+        self._last_update = _time_mod2.monotonic()
+        logger.info(
+            f"[IST {datetime.now(IST).strftime('%Y-%m-%d %H:%M:%S')}] "
+            f"RegimeSwitcher: regime={self._regime}  "
+            f"LONG×{self._multipliers.get('LONG', 1.0):.1f}  "
+            f"SHORT×{self._multipliers.get('SHORT', 1.0):.1f}  "
+            f"vix={self._last_vix:.1f}  adx={self._last_adx:.1f}  "
+            f"breadth={self._last_breadth:.2f}  ema_slope={self._last_ema_slope:.4f}"
+        )
+
+    def _compute_regime(self) -> Optional[str]:
+        """
+        Core regime detection using Nifty50 OHLCV + India VIX + breadth.
+        Returns regime name or None on failure.
+        All errors are caught so caller stays fail-open.
+        """
+        import numpy as np
+        import pandas as pd
+
+        # ── Step 1: Fetch India VIX (cached 30 min upstream) ─────────────────
+        vix = 0.0
+        try:
+            from data_fetch_upstox import get_india_vix
+            vix = float(get_india_vix() or 0.0)
+        except Exception as e:
+            logger.debug(f"RegimeSwitcher: vix fetch error: {e}")
+        self._last_vix = vix
+
+        # HIGH_VOL_FEAR trumps everything — check it first
+        if vix > 22.0:
+            return REGIME_HIGH_VOL_FEAR
+
+        # ── Step 2: Fetch Nifty50 daily data for EMA slope ───────────────────
+        nifty_close: Optional[pd.Series] = None
+        try:
+            from data_fetch_upstox import get_nifty_daily
+            df_nifty = get_nifty_daily(days=30)
+            if df_nifty is not None and not df_nifty.empty and len(df_nifty) >= 20:
+                nifty_close = df_nifty["close"].astype(float)
+        except Exception as e:
+            logger.debug(f"RegimeSwitcher: nifty daily fetch error: {e}")
+
+        ema_slope = 0.0
+        if nifty_close is not None and len(nifty_close) >= 20:
+            try:
+                ema5  = float(nifty_close.ewm(span=5,  adjust=False).mean().iloc[-1])
+                ema5_prev = float(nifty_close.ewm(span=5, adjust=False).mean().iloc[-2])
+                ema20 = float(nifty_close.ewm(span=20, adjust=False).mean().iloc[-1])
+                # Slope = (EMA5 - EMA20) / EMA20, positive = uptrend
+                ema_slope = (ema5 - ema20) / (ema20 + 1e-9)
+            except Exception as e:
+                logger.debug(f"RegimeSwitcher: EMA calc error: {e}")
+        self._last_ema_slope = ema_slope
+
+        # ── Step 3: Fetch ADX on Nifty50 (5-min intraday) ────────────────────
+        adx = 20.0  # default: neutral
+        try:
+            from data_fetch_upstox import get_nifty_intraday
+            df_intra = get_nifty_intraday(interval="5m")
+            if df_intra is not None and not df_intra.empty and len(df_intra) >= 20:
+                h = df_intra["high"].astype(float)
+                l = df_intra["low"].astype(float)
+                c = df_intra["close"].astype(float)
+                # Compute ADX(14) inline (pure OHLCV)
+                up   = h.diff().clip(lower=0)
+                down = (-l.diff()).clip(lower=0)
+                tr_s = pd.concat([h - l, (h - c.shift()).abs(), (l - c.shift()).abs()], axis=1).max(axis=1)
+                smooth = tr_s.ewm(alpha=1/14, adjust=False).mean().replace(0, 1e-9)
+                pdi = 100 * up.ewm(alpha=1/14, adjust=False).mean() / smooth
+                ndi = 100 * down.ewm(alpha=1/14, adjust=False).mean() / smooth
+                dx  = (100 * (pdi - ndi).abs() / (pdi + ndi + 1e-9))
+                adx = float(dx.ewm(alpha=1/14, adjust=False).mean().iloc[-1])
+        except Exception as e:
+            logger.debug(f"RegimeSwitcher: ADX calc error: {e}")
+        self._last_adx = adx
+
+        # ── Step 4: Advance-Decline breadth ratio ─────────────────────────────
+        breadth = 0.5  # neutral default
+        try:
+            from data_fetch_upstox import get_market_breadth
+            b = float(get_market_breadth() or 0.5)
+            breadth = max(0.0, min(1.0, b))
+        except Exception as e:
+            logger.debug(f"RegimeSwitcher: breadth fetch error: {e}")
+        self._last_breadth = breadth
+
+        # ── Step 5: Regime classification ─────────────────────────────────────
+        # CHOPPY: ADX < 20 (no directional conviction regardless of EMA)
+        if adx < 20.0:
+            return REGIME_CHOPPY
+
+        # TRENDING: ADX >= 25 gives high conviction; 20-25 is borderline
+        trending = adx >= 25.0
+
+        # BULL_TREND: EMA upslope + broad market advancing (>60%)
+        if ema_slope > 0.001 and breadth > 0.60:
+            return REGIME_BULL_TREND
+
+        # BEAR_TREND: EMA downslope + broad market declining (<40%)
+        if ema_slope < -0.001 and breadth < 0.40:
+            return REGIME_BEAR_TREND
+
+        # Weak trend or mixed signals → CHOPPY (cautious)
+        return REGIME_CHOPPY
+
 
 @dataclass
 class IndiaTradeSignal:
@@ -74,6 +270,14 @@ class IndiaSignalGenerator:
         self._watchlist = watchlist or []
         self._recognizer = PatternRecognizer()
         self._signals_today: List[IndiaTradeSignal] = []
+
+        # ── RegimeSwitcher (lazy-init, fail-open) ─────────────────────────────
+        self._regime_switcher: Optional[RegimeSwitcher] = None
+        try:
+            if getattr(config, "REGIME_SWITCHER_ENABLED", True):
+                self._regime_switcher = RegimeSwitcher()
+        except Exception:
+            pass
 
         # ── God Mode modules (lazy, fail-open) ───────────────────────────────
         self._vol_profile   = None
@@ -189,6 +393,27 @@ class IndiaSignalGenerator:
 
             # Base score — pass df_1h for 1h alignment scoring
             score = self._compute_base_score(ind, direction, df_5m, df_1h=df_1h)
+
+            # ── Regime multiplier (applied before MIN_SIGNAL_SCORE gate) ───────
+            # BULL_TREND: LONG×1.3/SHORT×0.7 | BEAR_TREND: SHORT×1.3/LONG×0.7
+            # CHOPPY: all×0.5 | HIGH_VOL_FEAR: all×0.3
+            _regime_name: Optional[str] = None
+            _regime_mult: float = 1.0
+            if self._regime_switcher is not None:
+                try:
+                    _regime_name, _regime_mult = (
+                        self._regime_switcher.get_regime_and_multiplier(direction)
+                    )
+                    if _regime_mult != 1.0:
+                        logger.debug(
+                            f"{symbol}: regime={_regime_name} "
+                            f"score {score:.1f} × {_regime_mult:.1f} = "
+                            f"{score * _regime_mult:.1f}"
+                        )
+                        score = score * _regime_mult
+                except Exception as _re:
+                    logger.debug(f"{symbol}: regime_switcher error (fail-open): {_re}")
+
             if score < self._config.MIN_SIGNAL_SCORE:
                 return None
 
@@ -329,7 +554,10 @@ class IndiaSignalGenerator:
                 patterns      = getattr(ind, "_patterns", []),
                 quality_grade = quality_grade,
                 size_multiplier = size_mult,
-                rationale     = f"Score {score:.0f} | {direction} | RR {rr:.1f} | Grade {quality_grade}",
+                rationale     = (
+                    f"Score {score:.0f} | {direction} | RR {rr:.1f} | Grade {quality_grade}"
+                    + (f" | REGIME_{_regime_name}×{_regime_mult:.1f}" if _regime_name else "")
+                ),
                 vix_level     = _vix_now,
             )
 

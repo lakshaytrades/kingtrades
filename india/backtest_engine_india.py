@@ -254,6 +254,93 @@ def _score_bar(row: pd.Series, prev: pd.Series, df_5m: pd.DataFrame,
     return net, direction, " | ".join(reasons)
 
 
+# ── Regime detection (OHLCV-only, for backtest use) ─────────────────────────
+
+# Regime names — mirrors RegimeSwitcher in signal_generator_india.py
+REGIME_BULL_TREND    = "BULL_TREND"
+REGIME_BEAR_TREND    = "BEAR_TREND"
+REGIME_CHOPPY        = "CHOPPY"
+REGIME_HIGH_VOL_FEAR = "HIGH_VOL_FEAR"
+
+# Per-regime score multipliers {regime: {direction: multiplier}}
+_REGIME_MULTS: Dict[str, Dict[str, float]] = {
+    REGIME_BULL_TREND:    {"LONG": 1.3, "SHORT": 0.7},
+    REGIME_BEAR_TREND:    {"SHORT": 1.3, "LONG": 0.7},
+    REGIME_CHOPPY:        {"LONG": 0.5, "SHORT": 0.5},
+    REGIME_HIGH_VOL_FEAR: {"LONG": 0.3, "SHORT": 0.3},
+}
+
+
+def _detect_regime(nifty_df: pd.DataFrame) -> Tuple[str, Dict[str, float]]:
+    """
+    Detect market regime from Nifty50 OHLCV data.  OHLCV-only — no live APIs.
+    Used by backtest_engine_india to apply regime-conditional score multipliers.
+
+    Logic (mirrors RegimeSwitcher in signal_generator_india.py):
+      1. HIGH_VOL_FEAR if implied-vol proxy (ATR/price ratio) > threshold
+         (In backtest we can't fetch India VIX, so we use ATR% as a proxy:
+          ATR(14) / close > 2% ≈ VIX > 22 territory for NSE stocks)
+      2. CHOPPY  if ADX(14) < 20  (no directional conviction)
+      3. BULL_TREND if EMA5 > EMA20 slope positive AND breadth proxy (advancing bars) > 60%
+      4. BEAR_TREND if EMA5 < EMA20 slope negative AND breadth proxy < 40%
+      5. CHOPPY  otherwise (mixed signals)
+
+    Args:
+        nifty_df: DataFrame with OHLCV columns indexed by datetime (5-min bars).
+                  Minimum 30 bars required; fewer → returns (CHOPPY, neutral multipliers).
+
+    Returns:
+        (regime_name, {direction: multiplier}) — fail-safe defaults to CHOPPY + 0.5×.
+    """
+    _safe_default = (REGIME_CHOPPY, _REGIME_MULTS[REGIME_CHOPPY])
+
+    try:
+        if nifty_df is None or nifty_df.empty or len(nifty_df) < 30:
+            return _safe_default
+
+        c = nifty_df["close"].astype(float)
+        h = nifty_df["high"].astype(float)
+        lo = nifty_df["low"].astype(float)
+
+        # ── High-vol fear proxy: ATR(14) / close > 2% ───────────────────────
+        atr14 = _atr(h, lo, c, 14).iloc[-1]
+        close_last = float(c.iloc[-1])
+        atr_pct = atr14 / (close_last + 1e-9)
+        if atr_pct > 0.02:
+            return REGIME_HIGH_VOL_FEAR, _REGIME_MULTS[REGIME_HIGH_VOL_FEAR]
+
+        # ── ADX(14) — choppiness gate ────────────────────────────────────────
+        adx_series = _adx(h, lo, c, 14)
+        adx_now = float(adx_series.iloc[-1])
+        if adx_now < 20.0:
+            return REGIME_CHOPPY, _REGIME_MULTS[REGIME_CHOPPY]
+
+        # ── EMA5 vs EMA20 slope (using daily resampled or available bars) ────
+        ema5  = _ema(c, 5)
+        ema20 = _ema(c, 20)
+        ema_slope = (float(ema5.iloc[-1]) - float(ema20.iloc[-1])) / (
+            float(ema20.iloc[-1]) + 1e-9
+        )
+
+        # ── Breadth proxy: fraction of last 20 bars that closed up ───────────
+        last20_closes = c.iloc[-20:]
+        adv = int((last20_closes.diff().dropna() > 0).sum())
+        breadth = adv / max(len(last20_closes) - 1, 1)
+
+        # ── Classify ─────────────────────────────────────────────────────────
+        if ema_slope > 0.001 and breadth > 0.60:
+            return REGIME_BULL_TREND, _REGIME_MULTS[REGIME_BULL_TREND]
+        if ema_slope < -0.001 and breadth < 0.40:
+            return REGIME_BEAR_TREND, _REGIME_MULTS[REGIME_BEAR_TREND]
+
+        # Mixed signals → choppy (cautious)
+        return REGIME_CHOPPY, _REGIME_MULTS[REGIME_CHOPPY]
+
+    except Exception as e:
+        logger.debug(f"_detect_regime error (fail-safe): {e}")
+        return _safe_default
+
+
 # ── Trade class ───────────────────────────────────────────────────────────────
 
 class Trade:

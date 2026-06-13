@@ -209,3 +209,8 @@ PORTFOLIO_REBALANCER_ENABLED = _flag("INDIA_PORTFOLIO_REBALANCER_ENABLED")  # co
 ADVANCED_SIZING_ENABLED      = _flag("INDIA_ADVANCED_SIZING_ENABLED")       # Calmar+Omega adaptive sizing
 ELITE_BAYES_ENABLED          = _flag("INDIA_ELITE_BAYES_ENABLED")           # Bayesian elite tracker
 OPTIMIZER_MULTIPARAMS        = _flag("INDIA_OPTIMIZER_MULTIPARAMS")         # 6-param walk-forward sweep
+
+# -- RegimeSwitcher: BULL/BEAR/CHOPPY/HIGH_VOL_FEAR detection every 30 min ---
+# Multiplies signal score based on detected regime to reduce choppy/fear trades
+# and amplify high-conviction trend trades (target: Sharpe ≥ 2)
+REGIME_SWITCHER_ENABLED      = bool(os.getenv("INDIA_REGIME_SWITCHER", "True") == "True")
