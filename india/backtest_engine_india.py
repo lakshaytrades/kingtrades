@@ -768,6 +768,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         data_15m[sym] = _resample(df, "15min")
         data_1h[sym]  = _resample(df, "1h")
 
+    # ── ML Scorer: train on loaded data (uses last 80% for training, walks forward) ──
+    _ml_scorer = None
+    try:
+        from ml_scorer_india import MLScorer
+        print("  Training ML ensemble scorer on historical data ...")
+        _ml_scorer = MLScorer()
+        # Train on first 70% of data to avoid lookahead
+        train_data = {sym: df.iloc[:int(len(df)*0.7)] for sym, df in data.items()}
+        if _ml_scorer.train_from_data(train_data):
+            print(f"  ML scorer ready.")
+        else:
+            _ml_scorer = None
+    except Exception as e:
+        print(f"  ML scorer skipped: {e}")
+        _ml_scorer = None
+
     print(f"\nRunning backtest on {len(data)} symbols ...")
 
     trades: List[Trade] = []
@@ -970,6 +986,16 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 net_score, direction, reason = _score_bar(row, prev, df_15m, df_1h, now_ts)
             except Exception as e:
                 continue
+
+            # ── ML Ensemble Boost ─────────────────────────────────────────────
+            if _ml_scorer is not None:
+                try:
+                    ml_boost, ml_reason = _ml_scorer.get_score_boost(df, idx, direction)
+                    net_score += ml_boost
+                    if ml_reason:
+                        reason = reason + "+" + ml_reason if reason else ml_reason
+                except Exception:
+                    pass
 
             # ── Breadth + sector alignment boost ─────────────────────────────
             if _breadth_state is not None and _sector_bias is not None:
