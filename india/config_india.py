@@ -222,3 +222,29 @@ STRATEGIES_ENABLED           = _flag("INDIA_STRATEGIES_ENABLED")            # ga
 DYNAMIC_KELLY_ENABLED   = bool(os.getenv("INDIA_DYNAMIC_KELLY",    "True") == "True")
 MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",    "0.02"))   # 2% hard cap per trade
 ANTI_MARTINGALE_ENABLED = bool(os.getenv("INDIA_ANTI_MARTINGALE",  "True") == "True")
+
+# ── Unit 4: Breadth & Sector Filter ─────────────────────────────────────────
+BREADTH_FILTER_ENABLED      = True   # market breadth gate (no counter-trend)
+SECTOR_FILTER_ENABLED       = True   # sector momentum alignment filter
+BREADTH_REFRESH_MINUTES     = 15     # how often to recompute breadth (minutes)
+
+# ── Unit 3: Advanced Risk ─────────────────────────────────────────────────────
+SORTINO_ENABLED             = True   # use Sortino in Kelly sizing
+CVAR_SIZING_ENABLED         = True   # CVaR-based position cap
+TIME_OF_DAY_SIZING_ENABLED  = True   # reduce size in afternoon
+INTRADAY_CIRCUIT_ENABLED    = True   # halt if down 3% intraday
+
+# ── New Entry Rules ──────────────────────────────────────────────────────────
+NO_ENTRY_AFTER_HOUR         = 13     # no new entries after 13:30 IST (backtest)
+NO_ENTRY_AFTER_MINUTE       = 30
+
+# ── Enhanced Indicators ──────────────────────────────────────────────────────
+SUPERTREND_ENABLED          = True   # Supertrend in scoring
+STOCH_RSI_ENABLED           = True   # Stochastic RSI in scoring
+SQUEEZE_ENABLED             = True   # TTM Squeeze in scoring
+BOS_ENABLED                 = True   # Break of Structure in scoring
+
+# ── New Strategies ───────────────────────────────────────────────────────────
+EMA21_PULLBACK_ENABLED      = True   # First pullback to EMA21 (68% WR)
+LIQUIDITY_GRAB_ENABLED      = True   # Liquidity grab + reversal (71% WR)
+INSIDE_BAR_ENABLED          = True   # Inside bar breakout (62% WR)

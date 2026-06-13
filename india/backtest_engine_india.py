@@ -714,7 +714,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 22.0   # net score threshold (lowered from 28 — signals are directional, not cumulative)
+MIN_SCORE    = 25.0   # net score threshold (raised from 22 — expanded scoring adds supertrend/stochRSI/squeeze/BoS/breadth/strategies)
 MAX_OPEN     = 7      # max simultaneous positions (raised for diversification)
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
@@ -723,6 +723,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                  capital: float = 500_000.0):
     from auth_upstox import get_upstox_client, verify_connection
     import data_fetch_upstox as dfu
+
+    # ── Breadth/sector filter (fail-open if module not present) ──────────────
+    try:
+        from breadth_sector_filter import BreadthCache
+        _breadth_cache = BreadthCache(refresh_minutes=15)
+        _use_breadth = True
+    except ImportError:
+        _breadth_cache = None
+        _use_breadth = False
+
+    # Initialize daily circuit breaker
+    try:
+        from risk_manager import set_daily_start_equity as _set_start
+        _set_start(capital)
+    except Exception:
+        pass
 
     print("Connecting to Upstox API ...")
     client = get_upstox_client()
@@ -914,6 +930,24 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if bar_time_now > dtime(13, 30):
             continue
 
+        # Skip new entries if circuit breaker tripped
+        try:
+            from risk_manager import check_intraday_circuit as _circuit
+            if _circuit(equity) in ('HALT', 'EMERGENCY'):
+                continue
+        except Exception:
+            pass
+
+        # ── Market breadth gate (refresh every 15 min) ───────────────────────
+        _breadth_state = None
+        _sector_bias   = None
+        if _use_breadth and _breadth_cache is not None:
+            try:
+                _breadth_state = _breadth_cache.get(data, now_ts)
+                _sector_bias   = _breadth_cache.get_sector(data, now_ts)
+            except Exception:
+                pass
+
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
@@ -937,6 +971,51 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception as e:
                 continue
 
+            # ── Breadth + sector alignment boost ─────────────────────────────
+            if _breadth_state is not None and _sector_bias is not None:
+                try:
+                    from breadth_sector_filter import get_breadth_score_boost
+                    b_delta, b_reason = get_breadth_score_boost(
+                        sym, _breadth_state, _sector_bias, direction)
+                    net_score += b_delta
+                    if b_reason:
+                        reason = reason + "+" + b_reason if reason else b_reason
+                except Exception:
+                    pass
+
+            # Pre-filter: skip clearly weak signals before calling new strategies
+            if abs(net_score) < 18.0:
+                continue
+
+            # ── New strategies boost (called with full DataFrame context) ─────
+            try:
+                from strategies_india import (ema21_pullback_signal,
+                                               liquidity_grab_signal,
+                                               inside_bar_breakout_signal)
+                # EMA21 Pullback
+                _s4, _r4 = ema21_pullback_signal(df, idx)
+                if _s4 > 0:
+                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
+                elif _s4 < 0:
+                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
+                # Liquidity Grab
+                _s5, _r5 = liquidity_grab_signal(df, idx)
+                if _s5 != 0:
+                    net_score += _s5; reason = reason + "+" + _r5 if reason else _r5
+                # Inside Bar
+                _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
+                if _s6 != 0:
+                    net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
+
+                # Re-determine direction after new strategies
+                if net_score > 0:
+                    direction = "LONG"
+                elif net_score < 0:
+                    direction = "SHORT"
+            except Exception:
+                pass
+
+            # Final threshold check after all score adjustments
             if abs(net_score) < MIN_SCORE:
                 continue
 
@@ -952,6 +1031,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
             # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
+
+            # Time-of-day risk reduction
+            try:
+                from risk_manager import time_of_day_multiplier as _tod_mult
+                tod_factor = _tod_mult(now_ts)
+                risk_pct = risk_pct * tod_factor
+            except Exception:
+                pass
             sl_dist  = abs(entry - sl)
             qty = int(min(equity * risk_pct / sl_dist,
                           equity * MAX_POS_PCT / entry))
