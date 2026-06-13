@@ -883,6 +883,34 @@ MIN_SCORE    = 25.0   # net score threshold (raised from 22 — expanded scoring
 MAX_OPEN     = 7      # max simultaneous positions (raised for diversification)
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
+# Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
+_ADAPTIVE_MIN_SCORE = MIN_SCORE
+_ADAPTIVE_WIN_HISTORY: list = []   # rolling win/loss (1/0)
+_ADAPTIVE_UPDATE_EVERY = 20         # update every 20 trades
+
+def _update_adaptive_threshold(pnl: float):
+    """Call after each trade to update the adaptive signal threshold."""
+    global _ADAPTIVE_MIN_SCORE, _ADAPTIVE_WIN_HISTORY
+    _ADAPTIVE_WIN_HISTORY.append(1 if pnl > 0 else 0)
+    if len(_ADAPTIVE_WIN_HISTORY) > 40:
+        _ADAPTIVE_WIN_HISTORY = _ADAPTIVE_WIN_HISTORY[-40:]
+
+    if len(_ADAPTIVE_WIN_HISTORY) >= _ADAPTIVE_UPDATE_EVERY:
+        rolling_wr = sum(_ADAPTIVE_WIN_HISTORY[-20:]) / 20
+
+        # High win rate (>65%): relax threshold slightly to get more trades
+        if rolling_wr >= 0.65:
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 3.0, 18.0)
+        # Good win rate (55-65%): keep at base
+        elif rolling_wr >= 0.55:
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE
+        # Acceptable (45-55%): tighten slightly
+        elif rolling_wr >= 0.45:
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 3.0
+        # Poor (<45%): tighten significantly
+        else:
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 6.0
+
 
 def run_backtest(symbols: List[str], from_date: str, to_date: str,
                  capital: float = 500_000.0):
@@ -1001,6 +1029,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     _upd_streak(pnl)
                 except Exception:
                     pass
+                try:
+                    _update_adaptive_threshold(t.pnl)
+                except Exception:
+                    pass
                 continue
 
             hi = bar["high"]; lo = bar["low"]
@@ -1022,6 +1054,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 try:
                     from risk_manager import update_streak as _upd_streak
                     _upd_streak(pnl)
+                except Exception:
+                    pass
+                try:
+                    _update_adaptive_threshold(t.pnl)
                 except Exception:
                     pass
                 continue
@@ -1075,6 +1111,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                                 _upd_streak(t.pnl)
                             except Exception:
                                 pass
+                            try:
+                                _update_adaptive_threshold(t.pnl)
+                            except Exception:
+                                pass
                             chandelier_triggered = True
                     else:  # SHORT
                         chandelier = float(lookback_22["low"].min()) + 2.5 * atr22
@@ -1091,6 +1131,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             try:
                                 from risk_manager import update_streak as _upd_streak
                                 _upd_streak(t.pnl)
+                            except Exception:
+                                pass
+                            try:
+                                _update_adaptive_threshold(t.pnl)
                             except Exception:
                                 pass
                             chandelier_triggered = True
@@ -1111,6 +1155,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     try:
                         from risk_manager import update_streak as _upd_streak
                         _upd_streak(t.pnl)
+                    except Exception:
+                        pass
+                    try:
+                        _update_adaptive_threshold(t.pnl)
                     except Exception:
                         pass
 
@@ -1223,7 +1271,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 pass
 
             # Final threshold check after all score adjustments
-            if abs(net_score) < MIN_SCORE:
+            if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
 
             # ATR-based SL/TP
