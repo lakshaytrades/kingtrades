@@ -80,7 +80,12 @@ SQUAREOFF   = dtime(15, 20)
 
 
 def _make_replay_config():
-    """Clone config_india into a namespace with live-only boosters disabled."""
+    """Clone config_india into a namespace with live-only boosters disabled.
+
+    Score thresholds are lowered for replay because ~25 live-only signal
+    sources are disabled. Base price/volume signals score 25-50 vs. 65-85
+    in live mode. Replay threshold of 20 captures the same relative edge.
+    """
     import config_india as base
     from types import SimpleNamespace
     attrs = {k: getattr(base, k) for k in dir(base) if not k.startswith("__")}
@@ -88,6 +93,12 @@ def _make_replay_config():
     for flag in _LIVE_ONLY_FLAGS:
         if hasattr(cfg, flag):
             setattr(cfg, flag, False)
+    # Lower score gates proportionally (live boosters disabled → raw scores lower)
+    cfg.MIN_SIGNAL_SCORE     = 20.0   # live=63, replay base signals score 25-45
+    cfg.FINAL_EXEC_MIN_SCORE = 22.0   # live=67
+    cfg.GRAND_SLAM_MIN_SCORE = 35.0   # live=82
+    if hasattr(cfg, "IDLE_SCALP_MIN_SCORE"):
+        cfg.IDLE_SCALP_MIN_SCORE = 18.0
     return cfg
 
 
