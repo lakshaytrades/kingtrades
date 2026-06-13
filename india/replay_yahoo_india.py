@@ -75,11 +75,11 @@ def fetch_yahoo_5m(symbol: str, days: int = 59) -> pd.DataFrame | None:
     return df if len(df) > 50 else None
 
 
-def replay(symbols, days):
+def replay(symbols, days, step=3):
     cfg = _make_replay_config()
     gen = IndiaSignalGenerator(cfg, watchlist=symbols)
 
-    print(f"Fetching real Yahoo 5-min candles ({days}d) for {len(symbols)} symbols...")
+    print(f"Fetching real Yahoo 5-min candles ({days}d) for {len(symbols)} symbols...", flush=True)
     data = {}
     for s in symbols:
         df = fetch_yahoo_5m(s, days)
@@ -105,7 +105,7 @@ def replay(symbols, days):
                     continue
                 open_trade = None
                 bars = day_df
-                for i in range(MIN_BARS, len(bars)):
+                for i in range(MIN_BARS, len(bars), step):
                     ts = bars.index[i]
                     if ts.time() < WARMUP_TIME:
                         continue
@@ -148,6 +148,7 @@ def replay(symbols, days):
                     _simulate_exit(tr, future)
                     trades.append(tr)
                     open_trade = None  # exit simulated fully within the day
+            print(f"  [{sym}] done — cumulative trades: {len(trades)}", flush=True)
     finally:
         dfd.get_ohlcv_multi_tf = orig_hook
 
@@ -199,6 +200,7 @@ if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--symbols", type=str, default="")
     ap.add_argument("--days", type=int, default=59)
+    ap.add_argument("--step", type=int, default=3, help="evaluate every Nth 5-min bar")
     a = ap.parse_args()
     syms = [s.strip().upper() for s in a.symbols.split(",") if s.strip()] or DEFAULT_SYMBOLS
-    replay(syms, a.days)
+    replay(syms, a.days, step=a.step)
