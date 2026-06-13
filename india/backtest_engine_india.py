@@ -589,6 +589,81 @@ _REGIME_MULTS: Dict[str, Dict[str, float]] = {
 }
 
 
+def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
+                df_15m: Optional[pd.DataFrame]) -> Tuple[bool, str]:
+    """
+    Fast pre-filter — kills known false-positive signal patterns before
+    running the full scoring engine.  Fail-open: returns (False, "") on error.
+
+    Kills:
+    1. ADX < 15            : pure noise
+    2. ATR < 0.18% price   : no room to profit after costs (~29 bps round-trip)
+    3. ATR > 4.5% price    : extreme event risk / circuit breaker territory
+    4. RVOL < 0.35         : dead volume, no institutional participation
+    5. Bar move < 0.04%    : doji / micro-congestion
+    6. MACD cross vs EMA50 : MACD bull-cross while price 2.5% below EMA50 = weak
+    7. 15m hard counter    : 15m full bear stack + 5m MACD bull cross = unreliable
+    """
+    try:
+        def g(r, col, default=0.0):
+            v = r.get(col, default)
+            return float(v) if v is not None and not (
+                isinstance(v, float) and (pd.isna(v) or np.isinf(v))
+            ) else default
+
+        c      = g(row,  "close", 1.0)
+        p_c    = g(prev, "close", c)
+        atr    = g(row,  "atr",   c * 0.005)
+        adx    = g(row,  "adx",   20)
+        rvol   = g(row,  "rvol",  1.0)
+        ema50  = g(row,  "ema50", c)
+        macd_h = g(row,  "macd_hist", 0)
+        p_macd = g(prev, "macd_hist", 0)
+
+        if c <= 0:
+            return True, "INVALID_PRICE"
+
+        atr_pct = atr / c * 100
+
+        if adx < 15:
+            return True, "PRE_NO_TREND"
+        if atr_pct < 0.18:
+            return True, "PRE_ATR_SMALL"
+        if atr_pct > 4.5:
+            return True, "PRE_ATR_EXTREME"
+        if rvol < 0.35:
+            return True, "PRE_DEAD_VOL"
+
+        bar_move = abs(c - p_c) / max(p_c, 1e-9) * 100
+        if bar_move < 0.04:
+            return True, "PRE_DOJI"
+
+        ema50_dist = (c - ema50) / max(ema50, 1e-9) * 100
+        macd_just_bull = macd_h > 0 and p_macd <= 0
+        macd_just_bear = macd_h < 0 and p_macd >= 0
+        if macd_just_bull and ema50_dist < -2.5:
+            return True, "PRE_MACD_VS_EMA50"
+        if macd_just_bear and ema50_dist >  2.5:
+            return True, "PRE_MACD_VS_EMA50"
+
+        if df_15m is not None and len(df_15m) >= 5:
+            try:
+                r15 = df_15m.iloc[-1]
+                e9  = float(r15.get("ema9",  c) or c)
+                e21 = float(r15.get("ema21", c) or c)
+                e50 = float(r15.get("ema50", c) or c)
+                if macd_just_bull and e9 < e21 < e50 and ema50_dist < -1.5:
+                    return True, "PRE_15M_HARD_BEAR"
+                if macd_just_bear and e9 > e21 > e50 and ema50_dist >  1.5:
+                    return True, "PRE_15M_HARD_BULL"
+            except Exception:
+                pass
+
+        return False, ""
+    except Exception:
+        return False, ""
+
+
 def _detect_regime(nifty_df: pd.DataFrame) -> Tuple[str, Dict[str, float]]:
     """
     Detect market regime from Nifty50 OHLCV data.  OHLCV-only — no live APIs.
@@ -666,7 +741,7 @@ class Trade:
                  "entry_time", "t1_done", "exit_price", "exit_time", "pnl", "r_mult",
                  "chandelier_sl", "atr_at_entry",
                  "stage1_done", "stage1_price", "stage2_price",
-                 "stage1_qty", "stage2_qty", "runner_qty", "be_sl")
+                 "stage1_qty", "stage2_qty", "runner_qty", "be_sl", "reason")
 
     def __init__(self, symbol, direction, entry, sl, t1, t2, qty, ts, atr_at_entry=0.0):
         self.symbol = symbol; self.direction = direction
@@ -681,6 +756,7 @@ class Trade:
         self.stage2_qty = 0
         self.runner_qty = 0
         self.be_sl = 0.0           # break-even stop
+        self.reason = ""           # signal reason string for attribution
 
 
 def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
@@ -986,6 +1062,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     max_dd = 0.0
     equity_curve = [capital]
     wins = losses = 0
+    pre_filter_kills = 0
+    strategy_counts: Dict[str, int]   = {}
+    strategy_pnl:    Dict[str, float] = {}
     # Dynamic Kelly: rolling list of per-trade P&Ls as fraction of capital
     recent_trades: List[float] = []
 
@@ -1211,6 +1290,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             _f1h = data_1h.get(sym)
             df_1h  = _f1h.loc[:now_ts]  if _f1h  is not None and not _f1h.empty  else None
 
+            # ── Pre-filter: kill known false-positive patterns (fast path) ───
+            try:
+                _skip, _skip_r = _pre_filter(row, prev, now_ts, df_15m)
+                if _skip:
+                    pre_filter_kills += 1
+                    continue
+            except Exception:
+                pass
+
             try:
                 net_score, direction, reason = _score_bar(row, prev, df_15m, df_1h, now_ts)
             except Exception as e:
@@ -1323,6 +1411,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
             except Exception:
                 pass
+            trade.reason = reason
             open_trades[sym] = trade
 
     # Close any still-open trades at last price
@@ -1340,10 +1429,31 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             else: losses += 1
             recent_trades.append(pnl / max(capital, 1e-9))
 
-    _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data))
+    # Build strategy attribution from trade reasons
+    _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
+                   "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
+                   "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
+                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM"]
+    for t in trades:
+        r = getattr(t, "reason", "") or ""
+        matched = False
+        for key in _STRAT_KEYS:
+            if key in r:
+                strategy_counts[key] = strategy_counts.get(key, 0) + 1
+                strategy_pnl[key]    = strategy_pnl.get(key, 0.0) + t.pnl
+                matched = True
+                break
+        if not matched:
+            strategy_counts["OTHER"] = strategy_counts.get("OTHER", 0) + 1
+            strategy_pnl["OTHER"]    = strategy_pnl.get("OTHER", 0.0) + t.pnl
+
+    _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
+            pre_filter_kills=pre_filter_kills,
+            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl)
 
 
-def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_syms):
+def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_syms,
+            pre_filter_kills=0, strategy_counts=None, strategy_pnl=None):
     print()
     print("=" * 70)
     print("  NSE Momentum Bot — Engine Backtest Report")
@@ -1470,6 +1580,27 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
     if hold_times:
         print(f"\n  Avg Hold Time: {statistics.mean(hold_times):.0f} min  |  "
               f"Max: {max(hold_times):.0f} min  |  Min: {min(hold_times):.0f} min")
+
+    # Pre-filter stats
+    if pre_filter_kills > 0:
+        total_signals = len(trades) + pre_filter_kills
+        print(f"\n  Pre-Filter: Blocked {pre_filter_kills:,} false signals "
+              f"({pre_filter_kills / max(total_signals, 1):.1%} of raw candidates)")
+        print(f"  Signal Quality: {len(trades) / max(total_signals, 1):.1%} passed filter")
+
+    # Strategy attribution
+    if strategy_counts:
+        print()
+        print("  Strategy Attribution (by P&L):")
+        sorted_strats = sorted(strategy_counts.items(),
+                               key=lambda x: strategy_pnl.get(x[0], 0), reverse=True)
+        for strat, count in sorted_strats:
+            pnl_s = (strategy_pnl or {}).get(strat, 0)
+            pnl_pct = pnl_s / max(capital, 1) * 100
+            print(f"    {strat:25s}: {count:3d} trades  ₹{pnl_s:+,.0f}  ({pnl_pct:+.2f}%)")
+
+    print()
+    print("=" * 70)
 
 
 def main():
