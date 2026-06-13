@@ -32,6 +32,96 @@ from pattern_recognition import PatternRecognizer, IndicatorSet
 logger = logging.getLogger("signal_india")
 IST = ZoneInfo("Asia/Kolkata")
 
+# ── Module-level VIX cooldown tracker ─────────────────────────────────────────
+_vix_cooldown_until = None  # IST timestamp when VIX cooldown expires
+
+
+def _detect_fair_value_gaps(df_15m, current_price: float) -> tuple:
+    """
+    Detect if price is currently filling a Fair Value Gap (FVG) on 15m.
+
+    Bullish FVG: gap between candle[i-2] high and candle[i] low (price imbalance)
+    When price returns to fill this gap = high-probability LONG entry.
+
+    Returns: (score_boost: int, reason: str)
+    """
+    try:
+        if df_15m is None or len(df_15m) < 5 or current_price <= 0:
+            return 0, ""
+
+        df = df_15m.tail(20)
+        price = current_price
+
+        for i in range(2, len(df)):
+            c_prev2 = df.iloc[i-2]
+            c_curr  = df.iloc[i]
+
+            h_prev2 = float(c_prev2.get("high", 0) or 0)
+            l_curr  = float(c_curr.get("low", 0) or 0)
+            l_prev2 = float(c_prev2.get("low", 0) or 0)
+            h_curr  = float(c_curr.get("high", 0) or 0)
+
+            # Bullish FVG: gap above (c[i-2] high < c[i] low)
+            if h_prev2 > 0 and l_curr > h_prev2:
+                gap_top = l_curr
+                gap_bot = h_prev2
+                # Price returning to fill this bullish FVG = LONG entry
+                if gap_bot * 0.998 <= price <= gap_top * 1.002:
+                    return 10, "FVG_BULL_FILL"
+
+            # Bearish FVG: gap below (c[i-2] low > c[i] high)
+            if l_prev2 > 0 and h_curr < l_prev2:
+                gap_top = l_prev2
+                gap_bot = h_curr
+                # Price returning to fill this bearish FVG = SHORT entry
+                if gap_bot * 0.998 <= price <= gap_top * 1.002:
+                    return -10, "FVG_BEAR_FILL"
+
+        return 0, ""
+    except Exception:
+        return 0, ""
+
+
+def _detect_bos_live(df_5m, df_15m, direction: str) -> tuple:
+    """
+    Break of Structure — confirms trend continuation.
+    Bullish BoS: price breaks above previous 15m swing high.
+    Bearish BoS: price breaks below previous 15m swing low.
+    Returns: (score_boost: int, reason: str)
+    """
+    try:
+        if df_15m is None or len(df_15m) < 15:
+            return 0, ""
+
+        df = df_15m.tail(25)
+        highs  = df["high"].values
+        lows   = df["low"].values
+        closes = df["close"].values
+
+        if len(closes) < 10:
+            return 0, ""
+
+        # Last swing high/low (in bars -15 to -5, avoiding most recent 4 bars)
+        lookback_h = highs[:-4][-15:]
+        lookback_l = lows[:-4][-15:]
+        swing_high = float(max(lookback_h)) if len(lookback_h) > 0 else 0
+        swing_low  = float(min(lookback_l)) if len(lookback_l) > 0 else 0
+
+        last_close = float(closes[-1])
+        prev_close = float(closes[-2]) if len(closes) > 1 else last_close
+
+        if direction == "LONG":
+            if prev_close < swing_high and last_close > swing_high * 1.001:
+                return 12, "BOS_BULL_15M_LIVE"
+        elif direction == "SHORT":
+            if prev_close > swing_low and last_close < swing_low * 0.999:
+                return 12, "BOS_BEAR_15M_LIVE"
+
+        return 0, ""
+    except Exception:
+        return 0, ""
+
+
 # ── Regime names ──────────────────────────────────────────────────────────────
 REGIME_BULL_TREND    = "BULL_TREND"
 REGIME_BEAR_TREND    = "BEAR_TREND"
@@ -436,7 +526,7 @@ class IndiaSignalGenerator:
 
             # ── Institutional boosters ────────────────────────────────────────
             score = self._apply_institutional_boosters(
-                symbol, direction, score, df_5m, ltp, ind, current_price
+                symbol, direction, score, df_5m, ltp, ind, current_price, df_15m
             )
 
             if score <= -990:  # shock event flag from NLP god mode
@@ -523,19 +613,21 @@ class IndiaSignalGenerator:
             # HAF has `evaluate()` but India bot was calling `apply_all_gates()` (doesn't exist)
             # → AttributeError always caught silently → grade="B" unconditionally.
             # This deterministic grading uses the actual final score correctly.
+            # Thresholds raised: A+ ≥85 (was 82), A ≥80 (was 78), B+ ≥73 (was 72)
+            # Multipliers: A+ 1.5x (was 1.35), A 1.2x (was 1.0), B+ 0.9x (was 0.8), B 0.7x (was 0.65)
             grand_slam = self._config.GRAND_SLAM_MIN_SCORE
             if score >= grand_slam:
                 quality_grade = "A+"
-                size_mult     = 1.35
-            elif score >= 78:
+                size_mult     = 1.5
+            elif score >= 80:
                 quality_grade = "A"
-                size_mult     = 1.00
-            elif score >= 72:
+                size_mult     = 1.2
+            elif score >= 73:
                 quality_grade = "B+"
-                size_mult     = 0.80
+                size_mult     = 0.9
             else:
                 quality_grade = "B"
-                size_mult     = 0.65
+                size_mult     = 0.7
 
             security_id = get_security_id(symbol) or ""
             _vix_now = getattr(self, '_last_india_vix', 0.0)
@@ -917,14 +1009,16 @@ class IndiaSignalGenerator:
                 return None
 
             # Re-grade with final score (cross all grade bands after all boosters)
+            # Thresholds raised: A+ ≥85 (was 82), A ≥80 (was 78), B+ ≥73 (was 72)
+            # Multipliers: A+ 1.5x (was 1.35), A 1.2x (was 1.0), B+ 0.9x (was 0.8), B 0.7x (was 0.65)
             if score >= grand_slam:
-                sig.quality_grade, _base_mult = "A+", 1.35
-            elif score >= 78:
-                sig.quality_grade, _base_mult = "A", 1.00
-            elif score >= 72:
-                sig.quality_grade, _base_mult = "B+", 0.80
+                sig.quality_grade, _base_mult = "A+", 1.5
+            elif score >= 80:
+                sig.quality_grade, _base_mult = "A", 1.2
+            elif score >= 73:
+                sig.quality_grade, _base_mult = "B+", 0.9
             else:
-                sig.quality_grade, _base_mult = "B", 0.65
+                sig.quality_grade, _base_mult = "B", 0.7
             sig.size_multiplier = round(_base_mult * _phase_size_mult, 3)
 
             # ── Idle scalp mode adjustments ───────────────────────────────────
@@ -1206,11 +1300,34 @@ class IndiaSignalGenerator:
 
     def _check_not_choppy(self, df: pd.DataFrame) -> bool:
         """
-        Reject choppy price action: 2+ direction alternations in last 4 bars.
-        Trending = at most 1 alternation (e.g. up-up-down or down-up-up).
-        Choppy = alternates every bar (up-down-up or down-up-down).
+        Reject choppy price action: >2 direction alternations in last 6 bars.
+        Trending = at most 2 alternations across 6 bars.
+        Uses a 0.03% noise filter so tiny ticks don't count as direction changes.
+        Falls back to the old 4-bar check if fewer than 7 bars are available.
         """
         try:
+            if len(df) >= 7:
+                # Tighter check: last 6 bars, allow ≤2 alternations
+                last6 = df.iloc[-7:-1]
+                directions_6 = []
+                for i in range(1, len(last6)):
+                    curr = float(last6.iloc[i].get("close", 0) if hasattr(last6.iloc[i], "get") else last6.iloc[i]["close"])
+                    prev = float(last6.iloc[i-1].get("close", 0) if hasattr(last6.iloc[i-1], "get") else last6.iloc[i-1]["close"])
+                    if curr > prev * 1.0003:
+                        directions_6.append(1)
+                    elif curr < prev * 0.9997:
+                        directions_6.append(-1)
+                    else:
+                        directions_6.append(0)
+
+                alternations_6 = sum(
+                    1 for i in range(1, len(directions_6))
+                    if directions_6[i] != 0 and directions_6[i-1] != 0 and
+                       directions_6[i] != directions_6[i-1]
+                )
+                return alternations_6 <= 2
+
+            # Fallback: original 4-bar check (≤1 alternation)
             if len(df) < 4:
                 return True
             closes = df["close"].iloc[-4:].values
@@ -1227,11 +1344,22 @@ class IndiaSignalGenerator:
         Fetch ^INDIAVIX via yfinance (cached 30 min).
         VIX >= 28.0 (EXTREME): block all signals.
         VIX >= 22.0 (HIGH): allow but flag for size reduction.
+        VIX > 24 and trending up: 30-minute cooldown on new entries.
         Stores self._last_india_vix for downstream sizing.
         Fail-open: returns True on any error.
         """
+        global _vix_cooldown_until
         try:
             now = datetime.now(IST)
+
+            # ── VIX cooldown check ─────────────────────────────────────────────
+            if _vix_cooldown_until is not None and now < _vix_cooldown_until:
+                logger.debug(
+                    f"India VIX cooldown active until "
+                    f"{_vix_cooldown_until.strftime('%H:%M:%S IST')} — blocking entry"
+                )
+                return False
+
             cache_valid = (
                 hasattr(self, "_vix_cache_value")
                 and hasattr(self, "_vix_cache_time")
@@ -1264,6 +1392,46 @@ class IndiaSignalGenerator:
             if vix >= 28.0:
                 logger.debug(f"India VIX {vix:.1f} >= 28.0 EXTREME — all signals blocked")
                 return False   # EXTREME: block all
+
+            # ── VIX trend check: if VIX > 24 and spiking, set 30-min cooldown ─
+            try:
+                vix_history = getattr(self, "_vix_history", [])
+                vix_history.append(vix)
+                if len(vix_history) > 10:
+                    vix_history = vix_history[-10:]
+                self._vix_history = vix_history
+
+                if len(vix_history) >= 5:
+                    # Simple EMA comparison: 3-bar vs 5-bar EMA
+                    def _simple_ema(vals, span):
+                        alpha = 2.0 / (span + 1)
+                        ema = vals[0]
+                        for v in vals[1:]:
+                            ema = alpha * v + (1 - alpha) * ema
+                        return ema
+
+                    ema3 = _simple_ema(vix_history[-3:], 3)
+                    ema5 = _simple_ema(vix_history[-5:], 5)
+                    vix_trending_up = ema3 > ema5
+
+                    if vix > 24 and vix_trending_up:
+                        _vix_cooldown_until = now + timedelta(minutes=30)
+                        self._vix_size_mult = self._vix_size_mult * 0.7
+                        logger.info(
+                            f"India VIX {vix:.1f} > 24 and trending up "
+                            f"(EMA3={ema3:.1f} > EMA5={ema5:.1f}) — "
+                            f"30-min cooldown set, size ×0.7"
+                        )
+                        return False  # Cooldown — block this entry
+
+                    # VIX trending up but not yet > 24: reduce size 20%
+                    if vix_trending_up and vix >= 20:
+                        self._vix_size_mult = self._vix_size_mult * 0.8
+                        logger.debug(
+                            f"India VIX {vix:.1f} trending up — size dampened ×0.8"
+                        )
+            except Exception as _vt_err:
+                logger.debug(f"_check_india_vix trend check (fail-open): {_vt_err}")
 
             # VIX >= 22.0: allow but flag for size reduction (handled in boosters)
             return True
@@ -1382,7 +1550,8 @@ class IndiaSignalGenerator:
     def _apply_institutional_boosters(self, symbol: str, direction: str,
                                       score: float, df_5m: pd.DataFrame,
                                       ltp: float, ind: IndicatorSet,
-                                      current_price: float) -> float:
+                                      current_price: float,
+                                      df_15m: Optional[pd.DataFrame] = None) -> float:
         # India VIX size adjustment — dampen score in high-VIX environments
         _vix = getattr(self, '_last_india_vix', 0.0)
         if _vix >= 22.0:
@@ -1682,6 +1851,27 @@ class IndiaSignalGenerator:
                     logger.debug(f"{symbol}: ML_GODMODE {_ml_d:+.0f} {_ml_r}")
             except Exception as _mle:
                 logger.debug(f"[suppressed] ml_signal_india: {_mle}")
+
+        # ── Fair Value Gap Confluence ──────────────────────────────────────────
+        try:
+            fvg_boost, fvg_reason = _detect_fair_value_gaps(df_15m, current_price or ltp)
+            if fvg_boost > 0 and direction == "LONG":
+                score = min(100.0, score + fvg_boost)
+                logger.debug(f"{symbol}: {fvg_reason} +{fvg_boost}")
+            elif fvg_boost < 0 and direction == "SHORT":
+                score = min(100.0, score + abs(fvg_boost))
+                logger.debug(f"{symbol}: {fvg_reason} +{abs(fvg_boost)}")
+        except Exception:
+            pass
+
+        # ── Break of Structure (BoS) Confluence ───────────────────────────────
+        try:
+            bos_boost, bos_reason = _detect_bos_live(df_5m, df_15m, direction)
+            if bos_boost > 0:
+                score = min(100.0, score + bos_boost)
+                logger.debug(f"{symbol}: {bos_reason} +{bos_boost}")
+        except Exception:
+            pass
 
         return score
 
