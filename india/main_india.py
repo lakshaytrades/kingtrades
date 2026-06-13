@@ -1661,11 +1661,13 @@ class SataVectorIndia:
                     try:
                         _df5 = _gohlcv(_sym, "5m", 30, self._dhan)
                         if _df5 is not None and len(_df5) >= 20:
-                            _ind = (
-                                _rec.compute_indicators(_df5)
-                                if hasattr(_rec, "compute_indicators")
-                                else _rec.get_latest_indicators(_df5)
-                            )
+                            # Correct in-repo API: PatternRecognizer exposes a
+                            # TechnicalIndicators engine via `.indicators`. Neither
+                            # `compute_indicators` nor a bare `get_latest_indicators`
+                            # exists on PatternRecognizer, so the old branch crashed
+                            # (silently caught) and this candidate path never ran.
+                            _eng = _rec.indicators
+                            _ind = _eng.get_latest_indicators(_eng.compute(_df5))
                             if _ind is None:
                                 continue
                             _dir = self._generator._get_direction(_ind, _df5)

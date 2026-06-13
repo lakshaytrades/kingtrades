@@ -136,7 +136,14 @@ class IndiaSignalGenerator:
             if ltp <= 0:
                 return None
 
-            ind = self._recognizer.compute_indicators(df_5m)
+            # PatternRecognizer has no `compute_indicators` method; the correct
+            # in-repo API (as used inside PatternRecognizer.analyze) is to run
+            # the TechnicalIndicators engine: compute() then get_latest_indicators().
+            # The previous call raised AttributeError on EVERY bar and was silently
+            # swallowed by the outer try/except, so this generator never produced
+            # a single signal. This restores a functioning signal core.
+            _ind_engine = self._recognizer.indicators
+            ind = _ind_engine.get_latest_indicators(_ind_engine.compute(df_5m))
             if ind is None:
                 return None
 
