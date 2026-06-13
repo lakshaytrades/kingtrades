@@ -811,6 +811,76 @@ def _detect_regime(nifty_df: pd.DataFrame) -> Tuple[str, Dict[str, float]]:
         return _safe_default
 
 
+def _compute_nifty_proxy(
+    data: Dict[str, pd.DataFrame],
+    now_ts,
+    lookback_bars: int = 20,
+) -> Dict[str, float]:
+    """
+    Compute Nifty50 proxy from average performance of loaded symbols.
+    Returns dict with: trend_score (-1 to +1), pct_above_vwap, pct_above_ema21
+
+    Used to determine broad market direction without requiring Nifty OHLCV data.
+    """
+    scores = []
+    n_above_vwap  = 0
+    n_above_ema21 = 0
+    n_total       = 0
+
+    for sym, df in data.items():
+        try:
+            if now_ts not in df.index:
+                continue
+            idx = df.index.get_loc(now_ts)
+            if idx < lookback_bars:
+                continue
+
+            row  = df.iloc[idx]
+            c    = float(row.get("close", 0) or 0)
+            vwap = float(row.get("vwap",  0) or 0)
+            e21  = float(row.get("ema21", 0) or 0)
+            e9   = float(row.get("ema9",  0) or 0)
+            e50  = float(row.get("ema50", 0) or 0)
+            adx  = float(row.get("adx",   0) or 0)
+
+            if c <= 0:
+                continue
+
+            n_total += 1
+
+            # Trend score for this symbol: -3 to +3
+            sym_score = 0
+            if e9  > 0 and c  > e9:  sym_score += 1
+            if e21 > 0 and e9 > e21: sym_score += 1
+            if e50 > 0 and e21 > e50: sym_score += 1
+            if e9  > 0 and c  < e9:  sym_score -= 1
+            if e21 > 0 and e9 < e21: sym_score -= 1
+            if e50 > 0 and e21 < e50: sym_score -= 1
+
+            # Apply ADX weight: stronger trend = more weight
+            weight = 1.0 + min(adx, 40) / 40.0
+            scores.append(sym_score * weight)
+
+            if vwap > 0 and c > vwap:  n_above_vwap += 1
+            if e21  > 0 and c > e21:   n_above_ema21 += 1
+
+        except Exception:
+            continue
+
+    if n_total == 0:
+        return {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
+
+    avg_score = sum(scores) / len(scores) if scores else 0
+    # Normalize to -1 to +1
+    trend_score = max(-1.0, min(1.0, avg_score / 2.0))
+
+    return {
+        "trend_score":    trend_score,
+        "pct_above_vwap": n_above_vwap  / n_total,
+        "pct_above_ema21": n_above_ema21 / n_total,
+    }
+
+
 # ── Trade class ───────────────────────────────────────────────────────────────
 
 class Trade:
@@ -958,12 +1028,24 @@ def _dynamic_kelly_size(recent_trades: list, capital: float,
 # ── Resample helpers ──────────────────────────────────────────────────────────
 
 def _resample(df: pd.DataFrame, rule: str) -> Optional[pd.DataFrame]:
+    """Resample 5-min OHLCV to higher timeframe (e.g. '15min', '1h').
+    Preserves timezone info from original index."""
+    if df is None or df.empty:
+        return None
     try:
-        r = df.resample(rule).agg({
-            "open": "first", "high": "max", "low": "min",
-            "close": "last", "volume": "sum"
-        }).dropna()
-        return _compute_all(r) if not r.empty else None
+        agg = {
+            "open":   "first",
+            "high":   "max",
+            "low":    "min",
+            "close":  "last",
+            "volume": "sum",
+        }
+        # Only aggregate columns that exist
+        agg = {k: v for k, v in agg.items() if k in df.columns}
+        result = df.resample(rule, closed="left", label="left").agg(agg).dropna()
+        if result.empty:
+            return None
+        return _compute_all(result)
     except Exception:
         return None
 
@@ -1032,8 +1114,8 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 38.0   # net score threshold (raised from 25 — tighter filter to reduce false positives and improve win rate)
-MAX_OPEN     = 7      # max simultaneous positions (raised for diversification)
+MIN_SCORE    = 38.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
+MAX_OPEN     = 5      # max simultaneous positions
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
@@ -1174,6 +1256,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         pass
 
     all_ts = sorted(set().union(*[set(df.index) for df in data.values()]))
+    _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
+    _nifty_proxy_ts = None
 
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 25) or now_ts.time() > dtime(15, 0):
@@ -1379,6 +1463,42 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
 
+        # ── Nifty proxy regime (refresh every 15 min) ────────────────────────
+        if (_nifty_proxy_ts is None or
+                (now_ts - _nifty_proxy_ts).total_seconds() >= 900):
+            try:
+                _nifty_proxy_cache = _compute_nifty_proxy(data, now_ts)
+                _nifty_proxy_ts = now_ts
+            except Exception:
+                pass
+
+        _mkt_trend = _nifty_proxy_cache.get("trend_score", 0)
+        _pct_vwap  = _nifty_proxy_cache.get("pct_above_vwap", 0.5)
+
+        # Strong market bias gates:
+        # If > 70% of stocks above VWAP → only LONG entries (or skip)
+        # If < 30% of stocks above VWAP → only SHORT entries (or skip)
+        _long_only_market  = _pct_vwap >= 0.70
+        _short_only_market = _pct_vwap <= 0.30
+
+        # Cap entries if too many open trades are stressed
+        _stressed = 0
+        for _st in open_trades.values():
+            if _st.direction == "LONG":
+                _cur = data.get(_st.symbol)
+                if _cur is not None and now_ts in _cur.index:
+                    _px = float(_cur.loc[now_ts].get("close", _st.entry))
+                    if _px < _st.entry - 0.5 * _st.atr_at_entry:
+                        _stressed += 1
+            else:
+                _cur = data.get(_st.symbol)
+                if _cur is not None and now_ts in _cur.index:
+                    _px = float(_cur.loc[now_ts].get("close", _st.entry))
+                    if _px > _st.entry + 0.5 * _st.atr_at_entry:
+                        _stressed += 1
+        if _stressed >= 2:
+            continue  # Too many stressed trades — wait
+
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
@@ -1393,9 +1513,24 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
             # Slice pre-computed resamples up to current bar (no repeated resampling)
             _f15 = data_15m.get(sym)
-            df_15m = _f15.loc[:now_ts] if _f15 is not None and not _f15.empty else None
+            df_15m = None
+            if _f15 is not None and not _f15.empty:
+                try:
+                    # Handle tz mismatch gracefully
+                    _slice15 = _f15.loc[:now_ts]
+                    df_15m = _slice15 if not _slice15.empty else None
+                except Exception:
+                    # Fallback: use tail of resampled data
+                    df_15m = _f15.tail(10) if len(_f15) > 0 else None
+
             _f1h = data_1h.get(sym)
-            df_1h  = _f1h.loc[:now_ts]  if _f1h  is not None and not _f1h.empty  else None
+            df_1h = None
+            if _f1h is not None and not _f1h.empty:
+                try:
+                    _slice1h = _f1h.loc[:now_ts]
+                    df_1h = _slice1h if not _slice1h.empty else None
+                except Exception:
+                    df_1h = _f1h.tail(5) if len(_f1h) > 0 else None
 
             # ── Pre-filter: kill known false-positive patterns (fast path) ───
             try:
@@ -1468,6 +1603,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Final threshold check after all score adjustments
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
+
+            # Market direction filter
+            if _long_only_market and direction == "SHORT":
+                continue   # Market is bullish — skip counter-trend SHORT
+            if _short_only_market and direction == "LONG":
+                continue   # Market is bearish — skip counter-trend LONG
 
             # ATR-based SL/TP
             atr = row.get("atr", row["close"] * 0.005)
