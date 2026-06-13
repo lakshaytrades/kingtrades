@@ -330,8 +330,8 @@ def _intraday_seasonality_boost(bar_ts, direction: str, adx: float) -> Tuple[flo
             else:
                 return 3.0, "POWER_HOUR"
 
-        # Opening hour: 9:15-10:15 — highest momentum predictability
-        elif dtime(9, 15) <= t < dtime(10, 15):
+        # Opening momentum: 9:45-10:15 AM (after false opening moves settle)
+        elif dtime(9, 45) <= t < dtime(10, 15):
             return 6.0, "OPENING_HOUR_BULL" if direction == "LONG" else "OPENING_HOUR_BEAR"
 
         # Late morning: 10:15-11:30 — solid trend following
@@ -682,6 +682,17 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
     7. 15m hard counter    : 15m full bear stack + 5m MACD bull cross = unreliable
     """
     try:
+        # Hard block: opening 30 minutes (9:15-9:44 AM)
+        # Indicators use yesterday's data at open → directionally unreliable
+        bar_t = bar_ts.time() if hasattr(bar_ts, 'time') else None
+        if bar_t is not None:
+            from datetime import time as _t
+            if bar_t < _t(9, 45):
+                return True, "OPENING_BLACKOUT"
+            # Lunch lull: 12:30-13:30 IST — low volume, choppy
+            if _t(12, 30) <= bar_t <= _t(13, 30):
+                return True, "LUNCH_LULL"
+
         def g(r, col, default=0.0):
             v = r.get(col, default)
             return float(v) if v is not None and not (
@@ -1539,6 +1550,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     df_1h = _slice1h if not _slice1h.empty else None
                 except Exception:
                     df_1h = _f1h.tail(5) if len(_f1h) > 0 else None
+
+            # Require minimum 6 intraday 5-min bars before scoring (30 min of data)
+            _today_d = now_ts.date()
+            _today_df_slice = df[df.index.date == _today_d]
+            _bars_today = len(_today_df_slice[_today_df_slice.index <= now_ts])
+            if _bars_today < 7:  # Need 7 bars = 9:15 + 9:20 + 9:25 + 9:30 + 9:35 + 9:40 + 9:45
+                continue
 
             # ── Pre-filter: kill known false-positive patterns (fast path) ───
             try:

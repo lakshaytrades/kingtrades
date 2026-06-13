@@ -434,6 +434,21 @@ class IndiaSignalGenerator:
             if ind is None:
                 return None
 
+            # ── Opening blackout + lunch lull gate ────────────────────────────
+            # No signals in opening 30 minutes (stale indicators) or lunch lull
+            try:
+                from datetime import time as _t
+                _now_check = datetime.now(IST)
+                _bt = _now_check.time()
+                if _bt < _t(9, 45):
+                    logger.debug(f"{symbol}: OPENING_BLACKOUT — no signals before 9:45 AM IST")
+                    return None
+                if _t(12, 30) <= _bt <= _t(13, 30):
+                    logger.debug(f"{symbol}: LUNCH_LULL — no signals 12:30-13:30 IST")
+                    return None
+            except Exception:
+                pass
+
             # ── Check idle scalp mode ──────────────────────────────────────────
             _is_scalp_mode = False
             try:
