@@ -508,7 +508,9 @@ def _detect_regime(nifty_df: pd.DataFrame) -> Tuple[str, Dict[str, float]]:
 class Trade:
     __slots__ = ("symbol", "direction", "entry", "sl", "t1", "t2", "qty",
                  "entry_time", "t1_done", "exit_price", "exit_time", "pnl", "r_mult",
-                 "chandelier_sl", "atr_at_entry")
+                 "chandelier_sl", "atr_at_entry",
+                 "stage1_done", "stage1_price", "stage2_price",
+                 "stage1_qty", "stage2_qty", "runner_qty", "be_sl")
 
     def __init__(self, symbol, direction, entry, sl, t1, t2, qty, ts, atr_at_entry=0.0):
         self.symbol = symbol; self.direction = direction
@@ -516,6 +518,13 @@ class Trade:
         self.qty = qty; self.entry_time = ts; self.t1_done = False
         self.exit_price = None; self.exit_time = None; self.pnl = 0.0; self.r_mult = 0.0
         self.chandelier_sl = 0.0; self.atr_at_entry = atr_at_entry
+        self.stage1_done = False   # 25% taken at 0.5R
+        self.stage1_price = 0.0   # 0.5R target
+        self.stage2_price = 0.0   # 1.0R target
+        self.stage1_qty = 0
+        self.stage2_qty = 0
+        self.runner_qty = 0
+        self.be_sl = 0.0           # break-even stop
 
 
 def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
@@ -861,6 +870,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     pass
                 continue
 
+            # ── Stage 1 exit: 25% at 0.5R ─────────────────────────────────
+            if (not t.stage1_done and t.stage1_price > 0 and t.stage1_qty > 0):
+                hit_s1 = (long and hi >= t.stage1_price) or (not long and lo <= t.stage1_price)
+                if hit_s1:
+                    pnl_s1 = ((t.stage1_price - t.entry) if long else (t.entry - t.stage1_price)) * t.stage1_qty
+                    pnl_s1 -= t.entry * t.stage1_qty * COST_RT_PCT / 2
+                    equity += pnl_s1
+                    t.pnl += pnl_s1
+                    t.stage1_done = True
+                    # Tighten SL to entry after 0.5R (not full break-even yet)
+                    new_sl = t.entry if long else t.entry
+                    if long and new_sl > t.sl:
+                        t.sl = new_sl
+                    elif not long and new_sl < t.sl:
+                        t.sl = new_sl
+
             if not t.t1_done:
                 t1_hit = (hi >= t.t1) if long else (lo <= t.t1)
                 if t1_hit:
@@ -1065,6 +1090,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 risk_pct = risk_pct * tod_factor
             except Exception:
                 pass
+
+            # ── Portfolio Volatility Targeting ──────────────────────────────
+            try:
+                from risk_manager import apply_vol_target_to_risk as _vol_target
+                risk_pct = _vol_target(risk_pct, equity_curve)
+            except Exception:
+                pass
             sl_dist  = abs(entry - sl)
             qty = int(min(equity * risk_pct / sl_dist,
                           equity * MAX_POS_PCT / entry))
@@ -1072,6 +1104,21 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
 
             trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
+            try:
+                from risk_manager import compute_exit_stages as _exits
+                _stages = _exits(entry, atr, direction, qty)
+                trade.stage1_price = _stages["stage1_price"]
+                trade.stage2_price = _stages["stage2_price"]
+                trade.stage1_qty   = _stages["stage1_qty"]
+                trade.stage2_qty   = _stages["stage2_qty"]
+                trade.runner_qty   = _stages["runner_qty"]
+                trade.be_sl        = _stages["be_sl"]
+                trade.sl           = _stages["sl"]
+                # Override t1 and t2 with stage prices
+                trade.t1 = _stages["stage2_price"]
+                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
+            except Exception:
+                pass
             open_trades[sym] = trade
 
     # Close any still-open trades at last price
