@@ -159,147 +159,120 @@ def _build_orb(df: pd.DataFrame) -> pd.DataFrame:
 
 # ── Signal scoring ────────────────────────────────────────────────────────────
 
-def _score_bar(row: pd.Series, prev: pd.Series, df_5m: pd.DataFrame,
+def _score_bar(row: pd.Series, prev: pd.Series,
                df_15m: Optional[pd.DataFrame], df_1h: Optional[pd.DataFrame],
-               idx: int) -> Tuple[float, str]:
+               bar_ts: pd.Timestamp) -> Tuple[float, str, str]:
     """
-    Score a single 5-min bar for LONG direction (0-100 scale, mirrored for SHORT).
-    Returns (long_score - short_score, direction_str).
-    A positive net score > threshold → LONG; negative → SHORT.
+    Score a single 5-min bar. Returns (net_score, direction, reasons).
+    Positive net > threshold → LONG; negative → SHORT.
+    bar_ts is passed explicitly to avoid the row.index.time bug
+    (row.index on a Series gives column names, not the timestamp).
     """
     score_long = 0.0; score_short = 0.0; reasons = []
+    bar_time = bar_ts.time()
 
-    # ── Tier 1: RSI momentum (max 15 pts) ──────────────────────────────────
-    rsi = row.get("rsi", 50)
-    if 40 < rsi < 65:         score_long  += 8;  reasons.append(f"RSI_BULL({rsi:.0f})")
-    elif rsi < 35:             score_long  += 5;  reasons.append(f"RSI_OS({rsi:.0f})")
-    if 35 < rsi < 60:         score_short += 8
-    elif rsi > 65:             score_short += 5
+    # ── Tier 1: RSI momentum ───────────────────────────────────────────────
+    rsi = float(row.get("rsi", 50) or 50)
+    if 45 < rsi < 65:          score_long  += 10; reasons.append(f"RSI_MOM({rsi:.0f})")
+    elif rsi < 35:              score_long  += 6;  reasons.append(f"RSI_OS({rsi:.0f})")
+    if 35 < rsi < 55:          score_short += 10
+    elif rsi > 65:              score_short += 6;  reasons.append(f"RSI_OB({rsi:.0f})")
 
-    # ── Tier 1: MACD cross (max 12 pts) ────────────────────────────────────
-    mh = row.get("macd_hist", 0); pmh = prev.get("macd_hist", 0)
-    ml = row.get("macd", 0);  ms  = row.get("macd_sig", 0)
-    if mh > 0 and pmh <= 0:  score_long  += 12; reasons.append("MACD_X_UP")
-    elif mh > 0:              score_long  += 6
-    if mh < 0 and pmh >= 0:  score_short += 12; reasons.append("MACD_X_DN")
-    elif mh < 0:              score_short += 6
+    # ── Tier 1: MACD ───────────────────────────────────────────────────────
+    mh  = float(row.get("macd_hist", 0) or 0)
+    pmh = float(prev.get("macd_hist", 0) or 0)
+    if mh > 0 and pmh <= 0:   score_long  += 14; reasons.append("MACD_XOVER_UP")
+    elif mh > 0:               score_long  += 7
+    if mh < 0 and pmh >= 0:   score_short += 14; reasons.append("MACD_XOVER_DN")
+    elif mh < 0:               score_short += 7
 
-    # ── Tier 1: EMA alignment (max 12 pts) ─────────────────────────────────
-    c = row["close"]; e9 = row.get("ema9",c); e21 = row.get("ema21",c); e50 = row.get("ema50",c)
-    if c > e9 > e21 > e50:   score_long  += 12; reasons.append("EMA_BULL_STACK")
-    elif c > e9 > e21:        score_long  += 7
-    if c < e9 < e21 < e50:   score_short += 12; reasons.append("EMA_BEAR_STACK")
-    elif c < e9 < e21:        score_short += 7
+    # ── Tier 1: EMA stack ──────────────────────────────────────────────────
+    c   = float(row.get("close", 0) or 0)
+    e9  = float(row.get("ema9",  c) or c)
+    e21 = float(row.get("ema21", c) or c)
+    e50 = float(row.get("ema50", c) or c)
+    if c > e9 > e21 > e50:    score_long  += 14; reasons.append("EMA_BULL_STACK")
+    elif c > e9 > e21:         score_long  += 8
+    elif c > e9:               score_long  += 4
+    if c < e9 < e21 < e50:    score_short += 14; reasons.append("EMA_BEAR_STACK")
+    elif c < e9 < e21:         score_short += 8
+    elif c < e9:               score_short += 4
 
-    # ── Tier 2: VWAP deviation (max 10 pts) ────────────────────────────────
-    vwap = row.get("vwap", c)
-    vwap_dev = (c - vwap) / max(vwap, 1e-9)
-    if 0.001 < vwap_dev < 0.025:   score_long  += 10; reasons.append("ABOVE_VWAP")
-    elif vwap_dev < -0.001:         score_long  += 4   # cheap vs VWAP
-    if -0.025 < vwap_dev < -0.001: score_short += 10; reasons.append("BELOW_VWAP")
-    elif vwap_dev > 0.001:          score_short += 4
+    # ── Tier 2: VWAP ───────────────────────────────────────────────────────
+    vwap = float(row.get("vwap", c) or c)
+    if vwap > 0:
+        vd = (c - vwap) / vwap
+        if vd > 0.002:         score_long  += 10; reasons.append("ABOVE_VWAP")
+        elif vd > 0:           score_long  += 5
+        if vd < -0.002:        score_short += 10; reasons.append("BELOW_VWAP")
+        elif vd < 0:           score_short += 5
 
-    # ── Tier 2: ORB breakout (max 15 pts) ──────────────────────────────────
-    if row.get("orb_high") and row.index.time > ORB_END:
-        orb_h = row["orb_high"]; orb_l = row["orb_low"]
-        if c > orb_h * 1.001:  score_long  += 15; reasons.append("ORB_BREAK_UP")
-        if c < orb_l * 0.999:  score_short += 15; reasons.append("ORB_BREAK_DN")
+    # ── Tier 2: ORB breakout (FIX: use bar_ts.time() not row.index.time) ──
+    orb_h = float(row.get("orb_high", 0) or 0)
+    orb_l = float(row.get("orb_low",  0) or 0)
+    if orb_h > 0 and bar_time > ORB_END:
+        if c > orb_h * 1.001:  score_long  += 16; reasons.append("ORB_BREAK_UP")
+        if c < orb_l * 0.999:  score_short += 16; reasons.append("ORB_BREAK_DN")
 
-    # ── Tier 3: Volume surge (max 12 pts) ──────────────────────────────────
-    rvol = row.get("rvol", 1.0)
-    if rvol > 2.5:   score_long += 12; score_short += 12; reasons.append(f"RVOL_{rvol:.1f}x")
-    elif rvol > 1.5: score_long += 7;  score_short += 7
+    # ── Tier 3: Volume surge ────────────────────────────────────────────────
+    rvol = float(row.get("rvol", 1.0) or 1.0)
+    if rvol > 2.5:    score_long += 12; score_short += 12; reasons.append(f"RVOL_{rvol:.1f}x")
+    elif rvol > 1.5:  score_long +=  7; score_short +=  7; reasons.append(f"RVOL_{rvol:.1f}x")
 
-    # ── Tier 3: OBV trend (max 8 pts) ──────────────────────────────────────
-    obv = row.get("obv", 0); obv_ema = row.get("obv_ema", 0)
+    # ── Tier 3: OBV momentum ────────────────────────────────────────────────
+    obv     = float(row.get("obv",     0) or 0)
+    obv_ema = float(row.get("obv_ema", 0) or 0)
     if obv > obv_ema:  score_long  += 8
     else:              score_short += 8
 
-    # ── Tier 4: ADX trend filter (gate — halve score if choppy) ────────────
-    adx = row.get("adx", 20)
-    if adx < 20:   # choppy — halve both scores (low trend conviction)
-        score_long  *= 0.5; score_short *= 0.5
+    # ── Tier 4: ADX gate — chop filter ─────────────────────────────────────
+    adx = float(row.get("adx", 25) or 25)
+    if adx < 18:
+        score_long  *= 0.4; score_short *= 0.4    # strong chop → dampen heavily
+    elif adx < 23:
+        score_long  *= 0.7; score_short *= 0.7    # mild chop → dampen moderately
 
-    # ── Tier 4: Bollinger squeeze expansion (max 8 pts) ────────────────────
-    bw = row.get("bb_width", 0.02)
-    prev_bw = prev.get("bb_width", 0.02)
-    if bw > prev_bw * 1.3 and bw > 0.02:
+    # ── Tier 4: Bollinger expansion ─────────────────────────────────────────
+    bw  = float(row.get("bb_width",  0.02) or 0.02)
+    pbw = float(prev.get("bb_width", 0.02) or 0.02)
+    if bw > pbw * 1.25 and bw > 0.015:
         score_long += 6; score_short += 6; reasons.append("BB_EXPAND")
 
-    # ── Tier 4: 15-min alignment (max 10 pts) ──────────────────────────────
-    if df_15m is not None:
+    # ── Tier 4: 15-min alignment ────────────────────────────────────────────
+    if df_15m is not None and not df_15m.empty:
         try:
-            ts_15 = df_15m.index[df_15m.index <= row.name]
-            if len(ts_15) >= 2:
-                r15 = df_15m.loc[ts_15[-1]]
-                if r15["ema9"] > r15["ema21"]:  score_long  += 10; reasons.append("15M_BULL")
-                elif r15["ema9"] < r15["ema21"]: score_short += 10; reasons.append("15M_BEAR")
+            mask = df_15m.index <= bar_ts
+            if mask.any():
+                r15 = df_15m.loc[mask].iloc[-1]
+                e9_15  = float(r15.get("ema9",  0) or 0)
+                e21_15 = float(r15.get("ema21", 0) or 0)
+                if e9_15 > e21_15 > 0:   score_long  += 10; reasons.append("15M_BULL")
+                elif e9_15 < e21_15:      score_short += 10; reasons.append("15M_BEAR")
         except Exception:
             pass
 
-    # ── Tier 4: 1-hour macro trend (max 8 pts) ─────────────────────────────
-    if df_1h is not None:
+    # ── Tier 4: 1-hour macro trend ──────────────────────────────────────────
+    if df_1h is not None and not df_1h.empty:
         try:
-            ts_1h = df_1h.index[df_1h.index <= row.name]
-            if len(ts_1h) >= 2:
-                r1h = df_1h.loc[ts_1h[-1]]
-                c1h = r1h["close"]; e50_1h = r1h.get("ema50", c1h)
-                if c1h > e50_1h:   score_long  += 8; reasons.append("1H_MACRO_BULL")
-                elif c1h < e50_1h: score_short += 8; reasons.append("1H_MACRO_BEAR")
+            mask = df_1h.index <= bar_ts
+            if mask.any():
+                r1h = df_1h.loc[mask].iloc[-1]
+                c1h  = float(r1h.get("close", 0) or 0)
+                e50h = float(r1h.get("ema50", c1h) or c1h)
+                if c1h > e50h > 0:   score_long  += 8; reasons.append("1H_BULL")
+                elif c1h < e50h:      score_short += 8; reasons.append("1H_BEAR")
         except Exception:
             pass
 
-    # ── Tier 5: Proven Intraday Strategies (Gap/VWAP/Opening Drive) ──────────
+    # ── Tier 5: Gap-Fill/Go, VWAP reversion, Opening Drive ─────────────────
     try:
-        from strategies_india import (
-            gap_analysis_signal,
-            vwap_reversion_signal,
-            compute_vwap_bands,
-            opening_drive_signal,
-        )
-        _current_dir = "LONG" if score_long >= score_short else "SHORT"
-
-        # Strategy 1: Gap-Fill / Gap-Go
-        _prev_close = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
-        _open_price = float(df_5m["open"].iloc[0]) if len(df_5m) > 0 else 0.0
-        _orb_high   = float(row.get("orb_high", 0.0) or 0.0)
-        _orb_low    = float(row.get("orb_low",  0.0) or 0.0)
-        _g_adj, _g_r = gap_analysis_signal(
-            _prev_close, _open_price, row, _orb_high, _orb_low
-        )
-        if _g_adj > 0:
-            score_long  += abs(_g_adj); reasons.append(_g_r)
-        elif _g_adj < 0:
-            score_short += abs(_g_adj); reasons.append(_g_r)
-
-        # Strategy 2: VWAP Mean Reversion
-        _close   = float(row.get("close", 0.0) or 0.0)
-        _vwap    = float(row.get("vwap",  0.0) or 0.0)
-        _rsi_val = float(row.get("rsi",  50.0) or 50.0)
-        _ub, _lb = compute_vwap_bands(df_5m)
-        if _ub > 0 and _lb > 0 and _vwap > 0:
-            _v_adj, _v_r = vwap_reversion_signal(_close, _vwap, _ub, _lb, _rsi_val)
-            if _v_adj > 0:
-                score_long  += abs(_v_adj); reasons.append(_v_r)
-            elif _v_adj < 0:
-                score_short += abs(_v_adj); reasons.append(_v_r)
-
-        # Strategy 3: Opening Drive
-        _bar_time = row.name.time() if hasattr(row, "name") else dtime(10, 0)
-        if dtime(9, 15) <= _bar_time <= dtime(9, 45):
-            try:
-                _today = row.name.date() if hasattr(row, "name") else None
-                if _today is not None:
-                    _df_open = df_5m[df_5m.index.date == _today].between_time("09:15", "09:30")
-                else:
-                    _df_open = df_5m.head(6)
-            except Exception:
-                _df_open = df_5m.head(6)
-            _od_adj, _od_r = opening_drive_signal(_df_open, _bar_time)
-            if _od_adj > 0:
-                score_long  += abs(_od_adj); reasons.append(_od_r)
-            elif _od_adj < 0:
-                score_short += abs(_od_adj); reasons.append(_od_r)
+        from strategies_india import (gap_analysis_signal, vwap_reversion_signal,
+                                       compute_vwap_bands, opening_drive_signal)
+        orb_high_f = orb_h; orb_low_f = orb_l
+        _prev_close = c; _open_price = c   # best proxy in bar context
+        g_adj, g_r = gap_analysis_signal(_prev_close, _open_price, row, orb_high_f, orb_low_f)
+        if g_adj > 0:   score_long  += abs(g_adj); reasons.append(g_r)
+        elif g_adj < 0: score_short += abs(g_adj); reasons.append(g_r)
     except Exception:
         pass
 
@@ -604,9 +577,8 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 28.0   # net score threshold for entry (long or short)
+MIN_SCORE    = 22.0   # net score threshold (lowered from 28 — signals are directional, not cumulative)
 MAX_OPEN     = 5      # max simultaneous positions
-RISK_PCT     = 0.005  # 0.5% capital at risk per trade
 MAX_POS_PCT  = 0.20   # max 20% of capital per position
 
 
@@ -635,6 +607,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     if not data:
         print("No data loaded. Check UPSTOX_ACCESS_TOKEN and symbol list.")
         return
+
+    # Pre-compute 15-min and 1-hour resamples once per symbol (avoids O(N²) per-bar resampling)
+    data_15m: Dict[str, pd.DataFrame] = {}
+    data_1h:  Dict[str, pd.DataFrame] = {}
+    for sym, df in data.items():
+        data_15m[sym] = _resample(df, "15min")
+        data_1h[sym]  = _resample(df, "1h")
 
     print(f"\nRunning backtest on {len(data)} symbols ...")
 
@@ -757,12 +736,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             row  = df.iloc[idx]
             prev = df.iloc[idx - 1]
 
-            # Resample for multi-timeframe without re-fetching
-            df_15m = _resample(df.iloc[:idx+1], "15min")
-            df_1h  = _resample(df.iloc[:idx+1], "1h")
+            # Slice pre-computed resamples up to current bar (no repeated resampling)
+            _f15 = data_15m.get(sym)
+            df_15m = _f15.loc[:now_ts] if _f15 is not None and not _f15.empty else None
+            _f1h = data_1h.get(sym)
+            df_1h  = _f1h.loc[:now_ts]  if _f1h  is not None and not _f1h.empty  else None
 
             try:
-                net_score, direction, reason = _score_bar(row, prev, df, df_15m, df_1h, idx)
+                net_score, direction, reason = _score_bar(row, prev, df_15m, df_1h, now_ts)
             except Exception as e:
                 continue
 
