@@ -116,6 +116,70 @@ def _bollinger(close: pd.Series, n: int = 20, k: float = 2.0):
     return mid - k*std, mid, mid + k*std
 
 
+def _supertrend(high: pd.Series, low: pd.Series, close: pd.Series,
+                period: int = 10, mult: float = 3.0) -> pd.Series:
+    """Supertrend indicator — returns Series of +1 (bullish) or -1 (bearish)."""
+    atr = _atr(high, low, close, period)
+    hl2 = (high + low) / 2
+    upper = hl2 + mult * atr
+    lower = hl2 - mult * atr
+    direction = pd.Series(1, index=close.index, dtype=float)
+    for i in range(1, len(close)):
+        prev_upper = upper.iloc[i-1]
+        prev_lower = lower.iloc[i-1]
+        upper.iloc[i] = min(upper.iloc[i], prev_upper) if close.iloc[i-1] < prev_upper else upper.iloc[i]
+        lower.iloc[i] = max(lower.iloc[i], prev_lower) if close.iloc[i-1] > prev_lower else lower.iloc[i]
+        if close.iloc[i] > prev_upper:
+            direction.iloc[i] = 1
+        elif close.iloc[i] < prev_lower:
+            direction.iloc[i] = -1
+        else:
+            direction.iloc[i] = direction.iloc[i-1]
+    return direction  # +1 = bullish, -1 = bearish
+
+
+def _stoch_rsi(close: pd.Series, n: int = 14,
+               smooth_k: int = 3, smooth_d: int = 3) -> Tuple[pd.Series, pd.Series]:
+    """Stochastic RSI — returns (k, d) Series in 0-100 range."""
+    rsi = _rsi(close, n)
+    min_rsi = rsi.rolling(n).min()
+    max_rsi = rsi.rolling(n).max()
+    stoch = 100 * (rsi - min_rsi) / (max_rsi - min_rsi + 1e-9)
+    k = stoch.rolling(smooth_k).mean()
+    d = k.rolling(smooth_d).mean()
+    return k, d
+
+
+def _keltner(close: pd.Series, high: pd.Series, low: pd.Series,
+             n: int = 20, mult: float = 1.5) -> Tuple[pd.Series, pd.Series]:
+    """Keltner Channel — returns (upper, lower) Series."""
+    ema = close.ewm(span=n, adjust=False).mean()
+    atr = _atr(high, low, close, n)
+    return ema + mult * atr, ema - mult * atr
+
+
+def _squeeze(close: pd.Series, high: pd.Series, low: pd.Series,
+             bb_n: int = 20, bb_k: float = 2.0,
+             kc_n: int = 20, kc_mult: float = 1.5) -> pd.Series:
+    """TTM Squeeze — returns Series: 1=squeeze on (breakout imminent), 0=no squeeze."""
+    bb_lo = _bollinger(close, bb_n, bb_k)[0]
+    bb_hi = _bollinger(close, bb_n, bb_k)[2]
+    kc_hi, kc_lo = _keltner(close, high, low, kc_n, kc_mult)
+    # Squeeze: BB inside KC
+    squeeze = ((bb_lo > kc_lo) & (bb_hi < kc_hi)).astype(int)
+    return squeeze
+
+
+def _squeeze_momentum(close: pd.Series, high: pd.Series, low: pd.Series,
+                      n: int = 20) -> pd.Series:
+    """Squeeze momentum oscillator value — positive = bullish momentum."""
+    hl2 = (high + low) / 2
+    mid = (high.rolling(n).max() + low.rolling(n).min()) / 2
+    delta = close - (mid + close.rolling(n).mean()) / 2
+    momentum = delta.rolling(n).mean()
+    return momentum
+
+
 def _compute_all(df: pd.DataFrame) -> pd.DataFrame:
     """Compute full indicator stack on a 5-min OHLCV DataFrame."""
     out = df.copy()
@@ -136,6 +200,11 @@ def _compute_all(df: pd.DataFrame) -> pd.DataFrame:
     out["rvol"]    = v / out["vol_sma"].replace(0, 1e-9)
     out["bb_lo"], out["bb_mid"], out["bb_hi"] = _bollinger(c)
     out["bb_width"] = (out["bb_hi"] - out["bb_lo"]) / out["bb_mid"].replace(0, 1e-9)
+    out["supertrend"] = _supertrend(h, l, c)
+    out["stoch_k"], out["stoch_d"] = _stoch_rsi(c)
+    out["kc_hi"], out["kc_lo"] = _keltner(c, h, l)
+    out["squeeze"]    = _squeeze(c, h, l)
+    out["sq_mom"]     = _squeeze_momentum(c, h, l)
     return out
 
 
@@ -158,6 +227,34 @@ def _build_orb(df: pd.DataFrame) -> pd.DataFrame:
 
 
 # ── Signal scoring ────────────────────────────────────────────────────────────
+
+def _detect_bos(df_15m: Optional[pd.DataFrame]) -> Tuple[int, str]:
+    """
+    Break of Structure on 15m — returns (+1, reason) LONG, (-1, reason) SHORT, (0, '')
+    Bullish BoS: close breaks above last swing high (5-bar pivot)
+    Bearish BoS: close breaks below last swing low
+    """
+    if df_15m is None or len(df_15m) < 15:
+        return 0, ""
+    df = df_15m.tail(30)
+    closes = df["close"].values
+    highs  = df["high"].values
+    lows   = df["low"].values
+    if len(closes) < 10:
+        return 0, ""
+    # Find last swing high and low in bars -15 to -5 (avoid current)
+    swing_high = float(np.max(highs[:-5][-15:]))
+    swing_low  = float(np.min(lows[:-5][-15:]))
+    last_close = float(closes[-1])
+    prev_close = float(closes[-2])
+    # Bullish BoS: previous close below swing high, current close above
+    if prev_close < swing_high and last_close > swing_high * 1.001:
+        return 1, "BOS_BULL_15M"
+    # Bearish BoS: previous close above swing low, current close below
+    if prev_close > swing_low and last_close < swing_low * 0.999:
+        return -1, "BOS_BEAR_15M"
+    return 0, ""
+
 
 def _score_bar(row: pd.Series, prev: pd.Series,
                df_15m: Optional[pd.DataFrame], df_1h: Optional[pd.DataFrame],
@@ -276,6 +373,44 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     except Exception:
         pass
 
+    # ── Supertrend ──────────────────────────────────────────────────────────
+    st = float(row.get("supertrend", 0) or 0)
+    if st > 0:
+        score_long  += 12; reasons.append("SUPERTREND_BULL")
+    elif st < 0:
+        score_short += 12; reasons.append("SUPERTREND_BEAR")
+
+    # ── Stochastic RSI ──────────────────────────────────────────────────────
+    sk = float(row.get("stoch_k", 50) or 50)
+    sd = float(row.get("stoch_d", 50) or 50)
+    if sk < 20 and sk > sd:     # oversold + turning up
+        score_long  += 8;  reasons.append("STOCH_OS_BULL")
+    elif sk > 80 and sk < sd:   # overbought + turning down
+        score_short += 8;  reasons.append("STOCH_OB_BEAR")
+
+    # ── TTM Squeeze Firing ──────────────────────────────────────────────────
+    sq   = float(row.get("squeeze", 0) or 0)
+    sqm  = float(row.get("sq_mom", 0) or 0)
+    p_sq  = float(prev.get("squeeze", 0) or 0)
+    p_sqm = float(prev.get("sq_mom", 0) or 0)
+    # Squeeze just fired (was in squeeze, now out) with bullish momentum
+    if p_sq == 1 and sq == 0 and sqm > 0 and sqm > p_sqm:
+        score_long  += 14; reasons.append("SQUEEZE_FIRE_BULL")
+    elif p_sq == 1 and sq == 0 and sqm < 0 and sqm < p_sqm:
+        score_short += 14; reasons.append("SQUEEZE_FIRE_BEAR")
+    # In squeeze: add mild bias based on momentum direction
+    elif sq == 1 and sqm > 0:
+        score_long  += 4;  reasons.append("SQUEEZE_BUILD_BULL")
+    elif sq == 1 and sqm < 0:
+        score_short += 4;  reasons.append("SQUEEZE_BUILD_BEAR")
+
+    # ── Break of Structure (Smart Money Concepts) ────────────────────────────
+    bos, bos_reason = _detect_bos(df_15m)
+    if bos == 1:
+        score_long  += 12; reasons.append(bos_reason)
+    elif bos == -1:
+        score_short += 12; reasons.append(bos_reason)
+
     net = score_long - score_short
     direction = "LONG" if net > 0 else "SHORT"
     return net, direction, " | ".join(reasons)
@@ -372,13 +507,15 @@ def _detect_regime(nifty_df: pd.DataFrame) -> Tuple[str, Dict[str, float]]:
 
 class Trade:
     __slots__ = ("symbol", "direction", "entry", "sl", "t1", "t2", "qty",
-                 "entry_time", "t1_done", "exit_price", "exit_time", "pnl", "r_mult")
+                 "entry_time", "t1_done", "exit_price", "exit_time", "pnl", "r_mult",
+                 "chandelier_sl", "atr_at_entry")
 
-    def __init__(self, symbol, direction, entry, sl, t1, t2, qty, ts):
+    def __init__(self, symbol, direction, entry, sl, t1, t2, qty, ts, atr_at_entry=0.0):
         self.symbol = symbol; self.direction = direction
         self.entry = entry; self.sl = sl; self.t1 = t1; self.t2 = t2
         self.qty = qty; self.entry_time = ts; self.t1_done = False
         self.exit_price = None; self.exit_time = None; self.pnl = 0.0; self.r_mult = 0.0
+        self.chandelier_sl = 0.0; self.atr_at_entry = atr_at_entry
 
 
 def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
@@ -578,8 +715,8 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 # ── Main replay ───────────────────────────────────────────────────────────────
 
 MIN_SCORE    = 22.0   # net score threshold (lowered from 28 — signals are directional, not cumulative)
-MAX_OPEN     = 5      # max simultaneous positions
-MAX_POS_PCT  = 0.20   # max 20% of capital per position
+MAX_OPEN     = 7      # max simultaneous positions (raised for diversification)
+MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
 
 def run_backtest(symbols: List[str], from_date: str, to_date: str,
@@ -651,7 +788,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Square-off
             if now_ts.time() >= SQUAREOFF:
                 px = bar["close"]
-                qty_left = t.qty - (t.qty // 2 if t.t1_done else 0)
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
                 pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
@@ -669,10 +807,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
 
             hi = bar["high"]; lo = bar["low"]
+            c_bar = bar["close"]
             sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
             if sl_hit:
                 px = t.sl
-                qty_left = t.qty - (t.qty // 2 if t.t1_done else 0)
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
                 pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
@@ -692,15 +832,60 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if not t.t1_done:
                 t1_hit = (hi >= t.t1) if long else (lo <= t.t1)
                 if t1_hit:
-                    half = t.qty // 2 or 1
+                    half = int(t.qty * 0.4) or 1
                     pnl_partial = ((t.t1 - t.entry) if long else (t.entry - t.t1)) * half
                     equity += pnl_partial
                     t.t1_done = True; t.sl = t.entry   # BE stop for runner
 
             if t.t1_done:
+                runner = t.qty - (int(t.qty * 0.4) or 1)
+                # ── Chandelier Exit for runner ────────────────────────────────
+                chandelier_triggered = False
+                if sym in data and now_ts in data[sym].index:
+                    idx2 = data[sym].index.get_loc(now_ts)
+                    lookback_22 = data[sym].iloc[max(0, idx2-22):idx2+1]
+                    atr22 = float(lookback_22["atr"].iloc[-1]) if "atr" in lookback_22.columns else t.atr_at_entry
+                    if long:
+                        chandelier = float(lookback_22["high"].max()) - 2.5 * atr22
+                        if c_bar < chandelier and chandelier > t.sl:
+                            pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
+                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            equity += pnl_r; t.pnl += pnl_r
+                            t.exit_price = c_bar; t.exit_time = now_ts
+                            trades.append(t); del open_trades[sym]
+                            if t.pnl > 0: wins += 1
+                            else: losses += 1
+                            _pnl_frac = t.pnl / max(capital, 1e-9)
+                            recent_trades.append(_pnl_frac)
+                            try:
+                                from risk_manager import update_streak as _upd_streak
+                                _upd_streak(t.pnl)
+                            except Exception:
+                                pass
+                            chandelier_triggered = True
+                    else:  # SHORT
+                        chandelier = float(lookback_22["low"].min()) + 2.5 * atr22
+                        if c_bar > chandelier and chandelier < t.sl:
+                            pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
+                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            equity += pnl_r; t.pnl += pnl_r
+                            t.exit_price = c_bar; t.exit_time = now_ts
+                            trades.append(t); del open_trades[sym]
+                            if t.pnl > 0: wins += 1
+                            else: losses += 1
+                            _pnl_frac = t.pnl / max(capital, 1e-9)
+                            recent_trades.append(_pnl_frac)
+                            try:
+                                from risk_manager import update_streak as _upd_streak
+                                _upd_streak(t.pnl)
+                            except Exception:
+                                pass
+                            chandelier_triggered = True
+                if chandelier_triggered:
+                    continue
+                # ── T2 full exit (runner at 2R) ───────────────────────────────
                 t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
                 if t2_hit:
-                    runner = t.qty - (t.qty // 2 or 1)
                     pnl_r = ((t.t2 - t.entry) if long else (t.entry - t.t2)) * runner
                     pnl_r -= (t.entry * t.qty + t.t2 * t.qty) * COST_RT_PCT / 2
                     equity += pnl_r; t.pnl += pnl_r
@@ -722,6 +907,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
         # ── New entries ─────────────────────────────────────────────────────
         if len(open_trades) >= MAX_OPEN:
+            continue
+
+        # No new entries after 13:30 IST (time gate)
+        bar_time_now = now_ts.time()
+        if bar_time_now > dtime(13, 30):
             continue
 
         for sym, df in data.items():
@@ -768,7 +958,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if qty < 1:
                 continue
 
-            trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts)
+            trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
             open_trades[sym] = trade
 
     # Close any still-open trades at last price
@@ -776,7 +966,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if sym in data:
             px = data[sym]["close"].iloc[-1]
             long = t.direction == "LONG"
-            qty_left = t.qty - (t.qty // 2 if t.t1_done else 0)
+            partial_qty = int(t.qty * 0.4) or 1
+            qty_left = t.qty - (partial_qty if t.t1_done else 0)
             pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
             pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
@@ -872,6 +1063,49 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
     else:
         print(f"  ✗ Monthly {monthly:.1f}% — need higher WR or larger position")
     print("=" * 70)
+
+    # Monthly P&L breakdown
+    print()
+    print("  Monthly Breakdown:")
+    from collections import defaultdict
+    monthly_pnl = defaultdict(float)
+    monthly_trades = defaultdict(int)
+    for t in trades:
+        if t.exit_time:
+            key = t.exit_time.strftime("%Y-%m")
+            monthly_pnl[key] += t.pnl
+            monthly_trades[key] += 1
+    for month in sorted(monthly_pnl):
+        mpct = monthly_pnl[month] / capital * 100
+        print(f"    {month}: ₹{monthly_pnl[month]:+,.0f}  ({mpct:+.1f}%)  {monthly_trades[month]} trades")
+
+    # Time-of-day win rate
+    print()
+    print("  Win Rate by Time of Day:")
+    tod_wins = defaultdict(int); tod_total = defaultdict(int)
+    def _tod(ts):
+        if ts is None: return "unknown"
+        h = ts.time()
+        from datetime import time as dtime2
+        if h < dtime2(10, 0):  return "09:15-10:00"
+        if h < dtime2(11, 30): return "10:00-11:30"
+        if h < dtime2(13, 30): return "11:30-13:30"
+        return "13:30-15:20"
+    for t in trades:
+        slot = _tod(t.entry_time)
+        tod_total[slot] += 1
+        if t.pnl > 0: tod_wins[slot] += 1
+    for slot in ["09:15-10:00", "10:00-11:30", "11:30-13:30", "13:30-15:20"]:
+        if tod_total[slot]:
+            wr2 = tod_wins[slot] / tod_total[slot] * 100
+            print(f"    {slot}: {wr2:.0f}% WR  ({tod_total[slot]} trades)")
+
+    # Average hold time
+    hold_times = [(t.exit_time - t.entry_time).total_seconds() / 60
+                  for t in trades if t.exit_time and t.entry_time]
+    if hold_times:
+        print(f"\n  Avg Hold Time: {statistics.mean(hold_times):.0f} min  |  "
+              f"Max: {max(hold_times):.0f} min  |  Min: {min(hold_times):.0f} min")
 
 
 def main():
