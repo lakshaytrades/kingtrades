@@ -32,8 +32,13 @@ IST = ZoneInfo("Asia/Kolkata")
 
 logging.getLogger("urllib3").setLevel(logging.WARNING)
 
-# Upstox NSE instrument master (gzipped JSON of all NSE instruments)
-_INSTRUMENTS_URL = "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz"
+# Upstox NSE instrument master — try multiple URLs (Upstox changes these occasionally)
+_INSTRUMENTS_URLS = [
+    "https://assets.upstox.com/market-quote/instruments/exchange/NSE.json.gz",
+    "https://assets.upstox.com/market-quote/instruments/exchange/complete.json.gz",
+    "https://assets.upstox.com/market-quote/instruments/exchange/NSE.csv.gz",
+]
+_INSTRUMENTS_URL  = _INSTRUMENTS_URLS[0]   # kept for compat
 _INSTR_CACHE_PATH = Path(__file__).parent.parent / "data" / "upstox_instruments_nse.json"
 _INSTR_CACHE_TTL  = 86400   # refresh daily
 
@@ -56,19 +61,134 @@ _VIX_KEY   = "NSE_INDEX|India VIX"
 
 _NSE_INTERVAL_MAP = {"1m": "1", "5m": "5", "15m": "15", "1h": "60", "1d": "1440"}
 
-# Minimal fallback so the bot can run before the instrument master downloads.
-# ISINs of the most liquid NSE names. Extended automatically once master loads.
+# Comprehensive fallback — Nifty 50 + Next 50 + liquid midcaps.
+# Used when the Upstox instrument master download fails.
 _FALLBACK_MAP: Dict[str, str] = {
-    "RELIANCE":  "NSE_EQ|INE002A01018",
-    "TCS":       "NSE_EQ|INE467B01029",
-    "INFY":      "NSE_EQ|INE009A01021",
-    "HDFCBANK":  "NSE_EQ|INE040A01034",
-    "ICICIBANK": "NSE_EQ|INE090A01021",
-    "SBIN":      "NSE_EQ|INE062A01020",
-    "AXISBANK":  "NSE_EQ|INE238A01034",
-    "KOTAKBANK": "NSE_EQ|INE237A01028",
-    "HINDUNILVR":"NSE_EQ|INE030A01027",
-    "ITC":       "NSE_EQ|INE154A01025",
+    # Nifty 50 core
+    "RELIANCE":    "NSE_EQ|INE002A01018",
+    "TCS":         "NSE_EQ|INE467B01029",
+    "INFY":        "NSE_EQ|INE009A01021",
+    "HDFCBANK":    "NSE_EQ|INE040A01034",
+    "ICICIBANK":   "NSE_EQ|INE090A01021",
+    "SBIN":        "NSE_EQ|INE062A01020",
+    "AXISBANK":    "NSE_EQ|INE238A01034",
+    "KOTAKBANK":   "NSE_EQ|INE237A01028",
+    "HINDUNILVR":  "NSE_EQ|INE030A01027",
+    "ITC":         "NSE_EQ|INE154A01025",
+    "BHARTIARTL":  "NSE_EQ|INE397D01024",
+    "ASIANPAINT":  "NSE_EQ|INE021A01026",
+    "MARUTI":      "NSE_EQ|INE585B01010",
+    "BAJFINANCE":  "NSE_EQ|INE296A01024",
+    "WIPRO":       "NSE_EQ|INE075A01022",
+    "ADANIENT":    "NSE_EQ|INE423A01024",
+    "ADANIPORTS":  "NSE_EQ|INE742F01042",
+    "TATAMOTORS":  "NSE_EQ|INE155A01022",
+    "TATACONSUM":  "NSE_EQ|INE192A01025",
+    "TATASTEEL":   "NSE_EQ|INE081A01012",
+    "SUNPHARMA":   "NSE_EQ|INE044A01036",
+    "DRREDDY":     "NSE_EQ|INE089A01023",
+    "CIPLA":       "NSE_EQ|INE059A01026",
+    "DIVISLAB":    "NSE_EQ|INE361B01024",
+    "LT":          "NSE_EQ|INE018A01030",
+    "POWERGRID":   "NSE_EQ|INE752E01010",
+    "NTPC":        "NSE_EQ|INE733E01010",
+    "ONGC":        "NSE_EQ|INE213A01029",
+    "COALINDIA":   "NSE_EQ|INE522F01014",
+    "BAJAJFINSV":  "NSE_EQ|INE918I01026",
+    "HCLTECH":     "NSE_EQ|INE860A01027",
+    "TECHM":       "NSE_EQ|INE669C01036",
+    "NESTLEIND":   "NSE_EQ|INE239A01016",
+    "TITAN":       "NSE_EQ|INE280A01028",
+    "ULTRACEMCO":  "NSE_EQ|INE481G01011",
+    "JSWSTEEL":    "NSE_EQ|INE019A01038",
+    "GRASIM":      "NSE_EQ|INE047A01021",
+    "HEROMOTOCO":  "NSE_EQ|INE158A01026",
+    "EICHERMOT":   "NSE_EQ|INE066A01021",
+    "BPCL":        "NSE_EQ|INE029A01011",
+    "M&M":         "NSE_EQ|INE101A01026",
+    "HINDALCO":    "NSE_EQ|INE038A01020",
+    "BRITANNIA":   "NSE_EQ|INE216A01030",
+    "SBILIFE":     "NSE_EQ|INE123W01016",
+    "HDFCLIFE":    "NSE_EQ|INE795G01014",
+    "APOLLOHOSP":  "NSE_EQ|INE437A01024",
+    "DMART":       "NSE_EQ|INE192R01011",
+    "INDUSINDBK":  "NSE_EQ|INE095A01012",
+    "SHREECEM":    "NSE_EQ|INE070A01015",
+    "TRENT":       "NSE_EQ|INE849A01020",
+    # Nifty Next 50 / liquid midcaps
+    "BAJAJ-AUTO":  "NSE_EQ|INE917I01010",
+    "BAJAJ_AUTO":  "NSE_EQ|INE917I01010",
+    "BAJAJAUTO":   "NSE_EQ|INE917I01010",
+    "AMBUJACEM":   "NSE_EQ|INE079A01024",
+    "ACC":         "NSE_EQ|INE012A01025",
+    "ADANIGREEN":  "NSE_EQ|INE364U01010",
+    "ADANITRANS":  "NSE_EQ|INE931S01010",
+    "AUROPHARMA":  "NSE_EQ|INE406A01037",
+    "BANDHANBNK":  "NSE_EQ|INE545U01014",
+    "BANKBARODA":  "NSE_EQ|INE028A01039",
+    "BEL":         "NSE_EQ|INE263A01024",
+    "BERGEPAINT":  "NSE_EQ|INE463A01038",
+    "BIOCON":      "NSE_EQ|INE376G01013",
+    "BOSCHLTD":    "NSE_EQ|INE323A01026",
+    "CANBK":       "NSE_EQ|INE476A01014",
+    "CHOLAFIN":    "NSE_EQ|INE121A01024",
+    "COLPAL":      "NSE_EQ|INE259A01022",
+    "CONCOR":      "NSE_EQ|INE111A01025",
+    "DABUR":       "NSE_EQ|INE016A01026",
+    "DLF":         "NSE_EQ|INE271C01023",
+    "FEDERALBNK":  "NSE_EQ|INE171A01029",
+    "FORTIS":      "NSE_EQ|INE142G01027",
+    "GAIL":        "NSE_EQ|INE129A01019",
+    "GODREJCP":    "NSE_EQ|INE102D01028",
+    "GODREJPROP":  "NSE_EQ|INE484J01027",
+    "HAVELLS":     "NSE_EQ|INE176B01034",
+    "ICICIPRULI":  "NSE_EQ|INE726G01019",
+    "IDEA":        "NSE_EQ|INE669E01016",
+    "IDFCFIRSTB":  "NSE_EQ|INE818H01020",
+    "INDHOTEL":    "NSE_EQ|INE053A01029",
+    "INDUSTOWER":  "NSE_EQ|INE121J01017",
+    "IRCTC":       "NSE_EQ|INE335Y01020",
+    "IRFC":        "NSE_EQ|INE053F01010",
+    "JINDALSTEL":  "NSE_EQ|INE749A01030",
+    "JUBLFOOD":    "NSE_EQ|INE797F01012",
+    "LTF":         "NSE_EQ|INE523H01014",
+    "LTIM":        "NSE_EQ|INE214T01019",
+    "LUPIN":       "NSE_EQ|INE326A01037",
+    "MCDOWELL-N":  "NSE_EQ|INE562A01011",
+    "MFSL":        "NSE_EQ|INE247F01036",
+    "MOTHERSON":   "NSE_EQ|INE775A01035",
+    "MPHASIS":     "NSE_EQ|INE356A01018",
+    "MRF":         "NSE_EQ|INE883A01011",
+    "NAUKRI":      "NSE_EQ|INE663F01024",
+    "NHPC":        "NSE_EQ|INE848E01016",
+    "NMDC":        "NSE_EQ|INE584A01023",
+    "OBEROIRLTY":  "NSE_EQ|INE093I01010",
+    "OFSS":        "NSE_EQ|INE881D01027",
+    "PAGEIND":     "NSE_EQ|INE761H01022",
+    "PEL":         "NSE_EQ|INE142I01023",
+    "PERSISTENT":  "NSE_EQ|INE262H01021",
+    "PETRONET":    "NSE_EQ|INE347G01014",
+    "PFC":         "NSE_EQ|INE134E01011",
+    "PIDILITIND":  "NSE_EQ|INE318A01026",
+    "PIIND":       "NSE_EQ|INE160A01022",
+    "PNB":         "NSE_EQ|INE160A01022",
+    "POLYCAB":     "NSE_EQ|INE455K01017",
+    "RECLTD":      "NSE_EQ|INE020B01018",
+    "SAIL":        "NSE_EQ|INE114A01011",
+    "SIEMENS":     "NSE_EQ|INE003A01024",
+    "SRF":         "NSE_EQ|INE647A01010",
+    "TATAPOWER":   "NSE_EQ|INE245A01021",
+    "TORNTPHARM":  "NSE_EQ|INE685A01028",
+    "TORNTPOWER":  "NSE_EQ|INE813H01021",
+    "TVSMOTOR":    "NSE_EQ|INE494B01023",
+    "UBL":         "NSE_EQ|INE686F01025",
+    "UNIONBANK":   "NSE_EQ|INE692A01016",
+    "UPL":         "NSE_EQ|INE628A01036",
+    "VEDL":        "NSE_EQ|INE205A01025",
+    "VOLTAS":      "NSE_EQ|INE226A01021",
+    "YESBANK":     "NSE_EQ|INE528G01035",
+    "ZOMATO":      "NSE_EQ|INE758T01015",
+    "ZYDUSLIFE":   "NSE_EQ|INE769A01020",
 }
 
 
@@ -97,20 +217,35 @@ def _load_instruments() -> Dict[str, str]:
             except Exception as e:
                 logger.debug(f"instrument cache read failed: {e}")
 
-    # Download fresh
-    try:
-        import requests
-        resp = requests.get(_INSTRUMENTS_URL, timeout=20)
-        resp.raise_for_status()
-        raw = gzip.decompress(resp.content)
-        instruments = json.loads(raw)
-        _symbol_map = _parse_instruments(instruments)
-        _INSTR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
-        _INSTR_CACHE_PATH.write_text(json.dumps(_symbol_map))
-        _symbol_map_loaded = True
-        logger.info(f"Upstox instruments downloaded: {len(_symbol_map)} NSE equity symbols")
-    except Exception as e:
-        logger.warning(f"Upstox instrument download failed: {e} — using fallback map")
+    # Download fresh — try each URL in order
+    import requests
+    downloaded = False
+    for url in _INSTRUMENTS_URLS:
+        try:
+            resp = requests.get(url, timeout=25, headers={"User-Agent": "Mozilla/5.0"})
+            resp.raise_for_status()
+            content = resp.content
+            # Try gzip decompress, fall back to raw
+            try:
+                raw = gzip.decompress(content)
+            except Exception:
+                raw = content
+            # Try JSON parse; if CSV fall through to exception
+            instruments = json.loads(raw)
+            parsed = _parse_instruments(instruments)
+            if len(parsed) > 50:   # sanity check — at least 50 symbols
+                _symbol_map = parsed
+                _INSTR_CACHE_PATH.parent.mkdir(parents=True, exist_ok=True)
+                _INSTR_CACHE_PATH.write_text(json.dumps(_symbol_map))
+                _symbol_map_loaded = True
+                logger.info(f"Upstox instruments downloaded from {url}: {len(_symbol_map)} symbols")
+                downloaded = True
+                break
+        except Exception as e:
+            logger.debug(f"Instrument download failed ({url}): {e}")
+
+    if not downloaded:
+        logger.warning(f"All instrument URLs failed — using expanded fallback map ({len(_FALLBACK_MAP)} symbols)")
         _symbol_map = _FALLBACK_MAP.copy()
         _symbol_map_loaded = True
 
