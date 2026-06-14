@@ -455,7 +455,7 @@ def dynamic_kelly_size(
             ratio_scaler = 0.6
 
         # ── Step 4: Score scaler (conviction) ────────────────────────────────
-        score_scale = max(0.6, min(current_score / 80.0, 1.0))  # floor 0.6, normalize to 80 not 100
+        score_scale = max(0.5, min(current_score / 70.0, 1.0))  # floor 0.5, normalize to 70 — more merit-based sizing
 
         # ── Step 5: Volatility scaler (reduce size in high-vol stocks) ────────
         # NSE large-cap 1h bars: ATR ≈ 0.8-1.5%, so thresholds set accordingly
@@ -676,7 +676,7 @@ THREE_STAGE_EXIT = {
     "stage2_r":    3.0,    # Runner target at 3R
     "stage2_pct":  0.0,    # Don't take partial at stage2 — let chandelier exit
     "runner_pct":  0.60,   # 60% runs with trailing stop
-    "sl_to_be_at": 1.5,    # Move SL to break-even after 1.5R profit
+    "sl_to_be_at": 0.8,    # Move SL to break-even after 0.8R profit
     "chandelier_bars": 10, # Tighter chandelier trail for momentum
     "chandelier_mult": 1.2, # 1.2×ATR trail (tight for momentum continuation)
 }
@@ -693,13 +693,14 @@ def compute_exit_stages(
 
     Returns:
         {
-            "stage1_price": float,  # 1.5R target (40% exit)
-            "stage2_price": float,  # 3.0R target (runner reference, no partial)
-            "stage1_qty":   int,    # qty to sell at stage 1 (40%)
-            "stage2_qty":   int,    # 0 — no partial at stage2, chandelier exits runner
-            "runner_qty":   int,    # qty to run with trailing stop (60%)
-            "sl":           float,  # initial stop loss (1.5×ATR)
-            "be_sl":        float,  # break-even stop (entry ± 0.1%)
+            "stage1_price":     float,  # 1.5R target (40% exit)
+            "stage2_price":     float,  # 3.0R target (runner reference, no partial)
+            "stage1_qty":       int,    # qty to sell at stage 1 (40%)
+            "stage2_qty":       int,    # 0 — no partial at stage2, chandelier exits runner
+            "runner_qty":       int,    # qty to run with trailing stop (60%)
+            "sl":               float,  # initial stop loss (1.5×ATR)
+            "be_sl":            float,  # break-even stop (entry ± 0.1%)
+            "be_trigger_price": float,  # price at which SL moves to BE (0.8R profit)
         }
     """
     sl_dist = 1.5 * atr
@@ -718,14 +719,19 @@ def compute_exit_stages(
     stage2_qty = 0   # No partial at stage2
     runner_qty = max(0, qty - stage1_qty)
 
+    # Break-even trigger price: price level at which SL is moved to break-even
+    be_trigger_r     = THREE_STAGE_EXIT["sl_to_be_at"]  # 0.8R
+    be_trigger_price = entry + be_trigger_r * r if is_long else entry - be_trigger_r * r
+
     return {
-        "stage1_price": stage1_price,
-        "stage2_price": stage2_price,
-        "stage1_qty":   stage1_qty,
-        "stage2_qty":   stage2_qty,
-        "runner_qty":   runner_qty,
-        "sl":           sl,
-        "be_sl":        be_sl,
+        "stage1_price":     stage1_price,
+        "stage2_price":     stage2_price,
+        "stage1_qty":       stage1_qty,
+        "stage2_qty":       stage2_qty,
+        "runner_qty":       runner_qty,
+        "sl":               sl,
+        "be_sl":            be_sl,
+        "be_trigger_price": be_trigger_price,   # price at which SL moves to break-even
     }
 
 
