@@ -415,10 +415,18 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         if c > orb_h * 1.001:  score_long  += 12; reasons.append("ORB_BREAK_UP")
         if c < orb_l * 0.999:  score_short += 12; reasons.append("ORB_BREAK_DN")
 
-    # ── Tier 3: Volume surge ────────────────────────────────────────────────
+    # ── Tier 3: Volume surge (directional — confirms bar direction) ─────────
     rvol = float(row.get("rvol", 1.0) or 1.0)
-    if rvol > 2.5:    score_long += 12; score_short += 12; reasons.append(f"RVOL_{rvol:.1f}x")
-    elif rvol > 1.5:  score_long +=  7; score_short +=  7; reasons.append(f"RVOL_{rvol:.1f}x")
+    _bar_bull = (c > float(row.get("open", c) or c))  # Green bar
+    _bar_bear = (c < float(row.get("open", c) or c))  # Red bar
+    if rvol > 2.0:
+        if _bar_bull:   score_long  += 14; reasons.append(f"VOL_BULL_{rvol:.1f}x")
+        elif _bar_bear: score_short += 14; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
+        else:           score_long += 6; score_short += 6  # Doji on high volume — neutral
+    elif rvol > 1.4:
+        if _bar_bull:   score_long  += 8;  reasons.append(f"VOL_BULL_{rvol:.1f}x")
+        elif _bar_bear: score_short += 8;  reasons.append(f"VOL_BEAR_{rvol:.1f}x")
+        else:           score_long += 3; score_short += 3
 
     # ── Tier 3: OBV momentum (directional — only fires when momentum confirmed) ──
     obv      = float(row.get("obv",     0) or 0)
@@ -489,11 +497,18 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         pass
 
     # ── Supertrend ──────────────────────────────────────────────────────────
+    # Reduced weight, only score if EMA stack ALSO agrees (reduces stale signal risk)
     st = float(row.get("supertrend", 0) or 0)
-    if st > 0:
-        score_long  += 5; reasons.append("SUPERTREND_BULL")
+    _ema_bull = (e9 > e21 > e50) if (e9 > 0 and e21 > 0 and e50 > 0) else False
+    _ema_bear = (e9 < e21 < e50) if (e9 > 0 and e21 > 0 and e50 > 0) else False
+    if st > 0 and _ema_bull:
+        score_long  += 8; reasons.append("SUPER+EMA_BULL")   # confirmed
+    elif st > 0:
+        score_long  += 3   # unconfirmed — small boost only
+    if st < 0 and _ema_bear:
+        score_short += 8; reasons.append("SUPER+EMA_BEAR")   # confirmed
     elif st < 0:
-        score_short += 5; reasons.append("SUPERTREND_BEAR")
+        score_short += 3   # unconfirmed
 
     # ── Stochastic RSI ──────────────────────────────────────────────────────
     sk = float(row.get("stoch_k", 50) or 50)
@@ -554,9 +569,10 @@ def _score_bar(row: pd.Series, prev: pd.Series,
 
     # ── Break of Structure (Smart Money Concepts) ────────────────────────────
     bos, bos_reason = _detect_bos(df_15m)
-    if bos == 1:
+    _bos_vol_ok = rvol >= 1.2  # Only score BoS if volume confirms
+    if bos == 1 and _bos_vol_ok:
         score_long  += 6; reasons.append(bos_reason)
-    elif bos == -1:
+    elif bos == -1 and _bos_vol_ok:
         score_short += 6; reasons.append(bos_reason)
 
     # ── Intraday Seasonality Adjustment ────────────────────────────────────
