@@ -1284,7 +1284,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
@@ -1320,7 +1320,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         partial_qty = int(t.qty * 0.4) or 1
                         qty_left = t.qty - (partial_qty if t.t1_done else 0)
                         pnl = ((px - t.entry) if long_trade else (t.entry - px)) * qty_left
-                        pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                        pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
                         trades.append(t); del open_trades[sym]
@@ -1342,7 +1342,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
@@ -1367,7 +1367,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 hit_s1 = (long and hi >= t.stage1_price) or (not long and lo <= t.stage1_price)
                 if hit_s1:
                     pnl_s1 = ((t.stage1_price - t.entry) if long else (t.entry - t.stage1_price)) * t.stage1_qty
-                    pnl_s1 -= t.entry * t.stage1_qty * COST_RT_PCT / 2
+                    pnl_s1 -= (t.entry * t.stage1_qty + t.stage1_price * t.stage1_qty) * COST_RT_PCT / 2
                     equity += pnl_s1
                     t.pnl += pnl_s1
                     t.stage1_done = True
@@ -1410,7 +1410,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         chandelier = float(lookback_22["high"].max()) - 2.5 * atr22
                         if c_bar < chandelier and chandelier > t.sl:
                             pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
-                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            pnl_r -= (t.entry * runner + c_bar * runner) * COST_RT_PCT / 2
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
@@ -1433,7 +1433,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         chandelier = float(lookback_22["low"].min()) + 2.5 * atr22
                         if c_bar > chandelier and chandelier < t.sl:
                             pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
-                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            pnl_r -= (t.entry * runner + c_bar * runner) * COST_RT_PCT / 2
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
@@ -1458,7 +1458,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
                 if t2_hit:
                     pnl_r = ((t.t2 - t.entry) if long else (t.entry - t.t2)) * runner
-                    pnl_r -= (t.entry * t.qty + t.t2 * t.qty) * COST_RT_PCT / 2
+                    pnl_r -= (t.entry * runner + t.t2 * runner) * COST_RT_PCT / 2
                     equity += pnl_r; t.pnl += pnl_r
                     t.exit_price = t.t2; t.exit_time = now_ts
                     trades.append(t); del open_trades[sym]
@@ -2056,7 +2056,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             partial_qty = int(t.qty * 0.4) or 1
             qty_left = t.qty - (partial_qty if t.t1_done else 0)
             pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-            pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+            pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
             trades.append(t)
             if pnl > 0: wins += 1
@@ -2411,7 +2411,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
@@ -2446,7 +2446,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         partial_qty = int(t.qty * 0.4) or 1
                         qty_left = t.qty - (partial_qty if t.t1_done else 0)
                         pnl = ((px - t.entry) if long_trade else (t.entry - px)) * qty_left
-                        pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                        pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
                         trades.append(t); del open_trades[sym]
@@ -2468,7 +2468,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-                pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
@@ -2491,7 +2491,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 hit_s1 = (long and hi >= t.stage1_price) or (not long and lo <= t.stage1_price)
                 if hit_s1:
                     pnl_s1 = ((t.stage1_price - t.entry) if long else (t.entry - t.stage1_price)) * t.stage1_qty
-                    pnl_s1 -= t.entry * t.stage1_qty * COST_RT_PCT / 2
+                    pnl_s1 -= (t.entry * t.stage1_qty + t.stage1_price * t.stage1_qty) * COST_RT_PCT / 2
                     equity += pnl_s1
                     t.pnl += pnl_s1
                     t.stage1_done = True
@@ -2532,7 +2532,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         chandelier = float(lookback_22["high"].max()) - 2.5 * atr22
                         if c_bar < chandelier and chandelier > t.sl:
                             pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
-                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            pnl_r -= (t.entry * runner + c_bar * runner) * COST_RT_PCT / 2
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
@@ -2554,7 +2554,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         chandelier = float(lookback_22["low"].min()) + 2.5 * atr22
                         if c_bar > chandelier and chandelier < t.sl:
                             pnl_r = ((c_bar - t.entry) if long else (t.entry - c_bar)) * runner
-                            pnl_r -= (t.entry * t.qty + c_bar * t.qty) * COST_RT_PCT / 2
+                            pnl_r -= (t.entry * runner + c_bar * runner) * COST_RT_PCT / 2
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
@@ -2577,7 +2577,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
                 if t2_hit:
                     pnl_r = ((t.t2 - t.entry) if long else (t.entry - t.t2)) * runner
-                    pnl_r -= (t.entry * t.qty + t.t2 * t.qty) * COST_RT_PCT / 2
+                    pnl_r -= (t.entry * runner + t.t2 * runner) * COST_RT_PCT / 2
                     equity += pnl_r; t.pnl += pnl_r
                     t.exit_price = t.t2; t.exit_time = now_ts
                     trades.append(t); del open_trades[sym]
@@ -3115,7 +3115,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             partial_qty = int(t.qty * 0.4) or 1
             qty_left = t.qty - (partial_qty if t.t1_done else 0)
             pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
-            pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+            pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
             trades.append(t)
             if pnl > 0: wins += 1
