@@ -610,13 +610,14 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
             except Exception:
                 pass
 
-        # Don't enter if price is already >1.5% from VWAP (chasing)
+        # Don't enter if price is extremely extended from VWAP (chasing extremes)
+        # 3% threshold: 1.5% was too tight for 1h bars where momentum moves are larger
         try:
             _pf_close = float(row.get("close", 0) or 0)
             _pf_vwap  = float(row.get("vwap",  0) or 0)
             if _pf_vwap > 0 and _pf_close > 0:
                 _pf_vwap_dev = abs(_pf_close - _pf_vwap) / _pf_vwap
-                if _pf_vwap_dev > 0.015:   # >1.5% from VWAP = too extended, likely to revert
+                if _pf_vwap_dev > 0.030:   # >3% from VWAP = genuinely extreme
                     return True, "VWAP_EXTENDED"
         except Exception:
             pass
@@ -1631,11 +1632,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 except Exception:
                     df_1h = _f1h.tail(5) if len(_f1h) > 0 else None
 
-            # Require minimum 6 intraday 5-min bars before scoring (30 min of data)
+            # Require at least 2 bars today (interval-agnostic; outer loop already
+            # blocks the first bar via < 9:45 gate, so 1h data gets 2 bars at 10:15)
             _today_d = now_ts.date()
             _today_df_slice = df[df.index.date == _today_d]
             _bars_today = len(_today_df_slice[_today_df_slice.index <= now_ts])
-            if _bars_today < 7:  # Need 7 bars = 9:15 + 9:20 + 9:25 + 9:30 + 9:35 + 9:40 + 9:45
+            if _bars_today < 2:
                 continue
 
             # ── Pre-filter: kill known false-positive patterns (fast path) ───
@@ -2033,6 +2035,9 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
 
     if not trades:
         print("  No trades generated.")
+        if pre_filter_kills > 0:
+            print(f"  Pre-filter blocked {pre_filter_kills:,} raw signal candidates.")
+            print("  Hint: if all bars are killed, check bar-count gates for 1h data.")
         print("=" * 70)
         return
 
@@ -2667,7 +2672,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             _today_d = now_ts.date()
             _today_df_slice = df[df.index.date == _today_d]
             _bars_today = len(_today_df_slice[_today_df_slice.index <= now_ts])
-            if _bars_today < 7:
+            if _bars_today < 2:
                 continue
 
             try:
