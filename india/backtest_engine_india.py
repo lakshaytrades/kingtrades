@@ -1090,7 +1090,7 @@ def _update_adaptive_threshold(pnl: float):
 
         # High win rate (>=65%): relax threshold slightly to get more trades
         if rolling_wr >= 0.65:
-            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 18.0)
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 12.0)
         # Good win rate (>=55%): keep at base
         elif rolling_wr >= 0.55:
             _ADAPTIVE_MIN_SCORE = MIN_SCORE
