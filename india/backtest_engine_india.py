@@ -469,10 +469,11 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         # Extreme chop only — kill signal (was 15, lowered for 1h compatibility)
         score_long = 0.0; score_short = 0.0
         return 0.0, "LONG", "ADX_CHOP_KILL"
-    elif adx_v < 18:
-        score_long  *= 0.7; score_short *= 0.7   # Moderate reduction for weak trend
-    elif adx_v >= 25:
-        score_long  *= 1.15; score_short *= 1.15  # Trending: boost
+    elif adx_v < 15:
+        score_long  *= 0.85; score_short *= 0.85   # Mild reduction (was 0.7 at 18, too aggressive)
+    elif adx_v >= 22:
+        score_long  *= 1.15; score_short *= 1.15   # Trending: boost
+    # ADX 15-22: neutral (no multiplier) — avoids penalizing moderate trends
 
     # ── 15m trend alignment (pure confirmation, not primary signal) ──────────
     if df_15m is not None and not df_15m.empty:
@@ -1070,9 +1071,9 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 16.0   # Lowered: 1h data generates fewer confirming signals
-MAX_OPEN     = 10     # Allow up to 10 simultaneous positions for diversification
-MAX_POS_PCT  = 0.15   # 15% per position (increased from 10% for better capital utilisation)
+MIN_SCORE    = 12.0   # Lowered: 1h data generates fewer confirming signals
+MAX_OPEN     = 12     # Allow up to 12 simultaneous positions for diversification
+MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
 _ADAPTIVE_MIN_SCORE = MIN_SCORE
@@ -1091,16 +1092,16 @@ def _update_adaptive_threshold(pnl: float):
 
         # High win rate (>=65%): relax threshold slightly to get more trades
         if rolling_wr >= 0.65:
-            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 12.0)
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 2.0, 10.0)  # relax slightly
         # Good win rate (>=55%): keep at base
         elif rolling_wr >= 0.55:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE                    # base
         # Acceptable (>=45%): tighten moderately
         elif rolling_wr >= 0.45:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 5.0
-        # Poor (<45%): tighten significantly
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 2.0              # tighten slightly
+        # Poor (<45%): tighten moderately (was +10 = catastrophic)
         else:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 10.0
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 4.0              # tighten moderately (was +10 = catastrophic)
 
 
 _rolling_win_halt = False
@@ -1311,12 +1312,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
-                    _max_hold = 75 if _is_morning else 50
+                    _max_hold = 240 if _is_morning else 150  # 4h morning, 2.5h afternoon (was 75/50 = too short for 1h bars)
                     if _held_minutes >= _max_hold:
                         # Exit at current close regardless of P&L
                         px = bar["close"]
                         long_trade = t.direction == "LONG"
-                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * t.qty
+                        partial_qty = int(t.qty * 0.4) or 1
+                        qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * qty_left
                         pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
@@ -1602,6 +1605,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Skip new entries during lunch lull
             if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
                 continue
+            # Skip early morning entries (10:15 bar has ~24% WR; wait for trend to establish)
+            if now_ts.time() < dtime(11, 0):
+                continue
             if now_ts not in df.index:
                 continue
             idx = df.index.get_loc(now_ts)
@@ -1667,11 +1673,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     _bear_bars = int((_last4["close"] < _last4["open"]).sum())
                     if _bull_bars >= 3 and direction == "SHORT":
                         # Today trending bullish but signal is SHORT → penalize heavily
-                        net_score += 20
+                        net_score += 12
                         reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
                     elif _bear_bars >= 3 and direction == "LONG":
                         # Today trending bearish but signal is LONG → penalize heavily
-                        net_score -= 20
+                        net_score -= 12
                         reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
                     elif _bull_bars >= 3 and direction == "LONG":
                         net_score += 6  # alignment bonus (was assignment bug: net_score = abs+6)
@@ -1691,16 +1697,16 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Session breadth directional bias ─────────────────────────────
             # % of symbols above today's open = real-time market direction
             if _session_breadth > 0.60:   # 60%+ stocks rising today → bullish session
-                net_score += 12; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
+                net_score += 8; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
                 if direction == "SHORT":
-                    net_score += 18  # Extra penalty for fighting the session trend
+                    net_score += 8  # Moderate penalty for fighting the session trend (was 18 = too harsh)
                     reason += "+COUNTER_SESSION"
             elif _session_breadth > 0.52:
                 net_score += 5
             elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
-                net_score -= 12; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                net_score -= 8; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
                 if direction == "LONG":
-                    net_score -= 18
+                    net_score -= 8  # Moderate penalty (was 18 = too harsh with small symbol sets)
                     reason += "+COUNTER_SESSION"
             elif _session_breadth < 0.48:
                 net_score -= 5
@@ -1774,7 +1780,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 elif net_score < 0: direction = "SHORT"
 
             # Pre-filter: skip clearly weak signals before calling new strategies
-            if abs(net_score) < 12.0:
+            if abs(net_score) < 8.0:
                 continue
 
             # ── New strategies boost (called with full DataFrame context) ─────
@@ -1845,12 +1851,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if _prev_day_close > 0 and _gap_open > 0:
                     _gap_val = (_gap_open - _prev_day_close) / _prev_day_close
                     if _gap_val > 0.002 and direction == "SHORT":
-                        net_score += 15  # Push toward LONG (positive gap day)
+                        net_score += 8  # Push toward LONG (positive gap day) (was 15 = too harsh)
                         reason = (reason + "+GAP_UP_PENALTY_SHORT") if reason else "GAP_UP_PENALTY_SHORT"
                         if net_score > 0:
                             direction = "LONG"
                     elif _gap_val < -0.002 and direction == "LONG":
-                        net_score -= 15  # Push toward SHORT (negative gap day)
+                        net_score -= 8  # Push toward SHORT (negative gap day) (was 15 = too harsh)
                         reason = (reason + "+GAP_DN_PENALTY_LONG") if reason else "GAP_DN_PENALTY_LONG"
                         if net_score < 0:
                             direction = "SHORT"
@@ -1895,8 +1901,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             entry = row["close"]
             long  = direction == "LONG"
             sl_dist = 1.5 * atr     # 1.5×ATR SL — tighter but more precise
-            t1_dist = 1.5 * atr     # Stage 1 at 1.5×ATR (same as SL = 1:1 initially)
-            t2_dist = 3.0 * atr     # Runner at 3×ATR — 2:1 R:R
+            t1_dist = 2.25 * atr    # 1.5R (was 1.0R = same as stop = 1:1 R:R)
+            t2_dist = 4.5 * atr     # 3R runner (was 2R)
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -1976,7 +1982,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trade.sl           = _stages["sl"]
                 # Override t1 and t2 with stage prices
                 trade.t1 = _stages["stage2_price"]
-                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
+                trade.t2 = entry + 4.5 * atr if direction == "LONG" else entry - 4.5 * atr  # 3R runner (was 3.0 = 2R)
             except Exception:
                 pass
             trade.reason = reason
@@ -2371,12 +2377,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
-                    _max_hold = 75 if _is_morning else 50
+                    _max_hold = 240 if _is_morning else 150  # 4h morning, 2.5h afternoon (was 75/50 = too short for 1h bars)
                     if _held_minutes >= _max_hold:
                         # Exit at current close regardless of P&L
                         px = bar["close"]
                         long_trade = t.direction == "LONG"
-                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * t.qty
+                        partial_qty = int(t.qty * 0.4) or 1
+                        qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * qty_left
                         pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
@@ -2642,6 +2650,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
                 continue
+            # Skip early morning entries (10:15 bar has ~24% WR; wait for trend to establish)
+            if now_ts.time() < dtime(11, 0):
+                continue
             if now_ts not in df.index:
                 continue
             idx = df.index.get_loc(now_ts)
@@ -2696,10 +2707,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     _bull_bars = int((_last4["close"] > _last4["open"]).sum())
                     _bear_bars = int((_last4["close"] < _last4["open"]).sum())
                     if _bull_bars >= 3 and direction == "SHORT":
-                        net_score += 20
+                        net_score += 12
                         reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
                     elif _bear_bars >= 3 and direction == "LONG":
-                        net_score -= 20
+                        net_score -= 12
                         reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
                     elif _bull_bars >= 3 and direction == "LONG":
                         net_score += 6
@@ -2718,16 +2729,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Session breadth directional bias ─────────────────────────────
             # % of symbols above today's open = real-time market direction
             if _session_breadth > 0.60:   # 60%+ stocks rising today → bullish session
-                net_score += 12; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
+                net_score += 8; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
                 if direction == "SHORT":
-                    net_score += 18  # Extra penalty for fighting the session trend
+                    net_score += 8  # Moderate penalty for fighting the session trend (was 18 = too harsh)
                     reason += "+COUNTER_SESSION"
             elif _session_breadth > 0.52:
                 net_score += 5
             elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
-                net_score -= 12; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                net_score -= 8; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
                 if direction == "LONG":
-                    net_score -= 18
+                    net_score -= 8  # Moderate penalty (was 18 = too harsh with small symbol sets)
                     reason += "+COUNTER_SESSION"
             elif _session_breadth < 0.48:
                 net_score -= 5
@@ -2799,7 +2810,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 elif net_score < 0: direction = "SHORT"
 
             # Pre-filter: skip clearly weak signals before calling new strategies
-            if abs(net_score) < 12.0:
+            if abs(net_score) < 8.0:
                 continue
 
             try:
@@ -2861,12 +2872,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if _prev_day_close > 0 and _gap_open > 0:
                     _gap_val = (_gap_open - _prev_day_close) / _prev_day_close
                     if _gap_val > 0.002 and direction == "SHORT":
-                        net_score += 15  # Push toward LONG (positive gap day)
+                        net_score += 8  # Push toward LONG (positive gap day) (was 15 = too harsh)
                         reason = (reason + "+GAP_UP_PENALTY_SHORT") if reason else "GAP_UP_PENALTY_SHORT"
                         if net_score > 0:
                             direction = "LONG"
                     elif _gap_val < -0.002 and direction == "LONG":
-                        net_score -= 15  # Push toward SHORT (negative gap day)
+                        net_score -= 8  # Push toward SHORT (negative gap day) (was 15 = too harsh)
                         reason = (reason + "+GAP_DN_PENALTY_LONG") if reason else "GAP_DN_PENALTY_LONG"
                         if net_score < 0:
                             direction = "SHORT"
@@ -2907,9 +2918,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # was 2.0 (tighter SL = faster loss acknowledgment)
-            t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # was 2.0 (achievable at 1:1 R:R from tighter SL)
-            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # was 4.0 (runner target at 2:1)
+            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # 1.5×ATR SL
+            t1    = entry + 2.25 * atr if long else entry - 2.25 * atr  # 1.5R (was 1.0R = same as stop = 1:1 R:R)
+            t2    = entry + 4.5 * atr if long else entry - 4.5 * atr    # 3R runner (was 2R)
 
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
 
@@ -2968,7 +2979,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 trade.be_sl        = _stages["be_sl"]
                 trade.sl           = _stages["sl"]
                 trade.t1 = _stages["stage2_price"]
-                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
+                trade.t2 = entry + 4.5 * atr if direction == "LONG" else entry - 4.5 * atr  # 3R runner (was 3.0 = 2R)
             except Exception:
                 pass
             trade.reason = reason
