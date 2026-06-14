@@ -664,14 +664,14 @@ def apply_vol_target_to_risk(
 # Expected improvement: average R-multiple increases from ~1.2 to ~1.6
 
 THREE_STAGE_EXIT = {
-    "stage1_r":    0.5,    # Take 25% profit at 0.5R
-    "stage1_pct":  0.25,   # 25% of position
-    "stage2_r":    1.0,    # Take 35% at 1R (was 40% at 1R)
-    "stage2_pct":  0.35,   # 35% of position
-    "runner_pct":  0.40,   # 40% runs with chandelier
+    "stage1_r":    0.5,    # Take 30% profit at 0.5R (keep)
+    "stage1_pct":  0.30,   # was 0.25 (take 30% at 0.5R)
+    "stage2_r":    0.8,    # was 1.0 (was too far, now closer)
+    "stage2_pct":  0.35,   # keep
+    "runner_pct":  0.35,   # was 0.40 (slightly less runner)
     "sl_to_be_at": 1.0,    # Move SL to break-even after stage 2
-    "chandelier_bars": 22, # Chandelier lookback
-    "chandelier_mult": 2.0, # Tighter chandelier for better trail (was 2.5)
+    "chandelier_bars": 15, # was 22 (tighter trail)
+    "chandelier_mult": 1.5, # was 2.0 (tighter trail)
 }
 
 

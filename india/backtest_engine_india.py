@@ -1162,9 +1162,9 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 30.0   # net score threshold — calibrated for 15-25 trades/month target
-MAX_OPEN     = 5      # max simultaneous positions
-MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
+MIN_SCORE    = 42.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
+MAX_OPEN     = 8      # More simultaneous positions = more trades = higher monthly returns
+MAX_POS_PCT  = 0.10   # 10% per position (more diversified, smaller individual losses)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
 _ADAPTIVE_MIN_SCORE = MIN_SCORE
@@ -1378,6 +1378,34 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
             hi = bar["high"]; lo = bar["low"]
             c_bar = bar["close"]
+
+            # ── Time-based exit: stale trades get cut ─────────────────────────
+            if t.entry_time is not None:
+                try:
+                    _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
+                    _is_morning = t.entry_time.time() < dtime(11, 30)
+                    _max_hold = 75 if _is_morning else 50
+                    if _held_minutes >= _max_hold:
+                        # Exit at current close regardless of P&L
+                        px = bar["close"]
+                        long_trade = t.direction == "LONG"
+                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * t.qty
+                        pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                        equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
+                        t.exit_price = px; t.exit_time = now_ts
+                        trades.append(t); del open_trades[sym]
+                        _win_history.append(1 if pnl > 0 else 0)
+                        if pnl > 0: wins += 1
+                        else: losses += 1
+                        recent_trades.append(pnl / max(capital, 1))
+                        try:
+                            _update_adaptive_threshold(t.pnl)
+                        except Exception:
+                            pass
+                        continue
+                except Exception:
+                    pass
+
             sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
             if sl_hit:
                 px = t.sl
@@ -1803,9 +1831,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr
-            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr   # 1R
-            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr   # 2R = 2:1 R:R maintained
+            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # was 2.0 (tighter SL = faster loss acknowledgment)
+            t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # was 2.0 (achievable at 1:1 R:R from tighter SL)
+            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # was 4.0 (runner target at 2:1)
 
             # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
@@ -1834,6 +1862,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
                 continue
+
+            # Half-size for signals near the lower threshold (lower confidence)
+            _threshold = _ADAPTIVE_MIN_SCORE
+            _confidence_ratio = abs(net_score) / max(_threshold * 2, 1.0)
+            if _confidence_ratio < 0.6:  # Score is only barely above threshold
+                qty = max(1, qty // 2)   # Half size for marginal signals
 
             trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
             try:
@@ -2190,6 +2224,34 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
             hi = bar["high"]; lo = bar["low"]
             c_bar = bar["close"]
+
+            # ── Time-based exit: stale trades get cut ─────────────────────────
+            if t.entry_time is not None:
+                try:
+                    _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
+                    _is_morning = t.entry_time.time() < dtime(11, 30)
+                    _max_hold = 75 if _is_morning else 50
+                    if _held_minutes >= _max_hold:
+                        # Exit at current close regardless of P&L
+                        px = bar["close"]
+                        long_trade = t.direction == "LONG"
+                        pnl = ((px - t.entry) if long_trade else (t.entry - px)) * t.qty
+                        pnl -= (t.entry * t.qty + px * t.qty) * COST_RT_PCT / 2
+                        equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
+                        t.exit_price = px; t.exit_time = now_ts
+                        trades.append(t); del open_trades[sym]
+                        _win_history.append(1 if pnl > 0 else 0)
+                        if pnl > 0: wins += 1
+                        else: losses += 1
+                        recent_trades.append(pnl / max(capital, 1))
+                        try:
+                            _update_adaptive_threshold(t.pnl)
+                        except Exception:
+                            pass
+                        continue
+                except Exception:
+                    pass
+
             sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
             if sl_hit:
                 px = t.sl
@@ -2572,9 +2634,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr
-            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr
-            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr
+            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # was 2.0 (tighter SL = faster loss acknowledgment)
+            t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # was 2.0 (achievable at 1:1 R:R from tighter SL)
+            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # was 4.0 (runner target at 2:1)
 
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
 
@@ -2600,6 +2662,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
                 continue
+
+            # Half-size for signals near the lower threshold (lower confidence)
+            _threshold = _ADAPTIVE_MIN_SCORE
+            _confidence_ratio = abs(net_score) / max(_threshold * 2, 1.0)
+            if _confidence_ratio < 0.6:  # Score is only barely above threshold
+                qty = max(1, qty // 2)   # Half size for marginal signals
 
             trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
             try:
