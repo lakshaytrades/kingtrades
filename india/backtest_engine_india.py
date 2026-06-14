@@ -367,12 +367,17 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     score_long = 0.0; score_short = 0.0; reasons = []
     bar_time = bar_ts.time()
 
-    # ── Tier 1: RSI momentum ───────────────────────────────────────────────
+    # ── Tier 1: RSI momentum (non-overlapping ranges) ─────────────────────
     rsi = float(row.get("rsi", 50) or 50)
-    if 45 < rsi < 65:          score_long  += 10; reasons.append(f"RSI_MOM({rsi:.0f})")
-    elif rsi < 35:              score_long  += 6;  reasons.append(f"RSI_OS({rsi:.0f})")
-    if 35 < rsi < 55:          score_short += 10
-    elif rsi > 65:              score_short += 6;  reasons.append(f"RSI_OB({rsi:.0f})")
+    prev_rsi = float(prev.get("rsi", 50) or 50)
+    if rsi > 60 and rsi < 78:      score_long  += 10; reasons.append(f"RSI_BULL({rsi:.0f})")
+    elif rsi > 50:                  score_long  += 5
+    elif rsi < 30:                  score_long  += 8;  reasons.append(f"RSI_OS({rsi:.0f})")
+    if rsi < 40 and rsi > 22:      score_short += 10; reasons.append(f"RSI_BEAR({rsi:.0f})")
+    elif rsi < 50:                  score_short += 5
+    elif rsi > 70:                  score_short += 8;  reasons.append(f"RSI_OB({rsi:.0f})")
+    if rsi > prev_rsi + 2 and rsi > 48:   score_long  += 4; reasons.append("RSI_RISING")
+    elif rsi < prev_rsi - 2 and rsi < 52: score_short += 4; reasons.append("RSI_FALLING")
 
     # ── Tier 1: MACD ───────────────────────────────────────────────────────
     mh  = float(row.get("macd_hist", 0) or 0)
@@ -415,11 +420,12 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     if rvol > 2.5:    score_long += 12; score_short += 12; reasons.append(f"RVOL_{rvol:.1f}x")
     elif rvol > 1.5:  score_long +=  7; score_short +=  7; reasons.append(f"RVOL_{rvol:.1f}x")
 
-    # ── Tier 3: OBV momentum ────────────────────────────────────────────────
-    obv     = float(row.get("obv",     0) or 0)
-    obv_ema = float(row.get("obv_ema", 0) or 0)
-    if obv > obv_ema:  score_long  += 8
-    else:              score_short += 8
+    # ── Tier 3: OBV momentum (directional — only fires when momentum confirmed) ──
+    obv      = float(row.get("obv",     0) or 0)
+    obv_ema  = float(row.get("obv_ema", 0) or 0)
+    prev_obv = float(prev.get("obv",    0) or 0)
+    if obv > prev_obv and obv > obv_ema:   score_long  += 4; reasons.append("OBV_BULL")
+    elif obv < prev_obv and obv < obv_ema: score_short += 4; reasons.append("OBV_BEAR")
 
     # ── Tier 4: ADX gate — chop filter ─────────────────────────────────────
     adx_v = float(row.get("adx", 25) or 25)
@@ -485,9 +491,9 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     # ── Supertrend ──────────────────────────────────────────────────────────
     st = float(row.get("supertrend", 0) or 0)
     if st > 0:
-        score_long  += 8; reasons.append("SUPERTREND_BULL")
+        score_long  += 5; reasons.append("SUPERTREND_BULL")
     elif st < 0:
-        score_short += 8; reasons.append("SUPERTREND_BEAR")
+        score_short += 5; reasons.append("SUPERTREND_BEAR")
 
     # ── Stochastic RSI ──────────────────────────────────────────────────────
     sk = float(row.get("stoch_k", 50) or 50)
@@ -1125,7 +1131,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 42.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
+MIN_SCORE    = 30.0   # net score threshold — calibrated for 15-25 trades/month target
 MAX_OPEN     = 5      # max simultaneous positions
 MAX_POS_PCT  = 0.15   # max 15% of capital per position (smaller, more diversified)
 
