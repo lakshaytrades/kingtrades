@@ -975,44 +975,9 @@ def get_strategies_score(
         _vwap = vwap if vwap is not None else float(current.get("vwap", 0.0))
         _rsi  = rsi  if rsi  is not None else float(current.get("rsi",  50.0))
 
-        # -- Strategy 1: Gap-Fill / Gap-Go ----------------------------------
-        if prev_close > 0 and open_price > 0:
-            s1, r1 = gap_analysis_signal(
-                prev_close, open_price, current, orb_high, orb_low
-            )
-            if s1 != 0:
-                total += s1
-                if r1:
-                    reason_parts.append(f"{r1}:{s1:+d}")
-
-        # -- Strategy 2: VWAP Mean Reversion --------------------------------
-        if _vwap > 0 and close > 0:
-            if upper_band is not None and lower_band is not None:
-                _upper, _lower = upper_band, lower_band
-            else:
-                _upper, _lower = compute_vwap_bands(df_5m)
-            if _upper > 0 and _lower > 0:
-                s2, r2 = vwap_reversion_signal(close, _vwap, _upper, _lower, _rsi)
-                if s2 != 0:
-                    total += s2
-                    if r2:
-                        reason_parts.append(f"{r2}:{s2:+d}")
-
-        # -- Strategy 3: Opening Drive --------------------------------------
-        if current_time is not None and df_5m is not None and not df_5m.empty:
-            # Build df_since_open for the current session
-            try:
-                today_str = df_5m.index[-1].strftime("%Y-%m-%d")
-                df_today  = df_5m[df_5m.index.strftime("%Y-%m-%d") == today_str]
-                df_open   = df_today.between_time("09:15", "09:30")
-            except Exception:
-                df_open = df_5m.head(6)   # fallback: first 6 bars
-
-            s3, r3 = opening_drive_signal(df_open, current_time)
-            if s3 != 0:
-                total += s3
-                if r3:
-                    reason_parts.append(f"{r3}:{s3:+d}")
+        # -- Strategy 1: Gap-Fill / Gap-Go — REMOVED (noisy, conflicting signals) --
+        # -- Strategy 2: VWAP Mean Reversion — REMOVED (noisy, conflicting signals) --
+        # -- Strategy 3: Opening Drive — REMOVED (noisy, conflicting signals) -------
 
         # -- Strategy 4: First Pullback to EMA21 ----------------------------
         if df_5m is not None and _idx is not None:

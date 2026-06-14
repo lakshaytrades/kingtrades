@@ -784,6 +784,17 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
             except Exception:
                 pass
 
+        # Don't enter if price is already >1.5% from VWAP (chasing)
+        try:
+            _pf_close = float(row.get("close", 0) or 0)
+            _pf_vwap  = float(row.get("vwap",  0) or 0)
+            if _pf_vwap > 0 and _pf_close > 0:
+                _pf_vwap_dev = abs(_pf_close - _pf_vwap) / _pf_vwap
+                if _pf_vwap_dev > 0.015:   # >1.5% from VWAP = too extended, likely to revert
+                    return True, "VWAP_EXTENDED"
+        except Exception:
+            pass
+
         return False, ""
     except Exception:
         return False, ""
@@ -1657,8 +1668,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
         _nifty_proxy_return = float(sum(_nf_returns) / max(len(_nf_returns), 1)) if _nf_returns else 0.0
-        _nifty_session_bull = _nifty_proxy_return > 0.0015   # +0.15% = session is bullish
-        _nifty_session_bear = _nifty_proxy_return < -0.0015  # -0.15% = session is bearish
+        _nifty_session_bull = _nifty_proxy_return > 0.0003   # +0.03% — even slight positive = bull
+        _nifty_session_bear = _nifty_proxy_return < -0.0003  # -0.03% — even slight negative = bear
 
         # Track bull/bear days for the report
         if _nf_today not in _session_days_seen:
@@ -1900,9 +1911,26 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # was 2.0 (tighter SL = faster loss acknowledgment)
-            t1    = entry + 1.5 * atr if long else entry - 1.5 * atr   # was 2.0 (achievable at 1:1 R:R from tighter SL)
-            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr   # was 4.0 (runner target at 2:1)
+            sl_dist = 2.0 * atr     # Wider SL prevents premature stops on NSE noise
+            t1_dist = 1.5 * atr     # Take 30% at 0.75R
+            t2_dist = 4.0 * atr     # Runner target at 2.0R — gives 2:1 R:R on 40% position
+            sl    = entry - sl_dist if long else entry + sl_dist
+            t1    = entry + t1_dist if long else entry - t1_dist
+            t2    = entry + t2_dist if long else entry - t2_dist
+
+            # Structure-based SL: use bar's low/high as minimum stop reference
+            # This prevents tiny ATR from giving an unrealistic SL
+            try:
+                bar_low  = float(row.get("low",  entry) or entry)
+                bar_high = float(row.get("high", entry) or entry)
+                _struct_sl_long  = bar_low  * 0.9995   # 0.05% below bar low
+                _struct_sl_short = bar_high * 1.0005   # 0.05% above bar high
+                if long and sl > _struct_sl_long:
+                    sl = _struct_sl_long   # Use structure SL if it's tighter
+                elif not long and sl < _struct_sl_short:
+                    sl = _struct_sl_short
+            except Exception:
+                pass
 
             # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
@@ -1951,7 +1979,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trade.sl           = _stages["sl"]
                 # Override t1 and t2 with stage prices
                 trade.t1 = _stages["stage2_price"]
-                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
+                trade.t2 = entry + 4.0 * atr if direction == "LONG" else entry - 4.0 * atr
             except Exception:
                 pass
             trade.reason = reason
@@ -2539,8 +2567,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
         _nifty_proxy_return = float(sum(_nf_returns) / max(len(_nf_returns), 1)) if _nf_returns else 0.0
-        _nifty_session_bull = _nifty_proxy_return > 0.0015   # +0.15% = session is bullish
-        _nifty_session_bear = _nifty_proxy_return < -0.0015  # -0.15% = session is bearish
+        _nifty_session_bull = _nifty_proxy_return > 0.0003   # +0.03% — even slight positive = bull
+        _nifty_session_bear = _nifty_proxy_return < -0.0003  # -0.03% — even slight negative = bear
 
         # Track bull/bear days for the report
         if _nf_today not in _session_days_seen:
