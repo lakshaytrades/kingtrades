@@ -911,7 +911,7 @@ def _kelly_size(wins: int, losses: int, capital: float, max_pct: float = 0.20) -
     """Half-Kelly position size as fraction of capital (legacy — kept for compatibility)."""
     total = wins + losses
     if total < 10:
-        return 0.005   # cold start: risk 0.5%
+        return 0.010   # cold start: risk 1% per trade
     p = wins / total
     b = 2.0            # avg win/loss ratio (1R SL, 2R TP)
     kelly = max(0, (p * b - (1 - p)) / b)
@@ -1054,7 +1054,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 22.0   # Lower threshold: ORB alone (18) + any single confirm = trade
+MIN_SCORE    = 16.0   # Lowered: 1h data generates fewer confirming signals
 MAX_OPEN     = 8      # More simultaneous positions = more trades = higher monthly returns
 MAX_POS_PCT  = 0.10   # 10% per position (more diversified, smaller individual losses)
 
@@ -1718,25 +1718,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Regime-conditional score multiplier ───────────────────────────
             if _regime is not None:
                 try:
-                    from regime_detector import get_regime_score_mult, MarketRegime
+                    from regime_detector import get_regime_score_mult
                     _rmult = get_regime_score_mult(_regime, direction)
                     net_score *= _rmult
-                    if _regime == MarketRegime.SIDEWAYS and _regime_confidence > 0.6:
-                        continue   # High-confidence sideways: skip
                 except Exception:
                     pass
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # ── Cross-sectional rank filter + boost ───────────────────────────
+            # ── Cross-sectional rank score boost/penalty (no hard filter) ────
             if _cs_rank_cache:
                 _sym_rank = _cs_rank_cache.get(sym, 0.5)
-                if direction == "LONG" and _sym_rank < 0.40:
-                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
-                        continue   # Weak stock in LONG: skip marginal signal
-                elif direction == "SHORT" and _sym_rank > 0.60:
-                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
-                        continue   # Strong stock in SHORT: skip marginal signal
                 if direction == "LONG":
                     if _sym_rank >= 0.75:
                         net_score += 10; reason = (reason + "+CS_TOP") if reason else "CS_TOP"
@@ -1765,7 +1757,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 elif net_score < 0: direction = "SHORT"
 
             # Pre-filter: skip clearly weak signals before calling new strategies
-            if abs(net_score) < 18.0:
+            if abs(net_score) < 12.0:
                 continue
 
             # ── New strategies boost (called with full DataFrame context) ─────
@@ -1857,13 +1849,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Nifty session direction gate (hardest gate) ───────────────────
             # Only trade with the session's net direction to avoid counter-trend losses
             if _nifty_session_bull and direction == "SHORT":
-                # Market is rising session-wide but signal is SHORT → likely a loser
-                # Allow ONLY if score is very strong (2× threshold = extremely high confidence)
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
-                    continue  # Block marginal counter-trend shorts in bull session
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
+                    continue  # Block weak counter-trend shorts in bull session
             if _nifty_session_bear and direction == "LONG":
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
-                    continue  # Block marginal counter-trend longs in bear session
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
+                    continue  # Block weak counter-trend longs in bear session
 
             # Final threshold check after all score adjustments
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
@@ -2725,25 +2715,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Regime-conditional score multiplier ───────────────────────────
             if _regime is not None:
                 try:
-                    from regime_detector import get_regime_score_mult, MarketRegime
+                    from regime_detector import get_regime_score_mult
                     _rmult = get_regime_score_mult(_regime, direction)
                     net_score *= _rmult
-                    if _regime == MarketRegime.SIDEWAYS and _regime_confidence > 0.6:
-                        continue
                 except Exception:
                     pass
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # ── Cross-sectional rank filter + boost ───────────────────────────
+            # ── Cross-sectional rank score boost/penalty (no hard filter) ────
             if _cs_rank_cache:
                 _sym_rank = _cs_rank_cache.get(sym, 0.5)
-                if direction == "LONG" and _sym_rank < 0.40:
-                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
-                        continue
-                elif direction == "SHORT" and _sym_rank > 0.60:
-                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
-                        continue
                 if direction == "LONG":
                     if _sym_rank >= 0.75:
                         net_score += 10; reason = (reason + "+CS_TOP") if reason else "CS_TOP"
@@ -2771,7 +2753,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            if abs(net_score) < 18.0:
+            # Pre-filter: skip clearly weak signals before calling new strategies
+            if abs(net_score) < 12.0:
                 continue
 
             try:
@@ -2854,13 +2837,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Nifty session direction gate (hardest gate) ───────────────────
             # Only trade with the session's net direction to avoid counter-trend losses
             if _nifty_session_bull and direction == "SHORT":
-                # Market is rising session-wide but signal is SHORT → likely a loser
-                # Allow ONLY if score is very strong (2× threshold = extremely high confidence)
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
-                    continue  # Block marginal counter-trend shorts in bull session
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
+                    continue  # Block weak counter-trend shorts in bull session
             if _nifty_session_bear and direction == "LONG":
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
-                    continue  # Block marginal counter-trend longs in bear session
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
+                    continue  # Block weak counter-trend longs in bear session
 
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
