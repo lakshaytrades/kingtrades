@@ -1126,6 +1126,8 @@ def momentum_ignition_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float,
         vol_accel = all(vols[i] > vols[i - 1] for i in range(1, 4))
 
         rvol  = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        if rvol < 1.8:
+            return 0, ""
         e9    = float(df.iloc[current_idx].get("ema9",  closes[-1]) or closes[-1])
         e21   = float(df.iloc[current_idx].get("ema21", closes[-1]) or closes[-1])
         ema_bull = e9 > e21 > 0
@@ -1179,14 +1181,24 @@ def institutional_accumulation_signal(df: pd.DataFrame, current_idx: int) -> Tup
         high_vol  = rvol > 2.0
         close_pos = (c - lo) / max(bar_range, 1e-9)   # 0=closed at low, 1=closed at high
 
+        e9  = float(row.get("ema9",  0) or 0)
+        e21 = float(row.get("ema21", 0) or 0)
+        ema_available = e9 > 0 and e21 > 0
+
         # Accumulation: close in top 30% of range
         if close_pos > 0.70:
+            # Require uptrend (e9 > e21) if EMA data available
+            if ema_available and e9 <= e21:
+                return 0, ""
             if wide_bar and high_vol:
                 return 16.0, "INST_ACCUM"
             if high_vol:
                 return 10.0, "INST_ACCUM_P"
         # Distribution: close in bottom 30% of range
         if close_pos < 0.30:
+            # Require downtrend (e9 < e21) if EMA data available
+            if ema_available and e9 >= e21:
+                return 0, ""
             if wide_bar and high_vol:
                 return -16.0, "INST_DISTRIB"
             if high_vol:
@@ -1222,6 +1234,7 @@ def pullback_continuation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[fl
         ema_falling = e21_now < e21_prev * 0.999
 
         rvol = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        atr  = float(df.iloc[current_idx].get("atr", 0) or 0)
         c_now  = closes[current_idx]
         c_prev = closes[current_idx - 1]
 
@@ -1234,6 +1247,12 @@ def pullback_continuation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[fl
             prev_high = float(df.iloc[current_idx - 1].get("high", c_prev) or c_prev)
             resumption = c_now > prev_high
             if pullback and resumption:
+                # Validate pullback didn't break below e21 by more than 1 ATR
+                if e21_now > 0 and atr > 0:
+                    pb_lows = [float(df.iloc[current_idx - i].get("low", closes[current_idx - i]) or closes[current_idx - i]) for i in range(1, 4)]
+                    min_low_pullback = min(pb_lows)
+                    if min_low_pullback < e21_now - atr:
+                        return 0, ""
                 if rvol > 1.3:
                     return 14.0, "PULLBACK_CONT_BULL"
                 return 9.0, "PULLBACK_CONT_BULL_P"
@@ -1247,6 +1266,12 @@ def pullback_continuation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[fl
             prev_low = float(df.iloc[current_idx - 1].get("low", c_prev) or c_prev)
             resumption = c_now < prev_low
             if bounce and resumption:
+                # Validate bounce didn't break above e21 by more than 1 ATR
+                if e21_now > 0 and atr > 0:
+                    pb_highs = [float(df.iloc[current_idx - i].get("high", closes[current_idx - i]) or closes[current_idx - i]) for i in range(1, 4)]
+                    max_high_pullback = max(pb_highs)
+                    if max_high_pullback > e21_now + atr:
+                        return 0, ""
                 if rvol > 1.3:
                     return -14.0, "PULLBACK_CONT_BEAR"
                 return -9.0, "PULLBACK_CONT_BEAR_P"
@@ -1286,6 +1311,8 @@ def range_expansion_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, s
 
         expansion = cur_range > 1.3 * prev_range
         rvol = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        if rvol < 1.5:
+            return 0, ""
         c_now = closes[current_idx]
         prev_high = highs[current_idx - 1]
         prev_low  = lows[current_idx - 1]
@@ -1293,7 +1320,7 @@ def range_expansion_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, s
         bull_break = c_now > prev_high
         bear_break = c_now < prev_low
 
-        if expansion and rvol >= 1.2:
+        if expansion and rvol >= 1.5:
             base_nr = 12.0 if nr7 else (8.0 if nr4 else 5.0)
             if bull_break:
                 return base_nr, f"NR{'7' if nr7 else '4'}_BULL_BREAK"
@@ -1302,3 +1329,41 @@ def range_expansion_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, s
     except Exception:
         pass
     return 0.0, ""
+
+
+def confirmed_momentum_signal(df: pd.DataFrame, idx: int) -> tuple:
+    """
+    Strong momentum signal: stock up ≥1% from open with 2×+ volume on 3 consecutive bull bars.
+    This is the highest-conviction setup for NSE intraday momentum.
+    Returns (score, reason). Max score ±20.
+    """
+    if idx < 3:
+        return 0, ""
+    try:
+        row = df.iloc[idx]
+        e9  = float(row.get("ema9",  0) or 0)
+        e21 = float(row.get("ema21", 0) or 0)
+        e50 = float(row.get("ema50", 0) or 0)
+        rvol = float(row.get("rvol", 1.0) or 1.0)
+        day_open = float(row.get("day_open", 0) or 0)
+        close = float(row.get("close", 0) or 0)
+        if close <= 0 or day_open <= 0:
+            return 0, ""
+        sess_ret = (close - day_open) / day_open
+
+        # Full EMA stack + session return + volume surge
+        if e9 > e21 > e50 and sess_ret > 0.01 and rvol > 2.0:
+            # Check last 3 bars are all bullish
+            last3 = df.iloc[idx-2:idx+1]
+            if (last3["close"] > last3["open"]).all():
+                return 20, "CONFIRMED_BULL_MOMENTUM"
+
+        # Bearish mirror
+        if e9 < e21 < e50 and sess_ret < -0.01 and rvol > 2.0:
+            last3 = df.iloc[idx-2:idx+1]
+            if (last3["close"] < last3["open"]).all():
+                return -20, "CONFIRMED_BEAR_MOMENTUM"
+
+        return 0, ""
+    except Exception:
+        return 0, ""

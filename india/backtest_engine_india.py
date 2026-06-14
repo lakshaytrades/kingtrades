@@ -1791,7 +1791,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                                                momentum_ignition_signal,
                                                institutional_accumulation_signal,
                                                pullback_continuation_signal,
-                                               range_expansion_signal)
+                                               range_expansion_signal,
+                                               confirmed_momentum_signal)
                 # EMA21 Pullback
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
@@ -1822,6 +1823,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _s15, _r15 = range_expansion_signal(df, idx)
                 if _s15 != 0:
                     net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
+                # Confirmed Momentum (highest conviction)
+                _s16, _r16 = confirmed_momentum_signal(df, idx)
+                if _s16 != 0:
+                    net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
 
                 # Re-determine direction after new strategies
                 if net_score > 0:
@@ -2008,7 +2013,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
                    "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
                    "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM"]
+                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM",
+                   "CONFIRMED_BULL_MOMENTUM", "CONFIRMED_BEAR_MOMENTUM"]
     for t in trades:
         r = getattr(t, "reason", "") or ""
         matched = False
@@ -2820,7 +2826,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                                                momentum_ignition_signal,
                                                institutional_accumulation_signal,
                                                pullback_continuation_signal,
-                                               range_expansion_signal)
+                                               range_expansion_signal,
+                                               confirmed_momentum_signal)
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
                     net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
@@ -2844,6 +2851,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _s15, _r15 = range_expansion_signal(df, idx)
                 if _s15 != 0:
                     net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
+                # Confirmed Momentum (highest conviction)
+                _s16, _r16 = confirmed_momentum_signal(df, idx)
+                if _s16 != 0:
+                    net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
 
                 if net_score > 0:
                     direction = "LONG"
@@ -3004,7 +3015,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
                    "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
                    "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM"]
+                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM",
+                   "CONFIRMED_BULL_MOMENTUM", "CONFIRMED_BEAR_MOMENTUM"]
     for t in trades:
         r = getattr(t, "reason", "") or ""
         matched = False
