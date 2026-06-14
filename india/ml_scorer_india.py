@@ -261,6 +261,11 @@ class MLScorer:
             X_all = np.vstack(X_all)
             y_all = np.concatenate(y_all)
 
+            self._n_samples = len(X_all)
+            if self._n_samples < 300:
+                print(f"  [ML] Too few samples ({self._n_samples}) — ML scoring disabled for reliability")
+                return False
+
             # Balance classes
             n_pos = int(y_all.sum())
             n_neg = len(y_all) - n_pos
@@ -337,21 +342,21 @@ class MLScorer:
                 p = 1.0 - prob_bull
 
             # Map probability → multiplier
-            # p >= 0.70 → 1.4×  (strong ML confirmation)
-            # p >= 0.60 → 1.2×
-            # p >= 0.50 → 1.0×  (neutral)
-            # p >= 0.40 → 0.8×
-            # p <  0.40 → 0.6×  (ML disagrees, reduce size)
-            if p >= 0.70:
+            # p >= 0.72 → 1.4×  (strong ML confirmation — require higher certainty)
+            # p >= 0.63 → 1.2×
+            # p >= 0.48 → 1.0×  (wider neutral band — was 0.52)
+            # p >= 0.40 → 0.85× (softer penalty — was 0.8)
+            # p <  0.40 → 0.75× (floor raised — was 0.6; ML rarely has >60% certainty)
+            if p >= 0.72:
                 return 1.4
-            elif p >= 0.62:
+            elif p >= 0.63:
                 return 1.2
-            elif p >= 0.52:
+            elif p >= 0.48:
                 return 1.0
-            elif p >= 0.42:
-                return 0.8
+            elif p >= 0.40:
+                return 0.85
             else:
-                return 0.6
+                return 0.75
 
         except Exception:
             return 1.0
@@ -367,15 +372,15 @@ class MLScorer:
         mult = self.get_multiplier(df, idx, direction)
 
         if mult >= 1.4:
-            return 12.0, "ML_STRONG_CONFIRM"
+            return 14.0, "ML_STRONG_CONFIRM"   # +2 boost (reward certainty)
         elif mult >= 1.2:
-            return 6.0, "ML_CONFIRM"
+            return 8.0, "ML_CONFIRM"            # +2 boost
         elif mult >= 1.0:
-            return 0.0, ""
+            return 0.0, ""                       # neutral
         elif mult >= 0.8:
-            return -6.0, "ML_UNCERTAIN"
+            return -3.0, "ML_UNCERTAIN"          # softer penalty (was -6)
         else:
-            return -12.0, "ML_DISAGREE"
+            return -6.0, "ML_DISAGREE"           # softer penalty (was -12)
 
     def save(self, path: Optional[str] = None):
         """Save trained models to disk."""
