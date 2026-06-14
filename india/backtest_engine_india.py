@@ -369,111 +369,97 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     score_long = 0.0; score_short = 0.0; reasons = []
     bar_time = bar_ts.time()
 
-    # ── Tier 1: RSI momentum (non-overlapping ranges) ─────────────────────
-    rsi = float(row.get("rsi", 50) or 50)
-    prev_rsi = float(prev.get("rsi", 50) or 50)
-    if rsi > 60 and rsi < 78:      score_long  += 10; reasons.append(f"RSI_BULL({rsi:.0f})")
-    elif rsi > 50:                  score_long  += 5
-    elif rsi < 30:                  score_long  += 8;  reasons.append(f"RSI_OS({rsi:.0f})")
-    if rsi < 40 and rsi > 22:      score_short += 10; reasons.append(f"RSI_BEAR({rsi:.0f})")
-    elif rsi < 50:                  score_short += 5
-    elif rsi > 70:                  score_short += 8;  reasons.append(f"RSI_OB({rsi:.0f})")
-    if rsi > prev_rsi + 2 and rsi > 48:   score_long  += 4; reasons.append("RSI_RISING")
-    elif rsi < prev_rsi - 2 and rsi < 52: score_short += 4; reasons.append("RSI_FALLING")
+    c    = float(row.get("close",    0) or 0)
+    o    = float(row.get("open",     0) or 0)
+    h    = float(row.get("high",     0) or 0)
+    lo   = float(row.get("low",      0) or 0)
+    if c <= 0:
+        net = score_long - score_short
+        direction = "LONG" if net >= 0 else "SHORT"
+        return net, direction, ""
 
-    # ── Tier 1: MACD ───────────────────────────────────────────────────────
+    # ── Signal 1: MACD momentum (clean directional) ─────────────────────────
     mh  = float(row.get("macd_hist", 0) or 0)
     pmh = float(prev.get("macd_hist", 0) or 0)
-    if mh > 0 and pmh <= 0:   score_long  += 14; reasons.append("MACD_XOVER_UP")
-    elif mh > 0:               score_long  += 7
-    if mh < 0 and pmh >= 0:   score_short += 14; reasons.append("MACD_XOVER_DN")
-    elif mh < 0:               score_short += 7
+    if mh > 0 and pmh <= 0:    score_long  += 12; reasons.append("MACD_XOVER_UP")
+    elif mh > 0:                score_long  += 7
+    elif mh < 0 and pmh >= 0:  score_short += 12; reasons.append("MACD_XOVER_DN")
+    elif mh < 0:                score_short += 7
 
-    # ── Tier 1: EMA stack ──────────────────────────────────────────────────
-    c   = float(row.get("close", 0) or 0)
+    # ── Signal 2: EMA momentum stack ────────────────────────────────────────
     e9  = float(row.get("ema9",  c) or c)
     e21 = float(row.get("ema21", c) or c)
     e50 = float(row.get("ema50", c) or c)
-    if c > e9 > e21 > e50:    score_long  += 14; reasons.append("EMA_BULL_STACK")
-    elif c > e9 > e21:         score_long  += 8
-    elif c > e9:               score_long  += 4
-    if c < e9 < e21 < e50:    score_short += 14; reasons.append("EMA_BEAR_STACK")
-    elif c < e9 < e21:         score_short += 8
-    elif c < e9:               score_short += 4
+    if c > e9 > e21 > e50:     score_long  += 12; reasons.append("EMA_BULL_STACK")
+    elif c > e9 > e21:          score_long  += 7
+    elif c > e9:                score_long  += 3
+    if c < e9 < e21 < e50:     score_short += 12; reasons.append("EMA_BEAR_STACK")
+    elif c < e9 < e21:          score_short += 7
+    elif c < e9:                score_short += 3
 
-    # ── Tier 2: VWAP ───────────────────────────────────────────────────────
+    # ── Signal 3: ORB structural breakout ───────────────────────────────────
+    orb_h = float(row.get("orb_high", 0) or 0)
+    orb_l = float(row.get("orb_low",  0) or 0)
+    rvol  = float(row.get("rvol", 1.0) or 1.0)
+    if orb_h > 0 and orb_l > 0 and bar_time > ORB_END:
+        orb_range_pct = (orb_h - orb_l) / max(orb_h, 1)
+        _vol_ok = rvol >= 1.3
+        if 0.001 <= orb_range_pct <= 0.025:   # Valid ORB range: 0.1% to 2.5%
+            if c > orb_h * 1.0015:   # 0.15% above ORB high
+                if _vol_ok:    score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
+                else:          score_long  += 10; reasons.append("ORB_BULL_WEAK")
+            elif c > orb_h:
+                if _vol_ok:    score_long  += 8
+            if c < orb_l * 0.9985:   # 0.15% below ORB low
+                if _vol_ok:    score_short += 18; reasons.append("ORB_BEAR_CONFIRM")
+                else:          score_short += 10; reasons.append("ORB_BEAR_WEAK")
+            elif c < orb_l:
+                if _vol_ok:    score_short += 8
+
+    # ── Signal 4: VWAP intraday anchor ──────────────────────────────────────
     vwap = float(row.get("vwap", c) or c)
     if vwap > 0:
         vd = (c - vwap) / vwap
-        if vd > 0.002:         score_long  += 10; reasons.append("ABOVE_VWAP")
-        elif vd > 0:           score_long  += 5
-        if vd < -0.002:        score_short += 10; reasons.append("BELOW_VWAP")
-        elif vd < 0:           score_short += 5
+        if vd > 0.003:     score_long  += 10; reasons.append("ABOVE_VWAP")
+        elif vd > 0.001:   score_long  += 6
+        elif vd > 0:       score_long  += 3
+        if vd < -0.003:    score_short += 10; reasons.append("BELOW_VWAP")
+        elif vd < -0.001:  score_short += 6
+        elif vd < 0:       score_short += 3
 
-    # ── Today's open anchor: is price above or below today's open? ───────────
-    day_open = float(row.get("day_open", 0) or 0)
-    if day_open > 0 and c > 0:
-        _from_open_pct = (c - day_open) / day_open
-        if _from_open_pct > 0.003:    # >0.3% above open
-            score_long  += 10; reasons.append(f"ABOVE_OPEN({_from_open_pct*100:.1f}%)")
-        elif _from_open_pct > 0.001:  # >0.1% above open
-            score_long  += 5
-        elif _from_open_pct < -0.003: # >0.3% below open
-            score_short += 10; reasons.append(f"BELOW_OPEN({abs(_from_open_pct)*100:.1f}%)")
-        elif _from_open_pct < -0.001: # >0.1% below open
-            score_short += 5
-
-    # ── Tier 2: ORB breakout (FIX: use bar_ts.time() not row.index.time) ──
-    orb_h = float(row.get("orb_high", 0) or 0)
-    orb_l = float(row.get("orb_low",  0) or 0)
-    if orb_h > 0 and bar_time > ORB_END:
-        if c > orb_h * 1.001:  score_long  += 12; reasons.append("ORB_BREAK_UP")
-        if c < orb_l * 0.999:  score_short += 12; reasons.append("ORB_BREAK_DN")
-
-    # ── Tier 3: Volume surge (directional — confirms bar direction) ─────────
-    rvol = float(row.get("rvol", 1.0) or 1.0)
-    _bar_bull = (c > float(row.get("open", c) or c))  # Green bar
-    _bar_bear = (c < float(row.get("open", c) or c))  # Red bar
+    # ── Signal 5: Volume-direction confirmation ──────────────────────────────
+    bar_bull = c > o and (c - o) > (h - lo) * 0.3   # Strong bullish body
+    bar_bear = c < o and (o - c) > (h - lo) * 0.3   # Strong bearish body
     if rvol > 2.0:
-        if _bar_bull:   score_long  += 14; reasons.append(f"VOL_BULL_{rvol:.1f}x")
-        elif _bar_bear: score_short += 14; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
-        else:           score_long += 6; score_short += 6  # Doji on high volume — neutral
+        if bar_bull:    score_long  += 14; reasons.append(f"VOL_BULL_{rvol:.1f}x")
+        elif bar_bear:  score_short += 14; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
     elif rvol > 1.4:
-        if _bar_bull:   score_long  += 8;  reasons.append(f"VOL_BULL_{rvol:.1f}x")
-        elif _bar_bear: score_short += 8;  reasons.append(f"VOL_BEAR_{rvol:.1f}x")
-        else:           score_long += 3; score_short += 3
+        if bar_bull:    score_long  += 8;  reasons.append(f"VOL_BULL_{rvol:.1f}x")
+        elif bar_bear:  score_short += 8;  reasons.append(f"VOL_BEAR_{rvol:.1f}x")
 
-    # ── Tier 3: OBV momentum (directional — only fires when momentum confirmed) ──
-    obv      = float(row.get("obv",     0) or 0)
-    obv_ema  = float(row.get("obv_ema", 0) or 0)
-    prev_obv = float(prev.get("obv",    0) or 0)
-    if obv > prev_obv and obv > obv_ema:   score_long  += 4; reasons.append("OBV_BULL")
-    elif obv < prev_obv and obv < obv_ema: score_short += 4; reasons.append("OBV_BEAR")
+    # ── Signal 6: Today's-open momentum (real-time session direction) ────────
+    day_open = float(row.get("day_open", 0) or 0)
+    if day_open > 0:
+        from_open = (c - day_open) / day_open
+        if from_open > 0.005:    score_long  += 10; reasons.append(f"DAY_MOM(+{from_open*100:.1f}%)")
+        elif from_open > 0.002:  score_long  += 5
+        elif from_open > 0.0005: score_long  += 2
+        if from_open < -0.005:   score_short += 10; reasons.append(f"DAY_MOM({from_open*100:.1f}%)")
+        elif from_open < -0.002: score_short += 5
+        elif from_open < -0.0005:score_short += 2
 
-    # ── Tier 4: ADX gate — chop filter ─────────────────────────────────────
+    # ── ADX gate: kill choppy markets (multiplier only, not a signal) ────────
     adx_v = float(row.get("adx", 25) or 25)
-    adx = adx_v  # alias for downstream references
-    if adx_v < 18:
-        score_long  *= 0.4; score_short *= 0.4    # strong chop → dampen heavily
-    elif adx_v < 23:
-        score_long  *= 0.7; score_short *= 0.7    # mild chop → dampen moderately
-    # Power hour + strong trend: amplify
-    try:
-        _t = bar_ts.time()
-        from datetime import time as _dtime
-        if _t >= _dtime(14, 30) and adx_v >= 25:
-            score_long  *= 1.15
-            score_short *= 1.15
-    except Exception:
-        pass
+    if adx_v < 15:
+        # Very choppy — kill signal entirely
+        score_long = 0.0; score_short = 0.0
+        return 0.0, "LONG", "ADX_CHOP_KILL"
+    elif adx_v < 20:
+        score_long  *= 0.5; score_short *= 0.5
+    elif adx_v >= 30:
+        score_long  *= 1.1; score_short *= 1.1   # Trending: mild boost
 
-    # ── Tier 4: Bollinger expansion ─────────────────────────────────────────
-    bw  = float(row.get("bb_width",  0.02) or 0.02)
-    pbw = float(prev.get("bb_width", 0.02) or 0.02)
-    if bw > pbw * 1.25 and bw > 0.015:
-        score_long += 6; score_short += 6; reasons.append("BB_EXPAND")
-
-    # ── Tier 4: 15-min alignment ────────────────────────────────────────────
+    # ── 15m trend alignment (pure confirmation, not primary signal) ──────────
     if df_15m is not None and not df_15m.empty:
         try:
             mask = df_15m.index <= bar_ts
@@ -481,209 +467,34 @@ def _score_bar(row: pd.Series, prev: pd.Series,
                 r15 = df_15m.loc[mask].iloc[-1]
                 e9_15  = float(r15.get("ema9",  0) or 0)
                 e21_15 = float(r15.get("ema21", 0) or 0)
-                if e9_15 > e21_15 > 0:   score_long  += 10; reasons.append("15M_BULL")
-                elif e9_15 < e21_15:      score_short += 10; reasons.append("15M_BEAR")
+                if e9_15 > e21_15 > 0:    score_long  += 8; reasons.append("15M_BULL")
+                elif e9_15 < e21_15 > 0:  score_short += 8; reasons.append("15M_BEAR")
         except Exception:
             pass
 
-    # ── Tier 4: 1-hour macro trend ──────────────────────────────────────────
+    # ── 1H macro trend gate ──────────────────────────────────────────────────
     if df_1h is not None and not df_1h.empty:
         try:
             mask = df_1h.index <= bar_ts
             if mask.any():
                 r1h = df_1h.loc[mask].iloc[-1]
                 c1h  = float(r1h.get("close", 0) or 0)
+                e21h = float(r1h.get("ema21", c1h) or c1h)
                 e50h = float(r1h.get("ema50", c1h) or c1h)
-                if c1h > e50h > 0:   score_long  += 8; reasons.append("1H_BULL")
-                elif c1h < e50h:      score_short += 8; reasons.append("1H_BEAR")
+                if c1h > e21h > e50h:
+                    score_long  *= 1.2; score_short *= 0.4   # 1H bull: strongly favor LONG
+                    reasons.append("1H_BULL")
+                elif c1h < e21h < e50h:
+                    score_short *= 1.2; score_long  *= 0.4   # 1H bear: strongly favor SHORT
+                    reasons.append("1H_BEAR")
         except Exception:
             pass
 
-    # ── Tier 5: Gap-Fill/Go, VWAP reversion, Opening Drive ─────────────────
-    try:
-        from strategies_india import (gap_analysis_signal, vwap_reversion_signal,
-                                       compute_vwap_bands, opening_drive_signal)
-        orb_high_f = orb_h; orb_low_f = orb_l
-        _prev_close = c; _open_price = c   # best proxy in bar context
-        g_adj, g_r = gap_analysis_signal(_prev_close, _open_price, row, orb_high_f, orb_low_f)
-        if g_adj > 0:   score_long  += abs(g_adj); reasons.append(g_r)
-        elif g_adj < 0: score_short += abs(g_adj); reasons.append(g_r)
-    except Exception:
-        pass
-
-    # ── Supertrend ──────────────────────────────────────────────────────────
-    # Reduced weight, only score if EMA stack ALSO agrees (reduces stale signal risk)
-    st = float(row.get("supertrend", 0) or 0)
-    _ema_bull = (e9 > e21 > e50) if (e9 > 0 and e21 > 0 and e50 > 0) else False
-    _ema_bear = (e9 < e21 < e50) if (e9 > 0 and e21 > 0 and e50 > 0) else False
-    if st > 0 and _ema_bull:
-        score_long  += 8; reasons.append("SUPER+EMA_BULL")   # confirmed
-    elif st > 0:
-        score_long  += 3   # unconfirmed — small boost only
-    if st < 0 and _ema_bear:
-        score_short += 8; reasons.append("SUPER+EMA_BEAR")   # confirmed
-    elif st < 0:
-        score_short += 3   # unconfirmed
-
-    # ── Stochastic RSI ──────────────────────────────────────────────────────
-    sk = float(row.get("stoch_k", 50) or 50)
-    sd = float(row.get("stoch_d", 50) or 50)
-    if sk < 20 and sk > sd:     # oversold + turning up
-        score_long  += 8;  reasons.append("STOCH_OS_BULL")
-    elif sk > 80 and sk < sd:   # overbought + turning down
-        score_short += 8;  reasons.append("STOCH_OB_BEAR")
-
-    # ── TTM Squeeze Firing ──────────────────────────────────────────────────
-    sq   = float(row.get("squeeze", 0) or 0)
-    sqm  = float(row.get("sq_mom", 0) or 0)
-    p_sq  = float(prev.get("squeeze", 0) or 0)
-    p_sqm = float(prev.get("sq_mom", 0) or 0)
-    # Squeeze just fired (was in squeeze, now out) with bullish momentum
-    if p_sq == 1 and sq == 0 and sqm > 0 and sqm > p_sqm:
-        score_long  += 14; reasons.append("SQUEEZE_FIRE_BULL")
-    elif p_sq == 1 and sq == 0 and sqm < 0 and sqm < p_sqm:
-        score_short += 14; reasons.append("SQUEEZE_FIRE_BEAR")
-    # In squeeze: add mild bias based on momentum direction
-    elif sq == 1 and sqm > 0:
-        score_long  += 4;  reasons.append("SQUEEZE_BUILD_BULL")
-    elif sq == 1 and sqm < 0:
-        score_short += 4;  reasons.append("SQUEEZE_BUILD_BEAR")
-
-    # ── Order Book Imbalance (OBI) ───────────────────────────────────────
-    obi     = float(row.get("obi",       0) or 0)
-    cum_d   = float(row.get("cum_delta", 0) or 0)
-    cum_d_e = float(row.get("cum_delta_ema", 0) or 0)
-    p_obi   = float(prev.get("obi",     0) or 0)
-
-    # Strong OBI signal (close near high/low for 10 bars)
-    # Weights halved: OBI from OHLCV is only an approximation (true OBI needs L2 data)
-    if obi >= 0.55:
-        score_long  += 5; reasons.append("OBI_BULL_STRONG")
-    elif obi >= 0.30:
-        score_long  +=  3; reasons.append("OBI_BULL")
-    elif obi <= -0.55:
-        score_short += 5; reasons.append("OBI_BEAR_STRONG")
-    elif obi <= -0.30:
-        score_short +=  3; reasons.append("OBI_BEAR")
-
-    # OBI momentum (trend in buying/selling pressure)
-    if obi > p_obi + 0.15 and obi > 0:
-        score_long  += 2; reasons.append("OBI_ACCEL_BULL")
-    elif obi < p_obi - 0.15 and obi < 0:
-        score_short += 2; reasons.append("OBI_ACCEL_BEAR")
-
-    # Cumulative delta divergence (price up but selling delta = exhaustion)
-    c2 = float(row.get("close", 0) or 0)
-    p2 = float(prev.get("close", 0) or 0)
-    if c2 > p2 * 1.001 and cum_d < cum_d_e * 0.7:
-        # Price rising but delta declining = distribution (SHORT signal)
-        score_short += 4; reasons.append("DELTA_DIVERGE_BEAR")
-    elif c2 < p2 * 0.999 and cum_d > cum_d_e * 1.3:
-        # Price falling but delta rising = accumulation (LONG signal)
-        score_long  += 4; reasons.append("DELTA_DIVERGE_BULL")
-
-    # ── Break of Structure (Smart Money Concepts) ────────────────────────────
-    bos, bos_reason = _detect_bos(df_15m)
-    _bos_vol_ok = rvol >= 1.2  # Only score BoS if volume confirms
-    if bos == 1 and _bos_vol_ok:
-        score_long  += 6; reasons.append(bos_reason)
-    elif bos == -1 and _bos_vol_ok:
-        score_short += 6; reasons.append(bos_reason)
-
-    # ── Intraday Seasonality Adjustment ────────────────────────────────────
-    _adx_val = float(row.get("adx", 20) or 20)
-    _direction_tmp = "LONG" if score_long > score_short else "SHORT"
-    _seas_boost, _seas_reason = _intraday_seasonality_boost(bar_ts, _direction_tmp, _adx_val)
-    if _seas_boost > 0:
-        score_long  += _seas_boost; score_short += _seas_boost  # applies to both
-        if _seas_reason: reasons.append(_seas_reason)
-    elif _seas_boost < 0:
-        # Penalty: apply to both directions (bad time for momentum)
-        score_long  += _seas_boost
-        score_short += _seas_boost
-        score_long  = max(0, score_long)
-        score_short = max(0, score_short)
-        if _seas_reason: reasons.append(_seas_reason)
-
-    # ── Direction Confluence Gate ──────────────────────────────────────────
-    # Count how many Tier 1 indicators agree with the leading direction
-    _leading_long = score_long > score_short
-    _confluences = 0
-
-    # Check RSI
-    _rsi_v = float(row.get("rsi", 50) or 50)
-    if _leading_long and _rsi_v < 65:   _confluences += 1
-    if not _leading_long and _rsi_v > 35: _confluences += 1
-
-    # Check MACD histogram
-    _mh = float(row.get("macd_hist", 0) or 0)
-    if _leading_long and _mh > 0:  _confluences += 1
-    if not _leading_long and _mh < 0: _confluences += 1
-
-    # Check EMA alignment
-    _e9  = float(row.get("ema9", 0) or 0)
-    _e21 = float(row.get("ema21", 0) or 0)
-    _c   = float(row.get("close", 0) or 0)
-    if _e9 > 0 and _e21 > 0 and _c > 0:
-        if _leading_long and _e9 > _e21 and _c > _e9:   _confluences += 1
-        if not _leading_long and _e9 < _e21 and _c < _e9: _confluences += 1
-
-    # Check VWAP
-    _vwap = float(row.get("vwap", 0) or 0)
-    if _vwap > 0 and _c > 0:
-        if _leading_long and _c > _vwap:    _confluences += 1
-        if not _leading_long and _c < _vwap: _confluences += 1
-
-    # Check Supertrend
-    _st = float(row.get("supertrend", 0) or 0)
-    if _st != 0:
-        if _leading_long and _st > 0:     _confluences += 1
-        if not _leading_long and _st < 0: _confluences += 1
-
-    # Require at least 3 out of 5 Tier 1 indicators to agree
-    if _confluences < 3:
-        # Penalize sharply — fewer than 3 confirmers means low-quality signal
-        score_long  *= 0.4
-        score_short *= 0.4
-        reasons.append(f"LOW_CONFLUENCE_{_confluences}/5")
-    elif _confluences >= 4:
-        # Bonus for high confluence
-        score_long  *= 1.15
-        score_short *= 1.15
-        reasons.append(f"HIGH_CONFLUENCE_{_confluences}/5")
-
-    # ── Mandatory 1H Trend Gate ────────────────────────────────────────────
-    # The 1h trend is the most reliable direction indicator.
-    # If 1h trend strongly contradicts signal direction, nullify the signal.
-    if df_1h is not None and len(df_1h) >= 5:
-        try:
-            r1h = df_1h.iloc[-1]
-            e9_1h  = float(r1h.get("ema9",  0) or 0)
-            e21_1h = float(r1h.get("ema21", 0) or 0)
-            e50_1h = float(r1h.get("ema50", 0) or 0)
-            c_1h   = float(r1h.get("close", 0) or 0)
-
-            if e9_1h > 0 and e21_1h > 0 and e50_1h > 0 and c_1h > 0:
-                h1_bull = (e9_1h > e21_1h > e50_1h) and (c_1h > e21_1h)
-                h1_bear = (e9_1h < e21_1h < e50_1h) and (c_1h < e21_1h)
-
-                if h1_bull:
-                    # 1h is bullish: penalize SHORT score heavily
-                    score_short *= 0.3
-                    if score_long > 0:
-                        score_long *= 1.2   # mild boost to confirmed direction
-                elif h1_bear:
-                    # 1h is bearish: penalize LONG score heavily
-                    score_long *= 0.3
-                    if score_short > 0:
-                        score_short *= 1.2
-                # If 1h is neutral: no adjustment (both directions allowed)
-        except Exception:
-            pass
-
+    # ── Final net score and direction ────────────────────────────────────────
     net = score_long - score_short
-    direction = "LONG" if net > 0 else "SHORT"
-    return net, direction, " | ".join(reasons)
+    direction = "LONG" if net >= 0 else "SHORT"
+    reason_str = "+".join(reasons) if reasons else ""
+    return net, direction, reason_str
 
 
 # ── Regime detection (OHLCV-only, for backtest use) ─────────────────────────
@@ -1193,7 +1004,7 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
-MIN_SCORE    = 42.0   # net score threshold (raised — tighter filter to reduce false positives and improve win rate)
+MIN_SCORE    = 22.0   # Lower threshold: ORB alone (18) + any single confirm = trade
 MAX_OPEN     = 8      # More simultaneous positions = more trades = higher monthly returns
 MAX_POS_PCT  = 0.10   # 10% per position (more diversified, smaller individual losses)
 
@@ -1214,7 +1025,7 @@ def _update_adaptive_threshold(pnl: float):
 
         # High win rate (>=65%): relax threshold slightly to get more trades
         if rolling_wr >= 0.65:
-            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 30.0)
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 4.0, 18.0)
         # Good win rate (>=55%): keep at base
         elif rolling_wr >= 0.55:
             _ADAPTIVE_MIN_SCORE = MIN_SCORE
