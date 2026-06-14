@@ -27,12 +27,14 @@ class MarketRegime(Enum):
 
 
 # Per-regime score multipliers {regime: {direction: multiplier}}
+# BEAR_STRONG LONG reduced to 0.20 (near-block) — prevents chasing longs in downtrends
+# BEAR_WEAK   LONG reduced to 0.45 — significant penalty even in mild downturns
 REGIME_SCORE_MULTS: Dict[MarketRegime, Dict[str, float]] = {
     MarketRegime.BULL_STRONG:  {"LONG": 1.30, "SHORT": 0.50},
     MarketRegime.BULL_WEAK:    {"LONG": 1.10, "SHORT": 0.75},
     MarketRegime.SIDEWAYS:     {"LONG": 0.70, "SHORT": 0.70},
-    MarketRegime.BEAR_WEAK:    {"LONG": 0.75, "SHORT": 1.10},
-    MarketRegime.BEAR_STRONG:  {"LONG": 0.50, "SHORT": 1.30},
+    MarketRegime.BEAR_WEAK:    {"LONG": 0.45, "SHORT": 1.10},
+    MarketRegime.BEAR_STRONG:  {"LONG": 0.20, "SHORT": 1.30},
 }
 
 
@@ -183,11 +185,17 @@ def detect_regime_from_data(
         if vol_ratio > 2.0:
             return MarketRegime.SIDEWAYS, 0.5, details
 
+        # Asymmetric thresholds: bear classification tightened (fires sooner on downturns)
+        # while bull thresholds stay at original conservative levels.
+        # This achieves the goal of faster BEAR detection + 0.20× LONG suppression
+        # without also making BULL_STRONG fire on marginally-positive days.
+        # Symmetric tightening would widen the overlap zone and create spurious
+        # BULL_WEAK classifications (confidence=0.0) on genuinely mixed/choppy days.
         trending = median_adx >= 22
         bull_signals = int(breadth > 0.60) + int(vwap_breadth > 0.55) + \
-                       int(ema_bias > 0.001) + int(median_roc5 > 0.001)
-        bear_signals = int(breadth < 0.40) + int(vwap_breadth < 0.45) + \
-                       int(ema_bias < -0.001) + int(median_roc5 < -0.001)
+                       int(ema_bias > 0.001) + int(median_roc5 > 0.001)   # original (conservative)
+        bear_signals = int(breadth < 0.45) + int(vwap_breadth < 0.48) + \
+                       int(ema_bias < -0.0005) + int(median_roc5 < -0.0005)  # tightened
 
         confidence = abs(bull_signals - bear_signals) / 4.0
 

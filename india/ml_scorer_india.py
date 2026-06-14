@@ -52,6 +52,8 @@ FEATURE_COLS = [
     "vwap_dev", "close_vs_high", "close_vs_low",
     # Multi-timeframe proxy
     "bar_return_5", "bar_return_10", "range_pct",
+    # Session momentum (appended last to preserve feature alignment)
+    "session_return", "sess_positive",
 ]
 
 
@@ -130,6 +132,30 @@ def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
         sq_mom = g(row, "sq_mom", 0)
         sq_mom_sign = 1.0 if sq_mom > 0 else (-1.0 if sq_mom < 0 else 0.0)
 
+        # Session momentum: how far stock has moved from today's open.
+        # Prefer the precomputed 'day_open' column (stamped by backtest_engine's
+        # indicator pipeline: out["day_open"] = df.groupby(df.index.date)["open"].transform("first")).
+        # Fall back to a full-DataFrame filter only when that column is absent (e.g. unit tests).
+        # Never fall back to the bar's own open (o) — that is intra-bar return, not session return.
+        raw_day_open = g(row, "day_open", 0.0)
+        if raw_day_open > 0:
+            day_open = raw_day_open
+        else:
+            try:
+                day_open = float(df[df.index.date == df.index[idx].date()].iloc[0]["open"])
+            except (IndexError, KeyError, AttributeError):
+                day_open = 0.0
+        if day_open > 0:
+            session_return = (c - day_open) / day_open  # fractional (not %)
+        else:
+            session_return = 0.0  # no day_open available — treat as flat
+        if session_return > 0.002:
+            sess_positive = 1.0
+        elif session_return < -0.002:
+            sess_positive = 0.0
+        else:
+            sess_positive = 0.5  # flat / within noise band
+
         features = [
             # Momentum
             g(row, "rsi",      50),
@@ -157,6 +183,9 @@ def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
             bar_return_5,
             bar_return_10,
             range_pct,
+            # Session momentum (last — appended to preserve prior feature alignment)
+            np.clip(session_return * 100, -5.0, 5.0),  # cap at ±5% in % units
+            sess_positive,
         ]
 
         feat = np.array(features, dtype=float)
@@ -342,14 +371,14 @@ class MLScorer:
                 p = 1.0 - prob_bull
 
             # Map probability → multiplier
-            # p >= 0.72 → 1.4×  (strong ML confirmation — require higher certainty)
-            # p >= 0.63 → 1.2×
-            # p >= 0.48 → 1.0×  (wider neutral band — was 0.52)
-            # p >= 0.40 → 0.85× (softer penalty — was 0.8)
-            # p <  0.40 → 0.75× (floor raised — was 0.6; ML rarely has >60% certainty)
-            if p >= 0.72:
+            # p >= 0.78 → 1.4×  (ML_STRONG_CONFIRM — raised from 0.72 for higher certainty bar)
+            # p >= 0.70 → 1.2×  (ML_CONFIRM — moderate signals still get boost)
+            # p >= 0.48 → 1.0×  (wider neutral band)
+            # p >= 0.40 → 0.85× (soft penalty)
+            # p <  0.40 → 0.75× (floor; ML rarely has >60% certainty)
+            if p >= 0.78:
                 return 1.4
-            elif p >= 0.63:
+            elif p >= 0.70:
                 return 1.2
             elif p >= 0.48:
                 return 1.0
@@ -372,9 +401,9 @@ class MLScorer:
         mult = self.get_multiplier(df, idx, direction)
 
         if mult >= 1.4:
-            return 14.0, "ML_STRONG_CONFIRM"   # +2 boost (reward certainty)
+            return 16.0, "ML_STRONG_CONFIRM"   # raised from +14 — reward high-certainty calls more
         elif mult >= 1.2:
-            return 8.0, "ML_CONFIRM"            # +2 boost
+            return 8.0, "ML_CONFIRM"
         elif mult >= 1.0:
             return 0.0, ""                       # neutral
         elif mult >= 0.8:
@@ -400,8 +429,31 @@ class MLScorer:
                 return False
             with open(p, "rb") as f:
                 d = pickle.load(f)
-            self._gb = d.get("gb")
-            self._rf = d.get("rf")
+            gb = d.get("gb")
+            rf = d.get("rf")
+
+            # Guard: reject stale models trained on a different feature count.
+            # Feature count changes (e.g. adding session_return/sess_positive) produce
+            # sklearn ValueError at predict_proba time, which get_multiplier() silently
+            # swallows — making all ML calls return neutral 1.0 with no warning.
+            expected_n = len(FEATURE_COLS)
+            for model in (gb, rf):
+                if model is None:
+                    continue
+                # Pipeline wraps the clf; check the final estimator's n_features_in_
+                clf = model.named_steps.get("clf", model) if hasattr(model, "named_steps") else model
+                n_feat = getattr(clf, "n_features_in_", None)
+                if n_feat is not None and n_feat != expected_n:
+                    print(f"  [ML] Stale model: {n_feat} features vs {expected_n} expected — "
+                          f"discarding {p.name} (will retrain)")
+                    try:
+                        p.unlink()
+                    except Exception:
+                        pass
+                    return False
+
+            self._gb = gb
+            self._rf = rf
             self._trained = d.get("trained", False)
             self._n_samples = d.get("n", 0)
             return self._trained
