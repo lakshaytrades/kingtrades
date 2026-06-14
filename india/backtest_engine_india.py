@@ -54,6 +54,8 @@ COST_RT_PCT  = 0.0029    # 29 bps round-trip (brokerage + STT + exchange + slipp
 SQUAREOFF    = dtime(15, 20)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
+# NSE is long-biased: only short in clear bear sessions (reduces false signals)
+LONG_ONLY_NSE = True   # Set False to re-enable shorts for testing
 
 # ── Pure OHLCV indicators ────────────────────────────────────────────────────
 
@@ -1068,8 +1070,8 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 # ── Main replay ───────────────────────────────────────────────────────────────
 
 MIN_SCORE    = 16.0   # Lowered: 1h data generates fewer confirming signals
-MAX_OPEN     = 8      # More simultaneous positions = more trades = higher monthly returns
-MAX_POS_PCT  = 0.10   # 10% per position (more diversified, smaller individual losses)
+MAX_OPEN     = 10     # Allow up to 10 simultaneous positions for diversification
+MAX_POS_PCT  = 0.15   # 15% per position (increased from 10% for better capital utilisation)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
 _ADAPTIVE_MIN_SCORE = MIN_SCORE
@@ -1877,6 +1879,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue   # Market is bullish — skip counter-trend SHORT
             if _short_only_market and direction == "LONG":
                 continue   # Market is bearish — skip counter-trend LONG
+            # NSE long-only mode: only SHORT in confirmed bear sessions
+            if LONG_ONLY_NSE and direction == "SHORT":
+                # Allow SHORT only when session is clearly bearish
+                _clearly_bear = (_nifty_session_bear and _session_breadth < 0.40)
+                if not _clearly_bear:
+                    continue   # Skip short in neutral/bull session
 
             # ATR-based SL/TP
             atr = row.get("atr", row["close"] * 0.005)
@@ -2879,9 +2887,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
 
             if _long_only_market and direction == "SHORT":
-                continue
+                continue   # Market is bullish — skip counter-trend SHORT
             if _short_only_market and direction == "LONG":
-                continue
+                continue   # Market is bearish — skip counter-trend LONG
+            # NSE long-only mode: only SHORT in confirmed bear sessions
+            if LONG_ONLY_NSE and direction == "SHORT":
+                # Allow SHORT only when session is clearly bearish
+                _clearly_bear = (_nifty_session_bear and _session_breadth < 0.40)
+                if not _clearly_bear:
+                    continue   # Skip short in neutral/bull session
 
             atr = row.get("atr", row["close"] * 0.005)
             if atr <= 0:

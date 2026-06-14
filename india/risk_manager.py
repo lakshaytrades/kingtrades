@@ -412,7 +412,7 @@ def dynamic_kelly_size(
 
         # ── Cold start: insufficient history ─────────────────────────────────
         if len(window) < 10:
-            return 0.005   # 0.5% risk while warming up
+            return 0.012   # 1.2% risk while warming up (reasonable cold-start sizing)
 
         # ── Step 1: Full Kelly from win/loss stats ────────────────────────────
         wins   = [r for r in window if r > 0]
@@ -780,11 +780,11 @@ def ic_kelly_multiplier(signal_score: float) -> float:
     Returns: float multiplier [0.3, 1.2]
     """
     ic = get_rolling_ic()
-    if ic < 0:       return 0.3
-    if ic < 0.05:    return 0.6
-    if ic < 0.10:    return 0.85
-    if ic < 0.20:    return 1.0
-    return 1.2
+    if ic < 0:       return 0.5   # negative IC: still trade at half size
+    if ic < 0.05:    return 0.9   # low IC: close to normal
+    if ic < 0.10:    return 1.0   # moderate IC: full Kelly
+    if ic < 0.20:    return 1.15  # good IC: slightly larger
+    return 1.3                     # strong IC: press advantage
 
 
 # ── Correlation-Adjusted Portfolio Sizing ─────────────────────────────────────
