@@ -18,17 +18,27 @@ IST = ZoneInfo("Asia/Kolkata")
 # Yahoo Finance NSE suffix
 NSE_SUFFIX = ".NS"
 
-# Default 50 liquid NSE symbols for backtesting
+# Ordered by intraday momentum quality: banking/auto/metals have strongest 1h trends.
+# IT stocks (TCS, INFY, WIPRO) placed at back — they trend slowly intraday.
+# Default backtest uses first 20: all high-momentum sectors.
 DEFAULT_SYMBOLS = [
-    "RELIANCE", "TCS", "INFY", "HDFCBANK", "ICICIBANK",
-    "HINDUNILVR", "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK",
-    "LT", "AXISBANK", "BAJFINANCE", "ASIANPAINT", "MARUTI",
-    "TITAN", "SUNPHARMA", "ULTRACEMCO", "NESTLEIND", "WIPRO",
-    "HCLTECH", "TECHM", "POWERGRID", "ONGC", "NTPC",
-    "COALINDIA", "TATAMOTORS", "JSWSTEEL", "TATASTEEL", "ADANIENT",
-    "DIVISLAB", "DRREDDY", "CIPLA", "EICHERMOT", "BAJAJFINSV",
-    "BAJAJ-AUTO", "HEROMOTOCO", "GRASIM", "BRITANNIA", "INDUSINDBK",
-    "BPCL", "HINDALCO", "VEDL", "SBILIFE", "HDFCLIFE",
+    # Banking & Finance (strong intraday momentum, institutional volume)
+    "HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "BAJFINANCE", "INDUSINDBK",
+    # Energy & Commodities (trending, volume-driven)
+    "RELIANCE", "ONGC", "BPCL", "COALINDIA",
+    # Auto (momentum sector, strong trends)
+    "TATAMOTORS", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT",
+    # Metals & Infrastructure (high beta, strong momentum)
+    "TATASTEEL", "JSWSTEEL", "HINDALCO", "LT",
+    # IT (slower intraday momentum — move to back)
+    "TCS", "INFY", "WIPRO", "HCLTECH", "TECHM",
+    # Telecom & Consumer
+    "BHARTIARTL", "HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "ASIANPAINT",
+    # Pharma
+    "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB",
+    # Conglomerates & Others
+    "ADANIENT", "ADANIPORTS", "BAJAJFINSV", "TITAN", "ULTRACEMCO", "NTPC",
+    "POWERGRID", "GRASIM", "VEDL", "SBILIFE", "HDFCLIFE",
     "PIDILITIND", "TORNTPHARM", "BERGEPAINT", "MUTHOOTFIN", "HAVELLS",
 ]
 
