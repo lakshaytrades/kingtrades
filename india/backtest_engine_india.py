@@ -857,6 +857,56 @@ def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
 
 # ── Kelly sizing ──────────────────────────────────────────────────────────────
 
+def _rank_symbols_by_momentum(data: Dict[str, pd.DataFrame], now_ts: pd.Timestamp) -> Dict[str, float]:
+    """
+    Cross-sectional momentum rank for all loaded symbols at this bar.
+
+    Returns {symbol: percentile_rank} where rank 0→1 (1 = strongest upside momentum).
+    Composite = 0.5×session_return + 0.3×vwap_deviation + 0.2×5bar_roc.
+
+    Only runs when ≥5 symbols have valid data. Returns {} on failure (fail-open).
+    No look-ahead bias: uses only df.loc[now_ts] and prior bars.
+    """
+    try:
+        today = now_ts.date()
+        scores: Dict[str, float] = {}
+        for sym, df in data.items():
+            try:
+                if now_ts not in df.index:
+                    continue
+                idx = df.index.get_loc(now_ts)
+                row = df.loc[now_ts]
+                c = float(row.get("close", 0) or 0)
+                if c <= 0:
+                    continue
+                # Session return from today's first bar open
+                today_df = df[df.index.date == today]
+                if len(today_df) == 0:
+                    continue
+                day_open = float(today_df.iloc[0]["open"])
+                sess_ret = (c - day_open) / day_open if day_open > 0 else 0.0
+                # VWAP deviation
+                vwap = float(row.get("vwap", c) or c)
+                vwap_dev = (c - vwap) / vwap if vwap > 0 else 0.0
+                # 5-bar ROC
+                roc5 = sess_ret
+                if idx >= 5:
+                    c5 = float(df.iloc[idx - 5].get("close", c) or c)
+                    if c5 > 0:
+                        roc5 = (c - c5) / c5
+                scores[sym] = 0.5 * sess_ret + 0.3 * vwap_dev + 0.2 * roc5
+            except Exception:
+                continue
+        if len(scores) < 5:
+            return {}
+        # Percentile rank: 0 = weakest, 1 = strongest
+        sorted_syms = sorted(scores, key=lambda s: scores[s])
+        n = len(sorted_syms)
+        return {sym: i / (n - 1) if n > 1 else 0.5 for i, sym in enumerate(sorted_syms)}
+    except Exception:
+        return {}
+
+
 def _kelly_size(wins: int, losses: int, capital: float, max_pct: float = 0.20) -> float:
     """Half-Kelly position size as fraction of capital (legacy — kept for compatibility)."""
     total = wins + losses
@@ -1162,6 +1212,16 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _bear_days = 0
     _session_days_seen: set = set()
 
+    # ── PhD-level enhancement caches ─────────────────────────────────────────
+    _cs_rank_cache: Dict[str, float] = {}   # cross-sectional momentum ranks
+    _cs_rank_ts = None
+    _regime = None                           # MarketRegime enum
+    _regime_confidence: float = 0.3
+    _regime_ts = None
+    _expiry_ctx: dict = {}
+    _factor_scores_cache: Dict[str, float] = {}  # multi-factor alpha scores
+    _factor_scores_ts = None
+
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
@@ -1430,6 +1490,32 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
 
+        # ── Cross-sectional rank + regime + factor model (every 15-30 min) ──
+        if (_cs_rank_ts is None or
+                (now_ts - _cs_rank_ts).total_seconds() >= 900):
+            try:
+                _cs_rank_cache = _rank_symbols_by_momentum(data, now_ts)
+                _cs_rank_ts = now_ts
+            except Exception:
+                pass
+        if (_factor_scores_ts is None or
+                (now_ts - _factor_scores_ts).total_seconds() >= 900):
+            try:
+                from factor_model import compute_factor_scores
+                _factor_scores_cache = compute_factor_scores(data, now_ts)
+                _factor_scores_ts = now_ts
+            except Exception:
+                pass
+        if (_regime_ts is None or
+                (now_ts - _regime_ts).total_seconds() >= 1800):
+            try:
+                from regime_detector import detect_regime_from_data, get_expiry_context
+                _regime, _regime_confidence, _ = detect_regime_from_data(data, now_ts)
+                _expiry_ctx = get_expiry_context(now_ts.date())
+                _regime_ts = now_ts
+            except Exception:
+                pass
+
         _mkt_trend = _nifty_proxy_cache.get("trend_score", 0)
         _pct_vwap  = _nifty_proxy_cache.get("pct_above_vwap", 0.5)
 
@@ -1442,6 +1528,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if _long_only_market and _short_only_market:
             _long_only_market = False
             _short_only_market = False
+
+        # F&O monthly expiry: skip all new entries
+        if _expiry_ctx.get("bias") == "AVOID":
+            continue
 
         # Cap entries if too many open trades are stressed
         _stressed = 0
@@ -1625,6 +1715,55 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 except Exception:
                     pass
 
+            # ── Regime-conditional score multiplier ───────────────────────────
+            if _regime is not None:
+                try:
+                    from regime_detector import get_regime_score_mult, MarketRegime
+                    _rmult = get_regime_score_mult(_regime, direction)
+                    net_score *= _rmult
+                    if _regime == MarketRegime.SIDEWAYS and _regime_confidence > 0.6:
+                        continue   # High-confidence sideways: skip
+                except Exception:
+                    pass
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
+            # ── Cross-sectional rank filter + boost ───────────────────────────
+            if _cs_rank_cache:
+                _sym_rank = _cs_rank_cache.get(sym, 0.5)
+                if direction == "LONG" and _sym_rank < 0.40:
+                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
+                        continue   # Weak stock in LONG: skip marginal signal
+                elif direction == "SHORT" and _sym_rank > 0.60:
+                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
+                        continue   # Strong stock in SHORT: skip marginal signal
+                if direction == "LONG":
+                    if _sym_rank >= 0.75:
+                        net_score += 10; reason = (reason + "+CS_TOP") if reason else "CS_TOP"
+                    elif _sym_rank >= 0.60:
+                        net_score += 5
+                elif direction == "SHORT":
+                    if _sym_rank <= 0.25:
+                        net_score -= 10; reason = (reason + "+CS_BOT") if reason else "CS_BOT"
+                    elif _sym_rank <= 0.40:
+                        net_score -= 5
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
+            # ── Multi-factor alpha boost ──────────────────────────────────────
+            if _factor_scores_cache:
+                try:
+                    from factor_model import get_factor_score_boost
+                    _fa, _fr = get_factor_score_boost(sym, direction, _factor_scores_cache)
+                    if abs(_fa) > 0.5:
+                        net_score += _fa
+                        if _fr:
+                            reason = (reason + "+" + _fr) if reason else _fr
+                except Exception:
+                    pass
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < 18.0:
                 continue
@@ -1633,7 +1772,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             try:
                 from strategies_india import (ema21_pullback_signal,
                                                liquidity_grab_signal,
-                                               inside_bar_breakout_signal)
+                                               inside_bar_breakout_signal,
+                                               momentum_ignition_signal,
+                                               institutional_accumulation_signal,
+                                               pullback_continuation_signal,
+                                               range_expansion_signal)
                 # EMA21 Pullback
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
@@ -1648,6 +1791,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
                 if _s6 != 0:
                     net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
+                # Momentum Ignition
+                _s12, _r12 = momentum_ignition_signal(df, idx)
+                if _s12 != 0:
+                    net_score += _s12; reason = (reason + "+" + _r12) if _r12 and reason else (_r12 or reason)
+                # Institutional Accumulation / Distribution
+                _s13, _r13 = institutional_accumulation_signal(df, idx)
+                if _s13 != 0:
+                    net_score += _s13; reason = (reason + "+" + _r13) if _r13 and reason else (_r13 or reason)
+                # Pullback Continuation
+                _s14, _r14 = pullback_continuation_signal(df, idx)
+                if _s14 != 0:
+                    net_score += _s14; reason = (reason + "+" + _r14) if _r14 and reason else (_r14 or reason)
+                # Range Expansion (NR4/NR7 breakout)
+                _s15, _r15 = range_expansion_signal(df, idx)
+                if _s15 != 0:
+                    net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
 
                 # Re-determine direction after new strategies
                 if net_score > 0:
@@ -1746,6 +1905,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
 
+            # ── IC-weighted Kelly + correlation-adjusted sizing ───────────────
+            try:
+                from risk_manager import ic_kelly_multiplier as _ic_mult, \
+                                         correlation_size_cap as _corr_cap
+                risk_pct *= _ic_mult(net_score)
+                risk_pct *= _corr_cap(direction, open_trades)
+            except Exception:
+                pass
+
             # Time-of-day risk reduction
             try:
                 from risk_manager import time_of_day_multiplier as _tod_mult
@@ -1770,6 +1938,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
                 continue
+
+            # F&O expiry size reduction (weekly expiry = 0.75×, pre-expiry = 0.85×)
+            _exp_mult = _expiry_ctx.get("size_multiplier", 1.0) if _expiry_ctx else 1.0
+            if _exp_mult < 1.0:
+                qty = max(1, int(qty * _exp_mult))
 
             # Half-size for signals near the lower threshold (lower confidence)
             _threshold = _ADAPTIVE_MIN_SCORE
@@ -2084,6 +2257,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _bear_days = 0
     _session_days_seen: set = set()
 
+    # ── PhD-level enhancement caches ─────────────────────────────────────────
+    _cs_rank_cache: Dict[str, float] = {}
+    _cs_rank_ts = None
+    _regime = None
+    _regime_confidence: float = 0.3
+    _regime_ts = None
+    _expiry_ctx: dict = {}
+    _factor_scores_cache: Dict[str, float] = {}
+    _factor_scores_ts = None
+
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
@@ -2334,6 +2517,32 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
 
+        # ── Cross-sectional rank + regime + factor model (every 15-30 min) ──
+        if (_cs_rank_ts is None or
+                (now_ts - _cs_rank_ts).total_seconds() >= 900):
+            try:
+                _cs_rank_cache = _rank_symbols_by_momentum(data, now_ts)
+                _cs_rank_ts = now_ts
+            except Exception:
+                pass
+        if (_factor_scores_ts is None or
+                (now_ts - _factor_scores_ts).total_seconds() >= 900):
+            try:
+                from factor_model import compute_factor_scores
+                _factor_scores_cache = compute_factor_scores(data, now_ts)
+                _factor_scores_ts = now_ts
+            except Exception:
+                pass
+        if (_regime_ts is None or
+                (now_ts - _regime_ts).total_seconds() >= 1800):
+            try:
+                from regime_detector import detect_regime_from_data, get_expiry_context
+                _regime, _regime_confidence, _ = detect_regime_from_data(data, now_ts)
+                _expiry_ctx = get_expiry_context(now_ts.date())
+                _regime_ts = now_ts
+            except Exception:
+                pass
+
         _mkt_trend = _nifty_proxy_cache.get("trend_score", 0)
         _pct_vwap  = _nifty_proxy_cache.get("pct_above_vwap", 0.5)
 
@@ -2342,6 +2551,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         if _long_only_market and _short_only_market:
             _long_only_market = False
             _short_only_market = False
+
+        # F&O monthly expiry: skip all new entries
+        if _expiry_ctx.get("bias") == "AVOID":
+            continue
 
         _stressed = 0
         for _st in open_trades.values():
@@ -2509,13 +2722,66 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 except Exception:
                     pass
 
+            # ── Regime-conditional score multiplier ───────────────────────────
+            if _regime is not None:
+                try:
+                    from regime_detector import get_regime_score_mult, MarketRegime
+                    _rmult = get_regime_score_mult(_regime, direction)
+                    net_score *= _rmult
+                    if _regime == MarketRegime.SIDEWAYS and _regime_confidence > 0.6:
+                        continue
+                except Exception:
+                    pass
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
+            # ── Cross-sectional rank filter + boost ───────────────────────────
+            if _cs_rank_cache:
+                _sym_rank = _cs_rank_cache.get(sym, 0.5)
+                if direction == "LONG" and _sym_rank < 0.40:
+                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
+                        continue
+                elif direction == "SHORT" and _sym_rank > 0.60:
+                    if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.5:
+                        continue
+                if direction == "LONG":
+                    if _sym_rank >= 0.75:
+                        net_score += 10; reason = (reason + "+CS_TOP") if reason else "CS_TOP"
+                    elif _sym_rank >= 0.60:
+                        net_score += 5
+                elif direction == "SHORT":
+                    if _sym_rank <= 0.25:
+                        net_score -= 10; reason = (reason + "+CS_BOT") if reason else "CS_BOT"
+                    elif _sym_rank <= 0.40:
+                        net_score -= 5
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
+            # ── Multi-factor alpha boost ──────────────────────────────────────
+            if _factor_scores_cache:
+                try:
+                    from factor_model import get_factor_score_boost
+                    _fa, _fr = get_factor_score_boost(sym, direction, _factor_scores_cache)
+                    if abs(_fa) > 0.5:
+                        net_score += _fa
+                        if _fr:
+                            reason = (reason + "+" + _fr) if reason else _fr
+                except Exception:
+                    pass
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+
             if abs(net_score) < 18.0:
                 continue
 
             try:
                 from strategies_india import (ema21_pullback_signal,
                                                liquidity_grab_signal,
-                                               inside_bar_breakout_signal)
+                                               inside_bar_breakout_signal,
+                                               momentum_ignition_signal,
+                                               institutional_accumulation_signal,
+                                               pullback_continuation_signal,
+                                               range_expansion_signal)
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
                     net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
@@ -2527,6 +2793,18 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
                 if _s6 != 0:
                     net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
+                _s12, _r12 = momentum_ignition_signal(df, idx)
+                if _s12 != 0:
+                    net_score += _s12; reason = (reason + "+" + _r12) if _r12 and reason else (_r12 or reason)
+                _s13, _r13 = institutional_accumulation_signal(df, idx)
+                if _s13 != 0:
+                    net_score += _s13; reason = (reason + "+" + _r13) if _r13 and reason else (_r13 or reason)
+                _s14, _r14 = pullback_continuation_signal(df, idx)
+                if _s14 != 0:
+                    net_score += _s14; reason = (reason + "+" + _r14) if _r14 and reason else (_r14 or reason)
+                _s15, _r15 = range_expansion_signal(df, idx)
+                if _s15 != 0:
+                    net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
 
                 if net_score > 0:
                     direction = "LONG"
@@ -2603,6 +2881,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
             risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
 
+            # ── IC-weighted Kelly + correlation-adjusted sizing ───────────────
+            try:
+                from risk_manager import ic_kelly_multiplier as _ic_mult, \
+                                         correlation_size_cap as _corr_cap
+                risk_pct *= _ic_mult(net_score)
+                risk_pct *= _corr_cap(direction, open_trades)
+            except Exception:
+                pass
+
             try:
                 from risk_manager import time_of_day_multiplier as _tod_mult
                 tod_factor = _tod_mult(now_ts)
@@ -2625,6 +2912,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
                 continue
+
+            # F&O expiry size reduction
+            _exp_mult = _expiry_ctx.get("size_multiplier", 1.0) if _expiry_ctx else 1.0
+            if _exp_mult < 1.0:
+                qty = max(1, int(qty * _exp_mult))
 
             # Half-size for signals near the lower threshold (lower confidence)
             _threshold = _ADAPTIVE_MIN_SCORE

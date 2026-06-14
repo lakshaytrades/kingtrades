@@ -1055,8 +1055,250 @@ def get_strategies_score(
         except Exception:
             pass
 
+        # -- Strategy 12: Momentum Ignition ------------------------------------
+        try:
+            s12, r12 = momentum_ignition_signal(df_5m, _idx if _idx is not None else len(df_5m) - 1)
+            if s12 != 0:
+                total += s12
+                if r12:
+                    reason_parts.append(f"{r12}:{s12:+.0f}")
+        except Exception:
+            pass
+
+        # -- Strategy 13: Institutional Accumulation / Distribution -----------
+        try:
+            s13, r13 = institutional_accumulation_signal(df_5m, _idx if _idx is not None else len(df_5m) - 1)
+            if s13 != 0:
+                total += s13
+                if r13:
+                    reason_parts.append(f"{r13}:{s13:+.0f}")
+        except Exception:
+            pass
+
+        # -- Strategy 14: Pullback Continuation --------------------------------
+        try:
+            s14, r14 = pullback_continuation_signal(df_5m, _idx if _idx is not None else len(df_5m) - 1)
+            if s14 != 0:
+                total += s14
+                if r14:
+                    reason_parts.append(f"{r14}:{s14:+.0f}")
+        except Exception:
+            pass
+
+        # -- Strategy 15: Range Expansion (NR4/NR7 breakout) ------------------
+        try:
+            s15, r15 = range_expansion_signal(df_5m, _idx if _idx is not None else len(df_5m) - 1)
+            if s15 != 0:
+                total += s15
+                if r15:
+                    reason_parts.append(f"{r15}:{s15:+.0f}")
+        except Exception:
+            pass
+
     except Exception as exc:
         logger.debug("get_strategies_score %s: %s", symbol, exc)
 
     reason_str = " | ".join(reason_parts) if reason_parts else ""
     return total, reason_str
+
+
+# ── Institutional Patterns (Strategies 12-15) ─────────────────────────────────
+
+def momentum_ignition_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
+    """
+    3+ consecutive bars same direction with ACCELERATING volume.
+    Institutional accelerator pattern — high WR when all 4 criteria met.
+    Returns signed score: positive=LONG, negative=SHORT.
+    """
+    try:
+        if current_idx < 4 or df is None or df.empty:
+            return 0.0, ""
+        bars = df.iloc[current_idx - 3: current_idx + 1]
+        if len(bars) < 4:
+            return 0.0, ""
+
+        closes = bars["close"].values.astype(float)
+        opens  = bars["open"].values.astype(float)
+        vols   = bars["volume"].values.astype(float)
+
+        bull_bars = all(closes[i] > opens[i] for i in range(4))
+        bear_bars = all(closes[i] < opens[i] for i in range(4))
+        vol_accel = all(vols[i] > vols[i - 1] for i in range(1, 4))
+
+        rvol  = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        e9    = float(df.iloc[current_idx].get("ema9",  closes[-1]) or closes[-1])
+        e21   = float(df.iloc[current_idx].get("ema21", closes[-1]) or closes[-1])
+        ema_bull = e9 > e21 > 0
+        ema_bear = e9 < e21
+
+        if bull_bars:
+            criteria = int(vol_accel) + int(rvol > 1.5) + int(ema_bull)
+            if criteria >= 3:
+                return 18.0, "MOM_IGNITION_BULL"
+            if criteria >= 2:
+                return 12.0, "MOM_IGNITION_BULL_P"
+            if vol_accel:
+                return 8.0, "VOL_ACCEL_BULL"
+        if bear_bars:
+            criteria = int(vol_accel) + int(rvol > 1.5) + int(ema_bear)
+            if criteria >= 3:
+                return -18.0, "MOM_IGNITION_BEAR"
+            if criteria >= 2:
+                return -12.0, "MOM_IGNITION_BEAR_P"
+            if vol_accel:
+                return -8.0, "VOL_ACCEL_BEAR"
+    except Exception:
+        pass
+    return 0.0, ""
+
+
+def institutional_accumulation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
+    """
+    Wide-range candle with extreme volume + close near high/low.
+    Institutional footprint — accumulation or distribution.
+    Returns signed score: positive=LONG(accumulation), negative=SHORT(distribution).
+    """
+    try:
+        if current_idx < 14 or df is None or df.empty:
+            return 0.0, ""
+        row = df.iloc[current_idx]
+        c   = float(row.get("close", 0) or 0)
+        o   = float(row.get("open",  0) or 0)
+        h   = float(row.get("high",  0) or 0)
+        lo  = float(row.get("low",   0) or 0)
+        if c <= 0 or h <= lo:
+            return 0.0, ""
+
+        rvol  = float(row.get("rvol", 1.0) or 1.0)
+        bar_range = h - lo
+        atr14 = float((df["high"] - df["low"]).iloc[max(0, current_idx - 14): current_idx + 1].mean())
+        if atr14 <= 0:
+            return 0.0, ""
+
+        wide_bar  = bar_range > 1.5 * atr14
+        high_vol  = rvol > 2.0
+        close_pos = (c - lo) / max(bar_range, 1e-9)   # 0=closed at low, 1=closed at high
+
+        # Accumulation: close in top 30% of range
+        if close_pos > 0.70:
+            if wide_bar and high_vol:
+                return 16.0, "INST_ACCUM"
+            if high_vol:
+                return 10.0, "INST_ACCUM_P"
+        # Distribution: close in bottom 30% of range
+        if close_pos < 0.30:
+            if wide_bar and high_vol:
+                return -16.0, "INST_DISTRIB"
+            if high_vol:
+                return -10.0, "INST_DISTRIB_P"
+    except Exception:
+        pass
+    return 0.0, ""
+
+
+def pullback_continuation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
+    """
+    First pullback in a trend followed by resumption.
+    Highest win-rate continuation pattern after trend identification.
+    Returns signed score: positive=LONG, negative=SHORT.
+    """
+    try:
+        if current_idx < 8 or df is None or df.empty:
+            return 0.0, ""
+
+        closes = df["close"].values.astype(float)
+        e21_col = df.get("ema21", pd.Series(dtype=float)) if hasattr(df, "get") else None
+
+        # EMA21 rising over last 5 bars = uptrend
+        try:
+            e21_now  = float(df.iloc[current_idx    ].get("ema21", 0) or 0)
+            e21_prev = float(df.iloc[current_idx - 5].get("ema21", 0) or 0)
+        except Exception:
+            return 0.0, ""
+        if e21_now <= 0 or e21_prev <= 0:
+            return 0.0, ""
+
+        ema_rising = e21_now > e21_prev * 1.001   # at least 0.1% rise over 5 bars
+        ema_falling = e21_now < e21_prev * 0.999
+
+        rvol = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        c_now  = closes[current_idx]
+        c_prev = closes[current_idx - 1]
+
+        # LONG continuation: uptrend, pullback (last 2-3 bars dipped), resumption
+        if ema_rising:
+            # Pullback: at least 1 of last 2 bars had lower close
+            pullback = closes[current_idx - 1] < closes[current_idx - 3] or \
+                       closes[current_idx - 2] < closes[current_idx - 4]
+            # Resumption: current bar closes above previous bar's high
+            prev_high = float(df.iloc[current_idx - 1].get("high", c_prev) or c_prev)
+            resumption = c_now > prev_high
+            if pullback and resumption:
+                if rvol > 1.3:
+                    return 14.0, "PULLBACK_CONT_BULL"
+                return 9.0, "PULLBACK_CONT_BULL_P"
+            if resumption:
+                return 5.0, "TREND_RESUME_BULL"
+
+        # SHORT continuation: downtrend, bounce, resumption down
+        if ema_falling:
+            bounce = closes[current_idx - 1] > closes[current_idx - 3] or \
+                     closes[current_idx - 2] > closes[current_idx - 4]
+            prev_low = float(df.iloc[current_idx - 1].get("low", c_prev) or c_prev)
+            resumption = c_now < prev_low
+            if bounce and resumption:
+                if rvol > 1.3:
+                    return -14.0, "PULLBACK_CONT_BEAR"
+                return -9.0, "PULLBACK_CONT_BEAR_P"
+            if resumption:
+                return -5.0, "TREND_RESUME_BEAR"
+    except Exception:
+        pass
+    return 0.0, ""
+
+
+def range_expansion_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
+    """
+    NR4/NR7 (narrowest range in 4 or 7 bars) followed by range expansion breakout.
+    Volatility compression → expansion is one of the most reliable NSE intraday setups.
+    Returns signed score: positive=LONG, negative=SHORT.
+    """
+    try:
+        if current_idx < 7 or df is None or df.empty:
+            return 0.0, ""
+
+        highs  = df["high"].values.astype(float)
+        lows   = df["low"].values.astype(float)
+        closes = df["close"].values.astype(float)
+
+        ranges = highs - lows
+        cur_range = ranges[current_idx]
+        prev_range = ranges[current_idx - 1]
+        if prev_range <= 0:
+            return 0.0, ""
+
+        # NR4: previous bar had narrowest range in last 4 bars
+        last4 = ranges[current_idx - 4: current_idx]
+        nr4 = prev_range <= last4.min() if len(last4) >= 4 else False
+        # NR7: previous bar had narrowest range in last 7 bars
+        last7 = ranges[current_idx - 7: current_idx]
+        nr7 = prev_range <= last7.min() if len(last7) >= 7 else False
+
+        expansion = cur_range > 1.3 * prev_range
+        rvol = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
+        c_now = closes[current_idx]
+        prev_high = highs[current_idx - 1]
+        prev_low  = lows[current_idx - 1]
+
+        bull_break = c_now > prev_high
+        bear_break = c_now < prev_low
+
+        if expansion and rvol >= 1.2:
+            base_nr = 12.0 if nr7 else (8.0 if nr4 else 5.0)
+            if bull_break:
+                return base_nr, f"NR{'7' if nr7 else '4'}_BULL_BREAK"
+            if bear_break:
+                return -base_nr, f"NR{'7' if nr7 else '4'}_BEAR_BREAK"
+    except Exception:
+        pass
+    return 0.0, ""

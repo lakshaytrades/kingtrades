@@ -42,7 +42,7 @@ Usage:
 """
 import logging
 import math
-from typing import List
+from typing import List, Tuple
 
 logger = logging.getLogger("risk_manager")
 
@@ -719,3 +719,104 @@ def compute_exit_stages(
         "sl":           sl,
         "be_sl":        be_sl,
     }
+
+
+# ── IC-Weighted Kelly Sizing ──────────────────────────────────────────────────
+
+_ic_trades: List[Tuple[float, float]] = []   # (signal_score, realized_return) pairs
+_ic_history: List[float] = []                # rolling IC values
+
+
+def record_signal_outcome(signal_score: float, actual_return: float) -> None:
+    """Record a trade's signal score and realized return for IC computation."""
+    global _ic_trades, _ic_history
+    try:
+        _ic_trades.append((float(signal_score), float(actual_return)))
+        if len(_ic_trades) > 100:
+            _ic_trades = _ic_trades[-100:]
+        if len(_ic_trades) >= 20:
+            import numpy as np
+            recent = _ic_trades[-50:]
+            scores  = [t[0] for t in recent]
+            returns = [t[1] for t in recent]
+            arr_s = np.array(scores,  dtype=float)
+            arr_r = np.array(returns, dtype=float)
+            if arr_s.std() > 0 and arr_r.std() > 0:
+                ic = float(np.corrcoef(arr_s, arr_r)[0, 1])
+                if math.isfinite(ic):
+                    _ic_history.append(ic)
+                    if len(_ic_history) > 30:
+                        _ic_history = _ic_history[-30:]
+    except Exception as e:
+        logger.debug("record_signal_outcome: %s", e)
+
+
+def get_rolling_ic() -> float:
+    """
+    Rolling Information Coefficient (rank corr of signal scores vs returns).
+    IC > 0.05 = good edge.  IC > 0.10 = strong (institutional grade).
+    Returns float clipped [-0.3, 0.3]. Default 0.05 if < 20 trades.
+    """
+    if len(_ic_history) < 5:
+        return 0.05
+    try:
+        ic = sum(_ic_history[-10:]) / min(len(_ic_history), 10)
+        return max(-0.3, min(0.3, float(ic)))
+    except Exception:
+        return 0.05
+
+
+def ic_kelly_multiplier(signal_score: float) -> float:
+    """
+    IC-adjusted Kelly multiplier based on rolling signal quality.
+
+    IC < 0:    0.3  (signal has negative edge — trade minimum size)
+    IC 0-0.05: 0.6  (low edge — conservative)
+    IC 0.05-0.10: 0.85 (moderate edge — standard)
+    IC 0.10-0.20: 1.0  (good edge — full Kelly)
+    IC > 0.20:    1.2  (strong edge — press the advantage)
+
+    Returns: float multiplier [0.3, 1.2]
+    """
+    ic = get_rolling_ic()
+    if ic < 0:       return 0.3
+    if ic < 0.05:    return 0.6
+    if ic < 0.10:    return 0.85
+    if ic < 0.20:    return 1.0
+    return 1.2
+
+
+# ── Correlation-Adjusted Portfolio Sizing ─────────────────────────────────────
+
+def correlation_size_cap(
+    new_direction: str,
+    open_trades: dict,
+) -> float:
+    """
+    Reduce size when adding a new trade correlated with existing open positions.
+
+    Same-direction trades have implicit positive correlation in NSE intraday
+    (market beta drives most intraday moves).  For each same-dir trade already
+    open, reduce new trade size by ~15%.
+
+    Returns: multiplier [0.4, 1.0]
+    """
+    try:
+        same_dir = sum(
+            1 for t in open_trades.values()
+            if hasattr(t, "direction") and t.direction == new_direction
+        )
+        if same_dir == 0:   return 1.00
+        if same_dir == 1:   return 0.90
+        if same_dir == 2:   return 0.75
+        if same_dir == 3:   return 0.60
+        return 0.45
+    except Exception:
+        return 1.0
+
+
+def reset_ic_state() -> None:
+    """Trim IC / MAE history at day start (keep recent data for continuity)."""
+    global _ic_trades, _ic_history
+    _ic_trades  = _ic_trades[-50:]  if len(_ic_trades)  > 50 else _ic_trades
+    _ic_history = _ic_history[-20:] if len(_ic_history) > 20 else _ic_history
