@@ -916,16 +916,36 @@ def _compute_nifty_proxy(
             continue
 
     if n_total == 0:
-        return {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
+        return {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5,
+                "session_return": 0.0}
 
     avg_score = sum(scores) / len(scores) if scores else 0
     # Normalize to -1 to +1
     trend_score = max(-1.0, min(1.0, avg_score / 2.0))
 
+    # Compute average session return (open-to-now) across all loaded symbols
+    _sr_today = now_ts.date()
+    _sr_returns = []
+    for _sym, _df in data.items():
+        try:
+            if now_ts not in _df.index:
+                continue
+            _todaydf = _df[_df.index.date == _sr_today]
+            if len(_todaydf) == 0:
+                continue
+            _open = float(_todaydf.iloc[0]["open"])
+            _close = float(_df.loc[now_ts]["close"])
+            if _open > 0:
+                _sr_returns.append((_close - _open) / _open)
+        except Exception:
+            pass
+    avg_session_return = float(sum(_sr_returns) / max(len(_sr_returns), 1)) if _sr_returns else 0.0
+
     return {
         "trend_score":    trend_score,
         "pct_above_vwap": n_above_vwap  / n_total,
         "pct_above_ema21": n_above_ema21 / n_total,
+        "session_return": avg_session_return,
     }
 
 
@@ -1311,6 +1331,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _breadth_session: Dict = {}   # {date: {ts: float}}
     _session_open: Dict[str, Dict] = {}   # {sym: {date: open_price}}
 
+    # Nifty50 proxy: computed from ALL loaded symbols' open-to-current return
+    # This is a real-time breadth indicator — better than lagging EMA alignment
+    _nifty_session_cache: Dict = {}   # {date: {ts: float}} intraday return from open
+
+    # Track bull/bear days for report
+    _bull_days = 0
+    _bear_days = 0
+    _session_days_seen: set = set()
+
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
@@ -1610,6 +1639,35 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if _stressed >= 2:
             continue  # Too many stressed trades — wait
 
+        # ── Nifty proxy: avg return from today's open across all loaded symbols ──
+        _nf_today = now_ts.date()
+        _nf_returns = []
+        for _nfsym, _nfdf in data.items():
+            try:
+                if now_ts not in _nfdf.index:
+                    continue
+                _nf_bar = _nfdf.loc[now_ts]
+                _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
+                if len(_nf_todaydf) == 0:
+                    continue
+                _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                _nf_close = float(_nf_bar["close"])
+                if _nf_open > 0:
+                    _nf_returns.append((_nf_close - _nf_open) / _nf_open)
+            except Exception:
+                pass
+        _nifty_proxy_return = float(sum(_nf_returns) / max(len(_nf_returns), 1)) if _nf_returns else 0.0
+        _nifty_session_bull = _nifty_proxy_return > 0.0015   # +0.15% = session is bullish
+        _nifty_session_bear = _nifty_proxy_return < -0.0015  # -0.15% = session is bearish
+
+        # Track bull/bear days for the report
+        if _nf_today not in _session_days_seen:
+            _session_days_seen.add(_nf_today)
+            if _nifty_session_bull:
+                _bull_days += 1
+            elif _nifty_session_bear:
+                _bear_days += 1
+
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
@@ -1815,6 +1873,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
 
+            # ── Nifty session direction gate (hardest gate) ───────────────────
+            # Only trade with the session's net direction to avoid counter-trend losses
+            if _nifty_session_bull and direction == "SHORT":
+                # Market is rising session-wide but signal is SHORT → likely a loser
+                # Allow ONLY if score is very strong (2× threshold = extremely high confidence)
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
+                    continue  # Block marginal counter-trend shorts in bull session
+            if _nifty_session_bear and direction == "LONG":
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
+                    continue  # Block marginal counter-trend longs in bear session
+
             # Final threshold check after all score adjustments
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
@@ -1924,11 +1993,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
     _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
             pre_filter_kills=pre_filter_kills,
-            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl)
+            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl,
+            bull_days=_bull_days, total_days=len(_session_days_seen))
 
 
 def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_syms,
-            pre_filter_kills=0, strategy_counts=None, strategy_pnl=None):
+            pre_filter_kills=0, strategy_counts=None, strategy_pnl=None,
+            bull_days=0, total_days=0):
     print()
     print("=" * 70)
     print("  NSE Momentum Bot — Engine Backtest Report")
@@ -2074,6 +2145,10 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
             pnl_pct = pnl_s / max(capital, 1) * 100
             print(f"    {strat:25s}: {count:3d} trades  ₹{pnl_s:+,.0f}  ({pnl_pct:+.2f}%)")
 
+    # Market regime summary
+    if total_days > 0:
+        print(f"\n  Market regime: Nifty session bull days: {bull_days}/{total_days} ({bull_days/max(total_days,1)*100:.0f}%)")
+
     print()
     print("=" * 70)
 
@@ -2160,6 +2235,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     # Session breadth cache: % of loaded stocks above today's open at each timestamp
     _breadth_session: Dict = {}   # {date: {ts: float}}
     _session_open: Dict[str, Dict] = {}   # {sym: {date: open_price}}
+
+    # Nifty50 proxy: computed from ALL loaded symbols' open-to-current return
+    # This is a real-time breadth indicator — better than lagging EMA alignment
+    _nifty_session_cache: Dict = {}   # {date: {ts: float}} intraday return from open
+
+    # Track bull/bear days for report
+    _bull_days = 0
+    _bear_days = 0
+    _session_days_seen: set = set()
 
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
@@ -2437,6 +2521,35 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         if _stressed >= 2:
             continue
 
+        # ── Nifty proxy: avg return from today's open across all loaded symbols ──
+        _nf_today = now_ts.date()
+        _nf_returns = []
+        for _nfsym, _nfdf in data.items():
+            try:
+                if now_ts not in _nfdf.index:
+                    continue
+                _nf_bar = _nfdf.loc[now_ts]
+                _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
+                if len(_nf_todaydf) == 0:
+                    continue
+                _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                _nf_close = float(_nf_bar["close"])
+                if _nf_open > 0:
+                    _nf_returns.append((_nf_close - _nf_open) / _nf_open)
+            except Exception:
+                pass
+        _nifty_proxy_return = float(sum(_nf_returns) / max(len(_nf_returns), 1)) if _nf_returns else 0.0
+        _nifty_session_bull = _nifty_proxy_return > 0.0015   # +0.15% = session is bullish
+        _nifty_session_bear = _nifty_proxy_return < -0.0015  # -0.15% = session is bearish
+
+        # Track bull/bear days for the report
+        if _nf_today not in _session_days_seen:
+            _session_days_seen.add(_nf_today)
+            if _nifty_session_bull:
+                _bull_days += 1
+            elif _nifty_session_bear:
+                _bear_days += 1
+
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
@@ -2621,6 +2734,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
 
+            # ── Nifty session direction gate (hardest gate) ───────────────────
+            # Only trade with the session's net direction to avoid counter-trend losses
+            if _nifty_session_bull and direction == "SHORT":
+                # Market is rising session-wide but signal is SHORT → likely a loser
+                # Allow ONLY if score is very strong (2× threshold = extremely high confidence)
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
+                    continue  # Block marginal counter-trend shorts in bull session
+            if _nifty_session_bear and direction == "LONG":
+                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 2.0:
+                    continue  # Block marginal counter-trend longs in bear session
+
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
 
@@ -2722,7 +2846,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
     _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
             pre_filter_kills=pre_filter_kills,
-            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl)
+            strategy_counts=strategy_counts, strategy_pnl=strategy_pnl,
+            bull_days=_bull_days, total_days=len(_session_days_seen))
 
 
 def main():
