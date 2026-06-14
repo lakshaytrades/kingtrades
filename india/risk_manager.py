@@ -474,8 +474,10 @@ def dynamic_kelly_size(
         raw = half_kelly * ratio_scaler * score_scale * vol_scale * om_mult
 
         # ── Minimum floor before CVaR cap ─────────────────────────────────────
-        # Ensures at least 1.2% risk even with bad Sharpe/Sortino at warmup
-        raw = max(raw, 0.012)
+        # Only apply floor when Kelly signals a positive edge (full_kelly > 0.005).
+        # If full_kelly=0 (p*b < q = genuinely losing edge), respect that — don't bet.
+        if full_kelly > 0.005:
+            raw = max(raw, 0.012)
 
         # ── Step 7: CVaR cap ──────────────────────────────────────────────────
         # After computing base_risk, apply CVaR cap
