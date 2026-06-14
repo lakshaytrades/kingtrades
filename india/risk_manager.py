@@ -455,14 +455,15 @@ def dynamic_kelly_size(
             ratio_scaler = 0.6
 
         # ── Step 4: Score scaler (conviction) ────────────────────────────────
-        score_scale = max(0.3, min(current_score / 100.0, 1.0))
+        score_scale = max(0.6, min(current_score / 80.0, 1.0))  # floor 0.6, normalize to 80 not 100
 
         # ── Step 5: Volatility scaler (reduce size in high-vol stocks) ────────
-        # atr_pct > 3% -> 0.5x; atr_pct 2-3% -> 0.75x; < 2% -> 1.0x
-        if atr_pct > 0.03:
-            vol_scale = 0.50
-        elif atr_pct > 0.02:
-            vol_scale = 0.75
+        # NSE large-cap 1h bars: ATR ≈ 0.8-1.5%, so thresholds set accordingly
+        # > 4% = genuinely extreme; > 2.5% = elevated; otherwise full size
+        if atr_pct > 0.04:
+            vol_scale = 0.60   # > 4% = genuinely extreme
+        elif atr_pct > 0.025:
+            vol_scale = 0.85   # > 2.5% = elevated but not extreme
         else:
             vol_scale = 1.00
 
@@ -471,6 +472,10 @@ def dynamic_kelly_size(
 
         # ── Combine all scalers ───────────────────────────────────────────────
         raw = half_kelly * ratio_scaler * score_scale * vol_scale * om_mult
+
+        # ── Minimum floor before CVaR cap ─────────────────────────────────────
+        # Ensures at least 1.2% risk even with bad Sharpe/Sortino at warmup
+        raw = max(raw, 0.012)
 
         # ── Step 7: CVaR cap ──────────────────────────────────────────────────
         # After computing base_risk, apply CVaR cap
@@ -492,7 +497,7 @@ def dynamic_kelly_size(
 
     except Exception as e:
         logger.debug("risk_manager.dynamic_kelly_size: %s", e)
-        return 0.005   # safe default on any error
+        return 0.015   # safe default on any error
 
 
 # ── Convenience: full sizing with streak ──────────────────────────────────────
@@ -780,7 +785,7 @@ def ic_kelly_multiplier(signal_score: float) -> float:
     Returns: float multiplier [0.3, 1.2]
     """
     ic = get_rolling_ic()
-    if ic < 0:       return 0.5   # negative IC: still trade at half size
+    if ic < 0:       return 0.7   # negative IC: 70% size (not 50%), warmup period
     if ic < 0.05:    return 0.9   # low IC: close to normal
     if ic < 0.10:    return 1.0   # moderate IC: full Kelly
     if ic < 0.20:    return 1.15  # good IC: slightly larger
