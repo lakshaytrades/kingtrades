@@ -1884,9 +1884,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 2.0 * atr     # Wider SL prevents premature stops on NSE noise
-            t1_dist = 1.5 * atr     # Take 30% at 0.75R
-            t2_dist = 4.0 * atr     # Runner target at 2.0R — gives 2:1 R:R on 40% position
+            sl_dist = 1.5 * atr     # 1.5×ATR SL — tighter but more precise
+            t1_dist = 1.5 * atr     # Stage 1 at 1.5×ATR (same as SL = 1:1 initially)
+            t2_dist = 3.0 * atr     # Runner at 3×ATR — 2:1 R:R
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -1966,7 +1966,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 trade.sl           = _stages["sl"]
                 # Override t1 and t2 with stage prices
                 trade.t1 = _stages["stage2_price"]
-                trade.t2 = entry + 4.0 * atr if direction == "LONG" else entry - 4.0 * atr
+                trade.t2 = entry + 3.0 * atr if direction == "LONG" else entry - 3.0 * atr
             except Exception:
                 pass
             trade.reason = reason

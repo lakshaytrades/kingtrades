@@ -664,14 +664,14 @@ def apply_vol_target_to_risk(
 # Expected improvement: average R-multiple increases from ~1.2 to ~1.6
 
 THREE_STAGE_EXIT = {
-    "stage1_r":    0.5,    # Take 30% profit at 0.5R (keep)
-    "stage1_pct":  0.30,   # was 0.25 (take 30% at 0.5R)
-    "stage2_r":    0.8,    # was 1.0 (was too far, now closer)
-    "stage2_pct":  0.35,   # keep
-    "runner_pct":  0.35,   # was 0.40 (slightly less runner)
-    "sl_to_be_at": 1.0,    # Move SL to break-even after stage 2
-    "chandelier_bars": 15, # was 22 (tighter trail)
-    "chandelier_mult": 1.5, # was 2.0 (tighter trail)
+    "stage1_r":    1.5,    # Take 40% at 1.5R (first real profit target)
+    "stage1_pct":  0.40,   # Take 40% at 1.5R target
+    "stage2_r":    3.0,    # Runner target at 3R
+    "stage2_pct":  0.0,    # Don't take partial at stage2 — let chandelier exit
+    "runner_pct":  0.60,   # 60% runs with trailing stop
+    "sl_to_be_at": 1.5,    # Move SL to break-even after 1.5R profit
+    "chandelier_bars": 10, # Tighter chandelier trail for momentum
+    "chandelier_mult": 1.2, # 1.2×ATR trail (tight for momentum continuation)
 }
 
 
@@ -686,11 +686,11 @@ def compute_exit_stages(
 
     Returns:
         {
-            "stage1_price": float,  # 0.5R target
-            "stage2_price": float,  # 1.0R target
-            "stage1_qty":   int,    # qty to sell at stage 1
-            "stage2_qty":   int,    # qty to sell at stage 2
-            "runner_qty":   int,    # qty to run with trailing stop
+            "stage1_price": float,  # 1.5R target (40% exit)
+            "stage2_price": float,  # 3.0R target (runner reference, no partial)
+            "stage1_qty":   int,    # qty to sell at stage 1 (40%)
+            "stage2_qty":   int,    # 0 — no partial at stage2, chandelier exits runner
+            "runner_qty":   int,    # qty to run with trailing stop (60%)
             "sl":           float,  # initial stop loss (1.5×ATR)
             "be_sl":        float,  # break-even stop (entry ± 0.1%)
         }
@@ -702,13 +702,14 @@ def compute_exit_stages(
     sl    = entry - sl_dist if is_long else entry + sl_dist
     be_sl = entry * 1.001  if is_long else entry * 0.999   # 0.1% buffer
 
-    stage1_price = entry + 0.5 * r if is_long else entry - 0.5 * r
-    stage2_price = entry + 1.0 * r if is_long else entry - 1.0 * r
+    # Stage 1: take 40% at 1.5R
+    stage1_price = entry + THREE_STAGE_EXIT["stage1_r"] * r if is_long else entry - THREE_STAGE_EXIT["stage1_r"] * r
+    # Stage 2: runner target at 3R (not used for partial exit, just reference)
+    stage2_price = entry + THREE_STAGE_EXIT["stage2_r"] * r if is_long else entry - THREE_STAGE_EXIT["stage2_r"] * r
 
-    # Compute quantities (must sum to qty)
     stage1_qty = max(1, int(qty * THREE_STAGE_EXIT["stage1_pct"]))
-    stage2_qty = max(1, int(qty * THREE_STAGE_EXIT["stage2_pct"]))
-    runner_qty = max(0, qty - stage1_qty - stage2_qty)
+    stage2_qty = 0   # No partial at stage2
+    runner_qty = max(0, qty - stage1_qty)
 
     return {
         "stage1_price": stage1_price,
