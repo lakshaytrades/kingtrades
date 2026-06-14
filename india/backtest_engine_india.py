@@ -262,15 +262,28 @@ def _compute_all(df: pd.DataFrame) -> pd.DataFrame:
 # ── Opening Range Breakout ────────────────────────────────────────────────────
 
 def _build_orb(df: pd.DataFrame) -> pd.DataFrame:
-    """Add orb_high / orb_low columns — ORB from 9:15 to 9:30 each day."""
+    """Add orb_high / orb_low columns.
+
+    For 5-min data: uses 9:15-9:30 window (3 bars).
+    For 1h data: uses first bar of day (9:15 bar, covers 9:15-10:15).
+    For daily data: uses the day's open price ± a fixed range.
+    """
     df = df.copy()
     df["date"] = df.index.normalize()
     orb_h = {}; orb_l = {}
     for d, grp in df.groupby("date"):
+        # Try the 9:15-9:30 window first (works for 5-min data)
         orb = grp.between_time("09:15", "09:30")
         if not orb.empty:
             orb_h[d] = orb["high"].max()
             orb_l[d] = orb["low"].min()
+        else:
+            # For 1h+ data: use first bar of the day as ORB
+            # The first bar covers the opening range naturally
+            first = grp.head(1)
+            if not first.empty:
+                orb_h[d] = float(first["high"].iloc[0])
+                orb_l[d] = float(first["low"].iloc[0])
     df["orb_high"] = df["date"].map(orb_h)
     df["orb_low"]  = df["date"].map(orb_l)
     df.drop(columns=["date"], inplace=True)
@@ -404,13 +417,13 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     if orb_h > 0 and orb_l > 0 and bar_time > ORB_END:
         orb_range_pct = (orb_h - orb_l) / max(orb_h, 1)
         _vol_ok = rvol >= 1.3
-        if 0.001 <= orb_range_pct <= 0.025:   # Valid ORB range: 0.1% to 2.5%
-            if c > orb_h * 1.0015:   # 0.15% above ORB high
+        if 0.0005 <= orb_range_pct <= 0.05:   # Valid ORB range: 0.05% to 5% (wider for 1h)
+            if c > orb_h * 1.0005:   # 0.05% above ORB high (was 0.15%)
                 if _vol_ok:    score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
                 else:          score_long  += 10; reasons.append("ORB_BULL_WEAK")
             elif c > orb_h:
                 if _vol_ok:    score_long  += 8
-            if c < orb_l * 0.9985:   # 0.15% below ORB low
+            if c < orb_l * 0.9995:   # 0.05% below ORB low (was 0.15%)
                 if _vol_ok:    score_short += 18; reasons.append("ORB_BEAR_CONFIRM")
                 else:          score_short += 10; reasons.append("ORB_BEAR_WEAK")
             elif c < orb_l:
@@ -450,14 +463,14 @@ def _score_bar(row: pd.Series, prev: pd.Series,
 
     # ── ADX gate: kill choppy markets (multiplier only, not a signal) ────────
     adx_v = float(row.get("adx", 25) or 25)
-    if adx_v < 15:
-        # Very choppy — kill signal entirely
+    if adx_v < 10:
+        # Extreme chop only — kill signal (was 15, lowered for 1h compatibility)
         score_long = 0.0; score_short = 0.0
         return 0.0, "LONG", "ADX_CHOP_KILL"
-    elif adx_v < 20:
-        score_long  *= 0.5; score_short *= 0.5
-    elif adx_v >= 30:
-        score_long  *= 1.1; score_short *= 1.1   # Trending: mild boost
+    elif adx_v < 18:
+        score_long  *= 0.7; score_short *= 0.7   # Moderate reduction for weak trend
+    elif adx_v >= 25:
+        score_long  *= 1.15; score_short *= 1.15  # Trending: boost
 
     # ── 15m trend alignment (pure confirmation, not primary signal) ──────────
     if df_15m is not None and not df_15m.empty:
@@ -561,13 +574,13 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
 
         atr_pct = atr / c * 100
 
-        if adx < 15:
+        if adx < 10:
             return True, "PRE_NO_TREND"
         if atr_pct < 0.18:
             return True, "PRE_ATR_SMALL"
         if atr_pct > 4.5:
             return True, "PRE_ATR_EXTREME"
-        if rvol < 0.35:
+        if rvol < 0.20:
             return True, "PRE_DEAD_VOL"
 
         bar_move = abs(c - p_c) / max(p_c, 1e-9) * 100
@@ -2183,6 +2196,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         _set_start(capital)
     except Exception:
         pass
+
+    # Ensure ORB columns are computed (handles both 5-min and 1h data)
+    for sym in list(data.keys()):
+        try:
+            if "orb_high" not in data[sym].columns or data[sym]["orb_high"].isna().all():
+                data[sym] = _build_orb(data[sym])
+        except Exception:
+            pass
 
     # Pre-compute 15-min and 1-hour resamples once per symbol
     data_15m: Dict[str, pd.DataFrame] = {}
