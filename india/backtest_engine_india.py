@@ -51,7 +51,7 @@ logging.basicConfig(level=logging.WARNING,
 logger = logging.getLogger("backtest_engine")
 
 COST_RT_PCT  = 0.0029    # 29 bps round-trip (brokerage + STT + exchange + slippage)
-SQUAREOFF    = dtime(15, 20)
+SQUAREOFF    = dtime(15, 15)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
 # NSE is long-biased: only short in clear bear sessions (reduces false signals)
@@ -1240,7 +1240,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _factor_scores_ts = None
 
     for i, now_ts in enumerate(all_ts):
-        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
+        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 30):
             continue
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
@@ -1378,6 +1378,18 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     elif not long and new_sl < t.sl:
                         t.sl = new_sl
 
+            # ── Early breakeven: move SL to entry when price reaches 0.8R ────
+            if not t.stage1_done and t.atr_at_entry > 0:
+                _r_dist = 1.5 * t.atr_at_entry   # SL distance = 1R
+                _be_trigger = (t.entry + 0.8 * _r_dist) if long else (t.entry - 0.8 * _r_dist)
+                _be_hit = (hi >= _be_trigger) if long else (lo <= _be_trigger)
+                if _be_hit:
+                    new_be_sl = t.entry * 1.0002 if long else t.entry * 0.9998  # tiny buffer
+                    if long and new_be_sl > t.sl:
+                        t.sl = new_be_sl
+                    elif not long and new_be_sl < t.sl:
+                        t.sl = new_be_sl
+
             if not t.t1_done:
                 t1_hit = (hi >= t.t1) if long else (lo <= t.t1)
                 if t1_hit:
@@ -1473,9 +1485,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if len(open_trades) >= MAX_OPEN:
             continue
 
-        # No new entries after 13:30 IST (time gate)
+        # No new entries after 14:30 IST (not enough time for setup to play out)
         bar_time_now = now_ts.time()
-        if bar_time_now > dtime(13, 30):
+        if bar_time_now > dtime(14, 30):
             continue
 
         # Skip new entries if circuit breaker tripped
@@ -1882,6 +1894,49 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if _nifty_session_bear and direction == "LONG":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend longs in bear session
+
+            # ── Hard momentum confirmation gates ─────────────────────────────
+            # Stock must already be moving in signal direction with volume.
+            # Prevents entries in "potential" momentum (not yet confirmed).
+            try:
+                _close_g = float(row.get("close", 0) or 0)
+                _day_open_g = float(row.get("day_open", 0) or 0)
+                _rvol_g = float(row.get("rvol", 1.0) or 1.0)
+                _e9_g = float(row.get("ema9", 0) or 0)
+                _e21_g = float(row.get("ema21", 0) or 0)
+                if _close_g > 0 and _day_open_g > 0:
+                    _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
+                    if direction == "LONG":
+                        # LONG: stock must be up ≥0.3% from open, volume elevated, EMA aligned
+                        if _sess_ret_g < 0.003:
+                            continue
+                        if _rvol_g < 1.5:
+                            continue
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
+                            continue   # bearish EMA — no long
+                        # Bonus for strongly confirmed momentum
+                        if _sess_ret_g > 0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                            net_score += 18
+                            reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
+                        elif _sess_ret_g > 0.003 and _rvol_g > 1.5:
+                            net_score += 8
+                            reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+                    elif direction == "SHORT":
+                        # SHORT: stock must be down ≥0.3% from open
+                        if _sess_ret_g > -0.003:
+                            continue
+                        if _rvol_g < 1.5:
+                            continue
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
+                            continue   # bullish EMA — no short
+                        if _sess_ret_g < -0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                            net_score -= 18
+                            reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
+                        elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
+                            net_score -= 8
+                            reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+            except Exception:
+                pass
 
             # Final threshold check after all score adjustments
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
@@ -2315,7 +2370,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _factor_scores_ts = None
 
     for i, now_ts in enumerate(all_ts):
-        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
+        if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 30):
             continue
 
         # ── Session breadth: % of symbols above today's open ─────────────────
@@ -2446,6 +2501,18 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     elif not long and new_sl < t.sl:
                         t.sl = new_sl
 
+            # ── Early breakeven: move SL to entry when price reaches 0.8R ────
+            if not t.stage1_done and t.atr_at_entry > 0:
+                _r_dist = 1.5 * t.atr_at_entry   # SL distance = 1R
+                _be_trigger = (t.entry + 0.8 * _r_dist) if long else (t.entry - 0.8 * _r_dist)
+                _be_hit = (hi >= _be_trigger) if long else (lo <= _be_trigger)
+                if _be_hit:
+                    new_be_sl = t.entry * 1.0002 if long else t.entry * 0.9998  # tiny buffer
+                    if long and new_be_sl > t.sl:
+                        t.sl = new_be_sl
+                    elif not long and new_be_sl < t.sl:
+                        t.sl = new_be_sl
+
             if not t.t1_done:
                 t1_hit = (hi >= t.t1) if long else (lo <= t.t1)
                 if t1_hit:
@@ -2535,8 +2602,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         if len(open_trades) >= MAX_OPEN:
             continue
 
+        # No new entries after 14:30 IST (not enough time for setup to play out)
         bar_time_now = now_ts.time()
-        if bar_time_now > dtime(13, 30):
+        if bar_time_now > dtime(14, 30):
             continue
 
         try:
@@ -2909,6 +2977,49 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if _nifty_session_bear and direction == "LONG":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend longs in bear session
+
+            # ── Hard momentum confirmation gates ─────────────────────────────
+            # Stock must already be moving in signal direction with volume.
+            # Prevents entries in "potential" momentum (not yet confirmed).
+            try:
+                _close_g = float(row.get("close", 0) or 0)
+                _day_open_g = float(row.get("day_open", 0) or 0)
+                _rvol_g = float(row.get("rvol", 1.0) or 1.0)
+                _e9_g = float(row.get("ema9", 0) or 0)
+                _e21_g = float(row.get("ema21", 0) or 0)
+                if _close_g > 0 and _day_open_g > 0:
+                    _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
+                    if direction == "LONG":
+                        # LONG: stock must be up ≥0.3% from open, volume elevated, EMA aligned
+                        if _sess_ret_g < 0.003:
+                            continue
+                        if _rvol_g < 1.5:
+                            continue
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
+                            continue   # bearish EMA — no long
+                        # Bonus for strongly confirmed momentum
+                        if _sess_ret_g > 0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                            net_score += 18
+                            reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
+                        elif _sess_ret_g > 0.003 and _rvol_g > 1.5:
+                            net_score += 8
+                            reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+                    elif direction == "SHORT":
+                        # SHORT: stock must be down ≥0.3% from open
+                        if _sess_ret_g > -0.003:
+                            continue
+                        if _rvol_g < 1.5:
+                            continue
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
+                            continue   # bullish EMA — no short
+                        if _sess_ret_g < -0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                            net_score -= 18
+                            reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
+                        elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
+                            net_score -= 8
+                            reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+            except Exception:
+                pass
 
             if abs(net_score) < _ADAPTIVE_MIN_SCORE:
                 continue
