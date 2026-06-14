@@ -244,6 +244,8 @@ def _compute_all(df: pd.DataFrame) -> pd.DataFrame:
     out["obv_ema"] = _ema(out["obv"], 21)
     out["vol_sma"] = v.rolling(20).mean()
     out["rvol"]    = v / out["vol_sma"].replace(0, 1e-9)
+    # Day's open price (first bar of each day)
+    out["day_open"] = df.groupby(df.index.date)["open"].transform("first")
     out["bb_lo"], out["bb_mid"], out["bb_hi"] = _bollinger(c)
     out["bb_width"] = (out["bb_hi"] - out["bb_lo"]) / out["bb_mid"].replace(0, 1e-9)
     out["supertrend"] = _supertrend(h, l, c)
@@ -407,6 +409,19 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         elif vd > 0:           score_long  += 5
         if vd < -0.002:        score_short += 10; reasons.append("BELOW_VWAP")
         elif vd < 0:           score_short += 5
+
+    # ── Today's open anchor: is price above or below today's open? ───────────
+    day_open = float(row.get("day_open", 0) or 0)
+    if day_open > 0 and c > 0:
+        _from_open_pct = (c - day_open) / day_open
+        if _from_open_pct > 0.003:    # >0.3% above open
+            score_long  += 10; reasons.append(f"ABOVE_OPEN({_from_open_pct*100:.1f}%)")
+        elif _from_open_pct > 0.001:  # >0.1% above open
+            score_long  += 5
+        elif _from_open_pct < -0.003: # >0.3% below open
+            score_short += 10; reasons.append(f"BELOW_OPEN({abs(_from_open_pct)*100:.1f}%)")
+        elif _from_open_pct < -0.001: # >0.1% below open
+            score_short += 5
 
     # ── Tier 2: ORB breakout (FIX: use bar_ts.time() not row.index.time) ──
     orb_h = float(row.get("orb_high", 0) or 0)
@@ -1292,11 +1307,40 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
     _nifty_proxy_ts = None
 
+    # Session breadth cache: % of loaded stocks above today's open at each timestamp
+    _breadth_session: Dict = {}   # {date: {ts: float}}
+    _session_open: Dict[str, Dict] = {}   # {sym: {date: open_price}}
+
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
+
+        # ── Session breadth: % of symbols above today's open ─────────────────
+        _brd_today = now_ts.date()
+        _brd_above = 0; _brd_total = 0
+        for _bsym, _bdf in data.items():
+            try:
+                if now_ts not in _bdf.index:
+                    continue
+                _brd_bar = _bdf.loc[now_ts]
+                # Get today's first bar open for this symbol
+                _brd_key = f"{_bsym}_{_brd_today}"
+                if _brd_key not in _session_open:
+                    _today_bdf = _bdf[_bdf.index.date == _brd_today]
+                    if len(_today_bdf) > 0:
+                        _session_open[_brd_key] = float(_today_bdf.iloc[0]["open"])
+                    else:
+                        continue
+                _brd_open = _session_open[_brd_key]
+                _brd_close = float(_brd_bar["close"])
+                if _brd_close > _brd_open * 1.0005:    # 0.05% above open
+                    _brd_above += 1
+                _brd_total += 1
+            except Exception:
+                pass
+        _session_breadth = (_brd_above / max(_brd_total, 1))
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -1629,6 +1673,28 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             elif net_score < 0:
                 direction = "SHORT"
 
+            # ── Session breadth directional bias ─────────────────────────────
+            # % of symbols above today's open = real-time market direction
+            if _session_breadth > 0.60:   # 60%+ stocks rising today → bullish session
+                net_score += 12; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
+                if direction == "SHORT":
+                    net_score += 18  # Extra penalty for fighting the session trend
+                    reason += "+COUNTER_SESSION"
+            elif _session_breadth > 0.52:
+                net_score += 5
+            elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
+                net_score -= 12; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                if direction == "LONG":
+                    net_score -= 18
+                    reason += "+COUNTER_SESSION"
+            elif _session_breadth < 0.48:
+                net_score -= 5
+            # Re-derive direction after session breadth adjustment
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
+
             # ── ML Ensemble Boost ─────────────────────────────────────────────
             if _ml_scorer is not None:
                 try:
@@ -1680,6 +1746,44 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     direction = "LONG"
                 elif net_score < 0:
                     direction = "SHORT"
+            except Exception:
+                pass
+
+            # ── Gap bias: weight toward gap direction (don't hard-block) ─────
+            try:
+                _gap_open = float(row.get("day_open", 0) or 0)
+                _prev_idx = idx - 1
+                # Find the last bar of the previous trading day
+                _prev_day_close = 0.0
+                if _gap_open > 0 and _prev_idx >= 0:
+                    _prev_close_bar = df.iloc[_prev_idx]
+                    _prev_bar_date = df.index[_prev_idx].date()
+                    _today_bar_date = now_ts.date()
+                    if _prev_bar_date < _today_bar_date:
+                        _prev_day_close = float(_prev_close_bar.get("close", 0) or 0)
+                    else:
+                        # Find last bar of previous day
+                        _prev_day_rows = df[df.index.date < _today_bar_date]
+                        if len(_prev_day_rows) > 0:
+                            _prev_day_close = float(_prev_day_rows.iloc[-1].get("close", 0) or 0)
+                if _prev_day_close > 0 and _gap_open > 0:
+                    _gap_val = (_gap_open - _prev_day_close) / _prev_day_close
+                    if _gap_val > 0.002 and direction == "SHORT":
+                        net_score += 15  # Push toward LONG (positive gap day)
+                        reason = (reason + "+GAP_UP_PENALTY_SHORT") if reason else "GAP_UP_PENALTY_SHORT"
+                        if net_score > 0:
+                            direction = "LONG"
+                    elif _gap_val < -0.002 and direction == "LONG":
+                        net_score -= 15  # Push toward SHORT (negative gap day)
+                        reason = (reason + "+GAP_DN_PENALTY_LONG") if reason else "GAP_DN_PENALTY_LONG"
+                        if net_score < 0:
+                            direction = "SHORT"
+                    elif _gap_val > 0.002 and direction == "LONG":
+                        net_score += 8   # Bonus: going with gap direction
+                        reason = (reason + "+GAP_UP_ALIGN") if reason else "GAP_UP_ALIGN"
+                    elif _gap_val < -0.002 and direction == "SHORT":
+                        net_score -= 8   # Bonus: going with gap direction (short on gap-down)
+                        reason = (reason + "+GAP_DN_ALIGN") if reason else "GAP_DN_ALIGN"
             except Exception:
                 pass
 
@@ -2019,9 +2123,38 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
     _nifty_proxy_ts = None
 
+    # Session breadth cache: % of loaded stocks above today's open at each timestamp
+    _breadth_session: Dict = {}   # {date: {ts: float}}
+    _session_open: Dict[str, Dict] = {}   # {sym: {date: open_price}}
+
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 0):
             continue
+
+        # ── Session breadth: % of symbols above today's open ─────────────────
+        _brd_today = now_ts.date()
+        _brd_above = 0; _brd_total = 0
+        for _bsym, _bdf in data.items():
+            try:
+                if now_ts not in _bdf.index:
+                    continue
+                _brd_bar = _bdf.loc[now_ts]
+                # Get today's first bar open for this symbol
+                _brd_key = f"{_bsym}_{_brd_today}"
+                if _brd_key not in _session_open:
+                    _today_bdf = _bdf[_bdf.index.date == _brd_today]
+                    if len(_today_bdf) > 0:
+                        _session_open[_brd_key] = float(_today_bdf.iloc[0]["open"])
+                    else:
+                        continue
+                _brd_open = _session_open[_brd_key]
+                _brd_close = float(_brd_bar["close"])
+                if _brd_close > _brd_open * 1.0005:    # 0.05% above open
+                    _brd_above += 1
+                _brd_total += 1
+            except Exception:
+                pass
+        _session_breadth = (_brd_above / max(_brd_total, 1))
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -2320,6 +2453,28 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             elif net_score < 0:
                 direction = "SHORT"
 
+            # ── Session breadth directional bias ─────────────────────────────
+            # % of symbols above today's open = real-time market direction
+            if _session_breadth > 0.60:   # 60%+ stocks rising today → bullish session
+                net_score += 12; reason = (reason + "+SESSION_BULL") if reason else "SESSION_BULL"
+                if direction == "SHORT":
+                    net_score += 18  # Extra penalty for fighting the session trend
+                    reason += "+COUNTER_SESSION"
+            elif _session_breadth > 0.52:
+                net_score += 5
+            elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
+                net_score -= 12; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                if direction == "LONG":
+                    net_score -= 18
+                    reason += "+COUNTER_SESSION"
+            elif _session_breadth < 0.48:
+                net_score -= 5
+            # Re-derive direction after session breadth adjustment
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
+
             if _ml_scorer is not None:
                 try:
                     ml_boost, ml_reason = _ml_scorer.get_score_boost(df, idx, direction)
@@ -2363,6 +2518,44 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     direction = "LONG"
                 elif net_score < 0:
                     direction = "SHORT"
+            except Exception:
+                pass
+
+            # ── Gap bias: weight toward gap direction (don't hard-block) ─────
+            try:
+                _gap_open = float(row.get("day_open", 0) or 0)
+                _prev_idx = idx - 1
+                # Find the last bar of the previous trading day
+                _prev_day_close = 0.0
+                if _gap_open > 0 and _prev_idx >= 0:
+                    _prev_close_bar = df.iloc[_prev_idx]
+                    _prev_bar_date = df.index[_prev_idx].date()
+                    _today_bar_date = now_ts.date()
+                    if _prev_bar_date < _today_bar_date:
+                        _prev_day_close = float(_prev_close_bar.get("close", 0) or 0)
+                    else:
+                        # Find last bar of previous day
+                        _prev_day_rows = df[df.index.date < _today_bar_date]
+                        if len(_prev_day_rows) > 0:
+                            _prev_day_close = float(_prev_day_rows.iloc[-1].get("close", 0) or 0)
+                if _prev_day_close > 0 and _gap_open > 0:
+                    _gap_val = (_gap_open - _prev_day_close) / _prev_day_close
+                    if _gap_val > 0.002 and direction == "SHORT":
+                        net_score += 15  # Push toward LONG (positive gap day)
+                        reason = (reason + "+GAP_UP_PENALTY_SHORT") if reason else "GAP_UP_PENALTY_SHORT"
+                        if net_score > 0:
+                            direction = "LONG"
+                    elif _gap_val < -0.002 and direction == "LONG":
+                        net_score -= 15  # Push toward SHORT (negative gap day)
+                        reason = (reason + "+GAP_DN_PENALTY_LONG") if reason else "GAP_DN_PENALTY_LONG"
+                        if net_score < 0:
+                            direction = "SHORT"
+                    elif _gap_val > 0.002 and direction == "LONG":
+                        net_score += 8   # Bonus: going with gap direction
+                        reason = (reason + "+GAP_UP_ALIGN") if reason else "GAP_UP_ALIGN"
+                    elif _gap_val < -0.002 and direction == "SHORT":
+                        net_score -= 8   # Bonus: going with gap direction (short on gap-down)
+                        reason = (reason + "+GAP_DN_ALIGN") if reason else "GAP_DN_ALIGN"
             except Exception:
                 pass
 
