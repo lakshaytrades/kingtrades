@@ -550,8 +550,8 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
             from datetime import time as _t
             if bar_t < _t(9, 45):
                 return True, "OPENING_BLACKOUT"
-            # Lunch lull: 12:30-13:30 IST — low volume, choppy
-            if _t(12, 30) <= bar_t <= _t(13, 30):
+            # Only block 13:00-13:30 (30-min narrower window for 1h data compatibility)
+            if _t(13, 0) <= bar_t <= _t(13, 30):
                 return True, "LUNCH_LULL"
 
         def g(r, col, default=0.0):
@@ -2229,6 +2229,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
     print(f"\nRunning backtest on {len(data)} symbols ...")
 
+    # Data profile diagnostic
+    if data:
+        _sample_sym = next(iter(data))
+        _sample_df = data[_sample_sym]
+        _bar_delta = (_sample_df.index[1] - _sample_df.index[0]).total_seconds() / 60 if len(_sample_df) > 1 else 60
+        _n_days = len(set(_sample_df.index.date))
+        print(f"  Bar interval: ~{_bar_delta:.0f} min | Days: {_n_days} | Bars/sym: {len(_sample_df)}")
+        print(f"  Date range: {_sample_df.index[0].date()} → {_sample_df.index[-1].date()}")
+        _has_orb = "orb_high" in _sample_df.columns and not _sample_df["orb_high"].isna().all()
+        print(f"  ORB computed: {_has_orb} | Columns: {len(_sample_df.columns)}")
+
     from_date = min(df.index[0] for df in data.values()).strftime("%Y-%m-%d")
     to_date   = max(df.index[-1] for df in data.values()).strftime("%Y-%m-%d")
 
@@ -3009,29 +3020,32 @@ Examples:
     ap.add_argument("--years",    type=int,   default=0,
                     help="Years of data for yfinance source (1-5, overrides --days)")
     ap.add_argument("--interval", default="1h",
-                    choices=["1h", "1d"],
-                    help="Bar interval for yfinance (1h=hourly, 1d=daily)")
+                    choices=["1h", "5m", "1d"],
+                    help="Bar interval (5m=60 days only, 1h=2 years, 1d=daily)")
     args = ap.parse_args()
 
     # ── yfinance path ────────────────────────────────────────────────────────
     if args.source == "yfinance":
         print("Loading NSE data from Yahoo Finance (no Upstox token required) ...")
         from data_yfinance import load_nse_data_yfinance, DEFAULT_SYMBOLS
-        period = f"{args.years}y" if args.years > 0 else "2y"
+        interval = getattr(args, 'interval', '1h')
+        years = getattr(args, 'years', 2)
+        period = f"{years}y" if years > 0 else "2y"
 
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            syms = DEFAULT_SYMBOLS
+            syms = DEFAULT_SYMBOLS[:20]
 
-        raw_data = load_nse_data_yfinance(syms, period=period, interval=args.interval,
+        print(f"Loading yfinance data: {len(syms)} symbols, interval={interval}, period={period}")
+        raw_data = load_nse_data_yfinance(syms, period=period, interval=interval,
                                            verbose=True)
         if not raw_data:
             print("ERROR: No data loaded from yfinance. Check internet connection.")
             sys.exit(1)
 
         print(f"\nLoaded {len(raw_data)} symbols from yfinance "
-              f"({period} of {args.interval} bars)")
+              f"({period} of {interval} bars)")
         print("Computing indicators ...")
         data: Dict[str, pd.DataFrame] = {}
         for sym, df in raw_data.items():

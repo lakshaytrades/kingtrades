@@ -45,7 +45,7 @@ def load_nse_data_yfinance(
     Args:
         symbols: List of NSE symbols WITHOUT .NS suffix (e.g. ["RELIANCE", "TCS"])
         period: "1y", "2y", "3y", "5y" (Yahoo Finance period string)
-        interval: "1h" for hourly (2yr max), "1d" for daily (unlimited)
+        interval: "1h" hourly (2yr max), "5m" 5-min (60d max), "1d" daily (unlimited)
         verbose: Print loading progress
 
     Returns:
@@ -64,12 +64,26 @@ def load_nse_data_yfinance(
         ticker_str = sym.upper() + NSE_SUFFIX
         try:
             ticker = yf.Ticker(ticker_str)
+
+            # Adjust period based on interval limits
+            _INTERVAL_MAX_PERIOD = {
+                "1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "60d",
+                "60m": "730d", "1h": "730d", "90m": "60d", "1d": "max",
+                "1wk": "max", "1mo": "max",
+            }
+            _period_days = {"1y": 365, "2y": 730, "3y": 1095, "5y": 1825}.get(period, 730)
+            _effective_period = period
+            if interval in ("5m", "2m", "1m", "15m", "30m", "90m") and _period_days > 60:
+                _effective_period = "60d"
+                if verbose and i == 0:
+                    print(f"  Note: {interval} data limited to 60 days on yfinance, using period=60d")
+
             # For intervals > 1d, Yahoo caps at 730 days; use "max" for daily
             if interval in ("1d", "1wk"):
-                raw = ticker.history(period=period, interval=interval, auto_adjust=True)
+                raw = ticker.history(period=_effective_period, interval=interval, auto_adjust=True)
             else:
-                # Hourly: Yahoo caps at 730 days regardless of period string
-                raw = ticker.history(period=period, interval=interval, auto_adjust=True)
+                # Hourly/intraday: Yahoo caps vary by interval
+                raw = ticker.history(period=_effective_period, interval=interval, auto_adjust=True)
 
             if raw is None or raw.empty:
                 if verbose:
