@@ -122,8 +122,8 @@ _DEMO_POSITIONS: Dict[str, Any] = {
         "pnl": -437.5,
         "atr": 22.4,
     },
-    "TATAMOTORS": {
-        "symbol": "TATAMOTORS",
+    "RELIANCE": {
+        "symbol": "RELIANCE",
         "direction": "SHORT",
         "entry_price": 912.75,
         "current_price": 898.30,

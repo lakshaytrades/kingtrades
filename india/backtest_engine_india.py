@@ -4126,13 +4126,14 @@ Examples:
     else:
         symbols = [
             "RELIANCE", "INFY", "TCS", "HDFCBANK", "ICICIBANK",
-            "SBIN", "AXISBANK", "KOTAKBANK", "HINDUNILVR", "ITC",
-            "BHARTIARTL", "ASIANPAINT", "MARUTI", "BAJFINANCE", "WIPRO",
-            "ADANIENT", "ADANIPORTS", "M&M", "TATASTEEL", "SUNPHARMA",
-            "DRREDDY", "CIPLA", "LT", "POWERGRID", "NTPC", "ONGC",
-            "HCLTECH", "TECHM", "BAJAJFINSV", "TITAN", "NESTLEIND",
-            "ULTRACEMCO", "JSWSTEEL", "GRASIM", "HEROMOTOCO", "EICHERMOT",
-            "BPCL", "HINDALCO", "BRITANNIA", "INDUSINDBK", "TATACONSUM",
+            "SBIN", "AXISBANK", "KOTAKBANK", "ITC", "BHARTIARTL",
+            "ASIANPAINT", "MARUTI", "BAJFINANCE", "WIPRO", "M&M",
+            "TATASTEEL", "SUNPHARMA", "CIPLA", "LT", "POWERGRID",
+            "NTPC", "ONGC", "HCLTECH", "TECHM", "BAJAJFINSV",
+            "TITAN", "ULTRACEMCO", "JSWSTEEL", "HEROMOTOCO", "EICHERMOT",
+            "BPCL", "COALINDIA", "INDUSINDBK", "TATACONSUM", "BAJAJ-AUTO",
+            "POLYCAB", "VOLTAS", "CROMPTON", "GODREJCP", "TRENT",
+            "PERSISTENT", "BALKRISIND", "ASTRAL", "CUMMINSIND", "APOLLOHOSP",
         ]
 
     run_backtest(symbols, from_date, to_date, args.capital)

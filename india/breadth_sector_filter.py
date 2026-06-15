@@ -36,11 +36,11 @@ NSE_SECTOR_MAP: Dict[str, str] = {
     "MPHASIS": "IT",      "COFORGE": "IT",       "PERSISTENT": "IT",
     "LTTS": "IT",
     # Pharma / Healthcare
-    "SUNPHARMA": "PHARMA", "DRREDDY": "PHARMA",  "CIPLA": "PHARMA",
+    "SUNPHARMA": "PHARMA", "APOLLOHOSP": "PHARMA",  "CIPLA": "PHARMA",
     "DIVISLAB": "PHARMA",  "APOLLOHOSP": "PHARMA", "MANKIND": "PHARMA",
     "TORNTPHARM": "PHARMA", "AUROPHARMA": "PHARMA",
     # Auto / EV
-    "MARUTI": "AUTO",     "TATAMOTORS": "AUTO",  "M&M": "AUTO",
+    "MARUTI": "AUTO",     "BAJAJ-AUTO": "AUTO",  "M&M": "AUTO",
     "BAJAJ-AUTO": "AUTO", "EICHERMOT": "AUTO",   "HEROMOTOCO": "AUTO",
     "TVSMOTOR": "AUTO",   "ASHOKLEY": "AUTO",
     # Metals / Mining
@@ -50,14 +50,14 @@ NSE_SECTOR_MAP: Dict[str, str] = {
     # Energy / Oil
     "RELIANCE": "ENERGY", "ONGC": "ENERGY",      "BPCL": "ENERGY",
     "IOC": "ENERGY",      "NTPC": "ENERGY",       "POWERGRID": "ENERGY",
-    "TATAPOWER": "ENERGY", "ADANIGREEN": "ENERGY", "ADANIPORTS": "ENERGY",
+    "TATAPOWER": "ENERGY", "TRENT": "RETAIL", "POLYCAB": "INDUSTRIALS",
     # FMCG / Consumer
     "HINDUNILVR": "FMCG", "ITC": "FMCG",         "NESTLEIND": "FMCG",
     "BRITANNIA": "FMCG",  "DABUR": "FMCG",        "GODREJCP": "FMCG",
     "MARICO": "FMCG",     "TATACONSUM": "FMCG",
     # Infra / Cement
     "ULTRACEMCO": "INFRA", "SHREECEM": "INFRA",   "GRASIM": "INFRA",
-    "LT": "INFRA",         "BHEL": "INFRA",        "ADANIENT": "INFRA",
+    "LT": "INFRA",         "BHEL": "INFRA",        "CUMMINSIND": "INDUSTRIALS",
     "SIEMENS": "INFRA",
     # Telecom / Media
     "BHARTIARTL": "TELECOM", "IDEA": "TELECOM",
