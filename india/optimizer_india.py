@@ -6,7 +6,7 @@ Out-of-sample validation on last 5 days (holdout). Only applies params that
 pass OOS Sharpe >= 0.8 × in-sample Sharpe (persistence filter).
 
 Parameters swept:
-  1. FINAL_EXEC_MIN_SCORE: 60-72, step 2
+  1. MIN_SCORE:             8-20, step 2  (matches backtest_engine_india MIN_SCORE scale)
   2. ATR_SL_MULT:           1.0-2.0, step 0.25
   3. ATR_TP_MULT:           2.0-4.0, step 0.5
   4. ATR_T1_MULT:           1.0-2.0, step 0.25
@@ -33,14 +33,15 @@ _PARAMS_FILE    = Path(__file__).parent.parent / "data" / "optimal_params.json"
 _OOS_RESULTS    = Path(__file__).parent.parent / "data" / "optimizer_history.json"
 
 _DEFAULT_PARAMS = {
-    "FINAL_EXEC_MIN_SCORE":   65,
+    "MIN_SCORE":              12.0,
     "ATR_SL_MULT":            1.5,
     "ATR_TP_MULT":            3.0,
     "ATR_T1_MULT":            1.5,
     "ORB_VOL_FILTER_STRONG":  2.0,
     "ADX_TREND_THRESH":       19,
-    # Legacy alias kept for backward compatibility
-    "MIN_SIGNAL_SCORE":       65,
+    # Legacy aliases kept for backward compatibility
+    "FINAL_EXEC_MIN_SCORE":   12.0,
+    "MIN_SIGNAL_SCORE":       12.0,
     "updated_at":             "",
     "sharpe":                 0.0,
     "oos_sharpe":             0.0,
@@ -50,7 +51,8 @@ _DEFAULT_PARAMS = {
 }
 
 # ── 6-parameter grid (capped at ~500 combos for speed) ────────────────────────
-_SCORE_RANGE = list(range(60, 73, 2))           # 7 values: 60,62,64,66,68,70,72
+# MIN_SCORE range matches backtest_engine_india.py scale [8, 20]
+_SCORE_RANGE = [8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]  # 7 values matching engine scale
 _SL_RANGE    = [1.0, 1.25, 1.5, 1.75, 2.0]     # 5 values
 _TP_RANGE    = [2.0, 2.5, 3.0, 3.5, 4.0]       # 5 values
 _T1_RANGE    = [1.0, 1.5, 2.0]                 # 3 values (coarser)
@@ -136,8 +138,9 @@ def _run_parameter_sweep(trades: List[dict]) -> dict:
             best_is_score  = combo_s
             best_is_sharpe = _sharpe(filtered)
             best_is_params = {
-                "FINAL_EXEC_MIN_SCORE":   min_score,
-                "MIN_SIGNAL_SCORE":       min_score,
+                "MIN_SCORE":              min_score,
+                "FINAL_EXEC_MIN_SCORE":   min_score,  # legacy alias
+                "MIN_SIGNAL_SCORE":       min_score,  # legacy alias
                 "ATR_SL_MULT":            sl_mult,
                 "ATR_TP_MULT":            tp_mult,
                 "ATR_T1_MULT":            t1_mult,
@@ -153,7 +156,7 @@ def _run_parameter_sweep(trades: List[dict]) -> dict:
     # OOS validation
     oos_filtered = [
         t["pnl_pct"] for t in oos_trades
-        if t.get("signal_score", 0) >= best_is_params["FINAL_EXEC_MIN_SCORE"]
+        if t.get("signal_score", 0) >= best_is_params["MIN_SCORE"]
     ]
     oos_sharpe = _sharpe(oos_filtered) if len(oos_filtered) >= 2 else best_is_sharpe * 0.5
     oos_valid  = oos_sharpe >= best_is_sharpe * 0.8
@@ -211,8 +214,8 @@ class WalkForwardOptimizer:
         best = _run_parameter_sweep(self._trade_log)
 
         # Persistence check: same params 3 weeks in a row = +confidence
-        if (self._last_best_params and best.get("FINAL_EXEC_MIN_SCORE") ==
-                self._last_best_params.get("FINAL_EXEC_MIN_SCORE")):
+        if (self._last_best_params and best.get("MIN_SCORE") ==
+                self._last_best_params.get("MIN_SCORE")):
             self._persistence_streak += 1
         else:
             self._persistence_streak = 0
@@ -225,8 +228,8 @@ class WalkForwardOptimizer:
         _save_params(best)
         _append_history(best)
         logger.info(
-            "Optimizer v2: score≥%d sl×%.2f tp×%.2f IS_sharpe=%.3f OOS_sharpe=%.3f streak=%d",
-            best.get("FINAL_EXEC_MIN_SCORE", 65),
+            "Optimizer v2: score≥%.1f sl×%.2f tp×%.2f IS_sharpe=%.3f OOS_sharpe=%.3f streak=%d",
+            best.get("MIN_SCORE", 12.0),
             best.get("ATR_SL_MULT", 1.5),
             best.get("ATR_TP_MULT", 3.0),
             best.get("in_sample_sharpe", 0.0),
@@ -242,12 +245,28 @@ def load_optimal_params() -> dict:
         if _PARAMS_FILE.exists():
             with open(_PARAMS_FILE) as f:
                 data = json.load(f)
-            # validate keys present
-            if "MIN_SIGNAL_SCORE" in data and "ATR_SL_MULT" in data:
+            # validate keys present — accept both old and new key names
+            if ("MIN_SCORE" in data or "MIN_SIGNAL_SCORE" in data) and "ATR_SL_MULT" in data:
+                # Normalise: ensure MIN_SCORE is always present
+                if "MIN_SCORE" not in data and "MIN_SIGNAL_SCORE" in data:
+                    data["MIN_SCORE"] = data["MIN_SIGNAL_SCORE"]
                 return data
     except Exception as e:
         logger.debug("load_optimal_params: %s", e)
     return dict(_DEFAULT_PARAMS)
+
+
+# ── Singleton accessor ─────────────────────────────────────────────────────────
+
+_optimizer_instance: Optional[WalkForwardOptimizer] = None
+
+
+def get_optimizer() -> WalkForwardOptimizer:
+    """Return the module-level WalkForwardOptimizer singleton."""
+    global _optimizer_instance
+    if _optimizer_instance is None:
+        _optimizer_instance = WalkForwardOptimizer()
+    return _optimizer_instance
 
 
 # ------------------------------------------------------------------ #

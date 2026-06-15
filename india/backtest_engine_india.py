@@ -1071,6 +1071,16 @@ def _fetch(client, symbol: str, from_date: str, to_date: str) -> Optional[pd.Dat
 
 # ── Main replay ───────────────────────────────────────────────────────────────
 
+def _opt_record_trade(t) -> None:
+    """Record a closed trade in the walk-forward optimizer singleton (fail-silent)."""
+    try:
+        from optimizer_india import get_optimizer as _get_opt
+        _pnl_pct = t.pnl / max(t.entry * t.qty, 1.0)
+        _get_opt().record_trade(_pnl_pct, 0, t.atr_at_entry)
+    except Exception:
+        pass
+
+
 MIN_SCORE    = 12.0   # Lowered: 1h data generates fewer confirming signals
 MAX_OPEN     = 12     # Allow up to 12 simultaneous positions for diversification
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
@@ -1142,6 +1152,19 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     try:
         from risk_manager import set_daily_start_equity as _set_start
         _set_start(capital)
+    except Exception:
+        pass
+
+    # ── Load walk-forward optimal parameters (if available) ──────────────────
+    try:
+        from optimizer_india import load_optimal_params as _load_opt
+        _opt = _load_opt()
+        if _opt:
+            global MIN_SCORE, _ADAPTIVE_MIN_SCORE
+            if "MIN_SCORE" in _opt:
+                MIN_SCORE = float(_opt["MIN_SCORE"])
+                _ADAPTIVE_MIN_SCORE = MIN_SCORE
+                print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
     except Exception:
         pass
 
@@ -1295,6 +1318,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
                 if pnl > 0: wins += 1
                 else: losses += 1
                 _win_history.append(1 if pnl > 0 else 0)
@@ -1331,6 +1355,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
                         trades.append(t); del open_trades[sym]
+                        _opt_record_trade(t)
                         _win_history.append(1 if pnl > 0 else 0)
                         if pnl > 0: wins += 1
                         else: losses += 1
@@ -1353,6 +1378,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
                 if pnl > 0: wins += 1
                 else: losses += 1
                 _win_history.append(1 if pnl > 0 else 0)
@@ -1421,6 +1447,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
+                            _opt_record_trade(t)
                             if t.pnl > 0: wins += 1
                             else: losses += 1
                             _win_history.append(1 if t.pnl > 0 else 0)
@@ -1444,6 +1471,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
+                            _opt_record_trade(t)
                             if t.pnl > 0: wins += 1
                             else: losses += 1
                             _win_history.append(1 if t.pnl > 0 else 0)
@@ -1469,6 +1497,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     equity += pnl_r; t.pnl += pnl_r
                     t.exit_price = t.t2; t.exit_time = now_ts
                     trades.append(t); del open_trades[sym]
+                    _opt_record_trade(t)
                     if t.pnl > 0: wins += 1
                     else: losses += 1
                     _win_history.append(1 if t.pnl > 0 else 0)
@@ -2120,6 +2149,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
             trades.append(t)
+            _opt_record_trade(t)
             if pnl > 0: wins += 1
             else: losses += 1
             _win_history.append(1 if pnl > 0 else 0)
@@ -2338,6 +2368,19 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     except Exception:
         pass
 
+    # ── Load walk-forward optimal parameters (if available) ──────────────────
+    try:
+        from optimizer_india import load_optimal_params as _load_opt
+        _opt = _load_opt()
+        if _opt:
+            global MIN_SCORE, _ADAPTIVE_MIN_SCORE
+            if "MIN_SCORE" in _opt:
+                MIN_SCORE = float(_opt["MIN_SCORE"])
+                _ADAPTIVE_MIN_SCORE = MIN_SCORE
+                print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
+    except Exception:
+        pass
+
     # Ensure ORB columns are computed (handles both 5-min and 1h data)
     for sym in list(data.keys()):
         try:
@@ -2483,6 +2526,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
                 if pnl > 0: wins += 1
                 else: losses += 1
                 _win_history.append(1 if pnl > 0 else 0)
@@ -2518,6 +2562,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+TIME_EXIT"
                         t.exit_price = px; t.exit_time = now_ts
                         trades.append(t); del open_trades[sym]
+                        _opt_record_trade(t)
                         _win_history.append(1 if pnl > 0 else 0)
                         if pnl > 0: wins += 1
                         else: losses += 1
@@ -2540,6 +2585,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 equity += pnl; t.pnl = pnl
                 t.exit_price = px; t.exit_time = now_ts
                 trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
                 if pnl > 0: wins += 1
                 else: losses += 1
                 _win_history.append(1 if pnl > 0 else 0)
@@ -2604,6 +2650,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
+                            _opt_record_trade(t)
                             if t.pnl > 0: wins += 1
                             else: losses += 1
                             _win_history.append(1 if t.pnl > 0 else 0)
@@ -2626,6 +2673,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             equity += pnl_r; t.pnl += pnl_r
                             t.exit_price = c_bar; t.exit_time = now_ts
                             trades.append(t); del open_trades[sym]
+                            _opt_record_trade(t)
                             if t.pnl > 0: wins += 1
                             else: losses += 1
                             _win_history.append(1 if t.pnl > 0 else 0)
@@ -2649,6 +2697,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     equity += pnl_r; t.pnl += pnl_r
                     t.exit_price = t.t2; t.exit_time = now_ts
                     trades.append(t); del open_trades[sym]
+                    _opt_record_trade(t)
                     if t.pnl > 0: wins += 1
                     else: losses += 1
                     _win_history.append(1 if t.pnl > 0 else 0)
@@ -3240,6 +3289,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
             trades.append(t)
+            _opt_record_trade(t)
             if pnl > 0: wins += 1
             else: losses += 1
             _win_history.append(1 if pnl > 0 else 0)
