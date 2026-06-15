@@ -475,6 +475,32 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         score_long  *= 1.15; score_short *= 1.15   # Trending: boost
     # ADX 15-22: neutral (no multiplier) — avoids penalizing moderate trends
 
+    # ── Conditional mean-reversion + session drive (ADX-gated) ──────────
+    # Apply the same ADX dampening multiplier to keep calibration consistent
+    try:
+        from strategies_india import vwap_reversion_signal, session_drive_signal
+        _cond_adx_mult = 0.85 if (adx_v and adx_v < 15) else (1.15 if (adx_v and adx_v >= 22) else 1.0)
+
+        _vr_score, _vr_reason = vwap_reversion_signal(row, adx=adx_v)
+        _vr_adj = int(_vr_score * _cond_adx_mult)
+        if _vr_adj > 0:
+            score_long  += _vr_adj
+            if _vr_reason: reasons.append(_vr_reason)
+        elif _vr_adj < 0:
+            score_short += abs(_vr_adj)
+            if _vr_reason: reasons.append(_vr_reason)
+
+        _sd_score, _sd_reason = session_drive_signal(row, adx=adx_v)
+        _sd_adj = int(_sd_score * _cond_adx_mult)
+        if _sd_adj > 0:
+            score_long  += _sd_adj
+            if _sd_reason: reasons.append(_sd_reason)
+        elif _sd_adj < 0:
+            score_short += abs(_sd_adj)
+            if _sd_reason: reasons.append(_sd_reason)
+    except Exception:
+        pass
+
     # ── 15m trend alignment (pure confirmation, not primary signal) ──────────
     if df_15m is not None and not df_15m.empty:
         try:
