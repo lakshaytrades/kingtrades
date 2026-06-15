@@ -1216,6 +1216,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
     _nifty_proxy_ts = None
 
+    # Detect bar interval for interval-aware hold time limits
+    _sample_vals = list(data.values())
+    _bar_mins = 60  # default 1h
+    if _sample_vals and len(_sample_vals[0]) > 1:
+        _bar_mins = (_sample_vals[0].index[1] - _sample_vals[0].index[0]).total_seconds() / 60
+    _is_5m_data = _bar_mins <= 7   # 5m or 3m bars
+
     # Session breadth cache: % of loaded stocks above today's open at each timestamp
     _breadth_session: Dict = {}   # {date: {ts: float}}
     _session_open: Dict[str, Dict] = {}   # {sym: {date: open_price}}
@@ -1312,7 +1319,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
-                    _max_hold = 240 if _is_morning else 150  # 4h morning, 2.5h afternoon (was 75/50 = too short for 1h bars)
+                    _max_hold = (90 if _is_morning else 60) if _is_5m_data else (240 if _is_morning else 150)  # 5m: 90/60 min; 1h: 240/150 min
                     if _held_minutes >= _max_hold:
                         # Exit at current close regardless of P&L
                         px = bar["close"]
@@ -1906,30 +1913,31 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _e21_g = float(row.get("ema21", 0) or 0)
                 if _close_g > 0 and _day_open_g > 0:
                     _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
+                    _sr_thresh = 0.0015 if _is_5m_data else 0.003   # 0.15% for 5m, 0.3% for 1h
                     if direction == "LONG":
-                        # LONG: stock must be up ≥0.3% from open, volume elevated, EMA aligned
-                        if _sess_ret_g < 0.003:
+                        # LONG: stock must be up in signal direction, volume elevated, EMA aligned
+                        if _sess_ret_g < _sr_thresh:
                             continue
                         if _rvol_g < 1.5:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
                         # Bonus for strongly confirmed momentum
-                        if _sess_ret_g > 0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if _sess_ret_g > _sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g > 0.003 and _rvol_g > 1.5:
+                        elif _sess_ret_g > _sr_thresh and _rvol_g > 1.5:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
-                        # SHORT: stock must be down ≥0.3% from open
-                        if _sess_ret_g > -0.003:
+                        # SHORT: stock must be down in signal direction
+                        if _sess_ret_g > -_sr_thresh:
                             continue
                         if _rvol_g < 1.5:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
                         elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
@@ -2344,6 +2352,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
     all_ts = sorted(set().union(*[set(df.index) for df in data.values()]))
     _nifty_proxy_cache = {"trend_score": 0.0, "pct_above_vwap": 0.5, "pct_above_ema21": 0.5}
+
+    # Detect bar interval for interval-aware hold time limits
+    _sample_vals = list(data.values())
+    _bar_mins = 60  # default 1h
+    if _sample_vals and len(_sample_vals[0]) > 1:
+        _bar_mins = (_sample_vals[0].index[1] - _sample_vals[0].index[0]).total_seconds() / 60
+    _is_5m_data = _bar_mins <= 7   # 5m or 3m bars
     _nifty_proxy_ts = None
 
     # Session breadth cache: % of loaded stocks above today's open at each timestamp
@@ -2438,7 +2453,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
-                    _max_hold = 240 if _is_morning else 150  # 4h morning, 2.5h afternoon (was 75/50 = too short for 1h bars)
+                    _max_hold = (90 if _is_morning else 60) if _is_5m_data else (240 if _is_morning else 150)  # 5m: 90/60 min; 1h: 240/150 min
                     if _held_minutes >= _max_hold:
                         # Exit at current close regardless of P&L
                         px = bar["close"]
@@ -2989,30 +3004,31 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _e21_g = float(row.get("ema21", 0) or 0)
                 if _close_g > 0 and _day_open_g > 0:
                     _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
+                    _sr_thresh = 0.0015 if _is_5m_data else 0.003   # 0.15% for 5m, 0.3% for 1h
                     if direction == "LONG":
-                        # LONG: stock must be up ≥0.3% from open, volume elevated, EMA aligned
-                        if _sess_ret_g < 0.003:
+                        # LONG: stock must be up in signal direction, volume elevated, EMA aligned
+                        if _sess_ret_g < _sr_thresh:
                             continue
                         if _rvol_g < 1.5:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
                         # Bonus for strongly confirmed momentum
-                        if _sess_ret_g > 0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if _sess_ret_g > _sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g > 0.003 and _rvol_g > 1.5:
+                        elif _sess_ret_g > _sr_thresh and _rvol_g > 1.5:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
-                        # SHORT: stock must be down ≥0.3% from open
-                        if _sess_ret_g > -0.003:
+                        # SHORT: stock must be down in signal direction
+                        if _sess_ret_g > -_sr_thresh:
                             continue
                         if _rvol_g < 1.5:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -0.006 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
                         elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
