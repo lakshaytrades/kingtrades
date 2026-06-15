@@ -6,6 +6,7 @@ This module:
   - Tracks token age in data/upstox_token_meta.json
   - Warns via Telegram when the token is stale / a new day has started
   - Supports /newtoken TOKEN command from Telegram to update .env + restart
+  - TOTP auto-renewal at 8:30 AM IST daily (no manual intervention needed)
   - Zero manual VPS access needed — all managed via Telegram
 
 Token renewal (60 seconds, no VPS):
@@ -15,10 +16,18 @@ Token renewal (60 seconds, no VPS):
   2. Send to Telegram: /newtoken YOUR_NEW_ACCESS_TOKEN
   3. Bot auto-updates .env, confirms, and restarts.
 
+TOTP Auto-Renewal (recommended — no manual steps):
+  Set UPSTOX_EMAIL, UPSTOX_PASSWORD, UPSTOX_TOTP_SECRET in .env.
+  Call schedule_auto_renewal() once at bot startup.
+
 Env vars (group: trades secret):
   UPSTOX_ACCESS_TOKEN   — today's access token (required)
   UPSTOX_API_KEY        — developer app api key / client id (for regeneration)
   UPSTOX_API_SECRET     — developer app secret (for regeneration)
+  UPSTOX_EMAIL          — Upstox login email (TOTP auto-renewal)
+  UPSTOX_PASSWORD       — Upstox login password (TOTP auto-renewal)
+  UPSTOX_TOTP_SECRET    — TOTP secret Base32 from Upstox 2FA setup (TOTP auto-renewal)
+  UPSTOX_REDIRECT_URI   — registered redirect URI (default: https://127.0.0.1/callback)
 """
 import json
 import logging
@@ -149,6 +158,313 @@ def update_token_in_env(new_token: str) -> Tuple[bool, str]:
     except Exception as e:
         logger.error(f"Token update failed: {e}")
         return False, f"Update failed: {e}"
+
+
+# ── TOTP auto-renewal ─────────────────────────────────────────────────────────
+
+def auto_renew_token() -> Tuple[bool, str]:
+    """
+    Automatically generate a new Upstox access token using TOTP + OAuth2 flow.
+
+    Upstox does not expose a direct password+TOTP endpoint — the standard
+    flow requires an OAuth2 authorization_code exchange. This function uses
+    the Upstox v2 login API (same as browser-based login) via requests:
+      1. POST /v2/login/authorization/dialog  — initiate login session
+      2. POST /v2/login/authorization/totp    — submit TOTP code
+      3. GET  /v2/login/authorization/dialog  — get redirect with auth code
+      4. POST /v2/login/authorization/token   — exchange code for access token
+
+    Note: Upstox's undocumented mobile/web login API endpoints are used here,
+    matching the approach used by the community (dhruvan, upstox-python-sdk
+    unofficial wrappers). If Upstox changes these endpoints, fall back to
+    Telegram /newtoken command.
+
+    Requires env vars:
+        UPSTOX_EMAIL         — Upstox login email
+        UPSTOX_PASSWORD      — Upstox login password
+        UPSTOX_TOTP_SECRET   — TOTP secret (Base32) from Upstox 2FA setup
+        UPSTOX_API_KEY       — developer app client_id
+        UPSTOX_API_SECRET    — developer app client_secret
+        UPSTOX_REDIRECT_URI  — registered redirect URI (e.g. https://127.0.0.1/callback)
+
+    Returns (success, message).
+    """
+    try:
+        import pyotp
+        import requests as _req
+    except ImportError as e:
+        return False, f"Missing dependency: {e}. Run: pip install pyotp requests"
+
+    email        = os.getenv("UPSTOX_EMAIL", "").strip()
+    password     = os.getenv("UPSTOX_PASSWORD", "").strip()
+    totp_secret  = os.getenv("UPSTOX_TOTP_SECRET", "").strip()
+    api_key      = os.getenv("UPSTOX_API_KEY", "").strip()
+    api_secret   = os.getenv("UPSTOX_API_SECRET", "").strip()
+    redirect_uri = os.getenv("UPSTOX_REDIRECT_URI", "https://127.0.0.1/callback").strip()
+
+    if not all([email, password, totp_secret, api_key, api_secret]):
+        missing = [k for k, v in {
+            "UPSTOX_EMAIL": email,
+            "UPSTOX_PASSWORD": password,
+            "UPSTOX_TOTP_SECRET": totp_secret,
+            "UPSTOX_API_KEY": api_key,
+            "UPSTOX_API_SECRET": api_secret,
+        }.items() if not v]
+        return False, (
+            f"TOTP auto-renewal disabled — missing env vars: {', '.join(missing)}. "
+            "Use Telegram /newtoken as fallback."
+        )
+
+    session = _req.Session()
+    # Browser-like headers required by Upstox login API
+    session.headers.update({
+        "Accept": "application/json",
+        "Content-Type": "application/json",
+        "User-Agent": (
+            "Mozilla/5.0 (Linux; Android 11; Pixel 5) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) "
+            "Chrome/124.0.0.0 Mobile Safari/537.36"
+        ),
+    })
+
+    try:
+        # Step 1: Initiate login — get session cookie
+        init_resp = session.post(
+            "https://api.upstox.com/v2/login/authorization/dialog",
+            json={
+                "client_id": api_key,
+                "redirect_uri": redirect_uri,
+                "response_type": "code",
+            },
+            timeout=15,
+            allow_redirects=True,
+        )
+        logger.debug(f"Upstox login init: HTTP {init_resp.status_code}")
+    except Exception as e:
+        logger.debug(f"Upstox login init step error (non-fatal): {e}")
+
+    try:
+        # Step 2: Submit email + password
+        login_resp = session.post(
+            "https://api.upstox.com/v2/login/authorization/users",
+            json={"client_id": api_key, "email": email, "password": password},
+            timeout=15,
+        )
+        if login_resp.status_code not in (200, 201, 302):
+            # Credential failure is a hard stop — Step 3 TOTP would be meaningless
+            return False, (
+                f"Upstox credential login failed (HTTP {login_resp.status_code}): "
+                f"{login_resp.text[:200]}. Check UPSTOX_EMAIL / UPSTOX_PASSWORD."
+            )
+    except Exception as e:
+        return False, f"Upstox credential login error: {e}"
+
+    try:
+        # Step 3: Submit TOTP code
+        # Generate fresh code right before submitting (valid for 30s window)
+        totp_normalized = totp_secret.replace(" ", "").upper()
+        totp_code = pyotp.TOTP(totp_normalized).now()
+        totp_resp = session.post(
+            "https://api.upstox.com/v2/login/authorization/totp",
+            json={"client_id": api_key, "totp": totp_code},
+            timeout=15,
+        )
+        logger.debug(f"Upstox TOTP step: HTTP {totp_resp.status_code}")
+        if totp_resp.status_code not in (200, 201, 302):
+            logger.warning(
+                f"Upstox TOTP step returned HTTP {totp_resp.status_code}: "
+                f"{totp_resp.text[:200]}"
+            )
+    except Exception as e:
+        logger.warning(f"Upstox TOTP submit error: {e}")
+
+    try:
+        # Step 4: Get authorization code via redirect
+        import urllib.parse
+        auth_url = (
+            f"https://api.upstox.com/v2/login/authorization/dialog"
+            f"?response_type=code"
+            f"&client_id={urllib.parse.quote(api_key)}"
+            f"&redirect_uri={urllib.parse.quote(redirect_uri)}"
+        )
+        code_resp = session.get(auth_url, timeout=15, allow_redirects=False)
+        # requests.Response.headers is CaseInsensitiveDict — single lookup suffices
+        location = code_resp.headers.get("Location", "")
+
+        if "code=" not in location:
+            return False, (
+                f"TOTP flow completed but no auth code received "
+                f"(HTTP {code_resp.status_code}). "
+                "Upstox may have changed their login API. "
+                "Use Telegram /newtoken as fallback."
+            )
+
+        parsed = urllib.parse.urlparse(location)
+        auth_code = urllib.parse.parse_qs(parsed.query).get("code", [""])[0]
+        if not auth_code:
+            return False, "Could not parse authorization code from redirect URL."
+
+        logger.debug(f"Upstox auth code obtained: {auth_code[:10]}...")
+    except Exception as e:
+        logger.error(f"Upstox auth code retrieval error: {e}")
+        return False, f"TOTP auth code step failed: {e}"
+
+    try:
+        # Step 5: Exchange authorization code for access token (standard OAuth2).
+        # Uses session.post() so any session cookies from Steps 1-3 are included.
+        token_resp = session.post(
+            "https://api.upstox.com/v2/login/authorization/token",
+            data={
+                "code":          auth_code,
+                "client_id":     api_key,
+                "client_secret": api_secret,
+                "redirect_uri":  redirect_uri,
+                "grant_type":    "authorization_code",
+            },
+            headers={
+                "Content-Type": "application/x-www-form-urlencoded",
+                "Accept":       "application/json",
+                "User-Agent":   "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+                                "AppleWebKit/537.36 (KHTML, like Gecko) "
+                                "Chrome/124.0.0.0 Safari/537.36",
+                "Origin":       "https://api.upstox.com",
+                "Referer":      "https://api.upstox.com/",
+            },
+            timeout=20,
+        )
+
+        if token_resp.status_code != 200:
+            return False, (
+                f"Token exchange failed (HTTP {token_resp.status_code}): "
+                f"{token_resp.text[:300]}"
+            )
+
+        body  = token_resp.json()
+        token = body.get("access_token") or body.get("data", {}).get("access_token", "")
+        if not token:
+            return False, f"Token exchange response has no access_token: {body}"
+
+        ok, msg = update_token_in_env(token)
+        if ok:
+            logger.info(f"TOTP auto-renewal successful ({token[:8]}***)")
+            return True, f"Token auto-renewed via TOTP ({token[:8]}***)"
+        return False, f"Token obtained but save failed: {msg}"
+
+    except Exception as e:
+        logger.error(f"TOTP token exchange error: {e}")
+        return False, f"TOTP token exchange failed: {e}"
+
+
+def _notify_telegram_for_token() -> None:
+    """Send Telegram alert asking user to renew token manually."""
+    try:
+        import requests as _req
+        bot_token = os.getenv("TELEGRAM_BOT_TOKEN", "")
+        chat_id   = os.getenv("TELEGRAM_CHAT_ID", "")
+        if bot_token and chat_id:
+            msg = (
+                "🇮🇳 ⚠️ *Upstox TOTP auto-renewal failed*\n"
+                "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
+                "Automatic token renewal could not complete.\n\n"
+                "*Manual renewal (60 seconds):*\n"
+                "1️⃣ Get today's token from Upstox app\n"
+                "2️⃣ Send: `/newtoken YOUR_TOKEN`\n\n"
+                "_Bot will auto-update and restart._"
+            )
+            _req.post(
+                f"https://api.telegram.org/bot{bot_token}/sendMessage",
+                json={"chat_id": chat_id, "text": msg, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+    except Exception:
+        pass
+
+
+def schedule_auto_renewal() -> None:
+    """
+    Schedule TOTP token renewal at 8:30 AM IST daily.
+    Call once at bot startup. Runs in a daemon thread — does not block the
+    main loop. If renewal fails, falls back to Telegram alert for manual renewal.
+
+    No-op if UPSTOX_TOTP_SECRET is not set (graceful degradation).
+    """
+    import threading
+
+    if not os.getenv("UPSTOX_TOTP_SECRET", "").strip():
+        logger.info(
+            "UPSTOX_TOTP_SECRET not set — TOTP auto-renewal disabled. "
+            "Use Telegram /newtoken for daily renewal."
+        )
+        return
+
+    def _renewal_job():
+        while True:
+            try:
+                now    = datetime.now(IST)
+                target = now.replace(hour=8, minute=30, second=0, microsecond=0)
+                if now >= target:
+                    target = target + timedelta(days=1)
+                wait_secs = (target - now).total_seconds()
+                logger.info(
+                    f"Next TOTP renewal scheduled at "
+                    f"{target.strftime('%Y-%m-%d %H:%M IST')} "
+                    f"({wait_secs / 3600:.1f}h from now)"
+                )
+                _time.sleep(max(wait_secs, 60))
+                ok, msg = auto_renew_token()
+                if ok:
+                    logger.info(f"Scheduled TOTP renewal succeeded: {msg}")
+                else:
+                    logger.warning(
+                        f"Scheduled TOTP renewal failed: {msg}. "
+                        "Sending Telegram fallback alert."
+                    )
+                    _notify_telegram_for_token()
+            except Exception as e:
+                logger.error(f"TOTP renewal scheduler error: {e}")
+                _time.sleep(300)  # Back off 5 min on unexpected error
+
+    t = threading.Thread(target=_renewal_job, daemon=True, name="upstox-token-renewal")
+    t.start()
+    logger.info("Upstox TOTP auto-renewal scheduler started (daemon thread, fires 08:30 IST)")
+
+
+def ensure_token_fresh() -> bool:
+    """
+    Check token freshness and attempt TOTP auto-renewal if stale.
+    Returns True if token is valid (existing or freshly renewed).
+    Intended for use at bot startup or before the trading session begins.
+
+    Note: is_token_stale() returns False when no metadata exists (unknown-age
+    token). In that case this function also returns True (assumes fresh) to
+    preserve backward-compatibility for bots that don't use token metadata.
+    If you need stricter checking, call auto_renew_token() unconditionally
+    at startup when UPSTOX_TOTP_SECRET is configured.
+    """
+    meta = _load_meta()
+    no_metadata = not meta.get("token_set_at")
+
+    if no_metadata:
+        # No age information — attempt renewal if TOTP is configured, else assume fresh.
+        if os.getenv("UPSTOX_TOTP_SECRET", "").strip():
+            logger.info("No token metadata found — attempting proactive TOTP renewal.")
+            ok, msg = auto_renew_token()
+            if ok:
+                logger.info(f"Proactive token renewal: {msg}")
+                return True
+            logger.warning(f"Proactive renewal failed: {msg}. Assuming existing token is valid.")
+        return True  # No metadata + no TOTP → assume token is fresh (legacy behavior)
+
+    if not is_token_stale():
+        return True
+
+    logger.warning("Upstox token is stale — attempting TOTP auto-renewal...")
+    ok, msg = auto_renew_token()
+    if ok:
+        logger.info(f"Token freshened: {msg}")
+        return True
+    logger.warning(f"TOTP renewal failed: {msg}. Token may be expired.")
+    return False
 
 
 # ── Expiry check & Telegram warning ──────────────────────────────────────────
