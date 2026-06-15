@@ -3561,7 +3561,7 @@ Examples:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
             from data_yfinance import DEFAULT_SYMBOLS
-            syms = DEFAULT_SYMBOLS[:20]
+            syms = DEFAULT_SYMBOLS[:40]
         raw_data = _load_cache(syms, interval=interval)
         if not raw_data:
             print(
@@ -3570,6 +3570,12 @@ Examples:
             )
             sys.exit(1)
         print(f"Loaded {len(raw_data)}/{len(syms)} symbols from cache.")
+        if len(raw_data) < min(30, len(syms)):
+            print(
+                f"WARNING: Only {len(raw_data)} symbols in cache (expected ≥30). "
+                "Cache may have been built with an older/smaller symbol list. "
+                "Re-run with --source yfinance to refresh the cache."
+            )
         print("Computing indicators ...")
         data: Dict[str, pd.DataFrame] = {}
         for sym, df in raw_data.items():
@@ -3596,7 +3602,7 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            syms = DEFAULT_SYMBOLS[:20]
+            syms = DEFAULT_SYMBOLS[:40]
 
         print(f"Loading yfinance data: {len(syms)} symbols, interval={interval}, period={period}")
         raw_data = load_nse_data_yfinance(syms, period=period, interval=interval,
@@ -3647,7 +3653,7 @@ Examples:
             "RELIANCE", "INFY", "TCS", "HDFCBANK", "ICICIBANK",
             "SBIN", "AXISBANK", "KOTAKBANK", "HINDUNILVR", "ITC",
             "BHARTIARTL", "ASIANPAINT", "MARUTI", "BAJFINANCE", "WIPRO",
-            "ADANIENT", "ADANIPORTS", "TATAMOTORS", "TATASTEEL", "SUNPHARMA",
+            "ADANIENT", "ADANIPORTS", "M&M", "TATASTEEL", "SUNPHARMA",
             "DRREDDY", "CIPLA", "LT", "POWERGRID", "NTPC", "ONGC",
             "HCLTECH", "TECHM", "BAJAJFINSV", "TITAN", "NESTLEIND",
             "ULTRACEMCO", "JSWSTEEL", "GRASIM", "HEROMOTOCO", "EICHERMOT",
