@@ -403,6 +403,23 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     elif mh < 0 and pmh >= 0:  score_short += 12; reasons.append("MACD_XOVER_DN")
     elif mh < 0:                score_short += 7
 
+    # ── Signal 8: RSI 50-crossing (change-of-state momentum shift) ──────────
+    # RSI crossing 50 from below = bullish momentum shift (not overbought, just starting)
+    # RSI crossing 50 from above = bearish momentum shift
+    rsi_v  = float(row.get("rsi",  50.0) or 50.0)
+    prsi_v = float(prev.get("rsi", rsi_v) or rsi_v)
+    _rsi_bull_cross = (prsi_v < 50.0) and (rsi_v >= 50.0)  # just crossed 50 from below
+    _rsi_bear_cross = (prsi_v > 50.0) and (rsi_v <= 50.0)  # just crossed 50 from above
+    if _rsi_bull_cross:
+        score_long  += 8; reasons.append("RSI_BULL_CROSS")
+    elif _rsi_bear_cross:
+        score_short += 8; reasons.append("RSI_BEAR_CROSS")
+    # Additional context: RSI position (not labeled — pure context)
+    elif rsi_v >= 55 and rsi_v < 68:
+        score_long  += 2  # RSI in bullish zone but not crossing = minor context
+    elif rsi_v <= 45 and rsi_v > 32:
+        score_short += 2  # RSI in bearish zone but not crossing = minor context
+
     # ── Signal 2: EMA momentum stack ────────────────────────────────────────
     e9  = float(row.get("ema9",  c) or c)
     e21 = float(row.get("ema21", c) or c)
@@ -2272,8 +2289,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Named-setup quality gate: require at least one high-WR setup ──
             # "OTHER" composite entries (no named setup) have ~0% WR in backtests
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
-                             "EMA21_PULLBACK", "MACD_XOVER", "VWAP_RECLAIM",
-                             "VWAP_REJECT", "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
+                             "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
+                             "VWAP_RECLAIM", "VWAP_REJECT",
+                             "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
@@ -2430,6 +2449,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
         "MACD_XOVER",
+        "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
         "VWAP_RECLAIM", "VWAP_REJECT",                  # transition signals
         "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT",
         "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
@@ -3687,8 +3707,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Named-setup quality gate: require at least one high-WR setup ──
             # "OTHER" composite entries (no named setup) have ~0% WR in backtests
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
-                             "EMA21_PULLBACK", "MACD_XOVER", "VWAP_RECLAIM",
-                             "VWAP_REJECT", "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
+                             "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
+                             "VWAP_RECLAIM", "VWAP_REJECT",
+                             "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
@@ -3823,6 +3845,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
         "MACD_XOVER",
+        "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
         "VWAP_RECLAIM", "VWAP_REJECT",                  # transition signals
         "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT",
         "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
