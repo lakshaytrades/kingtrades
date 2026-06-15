@@ -2167,6 +2167,27 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
 
+            # ── Entry quality gates ──────────────────────────────────────────
+            try:
+                _bar_t  = now_ts.time()
+                _rsi_q  = float(row.get("rsi", 50) or 50)
+                _ema9_q = float(row.get("ema9", 0) or 0)
+                _cls_q  = float(row.get("close", 0) or 0)
+                # RSI overbought — skip LONG when stock already extended
+                if direction == "LONG" and _rsi_q > 65:
+                    continue
+                # ORB time gate — breakout entry is noise after 10:15 AM
+                if ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason):
+                    if _bar_t > dtime(10, 15):
+                        continue
+                # EMA stack pullback gate — require price within 1.5% of EMA9
+                if "EMA_BULL_STACK" in reason and "ORB" not in reason:
+                    if _ema9_q > 0 and _cls_q > _ema9_q * 1.015:
+                        continue  # extended above EMA9; wait for pullback
+            except Exception:
+                pass
+            # ────────────────────────────────────────────────────────────────
+
             # ATR-based SL/TP
             atr = row.get("atr", row["close"] * 0.005)
             if atr <= 0:
@@ -3473,6 +3494,27 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
+
+            # ── Entry quality gates ──────────────────────────────────────────
+            try:
+                _bar_t  = now_ts.time()
+                _rsi_q  = float(row.get("rsi", 50) or 50)
+                _ema9_q = float(row.get("ema9", 0) or 0)
+                _cls_q  = float(row.get("close", 0) or 0)
+                # RSI overbought — skip LONG when stock already extended
+                if direction == "LONG" and _rsi_q > 65:
+                    continue
+                # ORB time gate — breakout entry is noise after 10:15 AM
+                if ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason):
+                    if _bar_t > dtime(10, 15):
+                        continue
+                # EMA stack pullback gate — require price within 1.5% of EMA9
+                if "EMA_BULL_STACK" in reason and "ORB" not in reason:
+                    if _ema9_q > 0 and _cls_q > _ema9_q * 1.015:
+                        continue  # extended above EMA9; wait for pullback
+            except Exception:
+                pass
+            # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
             if atr <= 0:
