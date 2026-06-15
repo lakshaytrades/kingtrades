@@ -2340,8 +2340,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: require dual confirmation ──
-            # Single-signal entries have ~35% WR; dual-confirmation = 50%+ WR
+            # ── Named-setup quality gate: pattern + market confirmation ──
+            # Rule: must have 1 named pattern AND 1 confirmation (volume/session).
+            # STRONG_CONFIRM = stock up 0.5%+ on day with RVOL > 2.0 (institutional flow)
+            # MOD_CONFIRM    = stock up on day with RVOL > 1.5 (moderate confirmation)
+            # This is the professional entry criteria: signal + tape confirmation.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -2349,10 +2352,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
-                             "INSIDE_BAR", "ACCUM", "DISTRIB")
+                             "INSIDE_BAR", "ACCUM", "DISTRIB",
+                             "STRONG_CONFIRM", "MOD_CONFIRM")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             if _qual_count < 2:
-                continue  # Require dual confirmation — single signals have ~35% WR
+                continue  # Need pattern + confirmation — pure patterns without tape = noise
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP
@@ -2361,9 +2365,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 1.5 * atr     # 1.5×ATR — momentum signals should move away immediately
-            t1_dist = 3.0 * atr     # 2R first target (break-even WR drops from 44% to 33%)
-            t2_dist = 6.0 * atr     # 4R runner
+            sl_dist = 1.0 * atr     # 1×ATR tight stop — if momentum doesn't work immediately, exit
+            t1_dist = 2.0 * atr     # 2R first target (break-even WR = 33%)
+            t2_dist = 4.0 * atr     # 4R runner
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3817,8 +3821,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: require dual confirmation ──
-            # Single-signal entries have ~35% WR; dual-confirmation = 50%+ WR
+            # ── Named-setup quality gate: pattern + market confirmation ──
+            # Rule: must have 1 named pattern AND 1 confirmation (volume/session).
+            # STRONG_CONFIRM = stock up 0.5%+ on day with RVOL > 2.0 (institutional flow)
+            # MOD_CONFIRM    = stock up on day with RVOL > 1.5 (moderate confirmation)
+            # This is the professional entry criteria: signal + tape confirmation.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -3826,10 +3833,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
-                             "INSIDE_BAR", "ACCUM", "DISTRIB")
+                             "INSIDE_BAR", "ACCUM", "DISTRIB",
+                             "STRONG_CONFIRM", "MOD_CONFIRM")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             if _qual_count < 2:
-                continue  # Require dual confirmation — single signals have ~35% WR
+                continue  # Need pattern + confirmation — pure patterns without tape = noise
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
@@ -3837,9 +3845,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # 1.5×ATR — momentum should move away
-            t1    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 2R target (33% WR break-even)
-            t2    = entry + 6.0 * atr if long else entry - 6.0 * atr   # 4R runner
+            sl    = entry - 1.0 * atr if long else entry + 1.0 * atr   # 1×ATR tight stop
+            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr   # 2R target (33% WR break-even)
+            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr   # 4R runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
