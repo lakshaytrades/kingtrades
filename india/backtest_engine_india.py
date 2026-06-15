@@ -2069,39 +2069,46 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     # Use abs(net_score) so SHORT signals (negative) also benefit
                     _abs_score = abs(net_score)
                     if _abs_score >= 18:
-                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006
+                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # 0.01%/0.02% — nearly no requirement
                     elif _abs_score >= 14:
-                        _sr_thresh = 0.0008 if _is_5m_data else 0.0015
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% (was 0.08%/0.15%)
                     else:
-                        _sr_thresh = 0.0015 if _is_5m_data else 0.003
-                    _rvol_min = 1.3 if _abs_score >= 18 else (1.4 if _abs_score >= 14 else 1.5)
+                        _sr_thresh = 0.0006 if _is_5m_data else 0.0012   # 0.06%/0.12% (was 0.15%/0.30%)
+                    _rvol_min = 1.2 if _abs_score >= 18 else (1.3 if _abs_score >= 14 else 1.4)
+                    # ORB bypass: direction-matched flag — breakout proves session direction
+                    _orb_bypass = (
+                        (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
+                        (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
+                    )
+                    # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
+                    _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
-                        if _sess_ret_g < _sr_thresh:
+                        if not _orb_bypass and _sess_ret_g < _sr_thresh:
                             continue
                         if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
                         # Bonus for strongly confirmed momentum
-                        if _sess_ret_g > _sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g > _sr_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g > _bonus_thresh and _rvol_g > 1.5:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
-                        if _sess_ret_g > -_sr_thresh:
+                        if not _orb_bypass and _sess_ret_g > -_sr_thresh:
                             continue
                         if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -_bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -_sr_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g < -_bonus_thresh and _rvol_g > 1.5:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
@@ -3316,39 +3323,46 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # Use abs(net_score) so SHORT signals (negative) also benefit
                     _abs_score = abs(net_score)
                     if _abs_score >= 18:
-                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006
+                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # 0.01%/0.02% — nearly no requirement
                     elif _abs_score >= 14:
-                        _sr_thresh = 0.0008 if _is_5m_data else 0.0015
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% (was 0.08%/0.15%)
                     else:
-                        _sr_thresh = 0.0015 if _is_5m_data else 0.003
-                    _rvol_min = 1.3 if _abs_score >= 18 else (1.4 if _abs_score >= 14 else 1.5)
+                        _sr_thresh = 0.0006 if _is_5m_data else 0.0012   # 0.06%/0.12% (was 0.15%/0.30%)
+                    _rvol_min = 1.2 if _abs_score >= 18 else (1.3 if _abs_score >= 14 else 1.4)
+                    # ORB bypass: direction-matched flag — breakout proves session direction
+                    _orb_bypass = (
+                        (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
+                        (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
+                    )
+                    # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
+                    _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
-                        if _sess_ret_g < _sr_thresh:
+                        if not _orb_bypass and _sess_ret_g < _sr_thresh:
                             continue
                         if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
                         # Bonus for strongly confirmed momentum
-                        if _sess_ret_g > _sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g > _sr_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g > _bonus_thresh and _rvol_g > 1.5:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
-                        if _sess_ret_g > -_sr_thresh:
+                        if not _orb_bypass and _sess_ret_g > -_sr_thresh:
                             continue
                         if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -_bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -_sr_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g < -_bonus_thresh and _rvol_g > 1.5:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
