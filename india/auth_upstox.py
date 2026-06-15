@@ -28,6 +28,11 @@ Env vars (group: trades secret):
   UPSTOX_PASSWORD       — Upstox login password (TOTP auto-renewal)
   UPSTOX_TOTP_SECRET    — TOTP secret Base32 from Upstox 2FA setup (TOTP auto-renewal)
   UPSTOX_REDIRECT_URI   — registered redirect URI (default: https://127.0.0.1/callback)
+
+Circuit breaker env vars (optional — override defaults):
+  DAILY_LOSS_HALT_PCT   — daily loss % to halt all trading (default: 0.03 = 3%)
+  CONSEC_LOSS_HALT      — consecutive losses before pause (default: 5)
+  CONSEC_LOSS_PAUSE_MIN — pause duration in minutes (default: 30)
 """
 import json
 import logging
@@ -41,6 +46,72 @@ from zoneinfo import ZoneInfo
 
 logger = logging.getLogger("auth_upstox")
 IST = ZoneInfo("Asia/Kolkata")
+
+# Guard against double-registration of the renewal thread
+_renewal_thread: Optional["threading.Thread"] = None
+
+# ── Circuit breaker thresholds (read from env if set, else use defaults) ──────
+DAILY_LOSS_HALT_PCT   = float(os.getenv("DAILY_LOSS_HALT_PCT", "0.03"))   # 3% daily loss → halt
+CONSEC_LOSS_HALT      = int(os.getenv("CONSEC_LOSS_HALT", "5"))            # 5 consecutive losses → pause
+CONSEC_LOSS_PAUSE_MIN = int(os.getenv("CONSEC_LOSS_PAUSE_MIN", "30"))      # pause duration in minutes
+
+_circuit_breaker_state = {
+    "halted": False,
+    "halt_reason": "",
+    "halt_until": None,
+    "consecutive_losses": 0,
+    "daily_pnl_pct": 0.0,
+}
+
+
+def check_circuit_breaker(daily_pnl_pct: float, consecutive_losses: int) -> tuple:
+    """
+    Check if trading should be halted. Returns (should_halt: bool, reason: str).
+    Call before each new trade entry.
+
+    - Halts all day if daily_pnl_pct <= -DAILY_LOSS_HALT_PCT (default -3%)
+    - Pauses CONSEC_LOSS_PAUSE_MIN minutes if consecutive_losses >= CONSEC_LOSS_HALT (default 5)
+    - Expired timed halts are auto-cleared before each check
+    """
+    state = _circuit_breaker_state
+    # Keep state dict in sync with caller-provided values so monitoring can read them
+    state["daily_pnl_pct"]     = daily_pnl_pct
+    state["consecutive_losses"] = consecutive_losses
+
+    # Auto-clear timed halt if expiry has passed
+    if state["halt_until"] and datetime.now(IST) >= state["halt_until"]:
+        state["halted"] = False
+        state["halt_until"] = None
+        state["halt_reason"] = ""
+
+    if state["halted"]:
+        return (True, state["halt_reason"])
+
+    # Daily loss check — permanent halt for the rest of the session
+    if daily_pnl_pct <= -DAILY_LOSS_HALT_PCT:
+        state["halted"] = True
+        state["halt_reason"] = f"DAILY_LOSS_LIMIT ({daily_pnl_pct:.2%})"
+        return (True, state["halt_reason"])
+
+    # Consecutive loss check — timed pause
+    if consecutive_losses >= CONSEC_LOSS_HALT:
+        state["halted"] = True
+        state["halt_until"] = datetime.now(IST) + timedelta(minutes=CONSEC_LOSS_PAUSE_MIN)
+        state["halt_reason"] = f"CONSEC_LOSSES_{consecutive_losses}"
+        return (True, state["halt_reason"])
+
+    return (False, "")
+
+
+def reset_circuit_breaker_daily():
+    """
+    Reset daily circuit breaker state. Call at market open (09:15 IST).
+    Note: consecutive_losses intentionally NOT reset daily (carries over session to session).
+    """
+    _circuit_breaker_state["daily_pnl_pct"] = 0.0
+    _circuit_breaker_state["halted"] = False
+    _circuit_breaker_state["halt_until"] = None
+    _circuit_breaker_state["halt_reason"] = ""
 
 _BASE        = Path(__file__).parent.parent
 _TOKEN_META  = _BASE / "data" / "upstox_token_meta.json"
@@ -355,6 +426,36 @@ def auto_renew_token() -> Tuple[bool, str]:
         return False, f"TOTP token exchange failed: {e}"
 
 
+def _auto_renew_with_retry(max_attempts: int = 4) -> bool:
+    """
+    Attempt token renewal with exponential backoff. Sends Telegram alert on failure.
+    Returns True if renewal succeeded.
+
+    Backoff schedule: 2s after attempt 1, 4s after attempt 2, 8s after attempt 3.
+    """
+    for attempt in range(max_attempts):
+        try:
+            ok, msg = auto_renew_token()
+            if ok:
+                logger.info(f"Token renewal succeeded on attempt {attempt + 1}: {msg}")
+                return True
+            logger.warning(f"Token renewal attempt {attempt + 1}/{max_attempts} failed: {msg}")
+        except Exception as e:
+            logger.warning(f"Token renewal attempt {attempt + 1}/{max_attempts} error: {e}")
+        if attempt < max_attempts - 1:
+            wait = 2 ** (attempt + 1)  # 2s, 4s, 8s
+            logger.info(f"Retrying token renewal in {wait}s...")
+            _time.sleep(wait)
+
+    # All attempts failed — notify via Telegram
+    logger.error("All token renewal attempts failed — sending Telegram alert")
+    try:
+        _notify_telegram_for_token()
+    except Exception:
+        pass
+    return False
+
+
 def _notify_telegram_for_token() -> None:
     """Send Telegram alert asking user to renew token manually."""
     try:
@@ -380,60 +481,75 @@ def _notify_telegram_for_token() -> None:
         pass
 
 
-def schedule_auto_renewal() -> None:
+def schedule_auto_renewal() -> "threading.Thread":
     """
-    Schedule TOTP token renewal at 8:30 AM IST daily.
-    Call once at bot startup. Runs in a daemon thread — does not block the
-    main loop. If renewal fails, falls back to Telegram alert for manual renewal.
+    Start a daemon thread that auto-renews the Upstox token daily at 08:30 IST.
+    Call this once at bot startup. Thread runs forever in background.
 
-    No-op if UPSTOX_TOTP_SECRET is not set (graceful degradation).
+    Uses pure IST datetime check (NOT the `schedule` library, which fires at UTC
+    server time = 14:00 IST on a UK server). Fires once per calendar day in the
+    08:30–08:35 IST window, tracked by date to prevent double-firing.
+
+    No-op (returns None) if UPSTOX_AUTO_RENEW_ENABLED=false or UPSTOX_TOTP_SECRET
+    is not set. Returns the existing thread if already running (idempotent).
     """
     import threading
+    global _renewal_thread
+
+    # Idempotency guard — never register twice
+    if _renewal_thread is not None and _renewal_thread.is_alive():
+        logger.debug("Upstox TOTP renewal thread already running — skipping registration")
+        return _renewal_thread
+
+    # Feature flag check
+    if os.getenv("UPSTOX_AUTO_RENEW_ENABLED", "true").lower() != "true":
+        logger.info("UPSTOX_AUTO_RENEW_ENABLED=false — TOTP auto-renewal disabled")
+        return None
 
     if not os.getenv("UPSTOX_TOTP_SECRET", "").strip():
         logger.info(
             "UPSTOX_TOTP_SECRET not set — TOTP auto-renewal disabled. "
             "Use Telegram /newtoken for daily renewal."
         )
-        return
+        return None
 
     def _renewal_job():
+        """Pure IST time check every 30s — fires once per day at 08:30 IST."""
+        _last_renewal_date = None
         while True:
             try:
-                now    = datetime.now(IST)
-                target = now.replace(hour=8, minute=30, second=0, microsecond=0)
-                if now >= target:
-                    target = target + timedelta(days=1)
-                wait_secs = (target - now).total_seconds()
-                logger.info(
-                    f"Next TOTP renewal scheduled at "
-                    f"{target.strftime('%Y-%m-%d %H:%M IST')} "
-                    f"({wait_secs / 3600:.1f}h from now)"
-                )
-                _time.sleep(max(wait_secs, 60))
-                ok, msg = auto_renew_token()
-                if ok:
-                    logger.info(f"Scheduled TOTP renewal succeeded: {msg}")
-                else:
-                    logger.warning(
-                        f"Scheduled TOTP renewal failed: {msg}. "
-                        "Sending Telegram fallback alert."
+                now_ist = datetime.now(IST)
+                if (now_ist.hour == 8 and 30 <= now_ist.minute < 35
+                        and _last_renewal_date != now_ist.date()):
+                    logger.info(
+                        f"Firing TOTP token renewal at {now_ist.strftime('%H:%M')} IST "
+                        f"on {now_ist.date()}"
                     )
-                    _notify_telegram_for_token()
+                    _auto_renew_with_retry()
+                    _last_renewal_date = now_ist.date()
+                    # Skip past the 5-minute firing window to avoid re-triggering
+                    _time.sleep(360)
+                    continue
             except Exception as e:
-                logger.error(f"TOTP renewal scheduler error: {e}")
-                _time.sleep(300)  # Back off 5 min on unexpected error
+                logger.error(f"TOTP renewal scheduler loop error: {e}")
+            _time.sleep(30)
 
-    t = threading.Thread(target=_renewal_job, daemon=True, name="upstox-token-renewal")
-    t.start()
+    _renewal_thread = threading.Thread(
+        target=_renewal_job, daemon=True, name="upstox-token-renewal"
+    )
+    _renewal_thread.start()
     logger.info("Upstox TOTP auto-renewal scheduler started (daemon thread, fires 08:30 IST)")
+    return _renewal_thread
 
 
-def ensure_token_fresh() -> bool:
+def ensure_token_fresh(max_age_hours: float = 20.0) -> bool:
     """
-    Check token freshness and attempt TOTP auto-renewal if stale.
-    Returns True if token is valid (existing or freshly renewed).
-    Intended for use at bot startup or before the trading session begins.
+    Check if current token is fresh. Renew if older than max_age_hours.
+    Call at start of each trading session or hourly during trading.
+    Returns True if token is valid (existing or just renewed).
+
+    Uses last_renewed timestamp from upstox_token_meta.json for the age check.
+    Falls back to is_token_stale() if metadata is missing or malformed.
 
     Note: is_token_stale() returns False when no metadata exists (unknown-age
     token). In that case this function also returns True (assumes fresh) to
@@ -441,30 +557,39 @@ def ensure_token_fresh() -> bool:
     If you need stricter checking, call auto_renew_token() unconditionally
     at startup when UPSTOX_TOTP_SECRET is configured.
     """
-    meta = _load_meta()
-    no_metadata = not meta.get("token_set_at")
+    try:
+        meta = _load_meta()
+        # Support both "last_renewed" (new field) and "token_set_at" (legacy field)
+        last_renewed_str = meta.get("last_renewed") or meta.get("token_set_at", "")
+        if last_renewed_str:
+            last_renewed = datetime.fromisoformat(last_renewed_str)
+            if last_renewed.tzinfo is None:
+                last_renewed = last_renewed.replace(tzinfo=IST)
+            age_hours = (datetime.now(IST) - last_renewed).total_seconds() / 3600
+            if age_hours < max_age_hours:
+                logger.debug(f"Token is fresh (age={age_hours:.1f}h < {max_age_hours}h)")
+                return True  # Token is fresh enough
+            logger.warning(
+                f"Upstox token is stale (age={age_hours:.1f}h >= {max_age_hours}h) "
+                "— attempting renewal..."
+            )
+            return _auto_renew_with_retry()
+    except Exception as e:
+        logger.debug(f"ensure_token_fresh metadata check error: {e}")
 
+    # Metadata missing or malformed — fall back to date-boundary staleness check
+    no_metadata = not _load_meta().get("token_set_at")
     if no_metadata:
-        # No age information — attempt renewal if TOTP is configured, else assume fresh.
         if os.getenv("UPSTOX_TOTP_SECRET", "").strip():
             logger.info("No token metadata found — attempting proactive TOTP renewal.")
-            ok, msg = auto_renew_token()
-            if ok:
-                logger.info(f"Proactive token renewal: {msg}")
-                return True
-            logger.warning(f"Proactive renewal failed: {msg}. Assuming existing token is valid.")
+            return _auto_renew_with_retry()
         return True  # No metadata + no TOTP → assume token is fresh (legacy behavior)
 
     if not is_token_stale():
         return True
 
     logger.warning("Upstox token is stale — attempting TOTP auto-renewal...")
-    ok, msg = auto_renew_token()
-    if ok:
-        logger.info(f"Token freshened: {msg}")
-        return True
-    logger.warning(f"TOTP renewal failed: {msg}. Token may be expired.")
-    return False
+    return _auto_renew_with_retry()
 
 
 # ── Expiry check & Telegram warning ──────────────────────────────────────────
