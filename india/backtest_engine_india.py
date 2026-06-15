@@ -58,6 +58,14 @@ ORB_END      = dtime(9, 30)
 # NSE is long-biased: only short in clear bear sessions (reduces false signals)
 LONG_ONLY_NSE = True   # Set False to re-enable shorts for testing
 
+# ── Research toggle: fade signals ────────────────────────────────────────────
+# When FADE_SIGNALS=1, keep the exact same candidate selection (all momentum
+# gates/scoring unchanged) but trade the OPPOSITE direction, with SL/TP and
+# sizing recomputed for the flipped side. Used to test whether the directional
+# signal is anti-predictive (very low win rate following momentum → would the
+# inverse have edge?). Default off — does NOT affect normal runs.
+_FADE_SIGNALS = os.environ.get("FADE_SIGNALS", "0") == "1"
+
 # ── Pure OHLCV indicators ────────────────────────────────────────────────────
 
 def _ema(series: pd.Series, n: int) -> pd.Series:
@@ -3516,6 +3524,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
+            # ── Research toggle: fade the signal (trade the opposite side) ──
+            if _FADE_SIGNALS:
+                direction = "SHORT" if long else "LONG"
+                long = not long
+                reason = (reason + "+FADE") if reason else "FADE"
             sl    = entry - 2.0 * atr if long else entry + 2.0 * atr   # 2×ATR SL — room for intraday noise
             t1    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 1.5R first target
             t2    = entry + 6.0 * atr if long else entry - 6.0 * atr   # 3R runner
