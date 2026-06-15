@@ -3340,14 +3340,51 @@ Examples:
     ap.add_argument("--to",       dest="to_date",   type=str, default="")
     ap.add_argument("--capital",  type=float, default=500_000.0)
     ap.add_argument("--source",   default="upstox",
-                    choices=["upstox", "yfinance"],
-                    help="Data source: upstox (default, 90 days) or yfinance (up to 3 years)")
+                    choices=["upstox", "yfinance", "cache"],
+                    help="Data source: upstox (default, 90 days), yfinance (up to 3 years), or cache (offline local Parquet/CSV)")
     ap.add_argument("--years",    type=int,   default=0,
                     help="Years of data for yfinance source (1-5, overrides --days)")
     ap.add_argument("--interval", default="1h",
                     choices=["1h", "5m", "1d"],
                     help="Bar interval (5m=60 days only, 1h=2 years, 1d=daily)")
     args = ap.parse_args()
+
+    # ── cache path (offline local Parquet/CSV) ───────────────────────────────
+    if args.source == "cache":
+        from data_cache import load_data as _load_cache, cache_stats as _cache_stats
+        interval = getattr(args, "interval", "1h")
+        stats = _cache_stats()
+        print(
+            f"Loading from local cache: {stats['symbols']} files, "
+            f"{stats['size_mb']} MB in {stats.get('cache_dir', '')}"
+        )
+        if args.symbols:
+            syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+        else:
+            from data_yfinance import DEFAULT_SYMBOLS
+            syms = DEFAULT_SYMBOLS[:20]
+        raw_data = _load_cache(syms, interval=interval)
+        if not raw_data:
+            print(
+                f"ERROR: No cached data found for interval={interval}. "
+                "Run with --source yfinance (or --source upstox) first to populate the cache."
+            )
+            sys.exit(1)
+        print(f"Loaded {len(raw_data)}/{len(syms)} symbols from cache.")
+        print("Computing indicators ...")
+        data: Dict[str, pd.DataFrame] = {}
+        for sym, df in raw_data.items():
+            try:
+                df2 = _compute_all(df)
+                df2 = _build_orb(df2)
+                data[sym] = df2
+            except Exception as e:
+                print(f"  {sym}: indicator error — {e}")
+        if not data:
+            print("ERROR: No symbols with valid indicators. Exiting.")
+            sys.exit(1)
+        run_backtest_from_data(data, capital=args.capital)
+        sys.exit(0)
 
     # ── yfinance path ────────────────────────────────────────────────────────
     if args.source == "yfinance":
@@ -3368,6 +3405,13 @@ Examples:
         if not raw_data:
             print("ERROR: No data loaded from yfinance. Check internet connection.")
             sys.exit(1)
+
+        # Auto-save to local cache for future offline use
+        try:
+            from data_cache import save_data as _save_cache
+            _save_cache(raw_data, interval=interval, source=args.source)
+        except Exception as _cache_err:
+            print(f"WARNING: Could not save data to local cache: {_cache_err}")
 
         print(f"\nLoaded {len(raw_data)} symbols from yfinance "
               f"({period} of {interval} bars)")
