@@ -50,7 +50,7 @@ logging.basicConfig(level=logging.WARNING,
                     format="%(asctime)s [%(levelname)s] %(message)s")
 logger = logging.getLogger("backtest_engine")
 
-COST_RT_PCT  = 0.0029    # 29 bps round-trip (brokerage + STT + exchange + slippage)
+COST_RT_PCT  = 0.0045    # 45bps: STT 0.025%×2 + brokerage 0.03%×2 + GST + slippage ~0.1%
 SQUAREOFF    = dtime(15, 15)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
@@ -538,7 +538,7 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
 
     Kills:
     1. ADX < 15            : pure noise
-    2. ATR < 0.18% price   : no room to profit after costs (~29 bps round-trip)
+    2. ATR < 0.18% price   : no room to profit after costs (~45 bps round-trip)
     3. ATR > 4.5% price    : extreme event risk / circuit breaker territory
     4. RVOL < 0.35         : dead volume, no institutional participation
     5. Bar move < 0.04%    : doji / micro-congestion
@@ -861,7 +861,7 @@ def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
             realized += ((px - trade.entry) if long else (trade.entry - px)) * qty_left
             trade.exit_price = px; trade.exit_time = future.index[-1]
 
-    # Costs: 29bps round-trip on entry + exit notional
+    # Costs: 45bps round-trip on entry + exit notional
     entry_val = trade.entry * trade.qty
     exit_val  = (trade.exit_price or trade.entry) * trade.qty
     realized -= (entry_val + exit_val) * COST_RT_PCT / 2
@@ -2026,6 +2026,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if qty < 1:
                 continue
 
+            # ── Minimum profit filter: skip cost-inefficient trades ───────────
+            # t1 (1.5R target) must cover at least 2.5× the round-trip cost
+            # This eliminates trades where expected gain is eaten by STT/brokerage
+            _min_profit_pct = 2.5 * COST_RT_PCT   # need 2.5× cost coverage at t1
+            _t1_profit_pct  = t1_dist / max(entry, 1.0)
+            if _t1_profit_pct < _min_profit_pct:
+                continue   # t1 doesn't cover costs — skip
+            # Also enforce minimum SL distance (0.3% = meaningful trade with cost coverage)
+            if sl_dist < entry * 0.003:
+                continue
+
             # F&O expiry size reduction (weekly expiry = 0.75×, pre-expiry = 0.85×)
             _exp_mult = _expiry_ctx.get("size_multiplier", 1.0) if _expiry_ctx else 1.0
             if _exp_mult < 1.0:
@@ -3092,6 +3103,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             qty = int(min(equity * risk_pct / sl_dist,
                           equity * MAX_POS_PCT / entry))
             if qty < 1:
+                continue
+
+            # ── Minimum profit filter: skip cost-inefficient trades ───────────
+            # t1 (1.5R target) must cover at least 2.5× the round-trip cost
+            # This eliminates trades where expected gain is eaten by STT/brokerage
+            _min_profit_pct = 2.5 * COST_RT_PCT   # need 2.5× cost coverage at t1
+            _t1_profit_pct  = abs(t1 - entry) / max(entry, 1.0)
+            if _t1_profit_pct < _min_profit_pct:
+                continue   # t1 doesn't cover costs — skip
+            # Also enforce minimum SL distance (0.3% = meaningful trade with cost coverage)
+            if sl_dist < entry * 0.003:
                 continue
 
             # F&O expiry size reduction
