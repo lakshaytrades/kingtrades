@@ -1810,8 +1810,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Skip new entries during lunch lull (narrow to 30 min)
-            if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
+            # Block all entries after 13:00 — afternoon has 0% WR in backtests
+            if now_ts.time() >= dtime(13, 0):
                 continue
             # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
             if now_ts.time() < dtime(10, 30):
@@ -2253,6 +2253,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
                     ))
+                    # Hard floor: LONG only when stock is trending up on the day (no bypass)
+                    # Flat/down stocks have ~35% WR regardless of signal quality
+                    if direction == "LONG" and _sess_ret_g < 0.005:
+                        continue
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -2336,8 +2340,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: require at least one high-WR setup ──
-            # "OTHER" composite entries (no named setup) have ~0% WR in backtests
+            # ── Named-setup quality gate: require dual confirmation ──
+            # Single-signal entries have ~35% WR; dual-confirmation = 50%+ WR
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -2347,10 +2351,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
-            if _qual_count == 0:
-                continue  # Zero named setups: always block regardless of score
-            if _qual_count == 1 and abs(net_score) < 22:
-                continue  # Single quality signal needs score >= 22 to proceed
+            if _qual_count < 2:
+                continue  # Require dual confirmation — single signals have ~35% WR
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP
@@ -3278,8 +3280,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Narrow lunch lull to 30 min only
-            if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
+            # Block all entries after 13:00 — afternoon has 0% WR in backtests
+            if now_ts.time() >= dtime(13, 0):
                 continue
             # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
             if now_ts.time() < dtime(10, 30):
@@ -3712,6 +3714,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
                     ))
+                    # Hard floor: LONG only when stock is trending up on the day (no bypass)
+                    # Flat/down stocks have ~35% WR regardless of signal quality
+                    if direction == "LONG" and _sess_ret_g < 0.005:
+                        continue
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -3811,8 +3817,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: require at least one high-WR setup ──
-            # "OTHER" composite entries (no named setup) have ~0% WR in backtests
+            # ── Named-setup quality gate: require dual confirmation ──
+            # Single-signal entries have ~35% WR; dual-confirmation = 50%+ WR
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -3822,10 +3828,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
-            if _qual_count == 0:
-                continue  # Zero named setups: always block regardless of score
-            if _qual_count == 1 and abs(net_score) < 22:
-                continue  # Single quality signal needs score >= 22 to proceed
+            if _qual_count < 2:
+                continue  # Require dual confirmation — single signals have ~35% WR
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
