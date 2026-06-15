@@ -2245,19 +2245,23 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
-                    # High-WR setup bypass: VWAP bounce and ORB clean signals are self-confirming
-                    # They include their own volume/VWAP checks — don't double-gate them
+                    # High-WR setup bypass: self-confirming signals don't need prior tape trend.
+                    # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
                     _high_wr_bypass = any(sig in reason for sig in (
                         "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
+                        "MACD_XOVER_UP",       # MACD cross = trend start — doesn't need prior gain
+                        "VWAP_RECLAIM",        # price reclaims VWAP = institutional buy
+                        "EMA21_PULLBACK",      # buy dip in uptrend near EMA21
+                        "PULLBACK_CONT",       # momentum continuation after pullback
+                        "CONFIRMED_MOMENTUM",  # highest conviction composite
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
                     # confirm a past one. Non-bypass signals need stock already trending.
-                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.003:
-                        continue  # Non-bypass LONG: require stock up >= 0.3% on the day
+                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.0015:
+                        continue  # Non-bypass LONG: require stock up >= 0.15% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -2359,8 +2363,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                 "ATR_SQUEEZE_BREAKOUT",
+                "MACD_XOVER_UP",
+                "VWAP_RECLAIM",
+                "EMA21_PULLBACK",
+                "PULLBACK_CONT",
+                "CONFIRMED_MOMENTUM",
             ))
-            # ORB_BULL_CLEAN removed from self-confirm: 20% WR shows it needs volume proof
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
@@ -3719,18 +3727,23 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
-                    # High-WR setup bypass: these signals are self-confirming
+                    # High-WR setup bypass: self-confirming signals don't need prior tape trend.
+                    # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
                     _high_wr_bypass = any(sig in reason for sig in (
                         "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
+                        "MACD_XOVER_UP",       # MACD cross = trend start — doesn't need prior gain
+                        "VWAP_RECLAIM",        # price reclaims VWAP = institutional buy
+                        "EMA21_PULLBACK",      # buy dip in uptrend near EMA21
+                        "PULLBACK_CONT",       # momentum continuation after pullback
+                        "CONFIRMED_MOMENTUM",  # highest conviction composite
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
                     # confirm a past one. Non-bypass signals need stock already trending.
-                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.003:
-                        continue  # Non-bypass LONG: require stock up >= 0.3% on the day
+                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.0015:
+                        continue  # Non-bypass LONG: require stock up >= 0.15% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -3758,9 +3771,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         elif not _ema_bearish_g and _sess_ret_g > 0.002 and _rvol_g > 1.2:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
-                        # EMA_BULL_STACK: price must be near EMA21 — chasing extended moves loses
+                        # EMA_BULL_STACK: block only extremely extended moves (>1.5% above EMA21)
                         if "EMA_BULL_STACK" in reason and _e21_g > 0 and _close_g > 0:
-                            if (_close_g - _e21_g) / _e21_g > 0.005:  # >0.5% above EMA21 = too extended
+                            if (_close_g - _e21_g) / _e21_g > 0.015:  # >1.5% above EMA21 = chase
                                 continue
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
@@ -3848,8 +3861,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                 "ATR_SQUEEZE_BREAKOUT",
+                "MACD_XOVER_UP",
+                "VWAP_RECLAIM",
+                "EMA21_PULLBACK",
+                "PULLBACK_CONT",
+                "CONFIRMED_MOMENTUM",
             ))
-            # ORB_BULL_CLEAN removed from self-confirm: 20% WR shows it needs volume proof
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:

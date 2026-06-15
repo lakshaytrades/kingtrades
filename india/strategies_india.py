@@ -269,9 +269,9 @@ def vwap_reversion_signal(row, adx: float = None) -> tuple:
     Returns (score_delta, reason_str) — positive=LONG, negative=SHORT.
     """
     try:
-        # ADX gate: only in non-trending markets
+        # ADX gate: only block extreme chop (ADX < 25 is still tradeable range)
         _adx = adx if adx is not None else row.get("adx", 25.0)
-        if _adx is None or _adx >= 15:
+        if _adx is None or _adx >= 25:
             return (0, "")
 
         vwap  = float(row.get("vwap", 0) or 0)
@@ -328,14 +328,14 @@ def session_drive_signal(row, adx: float = None) -> tuple:
 
         sess_move = (close - day_open) / day_open
 
-        # LONG: session up 0.8%+ + above VWAP + EMA bull stack + volume surge
-        if (sess_move > 0.008 and close > vwap and
-                ema9 > ema21 and rvol >= 1.8):
+        # LONG: session up 0.5%+ + above VWAP + EMA bull + moderate volume
+        if (sess_move > 0.005 and close > vwap and
+                ema9 > ema21 and rvol >= 1.3):
             return (15, "SESSION_DRIVE_LONG")
 
-        # SHORT: session down 0.8%+ + below VWAP + EMA bear stack + volume surge
-        if (sess_move < -0.008 and close < vwap and
-                ema9 < ema21 and rvol >= 1.8):
+        # SHORT: session down 0.5%+ + below VWAP + EMA bear + moderate volume
+        if (sess_move < -0.005 and close < vwap and
+                ema9 < ema21 and rvol >= 1.3):
             return (-15, "SESSION_DRIVE_SHORT")
 
         return (0, "")
@@ -418,8 +418,8 @@ def ema21_pullback_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, s
 
         # LONG signal
         bull_stack = ema9 > ema21 > ema50 > 0
-        at_ema21_long = 0.995 <= (c / ema21) <= 1.008  # within 0.5-0.8% of EMA21
-        rsi_reset_long = 35 <= rsi <= 58
+        at_ema21_long = 0.993 <= (c / ema21) <= 1.012  # within 0.7-1.2% of EMA21 (widened)
+        rsi_reset_long = 33 <= rsi <= 63  # widened: RSI cooling from 65 is still valid
         macd_pos = macd_h > 0
         not_volume_panic = rvol < 3.0
         # Require full bullish stack: EMA21 > EMA50 reduces false signals significantly
@@ -760,42 +760,39 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
 
         vwap_dev = abs(c - vwap) / vwap
 
-        # Check last 3 bars for VWAP test with low volume
+        # Check last 3 bars for VWAP test (absorption optional — just need VWAP contact)
+        # Absorption (low vol at VWAP) is rare in trending markets; VWAP contact + breakout is enough.
         recent = df_5m.iloc[max(0, current_idx-3):current_idx]
         vwap_tested = False
-        low_vol_at_test = False
 
         for i in range(len(recent)):
             bar = recent.iloc[i]
             b_low  = float(bar.get("low",  0) or 0)
             b_high = float(bar.get("high", 0) or 0)
             b_vwap = float(bar.get("vwap", vwap) or vwap)
-            b_vol  = float(bar.get("volume", 0) or 0)
 
-            if b_vwap > 0 and b_low <= b_vwap * 1.002 and b_high >= b_vwap * 0.998:
+            if b_vwap > 0 and b_low <= b_vwap * 1.003 and b_high >= b_vwap * 0.997:
                 vwap_tested = True
-                if b_vol < vol_sma * 1.2:   # moderate volume at VWAP = not a spike (absorption)
-                    low_vol_at_test = True
 
         if not vwap_tested:
             return 0, ""
 
-        current_high_vol = vol > vol_sma * 1.6
+        current_high_vol = vol > vol_sma * 1.4   # was 1.6 — slightly lower bar for confirmation
 
         # LONG BOUNCE: tested VWAP from above, held, now breaking up
         if (c > vwap * 1.001 and          # above VWAP
-                45 <= rsi <= 65 and         # RSI in healthy zone
-                ema9 > ema21 * 0.995 and   # relaxed: VWAP test causes slight EMA dip
-                current_high_vol and        # volume confirmation
-                vwap_dev < 0.008):          # not too far from VWAP
+                43 <= rsi <= 67 and         # RSI in healthy zone (widened from 45-65)
+                ema9 > ema21 * 0.993 and   # relaxed EMA: VWAP test may cause brief EMA compression
+                current_high_vol and        # volume confirmation on breakout bar
+                vwap_dev < 0.010):          # not too far from VWAP (widened from 0.8%)
             return 15, "VWAP_BOUNCE_LONG"
 
         # SHORT BOUNCE: tested VWAP from below, rejected, now breaking down
         if (c < vwap * 0.999 and          # below VWAP
-                35 <= rsi <= 55 and
+                33 <= rsi <= 57 and
                 ema9 < ema21 and
                 current_high_vol and
-                vwap_dev < 0.008):
+                vwap_dev < 0.010):
             return -15, "VWAP_BOUNCE_SHORT"
 
         return 0, ""
