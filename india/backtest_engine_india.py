@@ -1297,6 +1297,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _bear_days = 0
     _session_days_seen: set = set()
 
+    # Track effective threshold values across bars for regime report
+    _eff_min_score_history: list = []
+
     # ── PhD-level enhancement caches ─────────────────────────────────────────
     _cs_rank_cache: Dict[str, float] = {}   # cross-sectional momentum ranks
     _cs_rank_ts = None
@@ -1345,6 +1348,19 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
         _session_breadth = (_brd_above / max(_brd_total, 1))
+
+        # Regime-aware effective threshold — supplements rolling-win adaptive mechanism
+        # Strong bull days: lower bar to harvest momentum opportunities
+        # Bear days: raise bar to only take highest-conviction signals
+        if _session_breadth >= 0.65:
+            _eff_min_score = max(_ADAPTIVE_MIN_SCORE - 2.0, 7.0)   # bull: relax to floor 7
+        elif _session_breadth >= 0.45:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # neutral: use adaptive as-is
+        elif _session_breadth >= 0.30:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE + 1.5              # weak: tighten slightly
+        else:
+            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 3.0, MIN_SCORE + 4.0)  # bear: strict quality gate (capped to avoid death-spiral)
+        _eff_min_score_history.append(_eff_min_score)
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -2006,6 +2022,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
             # ── Nifty session direction gate (hardest gate) ───────────────────
             # Only trade with the session's net direction to avoid counter-trend losses
+            # Use _ADAPTIVE_MIN_SCORE (pre-regime base) so bull-day relaxation does NOT
+            # loosen this gate — counter-trend trades should face the same or higher bar
+            # regardless of how permissive the regime threshold is for with-trend entries.
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
@@ -2135,7 +2154,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 pass
 
             # Final threshold check after all score adjustments
-            if abs(net_score) < _ADAPTIVE_MIN_SCORE:
+            if abs(net_score) < _eff_min_score:
                 continue
 
             # Market direction filter
@@ -2237,6 +2256,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 qty = max(1, int(qty * _exp_mult))
 
             # Half-size for signals near the lower threshold (lower confidence)
+            # Use _ADAPTIVE_MIN_SCORE (pre-regime base) as the sizing anchor so
+            # bull-day relaxation doesn't inadvertently promote mid-range signals
+            # from half-size to full-size by lowering the denominator.
             _threshold = _ADAPTIVE_MIN_SCORE
             _confidence_ratio = abs(net_score) / max(_threshold * 2, 1.0)
             if _confidence_ratio < 0.6:  # Score is only barely above threshold
@@ -2329,12 +2351,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
             pre_filter_kills=pre_filter_kills,
             strategy_counts=strategy_counts, strategy_pnl=strategy_pnl,
-            bull_days=_bull_days, total_days=len(_session_days_seen))
+            bull_days=_bull_days, total_days=len(_session_days_seen),
+            eff_min_score_history=_eff_min_score_history)
 
 
 def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_syms,
             pre_filter_kills=0, strategy_counts=None, strategy_pnl=None,
-            bull_days=0, total_days=0):
+            bull_days=0, total_days=0, eff_min_score_history=None):
     print()
     print("=" * 70)
     print("  NSE Momentum Bot — Engine Backtest Report")
@@ -2486,6 +2509,11 @@ def _report(trades, capital, equity, max_dd, eq_curve, from_date, to_date, n_sym
     # Market regime summary
     if total_days > 0:
         print(f"\n  Market regime: Nifty session bull days: {bull_days}/{total_days} ({bull_days/max(total_days,1)*100:.0f}%)")
+        if eff_min_score_history:
+            _avg_eff = sum(eff_min_score_history) / len(eff_min_score_history)
+            _min_eff = min(eff_min_score_history)
+            _max_eff = max(eff_min_score_history)
+            print(f"  Avg effective threshold: {_avg_eff:.1f} (range: {_min_eff:.1f}–{_max_eff:.1f})")
 
     print()
     print("=" * 70)
@@ -2624,6 +2652,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _bear_days = 0
     _session_days_seen: set = set()
 
+    # Track effective threshold values across bars for regime report
+    _eff_min_score_history: list = []
+
     # ── PhD-level enhancement caches ─────────────────────────────────────────
     _cs_rank_cache: Dict[str, float] = {}
     _cs_rank_ts = None
@@ -2671,6 +2702,19 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
         _session_breadth = (_brd_above / max(_brd_total, 1))
+
+        # Regime-aware effective threshold — supplements rolling-win adaptive mechanism
+        # Strong bull days: lower bar to harvest momentum opportunities
+        # Bear days: raise bar to only take highest-conviction signals
+        if _session_breadth >= 0.65:
+            _eff_min_score = max(_ADAPTIVE_MIN_SCORE - 2.0, 7.0)   # bull: relax to floor 7
+        elif _session_breadth >= 0.45:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # neutral: use adaptive as-is
+        elif _session_breadth >= 0.30:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE + 1.5              # weak: tighten slightly
+        else:
+            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 3.0, MIN_SCORE + 4.0)  # bear: strict quality gate (capped to avoid death-spiral)
+        _eff_min_score_history.append(_eff_min_score)
 
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
@@ -3289,6 +3333,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
             # ── Nifty session direction gate (hardest gate) ───────────────────
             # Only trade with the session's net direction to avoid counter-trend losses
+            # Use _ADAPTIVE_MIN_SCORE (pre-regime base) so bull-day relaxation does NOT
+            # loosen this gate — counter-trend trades should face the same or higher bar
+            # regardless of how permissive the regime threshold is for with-trend entries.
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
@@ -3417,7 +3464,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
 
-            if abs(net_score) < _ADAPTIVE_MIN_SCORE:
+            if abs(net_score) < _eff_min_score:
                 continue
 
             if _long_only_market and direction == "SHORT":
@@ -3497,6 +3544,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 qty = max(1, int(qty * _exp_mult))
 
             # Half-size for signals near the lower threshold (lower confidence)
+            # Use _ADAPTIVE_MIN_SCORE (pre-regime base) as the sizing anchor so
+            # bull-day relaxation doesn't inadvertently promote mid-range signals
+            # from half-size to full-size by lowering the denominator.
             _threshold = _ADAPTIVE_MIN_SCORE
             _confidence_ratio = abs(net_score) / max(_threshold * 2, 1.0)
             if _confidence_ratio < 0.6:  # Score is only barely above threshold
@@ -3588,7 +3638,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     _report(trades, capital, equity, max_dd, equity_curve, from_date, to_date, len(data),
             pre_filter_kills=pre_filter_kills,
             strategy_counts=strategy_counts, strategy_pnl=strategy_pnl,
-            bull_days=_bull_days, total_days=len(_session_days_seen))
+            bull_days=_bull_days, total_days=len(_session_days_seen),
+            eff_min_score_history=_eff_min_score_history)
 
 
 def main():
