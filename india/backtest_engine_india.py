@@ -1317,7 +1317,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # Reset rolling-win circuit breaker at each new trading day (mirrors real behavior)
         _today = now_ts.date()
         if _loop_prev_day != _today:
-            global _rolling_win_halt, _ADAPTIVE_MIN_SCORE
+            global _rolling_win_halt
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
@@ -2671,7 +2671,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         # intraday circuit breakers reset at next market open)
         _today2 = now_ts.date()
         if _loop_prev_day2 != _today2:
-            global _rolling_win_halt, _ADAPTIVE_MIN_SCORE
+            global _rolling_win_halt
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
