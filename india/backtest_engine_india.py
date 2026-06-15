@@ -2189,13 +2189,21 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
+                    # High-WR setup bypass: VWAP bounce and ORB clean signals are self-confirming
+                    # They include their own volume/VWAP checks — don't double-gate them
+                    _high_wr_bypass = any(sig in reason for sig in (
+                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
+                        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
+                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+                        "ATR_SQUEEZE_BREAKOUT",
+                    ))
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
-                        if not _orb_bypass and _sess_ret_g < _sr_thresh:
+                        if not _orb_bypass and not _high_wr_bypass and _sess_ret_g < _sr_thresh:
                             continue
-                        if _rvol_g < _rvol_min:
+                        if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
@@ -2211,9 +2219,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
-                        if not _orb_bypass and _sess_ret_g > -_sr_thresh:
+                        if not _orb_bypass and not _high_wr_bypass and _sess_ret_g > -_sr_thresh:
                             continue
-                        if _rvol_g < _rvol_min:
+                        if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
@@ -2277,9 +2285,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
-            if not any(q in reason for q in _QUALITY_SIGS):
-                if abs(net_score) < 22:
-                    continue  # No named high-WR setup and score not exceptional
+            _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            if _qual_count == 0:
+                continue  # Zero named setups: always block regardless of score
+            if _qual_count == 1 and abs(net_score) < 22:
+                continue  # Single quality signal needs score >= 22 to proceed
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP
@@ -2288,9 +2298,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 2.0 * atr     # 2×ATR — adequate noise buffer for NSE large-caps vs 45bps cost
-            t1_dist = 2.5 * atr     # 1.25R first target — reliably reached on valid momentum
-            t2_dist = 5.0 * atr     # 2.5R runner
+            sl_dist = 1.5 * atr     # 1.5×ATR — momentum signals should move away immediately
+            t1_dist = 3.0 * atr     # 2R first target (break-even WR drops from 44% to 33%)
+            t2_dist = 6.0 * atr     # 4R runner
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3588,6 +3598,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
+                    # High-WR setup bypass: these signals are self-confirming
+                    _high_wr_bypass = any(sig in reason for sig in (
+                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
+                        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
+                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+                        "ATR_SQUEEZE_BREAKOUT",
+                    ))
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -3596,9 +3613,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         if any("VOL_BEAR" in r for r in reason.split("+")):
                             continue
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
-                        if not _orb_bypass and _sess_ret_g < _sr_thresh:
+                        if not _orb_bypass and not _high_wr_bypass and _sess_ret_g < _sr_thresh:
                             continue
-                        if _rvol_g < _rvol_min:
+                        if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
                         # ORB_BULL_CONFIRM: NSE ORB breakouts are trap-prone without real volume
                         if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.8:
@@ -3621,9 +3638,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                                 continue
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
-                        if not _orb_bypass and _sess_ret_g > -_sr_thresh:
+                        if not _orb_bypass and not _high_wr_bypass and _sess_ret_g > -_sr_thresh:
                             continue
-                        if _rvol_g < _rvol_min:
+                        if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
@@ -3692,9 +3709,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
-            if not any(q in reason for q in _QUALITY_SIGS):
-                if abs(net_score) < 22:
-                    continue  # No named high-WR setup and score not exceptional
+            _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            if _qual_count == 0:
+                continue  # Zero named setups: always block regardless of score
+            if _qual_count == 1 and abs(net_score) < 22:
+                continue  # Single quality signal needs score >= 22 to proceed
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
@@ -3702,9 +3721,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr   # 2×ATR noise buffer
-            t1    = entry + 2.5 * atr if long else entry - 2.5 * atr   # 1.25R target
-            t2    = entry + 5.0 * atr if long else entry - 5.0 * atr   # 2.5R runner
+            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # 1.5×ATR — momentum should move away
+            t1    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 2R target (33% WR break-even)
+            t2    = entry + 6.0 * atr if long else entry - 6.0 * atr   # 4R runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult

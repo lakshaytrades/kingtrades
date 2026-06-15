@@ -785,7 +785,7 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
         # LONG BOUNCE: tested VWAP from above, held, now breaking up
         if (c > vwap * 1.001 and          # above VWAP
                 45 <= rsi <= 65 and         # RSI in healthy zone
-                ema9 > ema21 and            # trend aligned
+                ema9 > ema21 * 0.995 and   # relaxed: VWAP test causes slight EMA dip
                 current_high_vol and        # volume confirmation
                 vwap_dev < 0.008):          # not too far from VWAP
             return 15, "VWAP_BOUNCE_LONG"
