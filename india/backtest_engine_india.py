@@ -1317,9 +1317,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # Reset rolling-win circuit breaker at each new trading day (mirrors real behavior)
         _today = now_ts.date()
         if _loop_prev_day != _today:
-            global _rolling_win_halt
+            global _rolling_win_halt, _ADAPTIVE_MIN_SCORE
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
             _loop_prev_day = _today
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
@@ -2162,12 +2163,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue   # Market is bullish — skip counter-trend SHORT
             if _short_only_market and direction == "LONG":
                 continue   # Market is bearish — skip counter-trend LONG
-            # NSE long-only mode: only SHORT in confirmed bear sessions
+            # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
-                # Allow SHORT only when session is clearly bearish
-                _clearly_bear = (_nifty_session_bear and _session_breadth < 0.40)
-                if not _clearly_bear:
-                    continue   # Skip short in neutral/bull session
+                continue
 
             # ATR-based SL/TP
             atr = row.get("atr", row["close"] * 0.005)
@@ -2673,9 +2671,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         # intraday circuit breakers reset at next market open)
         _today2 = now_ts.date()
         if _loop_prev_day2 != _today2:
-            global _rolling_win_halt
+            global _rolling_win_halt, _ADAPTIVE_MIN_SCORE
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
             _loop_prev_day2 = _today2
 
         # ── Session breadth: % of symbols above today's open ─────────────────
@@ -3471,12 +3470,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue   # Market is bullish — skip counter-trend SHORT
             if _short_only_market and direction == "LONG":
                 continue   # Market is bearish — skip counter-trend LONG
-            # NSE long-only mode: only SHORT in confirmed bear sessions
+            # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
-                # Allow SHORT only when session is clearly bearish
-                _clearly_bear = (_nifty_session_bear and _session_breadth < 0.40)
-                if not _clearly_bear:
-                    continue   # Skip short in neutral/bull session
+                continue
 
             atr = row.get("atr", row["close"] * 0.005)
             if atr <= 0:
