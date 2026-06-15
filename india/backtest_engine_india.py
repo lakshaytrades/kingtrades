@@ -1303,14 +1303,47 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
             t = open_trades[sym]
-            if sym not in data or now_ts not in data[sym].index:
+            if sym not in data:
                 continue
-            bar = data[sym].loc[now_ts]
             long = t.direction == "LONG"
 
-            # Square-off
-            if now_ts.time() >= SQUAREOFF:
-                px = bar["close"]
+            # ── Day-rollover force-close: position leaked past end of entry day ─
+            if t.entry_time is not None and t.entry_time.date() < now_ts.date():
+                try:
+                    _prev_bars = data[sym][data[sym].index.date == t.entry_time.date()]
+                    px = float(_prev_bars["close"].iloc[-1]) if not _prev_bars.empty else float(t.entry)
+                    _exit_ts = _prev_bars.index[-1] if not _prev_bars.empty else t.entry_time
+                except Exception:
+                    px = float(t.entry); _exit_ts = t.entry_time
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
+                equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+DAY_ROLLOVER_EXIT"
+                t.exit_price = px; t.exit_time = _exit_ts
+                trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
+                if pnl > 0: wins += 1
+                else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
+                recent_trades.append(pnl / max(capital, 1e-9))
+                try:
+                    _update_adaptive_threshold(t.pnl)
+                except Exception:
+                    pass
+                continue
+
+            # ── Resolve nearest available bar (asof) for time-sensitive exits ─
+            try:
+                _asof_ts = data[sym].index.asof(now_ts)
+                _have_asof = (not pd.isnull(_asof_ts)) and (_asof_ts.date() == now_ts.date())
+                _asof_bar = data[sym].loc[_asof_ts] if _have_asof else None
+            except Exception:
+                _have_asof = False; _asof_bar = None
+
+            # Square-off: fires even when exact bar missing (uses nearest bar close)
+            if now_ts.time() >= SQUAREOFF and _have_asof:
+                px = float(_asof_bar["close"])
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
@@ -1335,18 +1368,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     pass
                 continue
 
-            hi = bar["high"]; lo = bar["low"]
-            c_bar = bar["close"]
-
-            # ── Time-based exit: stale trades get cut ─────────────────────────
-            if t.entry_time is not None:
+            # ── Time-based exit: uses nearest bar so sparse 1h data can't block it
+            if t.entry_time is not None and _have_asof:
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
                     _max_hold = (90 if _is_morning else 60) if _is_5m_data else (240 if _is_morning else 150)  # 5m: 90/60 min; 1h: 240/150 min
                     if _held_minutes >= _max_hold:
-                        # Exit at current close regardless of P&L
-                        px = bar["close"]
+                        px = float(_asof_bar["close"])
                         long_trade = t.direction == "LONG"
                         partial_qty = int(t.qty * 0.4) or 1
                         qty_left = t.qty - (partial_qty if t.t1_done else 0)
@@ -1367,6 +1396,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         continue
                 except Exception:
                     pass
+
+            # ── Price-based exits (SL/TP/chandelier): require exact intrabar data
+            if now_ts not in data[sym].index:
+                continue
+            bar = data[sym].loc[now_ts]
+            hi = bar["high"]; lo = bar["low"]
+            c_bar = bar["close"]
 
             sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
             if sl_hit:
@@ -2148,6 +2184,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
             pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
+            t.exit_time = data[sym].index[-1]
             trades.append(t)
             _opt_record_trade(t)
             if pnl > 0: wins += 1
@@ -2512,13 +2549,47 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         # ── Exit open trades ────────────────────────────────────────────────
         for sym in list(open_trades.keys()):
             t = open_trades[sym]
-            if sym not in data or now_ts not in data[sym].index:
+            if sym not in data:
                 continue
-            bar = data[sym].loc[now_ts]
             long = t.direction == "LONG"
 
-            if now_ts.time() >= SQUAREOFF:
-                px = bar["close"]
+            # ── Day-rollover force-close: position leaked past end of entry day ─
+            if t.entry_time is not None and t.entry_time.date() < now_ts.date():
+                try:
+                    _prev_bars = data[sym][data[sym].index.date == t.entry_time.date()]
+                    px = float(_prev_bars["close"].iloc[-1]) if not _prev_bars.empty else float(t.entry)
+                    _exit_ts = _prev_bars.index[-1] if not _prev_bars.empty else t.entry_time
+                except Exception:
+                    px = float(t.entry); _exit_ts = t.entry_time
+                partial_qty = int(t.qty * 0.4) or 1
+                qty_left = t.qty - (partial_qty if t.t1_done else 0)
+                pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
+                pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
+                equity += pnl; t.pnl = pnl; t.reason = (t.reason or "") + "+DAY_ROLLOVER_EXIT"
+                t.exit_price = px; t.exit_time = _exit_ts
+                trades.append(t); del open_trades[sym]
+                _opt_record_trade(t)
+                if pnl > 0: wins += 1
+                else: losses += 1
+                _win_history.append(1 if pnl > 0 else 0)
+                recent_trades.append(pnl / max(capital, 1e-9))
+                try:
+                    _update_adaptive_threshold(t.pnl)
+                except Exception:
+                    pass
+                continue
+
+            # ── Resolve nearest available bar (asof) for time-sensitive exits ─
+            try:
+                _asof_ts = data[sym].index.asof(now_ts)
+                _have_asof = (not pd.isnull(_asof_ts)) and (_asof_ts.date() == now_ts.date())
+                _asof_bar = data[sym].loc[_asof_ts] if _have_asof else None
+            except Exception:
+                _have_asof = False; _asof_bar = None
+
+            # Square-off: fires even when exact bar missing (uses nearest bar close)
+            if now_ts.time() >= SQUAREOFF and _have_asof:
+                px = float(_asof_bar["close"])
                 partial_qty = int(t.qty * 0.4) or 1
                 qty_left = t.qty - (partial_qty if t.t1_done else 0)
                 pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
@@ -2542,18 +2613,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     pass
                 continue
 
-            hi = bar["high"]; lo = bar["low"]
-            c_bar = bar["close"]
-
-            # ── Time-based exit: stale trades get cut ─────────────────────────
-            if t.entry_time is not None:
+            # ── Time-based exit: uses nearest bar so sparse 1h data can't block it
+            if t.entry_time is not None and _have_asof:
                 try:
                     _held_minutes = (now_ts - t.entry_time).total_seconds() / 60
                     _is_morning = t.entry_time.time() < dtime(11, 30)
                     _max_hold = (90 if _is_morning else 60) if _is_5m_data else (240 if _is_morning else 150)  # 5m: 90/60 min; 1h: 240/150 min
                     if _held_minutes >= _max_hold:
-                        # Exit at current close regardless of P&L
-                        px = bar["close"]
+                        px = float(_asof_bar["close"])
                         long_trade = t.direction == "LONG"
                         partial_qty = int(t.qty * 0.4) or 1
                         qty_left = t.qty - (partial_qty if t.t1_done else 0)
@@ -2574,6 +2641,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         continue
                 except Exception:
                     pass
+
+            # ── Price-based exits (SL/TP/chandelier): require exact intrabar data
+            if now_ts not in data[sym].index:
+                continue
+            bar = data[sym].loc[now_ts]
+            hi = bar["high"]; lo = bar["low"]
+            c_bar = bar["close"]
 
             sl_hit = (lo <= t.sl) if long else (hi >= t.sl)
             if sl_hit:
@@ -3288,6 +3362,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             pnl = ((px - t.entry) if long else (t.entry - px)) * qty_left
             pnl -= (t.entry * qty_left + px * qty_left) * COST_RT_PCT / 2
             equity += pnl; t.pnl = pnl; t.exit_price = px
+            t.exit_time = data[sym].index[-1]
             trades.append(t)
             _opt_record_trade(t)
             if pnl > 0: wins += 1
