@@ -1733,10 +1733,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if now_ts not in _nfdf.index:
                     continue
                 _nf_bar = _nfdf.loc[now_ts]
-                _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
-                if len(_nf_todaydf) == 0:
-                    continue
-                _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                # Reuse the per-day first-open cached by the breadth loop above
+                # (avoids an O(bars) `index.date == today` scan per symbol per bar,
+                # which made the full-period replay O(bars²)).
+                _nf_okey = f"{_nfsym}_{_nf_today}"
+                _nf_open = _session_open.get(_nf_okey)
+                if _nf_open is None:
+                    _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
+                    if len(_nf_todaydf) == 0:
+                        continue
+                    _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                    _session_open[_nf_okey] = _nf_open
                 _nf_close = float(_nf_bar["close"])
                 if _nf_open > 0:
                     _nf_returns.append((_nf_close - _nf_open) / _nf_open)
@@ -3078,10 +3085,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if now_ts not in _nfdf.index:
                     continue
                 _nf_bar = _nfdf.loc[now_ts]
-                _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
-                if len(_nf_todaydf) == 0:
-                    continue
-                _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                # Reuse the per-day first-open cached by the breadth loop above
+                # (avoids an O(bars) `index.date == today` scan per symbol per bar,
+                # which made the full-period replay O(bars²)).
+                _nf_okey = f"{_nfsym}_{_nf_today}"
+                _nf_open = _session_open.get(_nf_okey)
+                if _nf_open is None:
+                    _nf_todaydf = _nfdf[_nfdf.index.date == _nf_today]
+                    if len(_nf_todaydf) == 0:
+                        continue
+                    _nf_open = float(_nf_todaydf.iloc[0]["open"])
+                    _session_open[_nf_okey] = _nf_open
                 _nf_close = float(_nf_bar["close"])
                 if _nf_open > 0:
                     _nf_returns.append((_nf_close - _nf_open) / _nf_open)
