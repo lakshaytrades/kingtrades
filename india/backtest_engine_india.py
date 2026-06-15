@@ -1111,37 +1111,39 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 12.0   # Lowered: 1h data generates fewer confirming signals
+MIN_SCORE    = 9.0    # Base threshold — lowered to allow sufficient trade frequency
 MAX_OPEN     = 12     # Allow up to 12 simultaneous positions for diversification
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
-# Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate
+# Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate.
+# CRITICAL: Only relax on good WR; never tighten aggressively — aggressive tightening
+# creates a death spiral (losses → threshold rises → no new trades → no recovery).
 _ADAPTIVE_MIN_SCORE = MIN_SCORE
 _ADAPTIVE_WIN_HISTORY: list = []   # rolling win/loss (1/0)
-_ADAPTIVE_UPDATE_EVERY = 20         # update every 20 trades
+_ADAPTIVE_UPDATE_EVERY = 30         # update every 30 trades (more stable estimate)
 
 def _update_adaptive_threshold(pnl: float):
     """Call after each trade to update the adaptive signal threshold."""
     global _ADAPTIVE_MIN_SCORE, _ADAPTIVE_WIN_HISTORY
     _ADAPTIVE_WIN_HISTORY.append(1 if pnl > 0 else 0)
-    if len(_ADAPTIVE_WIN_HISTORY) > 40:
-        _ADAPTIVE_WIN_HISTORY = _ADAPTIVE_WIN_HISTORY[-40:]
+    if len(_ADAPTIVE_WIN_HISTORY) > 60:
+        _ADAPTIVE_WIN_HISTORY = _ADAPTIVE_WIN_HISTORY[-60:]
 
     if len(_ADAPTIVE_WIN_HISTORY) >= _ADAPTIVE_UPDATE_EVERY:
-        rolling_wr = sum(_ADAPTIVE_WIN_HISTORY[-20:]) / 20
+        rolling_wr = sum(_ADAPTIVE_WIN_HISTORY[-30:]) / 30
 
-        # High win rate (>=65%): relax threshold slightly to get more trades
+        # High win rate (>=65%): relax threshold to harvest more opportunities
         if rolling_wr >= 0.65:
-            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 2.0, 10.0)  # relax slightly
+            _ADAPTIVE_MIN_SCORE = max(MIN_SCORE - 2.0, 7.0)
         # Good win rate (>=55%): keep at base
         elif rolling_wr >= 0.55:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE                    # base
-        # Acceptable (>=45%): tighten moderately
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE
+        # Acceptable (>=45%): tighten slightly
         elif rolling_wr >= 0.45:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 2.0              # tighten slightly
-        # Poor (<45%): tighten moderately (was +10 = catastrophic)
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 1.0
+        # Poor (<45%): modest tighten only — aggressive tightening kills recovery
         else:
-            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 4.0              # tighten moderately (was +10 = catastrophic)
+            _ADAPTIVE_MIN_SCORE = MIN_SCORE + 2.0
 
 
 _rolling_win_halt = False
@@ -1716,11 +1718,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Skip new entries during lunch lull
-            if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
+            # Skip new entries during lunch lull (narrow to 30 min)
+            if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Skip early morning entries (10:15 bar has ~24% WR; wait for trend to establish)
-            if now_ts.time() < dtime(11, 0):
+            # Allow entries from 9:30 AM — ORB and morning momentum are highest value
+            if now_ts.time() < dtime(9, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -2133,9 +2135,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 1.5 * atr     # 1.5×ATR SL — tighter but more precise
-            t1_dist = 2.25 * atr    # 1.5R (was 1.0R = same as stop = 1:1 R:R)
-            t2_dist = 4.5 * atr     # 3R runner (was 2R)
+            sl_dist = 2.0 * atr     # 2×ATR SL — room for intraday noise before real move
+            t1_dist = 3.0 * atr     # 1.5R first target
+            t2_dist = 6.0 * atr     # 3R runner
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -2977,10 +2979,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            if dtime(12, 30) <= now_ts.time() <= dtime(13, 30):
+            # Narrow lunch lull to 30 min only
+            if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Skip early morning entries (10:15 bar has ~24% WR; wait for trend to establish)
-            if now_ts.time() < dtime(11, 0):
+            # Allow entries from 9:30 AM — ORB and morning momentum are highest value
+            if now_ts.time() < dtime(9, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3366,9 +3369,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # 1.5×ATR SL
-            t1    = entry + 2.25 * atr if long else entry - 2.25 * atr  # 1.5R (was 1.0R = same as stop = 1:1 R:R)
-            t2    = entry + 4.5 * atr if long else entry - 4.5 * atr    # 3R runner (was 2R)
+            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr   # 2×ATR SL — room for intraday noise
+            t1    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 1.5R first target
+            t2    = entry + 6.0 * atr if long else entry - 6.0 * atr   # 3R runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
