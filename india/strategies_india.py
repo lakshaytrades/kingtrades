@@ -703,7 +703,7 @@ def hammer_reversal_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, 
                 (c - l) / max(bar_range, 1e-9) >= 0.60 and  # close in upper 40%
                 prior_bearish >= 2 and
                 vol_ok):
-            return 13, "HAMMER_BULL"
+            return 13, "HAMMER_REVERSAL_LONG"
 
         # SHOOTING STAR: long upper wick, small body near bottom, after uptrend
         if (upper_wick >= body * 2.0 and
@@ -711,7 +711,7 @@ def hammer_reversal_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, 
                 (h - c) / max(bar_range, 1e-9) >= 0.60 and  # close in lower 40%
                 prior_bullish >= 2 and
                 vol_ok):
-            return -13, "SHOOTING_STAR_BEAR"
+            return -13, "HAMMER_REVERSAL_SHORT"
 
         return 0, ""
     except Exception:
@@ -774,7 +774,7 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
 
             if b_vwap > 0 and b_low <= b_vwap * 1.002 and b_high >= b_vwap * 0.998:
                 vwap_tested = True
-                if b_vol < vol_sma * 0.9:   # low volume = absorption
+                if b_vol < vol_sma * 1.2:   # moderate volume at VWAP = not a spike (absorption)
                     low_vol_at_test = True
 
         if not vwap_tested:
@@ -857,19 +857,19 @@ def intraday_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[flo
 
         # LONG: price >0.5% above open, 3/4 bars bullish, volume ok, EMA rising
         if move_pct >= 0.005 and bull_bars >= 3 and rvol >= 1.1 and ema_rising:
-            return 12.0, "INTRA_BULL_MOM"
+            return 12.0, "INTRADAY_MOM_UP"
 
         # LONG (weaker): price >0.3% above open, 3/4 bars bullish
         if move_pct >= 0.003 and bull_bars >= 3 and rvol >= 0.9:
-            return 8.0, "INTRA_BULL_MOM_WEAK"
+            return 8.0, "INTRADAY_MOM_UP"
 
         # SHORT: price >0.5% below open, 3/4 bars bearish, volume ok, EMA falling
         if move_pct <= -0.005 and bear_bars >= 3 and rvol >= 1.1 and ema_falling:
-            return -12.0, "INTRA_BEAR_MOM"
+            return -12.0, "INTRADAY_MOM_DN"
 
         # SHORT (weaker): price >0.3% below open, 3/4 bars bearish
         if move_pct <= -0.003 and bear_bars >= 3 and rvol >= 0.9:
-            return -8.0, "INTRA_BEAR_MOM_WEAK"
+            return -8.0, "INTRADAY_MOM_DN"
 
     except Exception as exc:
         logger.debug("intraday_momentum_signal: %s", exc)
@@ -942,11 +942,11 @@ def atr_squeeze_breakout_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[
 
         if bar_move_pct > 0.001 and bar_body > 0:  # Bullish breakout
             score = 14.0 if macd_h > 0 else 10.0
-            return score, "ATR_SQUEEZE_BULL"
+            return score, "ATR_SQUEEZE_BREAKOUT"
 
         if bar_move_pct < -0.001 and bar_body < 0:  # Bearish breakout
             score = -14.0 if macd_h < 0 else -10.0
-            return score, "ATR_SQUEEZE_BEAR"
+            return score, "ATR_SQUEEZE_BREAKOUT"
 
     except Exception as exc:
         logger.debug("atr_squeeze_breakout_signal: %s", exc)
@@ -982,7 +982,7 @@ def orb_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, s
         return 0.0, ""
 
     orb_range = orb_high - orb_low
-    if orb_range / max(orb_high, 1) < 0.001:  # ORB range too tight (<0.1%) → skip
+    if orb_range <= 0:
         return 0.0, ""
 
     c = float(row.get("close", 0) or 0)
