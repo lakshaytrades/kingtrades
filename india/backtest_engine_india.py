@@ -1820,15 +1820,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     _bull_bars = int((_last4["close"] > _last4["open"]).sum())
                     _bear_bars = int((_last4["close"] < _last4["open"]).sum())
                     if _bull_bars >= 3 and direction == "SHORT":
-                        # Today trending bullish but signal is SHORT → penalize heavily
-                        net_score += 12
+                        # Today trending bullish but signal is SHORT → push toward LONG
+                        net_score += 10
                         reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
                     elif _bear_bars >= 3 and direction == "LONG":
-                        # Today trending bearish but signal is LONG → penalize heavily
-                        net_score -= 12
-                        reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
+                        # Soft penalty — avoid flipping LONG→SHORT on a slight pullback
+                        net_score -= 4
+                        reason = (reason + "+TODAY_BEAR_PENALTY") if reason else "TODAY_BEAR_PENALTY"
                     elif _bull_bars >= 3 and direction == "LONG":
-                        net_score += 6  # alignment bonus (was assignment bug: net_score = abs+6)
+                        net_score += 6  # alignment bonus
                         reason = (reason + "+TODAY_ALIGN_BULL") if reason else "TODAY_ALIGN_BULL"
                     elif _bear_bars >= 3 and direction == "SHORT":
                         net_score -= 6  # alignment bonus
@@ -2030,9 +2030,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
-            if _nifty_session_bear and direction == "LONG":
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
-                    continue  # Block weak counter-trend longs in bear session
+            # Bear-session LONG gate removed: BULL_DAY_ONLY (breadth >= 0.40) already filters
+            # bear sessions. Keeping the gate would block valid relative-strength LONGs on
+            # days where portfolio is slightly negative but one sector is running up.
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
             # 15m penalty (currently only bonus exists; disagreement has zero cost)
@@ -2057,19 +2057,20 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if direction == "LONG":
                     # Penalty: 15m bearish while trying to go LONG
                     if _15m_bear:
-                        net_score -= 10
+                        net_score -= 7
                         reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
-                    # Hard block: BOTH 15m AND 1h bearish on a LONG signal
+                    # Extra penalty if 1h also bearish — let threshold gate filter, not hard block
                     if _15m_bear and _1h_bear:
-                        continue  # all higher TFs against LONG — skip
+                        net_score -= 5
+                        reason = (reason + "+1H_BEAR_PENALTY") if reason else "1H_BEAR_PENALTY"
                 elif direction == "SHORT":
                     # Penalty: 15m bullish while trying to go SHORT
                     if _15m_bull:
-                        net_score += 10
+                        net_score += 7
                         reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
-                    # Hard block: BOTH 15m AND 1h bullish on a SHORT signal
                     if _15m_bull and _1h_bull:
-                        continue  # all higher TFs against SHORT — skip
+                        net_score += 5
+                        reason = (reason + "+1H_BULL_PENALTY") if reason else "1H_BULL_PENALTY"
                 # Re-derive direction after penalty
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
@@ -2091,12 +2092,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     # Use abs(net_score) so SHORT signals (negative) also benefit
                     _abs_score = abs(net_score)
                     if _abs_score >= 18:
-                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # 0.01%/0.02% — nearly no requirement
+                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # nearly no session return requirement
                     elif _abs_score >= 14:
-                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% (was 0.08%/0.15%)
+                        _sr_thresh = 0.0002 if _is_5m_data else 0.0004   # 0.02%/0.04% — halved from before
                     else:
-                        _sr_thresh = 0.0006 if _is_5m_data else 0.0012   # 0.06%/0.12% (was 0.15%/0.30%)
-                    _rvol_min = 1.2 if _abs_score >= 18 else (1.3 if _abs_score >= 14 else 1.4)
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% — halved from before
+                    _rvol_min = 1.1  # uniform 1.1× — 1.4 was too restrictive for NSE large-caps
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
@@ -2110,8 +2111,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             continue
                         if _rvol_g < _rvol_min:
                             continue
-                        if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
-                            continue   # bearish EMA — no long
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998:
+                            net_score -= 5  # EMA bearish: soft penalty, not hard block
+                            if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum
                         if _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
@@ -3351,9 +3353,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
-            if _nifty_session_bear and direction == "LONG":
-                if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
-                    continue  # Block weak counter-trend longs in bear session
+            # Bear-session LONG gate removed: BULL_DAY_ONLY (breadth >= 0.40) already filters
+            # bear sessions. Keeping the gate would block valid relative-strength LONGs on
+            # days where portfolio is slightly negative but one sector is running up.
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
             # 15m penalty (currently only bonus exists; disagreement has zero cost)
@@ -3378,19 +3380,20 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if direction == "LONG":
                     # Penalty: 15m bearish while trying to go LONG
                     if _15m_bear:
-                        net_score -= 10
+                        net_score -= 7
                         reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
-                    # Hard block: BOTH 15m AND 1h bearish on a LONG signal
+                    # Extra penalty if 1h also bearish — let threshold gate filter, not hard block
                     if _15m_bear and _1h_bear:
-                        continue  # all higher TFs against LONG — skip
+                        net_score -= 5
+                        reason = (reason + "+1H_BEAR_PENALTY") if reason else "1H_BEAR_PENALTY"
                 elif direction == "SHORT":
                     # Penalty: 15m bullish while trying to go SHORT
                     if _15m_bull:
-                        net_score += 10
+                        net_score += 7
                         reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
-                    # Hard block: BOTH 15m AND 1h bullish on a SHORT signal
                     if _15m_bull and _1h_bull:
-                        continue  # all higher TFs against SHORT — skip
+                        net_score += 5
+                        reason = (reason + "+1H_BULL_PENALTY") if reason else "1H_BULL_PENALTY"
                 # Re-derive direction after penalty
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
@@ -3412,12 +3415,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # Use abs(net_score) so SHORT signals (negative) also benefit
                     _abs_score = abs(net_score)
                     if _abs_score >= 18:
-                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # 0.01%/0.02% — nearly no requirement
+                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # nearly no session return requirement
                     elif _abs_score >= 14:
-                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% (was 0.08%/0.15%)
+                        _sr_thresh = 0.0002 if _is_5m_data else 0.0004   # 0.02%/0.04% — halved from before
                     else:
-                        _sr_thresh = 0.0006 if _is_5m_data else 0.0012   # 0.06%/0.12% (was 0.15%/0.30%)
-                    _rvol_min = 1.2 if _abs_score >= 18 else (1.3 if _abs_score >= 14 else 1.4)
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006   # 0.03%/0.06% — halved from before
+                    _rvol_min = 1.1  # uniform 1.1× — 1.4 was too restrictive for NSE large-caps
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
@@ -3431,8 +3434,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if _rvol_g < _rvol_min:
                             continue
-                        if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
-                            continue   # bearish EMA — no long
+                        if _e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998:
+                            net_score -= 5  # EMA bearish: soft penalty, not hard block
+                            if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum
                         if _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
