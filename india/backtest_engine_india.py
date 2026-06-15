@@ -1984,7 +1984,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                                                institutional_accumulation_signal,
                                                pullback_continuation_signal,
                                                range_expansion_signal,
-                                               confirmed_momentum_signal)
+                                               confirmed_momentum_signal,
+                                               vwap_bounce_signal,
+                                               orb_momentum_signal,
+                                               hammer_reversal_signal,
+                                               atr_squeeze_breakout_signal,
+                                               intraday_momentum_signal)
                 # EMA21 Pullback
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
@@ -2019,6 +2024,26 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _s16, _r16 = confirmed_momentum_signal(df, idx)
                 if _s16 != 0:
                     net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
+                # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+                _sv, _rv = vwap_bounce_signal(df, idx)
+                if _sv != 0:
+                    net_score += _sv; reason = (reason + "+" + _rv) if _rv and reason else (_rv or reason)
+                # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+                _so, _ro = orb_momentum_signal(df, idx)
+                if _so != 0:
+                    net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
+                # Hammer Reversal (pin-bar reversal at support)
+                _sh, _rh = hammer_reversal_signal(df, idx)
+                if _sh != 0:
+                    net_score += _sh; reason = (reason + "+" + _rh) if _rh and reason else (_rh or reason)
+                # ATR Squeeze Breakout (volatility expansion from squeeze)
+                _sq, _rq = atr_squeeze_breakout_signal(df, idx)
+                if _sq != 0:
+                    net_score += _sq; reason = (reason + "+" + _rq) if _rq and reason else (_rq or reason)
+                # Intraday Momentum (today's established directional drift)
+                _si, _ri = intraday_momentum_signal(df, idx)
+                if _si != 0:
+                    net_score += _si; reason = (reason + "+" + _ri) if _ri and reason else (_ri or reason)
 
                 # Re-determine direction after new strategies
                 if net_score > 0:
@@ -2231,6 +2256,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
+            # ── Named-setup quality gate: require at least one high-WR setup ──
+            # "OTHER" composite entries (no named setup) have ~0% WR in backtests
+            _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
+                             "EMA21_PULLBACK", "MACD_XOVER", "VWAP_RECLAIM",
+                             "VWAP_REJECT", "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
+                             "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
+                             "INSIDE_BAR", "ACCUM", "DISTRIB")
+            if reason and not any(q in reason for q in _QUALITY_SIGS):
+                if abs(net_score) < 20:
+                    continue  # No named high-WR setup and score not exceptional
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP
@@ -3328,7 +3364,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                                                institutional_accumulation_signal,
                                                pullback_continuation_signal,
                                                range_expansion_signal,
-                                               confirmed_momentum_signal)
+                                               confirmed_momentum_signal,
+                                               vwap_bounce_signal,
+                                               orb_momentum_signal,
+                                               hammer_reversal_signal,
+                                               atr_squeeze_breakout_signal,
+                                               intraday_momentum_signal)
                 _s4, _r4 = ema21_pullback_signal(df, idx)
                 if _s4 > 0:
                     net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
@@ -3356,6 +3397,26 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _s16, _r16 = confirmed_momentum_signal(df, idx)
                 if _s16 != 0:
                     net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
+                # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+                _sv, _rv = vwap_bounce_signal(df, idx)
+                if _sv != 0:
+                    net_score += _sv; reason = (reason + "+" + _rv) if _rv and reason else (_rv or reason)
+                # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+                _so, _ro = orb_momentum_signal(df, idx)
+                if _so != 0:
+                    net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
+                # Hammer Reversal (pin-bar reversal at support)
+                _sh, _rh = hammer_reversal_signal(df, idx)
+                if _sh != 0:
+                    net_score += _sh; reason = (reason + "+" + _rh) if _rh and reason else (_rh or reason)
+                # ATR Squeeze Breakout (volatility expansion from squeeze)
+                _sq, _rq = atr_squeeze_breakout_signal(df, idx)
+                if _sq != 0:
+                    net_score += _sq; reason = (reason + "+" + _rq) if _rq and reason else (_rq or reason)
+                # Intraday Momentum (today's established directional drift)
+                _si, _ri = intraday_momentum_signal(df, idx)
+                if _si != 0:
+                    net_score += _si; reason = (reason + "+" + _ri) if _ri and reason else (_ri or reason)
 
                 if net_score > 0:
                     direction = "LONG"
@@ -3596,6 +3657,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
+            # ── Named-setup quality gate: require at least one high-WR setup ──
+            # "OTHER" composite entries (no named setup) have ~0% WR in backtests
+            _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
+                             "EMA21_PULLBACK", "MACD_XOVER", "VWAP_RECLAIM",
+                             "VWAP_REJECT", "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
+                             "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
+                             "INSIDE_BAR", "ACCUM", "DISTRIB")
+            if reason and not any(q in reason for q in _QUALITY_SIGS):
+                if abs(net_score) < 20:
+                    continue  # No named high-WR setup and score not exceptional
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
