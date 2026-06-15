@@ -9,7 +9,12 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("watchlist_india")
 IST = ZoneInfo("Asia/Kolkata")
 
-# ── Core NSE liquid universe (80 symbols) ────────────────────────────────────
+# ── Core NSE liquid universe (~80 symbols) ───────────────────────────────────
+# Removed: ADANIENT/ADANIPORTS (0% WR, promoter manipulation), DRREDDY (event risk),
+#           TATAMOTORS (Yahoo 404), PAYTM (speculative), HDFC (merged into HDFCBANK),
+#           ADANIGREEN/ADANITRANS (Adani group), M&MFIN (broken ticker), SHREECEM (low volume)
+# Added: POLYCAB, VOLTAS, CROMPTON, GODREJCP, BALKRISIND, TRENT, PERSISTENT, ASTRAL,
+#         SUPREMEIND, CUMMINSIND (reliable liquid large-caps with strong momentum)
 _CORE_WATCHLIST: List[str] = [
     # Nifty 50 heavyweights
     "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
@@ -18,92 +23,106 @@ _CORE_WATCHLIST: List[str] = [
     "TITAN", "WIPRO", "ULTRACEMCO", "NESTLEIND", "TECHM",
     "SUNPHARMA", "POWERGRID", "NTPC", "TATASTEEL",
     "JSWSTEEL", "ONGC", "COALINDIA", "BPCL", "HCLTECH",
-    "BAJAJFINSV", "GRASIM", "DIVISLAB", "DRREDDY", "CIPLA",
+    "BAJAJFINSV", "GRASIM", "DIVISLAB", "CIPLA",
     "EICHERMOT", "HEROMOTOCO", "M&M", "TATACONSUM", "BRITANNIA",
     "APOLLOHOSP", "INDUSINDBK", "HDFCLIFE", "SBILIFE", "PIDILITIND",
+    # FMCG & Retail (reliable momentum)
+    "GODREJCP", "TRENT", "DABUR",
     # High-momentum mid-cap (consistently liquid)
-    "ADANIPORTS", "ADANIENT", "DABUR", "HINDPETRO", "IOC",
-    # New additions — 30 high-liquidity momentum stocks
-    "TATAMOTORS", "BAJAJ-AUTO", "SHREECEM", "M&MFIN", "PFC",
-    "RECLTD", "TATAPOWER", "ADANIGREEN", "ADANITRANS", "SIEMENS",
-    "ABB", "HAVELLS", "VEDL", "HINDALCO", "UPL",
-    "DMART", "NAUKRI", "ZOMATO", "IRCTC", "BANKBARODA",
-    "CANBK", "PNB", "FEDERALBNK", "MUTHOOTFIN", "CHOLAFIN",
-    "IDFCFIRSTB", "LTIM", "MPHASIS", "PAYTM", "HDFC",
+    "HINDPETRO", "IOC",
+    # IT mid-cap (excellent momentum)
+    "PERSISTENT", "LTIM", "MPHASIS",
+    # Auto sector
+    "BAJAJ-AUTO", "BALKRISIND",
+    # Power & Energy
+    "PFC", "RECLTD", "TATAPOWER",
+    # Industrials & Consumer Durables (strong momentum, institutional participation)
+    "SIEMENS", "ABB", "HAVELLS", "POLYCAB", "VOLTAS", "CROMPTON", "CUMMINSIND",
+    # Building Materials (clean trend followers)
+    "ASTRAL", "SUPREMEIND",
+    # Metals & Commodities
+    "VEDL", "HINDALCO", "UPL",
+    # Consumer & Internet
+    "DMART", "NAUKRI", "ZOMATO", "IRCTC",
+    # Banking (mid-cap)
+    "BANKBARODA", "CANBK", "PNB", "FEDERALBNK", "MUTHOOTFIN", "CHOLAFIN",
+    "IDFCFIRSTB",
 ]
 
 # ── Momentum tier classification ─────────────────────────────────────────────
 # T1: 25 highest-liquidity / index heavyweights — preferred for entry
 # T2: 30 solid mid/large-cap with good momentum — secondary preference
-# T3: 25 remaining — use only when T1+T2 slots full or strong setup present
+# T3: remaining — use only when T1+T2 slots full or strong setup present
 _MOMENTUM_TIER: Dict[str, str] = {
-    # T1 — 25 symbols
+    # T1 — 25 symbols (index heavyweights + strongest intraday movers)
     "RELIANCE":   "T1", "TCS":        "T1", "HDFCBANK":   "T1",
     "INFY":       "T1", "ICICIBANK":  "T1", "SBIN":       "T1",
     "AXISBANK":   "T1", "KOTAKBANK":  "T1", "BAJFINANCE": "T1",
     "BHARTIARTL": "T1", "LT":         "T1", "ITC":        "T1",
-    "TATASTEEL":  "T1", "TATAMOTORS": "T1", "ADANIENT":   "T1",
-    "ADANIPORTS": "T1", "MARUTI":     "T1", "HCLTECH":    "T1",
+    "TATASTEEL":  "T1", "MARUTI":     "T1", "HCLTECH":    "T1",
     "WIPRO":      "T1", "JSWSTEEL":   "T1", "M&M":        "T1",
     "BAJAJFINSV": "T1", "ZOMATO":     "T1", "INDUSINDBK": "T1",
-    "NTPC":       "T1",
+    "NTPC":       "T1", "TRENT":      "T1", "PERSISTENT": "T1",
+    "POLYCAB":    "T1",
     # T2 — 30 symbols
     "TECHM":      "T2", "SUNPHARMA":  "T2", "ONGC":       "T2",
     "BPCL":       "T2", "COALINDIA":  "T2", "HINDUNILVR": "T2",
-    "ASIANPAINT": "T2", "TITAN":      "T2", "DRREDDY":    "T2",
-    "CIPLA":      "T2", "GRASIM":     "T2", "ULTRACEMCO": "T2",
-    "HDFC":       "T2", "TATAPOWER":  "T2", "VEDL":       "T2",
-    "HINDALCO":   "T2", "BAJAJ-AUTO": "T2", "EICHERMOT":  "T2",
+    "ASIANPAINT": "T2", "TITAN":      "T2", "CIPLA":      "T2",
+    "GRASIM":     "T2", "ULTRACEMCO": "T2", "TATAPOWER":  "T2",
+    "VEDL":       "T2", "BAJAJ-AUTO": "T2", "EICHERMOT":  "T2",
     "HEROMOTOCO": "T2", "BANKBARODA": "T2", "PNB":        "T2",
     "CANBK":      "T2", "IRCTC":      "T2", "NAUKRI":     "T2",
     "POWERGRID":  "T2", "IOC":        "T2", "HINDPETRO":  "T2",
-    "ADANIGREEN": "T2", "LTIM":       "T2", "IDFCFIRSTB": "T2",
-    # T3 — 25 symbols
+    "LTIM":       "T2", "IDFCFIRSTB": "T2", "GODREJCP":   "T2",
+    "BALKRISIND": "T2", "VOLTAS":     "T2", "HAVELLS":    "T2",
+    # T3 — remaining symbols
     "NESTLEIND":  "T3", "DIVISLAB":   "T3", "BRITANNIA":  "T3",
     "APOLLOHOSP": "T3", "HDFCLIFE":   "T3", "SBILIFE":    "T3",
     "PIDILITIND": "T3", "DABUR":      "T3", "TATACONSUM": "T3",
-    "SHREECEM":   "T3", "M&MFIN":     "T3", "PFC":        "T3",
-    "RECLTD":     "T3", "ADANITRANS": "T3", "SIEMENS":    "T3",
-    "ABB":        "T3", "HAVELLS":    "T3", "UPL":        "T3",
-    "DMART":      "T3", "FEDERALBNK": "T3", "MUTHOOTFIN": "T3",
-    "CHOLAFIN":   "T3", "MPHASIS":    "T3", "PAYTM":      "T3",
+    "PFC":        "T3", "RECLTD":     "T3", "SIEMENS":    "T3",
+    "ABB":        "T3", "UPL":        "T3", "DMART":      "T3",
+    "FEDERALBNK": "T3", "MUTHOOTFIN": "T3", "CHOLAFIN":   "T3",
+    "MPHASIS":    "T3", "CROMPTON":   "T3", "CUMMINSIND": "T3",
+    "ASTRAL":     "T3", "SUPREMEIND": "T3", "HINDALCO":   "T3",
 }
 
 # ── Sector mapping ────────────────────────────────────────────────────────────
 _SECTOR_MAP: Dict[str, str] = {
     "RELIANCE":   "Energy",      "ONGC":       "Energy",
     "BPCL":       "Energy",      "IOC":        "Energy",       "HINDPETRO":  "Energy",
-    "TATAPOWER":  "Power",       "ADANIGREEN": "Power",        "PFC":        "Power",
-    "RECLTD":     "Power",       "ADANITRANS": "Power",
+    "TATAPOWER":  "Power",       "PFC":        "Power",
+    "RECLTD":     "Power",
     "TCS":        "IT",          "INFY":       "IT",           "WIPRO":      "IT",
     "HCLTECH":    "IT",          "TECHM":      "IT",           "LTIM":       "IT",
-    "MPHASIS":    "IT",
+    "MPHASIS":    "IT",          "PERSISTENT": "IT",
     "HDFCBANK":   "Banking",     "ICICIBANK":  "Banking",      "SBIN":       "Banking",
     "KOTAKBANK":  "Banking",     "AXISBANK":   "Banking",      "INDUSINDBK": "Banking",
     "BANKBARODA": "Banking",     "PNB":        "Banking",      "CANBK":      "Banking",
-    "FEDERALBNK": "Banking",     "IDFCFIRSTB": "Banking",      "PAYTM":      "Banking",
+    "FEDERALBNK": "Banking",     "IDFCFIRSTB": "Banking",
     "BAJFINANCE": "Finance",     "BAJAJFINSV": "Finance",      "HDFCLIFE":   "Finance",
-    "SBILIFE":    "Finance",     "HDFC":       "Finance",      "M&MFIN":     "Finance",
-    "MUTHOOTFIN": "Finance",     "CHOLAFIN":   "Finance",
-    "LT":         "Infra",       "ADANIPORTS": "Infra",        "POWERGRID":  "Infra",
+    "SBILIFE":    "Finance",     "MUTHOOTFIN": "Finance",      "CHOLAFIN":   "Finance",
+    "LT":         "Infra",       "POWERGRID":  "Infra",
     "SIEMENS":    "Infra",       "ABB":        "Infra",        "HAVELLS":    "Infra",
     "NTPC":       "Power",       "COALINDIA":  "Mining",
     "TATASTEEL":  "Metal",       "JSWSTEEL":   "Metal",        "VEDL":       "Metal",
     "HINDALCO":   "Metal",
     "MARUTI":     "Auto",        "EICHERMOT":  "Auto",
     "HEROMOTOCO": "Auto",        "BAJAJ-AUTO": "Auto",         "M&M":        "Auto",
-    "TATAMOTORS": "Auto",
-    "SUNPHARMA":  "Pharma",      "DRREDDY":    "Pharma",       "CIPLA":      "Pharma",
+    "BALKRISIND": "Auto",
+    "SUNPHARMA":  "Pharma",      "CIPLA":      "Pharma",
     "DIVISLAB":   "Pharma",      "APOLLOHOSP": "Healthcare",
     "HINDUNILVR": "FMCG",        "ITC":        "FMCG",         "NESTLEIND":  "FMCG",
     "BRITANNIA":  "FMCG",        "TATACONSUM": "FMCG",         "DABUR":      "FMCG",
-    "DMART":      "Retail",      "NAUKRI":     "Internet",     "ZOMATO":     "Internet",
+    "GODREJCP":   "FMCG",
+    "DMART":      "Retail",      "TRENT":      "Retail",
+    "NAUKRI":     "Internet",    "ZOMATO":     "Internet",
     "IRCTC":      "Travel",
     "ASIANPAINT": "Paints",      "PIDILITIND": "Chemicals",    "UPL":        "Agro",
     "BHARTIARTL": "Telecom",
     "TITAN":      "Consumer",    "ULTRACEMCO": "Cement",       "GRASIM":     "Cement",
-    "SHREECEM":   "Cement",
-    "ADANIENT":   "Conglomerate",
+    "POLYCAB":    "Industrials", "CUMMINSIND": "Industrials",
+    "VOLTAS":     "Consumer Durables", "CROMPTON": "Consumer Durables",
+    "ASTRAL":     "Building Materials", "SUPREMEIND": "Building Materials",
 }
 
 

@@ -21,27 +21,33 @@ NSE_SUFFIX = ".NS"
 # Ordered by intraday momentum quality: banking/auto/metals have strongest 1h trends.
 # IT stocks (TCS, INFY, WIPRO) placed at back — they trend slowly intraday.
 # Default backtest uses first 40: covers high-momentum sectors across NSE.
-# NOTE: TATAMOTORS replaced with M&M (Mahindra & Mahindra, Yahoo: M&M.NS) —
-#       TATAMOTORS.NS returns HTTP 404 on Yahoo Finance.
+# Removed: ADANIENT/ADANIPORTS (0% WR, promoter manipulation), DRREDDY (event risk),
+#           TATAMOTORS (Yahoo 404), PAYTM (speculative), HDFC (merged into HDFCBANK),
+#           ADANIGREEN/ADANITRANS (Adani group), M&MFIN (broken ticker), SHREECEM (low volume)
 DEFAULT_SYMBOLS = [
     # Banking & Finance (strong intraday momentum, institutional volume)
     "HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "BAJFINANCE", "INDUSINDBK",
     # Energy & Commodities (trending, volume-driven)
     "RELIANCE", "ONGC", "BPCL", "COALINDIA",
-    # Auto (momentum sector, strong trends) — M&M replaces TATAMOTORS (404 on Yahoo)
-    "M&M", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT",
+    # Auto (momentum sector, strong trends)
+    "M&M", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT", "BALKRISIND",
     # Metals & Infrastructure (high beta, strong momentum)
     "TATASTEEL", "JSWSTEEL", "HINDALCO", "LT",
     # IT (slower intraday momentum — move to back)
-    "TCS", "INFY", "WIPRO", "HCLTECH", "TECHM",
+    "TCS", "INFY", "WIPRO", "HCLTECH", "TECHM", "PERSISTENT",
     # Telecom & Consumer
-    "BHARTIARTL", "HINDUNILVR", "ITC", "NESTLEIND", "BRITANNIA", "ASIANPAINT",
+    "BHARTIARTL", "ITC", "ASIANPAINT",
+    # FMCG & Retail
+    "GODREJCP", "TRENT",
     # Pharma
-    "SUNPHARMA", "DRREDDY", "CIPLA", "DIVISLAB",
-    # Conglomerates & Others
-    "ADANIENT", "ADANIPORTS", "BAJAJFINSV", "TITAN", "ULTRACEMCO", "NTPC",
-    "POWERGRID", "GRASIM", "VEDL", "SBILIFE", "HDFCLIFE",
-    "PIDILITIND", "TORNTPHARM", "BERGEPAINT", "MUTHOOTFIN", "HAVELLS",
+    "SUNPHARMA", "CIPLA", "DIVISLAB",
+    # Finance & Conglomerates
+    "BAJAJFINSV", "TITAN", "ULTRACEMCO", "NTPC",
+    "POWERGRID", "HAVELLS",
+    # Industrials & Consumer Durables (strong momentum, institutional participation)
+    "POLYCAB", "VOLTAS", "CROMPTON", "CUMMINSIND",
+    # Building Materials (clean trend followers)
+    "ASTRAL", "SUPREMEIND",
 ]
 
 
