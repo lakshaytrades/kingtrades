@@ -1264,6 +1264,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     # Dynamic Kelly: rolling list of per-trade P&Ls as fraction of capital
     recent_trades: List[float] = []
     _win_history: list = []
+    _loop_prev_day = None  # track day boundary to reset circuit breaker daily
 
     # Initialise anti-martingale streak state for the backtest run
     try:
@@ -1309,6 +1310,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 30):
             continue
+
+        # Reset rolling-win circuit breaker at each new trading day (mirrors real behavior)
+        _today = now_ts.date()
+        if _loop_prev_day != _today:
+            global _rolling_win_halt
+            _rolling_win_halt = False
+            _loop_prev_day = _today
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
 
@@ -2548,6 +2556,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     strategy_pnl:    Dict[str, float] = {}
     recent_trades: List[float] = []
     _win_history: list = []
+    _loop_prev_day2 = None  # track day boundary to reset circuit breaker daily
 
     try:
         from risk_manager import reset_streak as _reset_streak
@@ -2592,6 +2601,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     for i, now_ts in enumerate(all_ts):
         if now_ts.time() < dtime(9, 45) or now_ts.time() > dtime(15, 30):
             continue
+
+        # Reset rolling-win circuit breaker at each new trading day (mirrors real behavior:
+        # intraday circuit breakers reset at next market open)
+        _today2 = now_ts.date()
+        if _loop_prev_day2 != _today2:
+            global _rolling_win_halt
+            _rolling_win_halt = False
+            _loop_prev_day2 = _today2
 
         # ── Session breadth: % of symbols above today's open ─────────────────
         _brd_today = now_ts.date()
