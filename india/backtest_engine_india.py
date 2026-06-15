@@ -407,12 +407,27 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     e9  = float(row.get("ema9",  c) or c)
     e21 = float(row.get("ema21", c) or c)
     e50 = float(row.get("ema50", c) or c)
-    if c > e9 > e21 > e50:     score_long  += 12; reasons.append("EMA_BULL_STACK")
-    elif c > e9 > e21:          score_long  += 7
-    elif c > e9:                score_long  += 3
-    if c < e9 < e21 < e50:     score_short += 12; reasons.append("EMA_BEAR_STACK")
-    elif c < e9 < e21:          score_short += 7
-    elif c < e9:                score_short += 3
+    pe9  = float(prev.get("ema9",  e9)  or e9)
+    pe21 = float(prev.get("ema21", e21) or e21)
+    pe50 = float(prev.get("ema50", e50) or e50)
+    # CHANGE-OF-STATE: fresh stack = EMA9 just crossed above EMA21 (prev bar had e9 <= e21)
+    # Old stack (running for many bars) gets only a small context bonus — not a signal
+    _ema_fresh_bull = (pe9 <= pe21) and (e9 > e21 > 0)   # EMA9 crossed EMA21 this bar
+    _ema_fresh_bear = (pe9 >= pe21) and (e9 < e21 and e21 > 0)
+    if c > e9 > e21 > e50:
+        if _ema_fresh_bull:  score_long  += 12; reasons.append("EMA_BULL_STACK")
+        else:                score_long  += 4   # old stack = context only, not signal
+    elif c > e9 > e21:
+        if _ema_fresh_bull:  score_long  += 7
+        else:                score_long  += 2
+    elif c > e9:             score_long  += 2
+    if c < e9 < e21 < e50:
+        if _ema_fresh_bear:  score_short += 12; reasons.append("EMA_BEAR_STACK")
+        else:                score_short += 4
+    elif c < e9 < e21:
+        if _ema_fresh_bear:  score_short += 7
+        else:                score_short += 2
+    elif c < e9:             score_short += 2
 
     # ── Signal 3: ORB structural breakout ───────────────────────────────────
     orb_h = float(row.get("orb_high", 0) or 0)
@@ -421,28 +436,49 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     if orb_h > 0 and orb_l > 0 and bar_time > ORB_END:
         orb_range_pct = (orb_h - orb_l) / max(orb_h, 1)
         _vol_ok = rvol >= 1.3
-        if 0.0005 <= orb_range_pct <= 0.05:   # Valid ORB range: 0.05% to 5% (wider for 1h)
-            if c > orb_h * 1.0005:   # 0.05% above ORB high (was 0.15%)
-                if _vol_ok:    score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
-                else:          score_long  += 10; reasons.append("ORB_BULL_WEAK")
+        _prev_c = float(prev.get("close", c) or c)
+        if 0.0005 <= orb_range_pct <= 0.05:
+            # CHANGE-OF-STATE: only the BREAKOUT BAR scores high — previous bar was inside ORB
+            # Subsequent bars above ORB are trend continuation (much weaker signal)
+            _orb_bull_fresh = (c > orb_h * 1.0005) and (_prev_c <= orb_h * 1.0005)
+            _orb_bear_fresh = (c < orb_l * 0.9995) and (_prev_c >= orb_l * 0.9995)
+            if c > orb_h * 1.0005:
+                if _orb_bull_fresh:
+                    if _vol_ok:  score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
+                    else:        score_long  += 10; reasons.append("ORB_BULL_WEAK")
+                else:            score_long  += 3   # already above ORB = old news
             elif c > orb_h:
-                if _vol_ok:    score_long  += 8
-            if c < orb_l * 0.9995:   # 0.05% below ORB low (was 0.15%)
-                if _vol_ok:    score_short += 18; reasons.append("ORB_BEAR_CONFIRM")
-                else:          score_short += 10; reasons.append("ORB_BEAR_WEAK")
+                if _vol_ok:      score_long  += 4
+            if c < orb_l * 0.9995:
+                if _orb_bear_fresh:
+                    if _vol_ok:  score_short += 18; reasons.append("ORB_BEAR_CONFIRM")
+                    else:        score_short += 10; reasons.append("ORB_BEAR_WEAK")
+                else:            score_short += 3
             elif c < orb_l:
-                if _vol_ok:    score_short += 8
+                if _vol_ok:      score_short += 4
 
     # ── Signal 4: VWAP intraday anchor ──────────────────────────────────────
-    vwap = float(row.get("vwap", c) or c)
+    vwap  = float(row.get("vwap",  c) or c)
+    pvwap = float(prev.get("vwap", vwap) or vwap)
+    pc    = float(prev.get("close", c) or c)
     if vwap > 0:
         vd = (c - vwap) / vwap
-        if vd > 0.003:     score_long  += 10; reasons.append("ABOVE_VWAP")
-        elif vd > 0.001:   score_long  += 6
-        elif vd > 0:       score_long  += 3
-        if vd < -0.003:    score_short += 10; reasons.append("BELOW_VWAP")
-        elif vd < -0.001:  score_short += 6
-        elif vd < 0:       score_short += 3
+        # CHANGE-OF-STATE: VWAP reclaim (crossed from below) is the strongest signal.
+        # Price already extended >0.3% above VWAP = potential exhaustion, NOT an entry signal.
+        _vwap_reclaim = (c > vwap) and (pc < pvwap)   # just crossed VWAP from below
+        _vwap_reject  = (c < vwap) and (pc > pvwap)   # just fell below VWAP
+        if _vwap_reclaim:
+            score_long  += 14; reasons.append("VWAP_RECLAIM")  # strongest: institutional buy
+        elif 0 < vd <= 0.003:
+            score_long  += 4   # near VWAP from above = modest support context
+        elif vd > 0.003:
+            score_long  += 2   # far above VWAP = late entry risk; minimal score
+        if _vwap_reject:
+            score_short += 14; reasons.append("VWAP_REJECT")   # strongest: institutional sell
+        elif -0.003 <= vd < 0:
+            score_short += 4
+        elif vd < -0.003:
+            score_short += 2
 
     # ── Signal 5: Volume-direction confirmation ──────────────────────────────
     bar_bull = c > o and (c - o) > (h - lo) * 0.3   # Strong bullish body
