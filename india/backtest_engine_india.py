@@ -1321,6 +1321,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _loop_prev_day = _today
+            # Reset the daily-loss circuit breaker to the new day's opening equity, so the
+            # 3% HALT threshold is a per-day limit (not a lifetime one measured against the
+            # original starting capital — which would permanently halt the backtest after a
+            # cumulative 3% drawdown).
+            try:
+                from risk_manager import set_daily_start_equity as _set_day_start
+                _set_day_start(equity)
+            except Exception:
+                pass
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
 
@@ -2677,6 +2686,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             _rolling_win_halt = False
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _loop_prev_day2 = _today2
+            # Reset the *daily-loss* circuit breaker to the new day's opening equity.
+            # Without this, check_intraday_circuit() measures drawdown against the
+            # original starting capital for the entire backtest, so a cumulative 3%
+            # loss permanently HALTs all new entries for the rest of the replay
+            # (the 2% daily loss limit is a *per-day* limit, not a lifetime one).
+            try:
+                from risk_manager import set_daily_start_equity as _set_day_start
+                _set_day_start(equity)
+            except Exception:
+                pass
 
         # ── Session breadth: % of symbols above today's open ─────────────────
         _brd_today = now_ts.date()
