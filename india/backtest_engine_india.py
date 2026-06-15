@@ -1813,8 +1813,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: skip first 45 min (9:15-10:00) — pre-ORB noise
-            if now_ts.time() < dtime(10, 0):
+            # Opening blackout: 10:00-10:30 = 0% WR (ORB fakeouts) — wait for trend to confirm
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -2272,10 +2272,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum — guarded: EMA bearish blocks both bonuses
                         # so the penalty is not silently overridden by MOD_CONFIRM within the same block
-                        if not _ema_bearish_g and _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif not _ema_bearish_g and _sess_ret_g > _bonus_thresh and _rvol_g > 1.5:
+                        elif not _ema_bearish_g and _sess_ret_g > 0.002 and _rvol_g > 1.2:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
@@ -2286,10 +2286,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -_bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -_bonus_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g < -0.002 and _rvol_g > 1.2:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
@@ -2357,10 +2357,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                 "ATR_SQUEEZE_BREAKOUT",
             ))
+            # ORB_BULL_CLEAN removed from self-confirm: 20% WR shows it needs volume proof
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
@@ -3295,8 +3295,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: skip first 45 min (9:15-10:00) — pre-ORB noise
-            if now_ts.time() < dtime(10, 0):
+            # Opening blackout: 10:00-10:30 = 0% WR (ORB fakeouts) — wait for trend to confirm
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3752,10 +3752,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum — guarded: EMA bearish blocks both bonuses
                         # so the penalty is not silently overridden by MOD_CONFIRM within the same block
-                        if not _ema_bearish_g and _sess_ret_g > _bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g > _e21_g):
+                        if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif not _ema_bearish_g and _sess_ret_g > _bonus_thresh and _rvol_g > 1.5:
+                        elif not _ema_bearish_g and _sess_ret_g > 0.002 and _rvol_g > 1.2:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                         # EMA_BULL_STACK: price must be near EMA21 — chasing extended moves loses
@@ -3770,10 +3770,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
-                        if _sess_ret_g < -_bonus_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
+                        if _sess_ret_g < -0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -_bonus_thresh and _rvol_g > 1.5:
+                        elif _sess_ret_g < -0.002 and _rvol_g > 1.2:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
@@ -3846,10 +3846,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                 "ATR_SQUEEZE_BREAKOUT",
             ))
+            # ORB_BULL_CLEAN removed from self-confirm: 20% WR shows it needs volume proof
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
