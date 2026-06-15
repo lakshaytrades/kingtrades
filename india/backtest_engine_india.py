@@ -2003,68 +2003,105 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                                                hammer_reversal_signal,
                                                atr_squeeze_breakout_signal,
                                                intraday_momentum_signal)
-                # EMA21 Pullback
+            except Exception:
+                pass
+            # EMA21 Pullback
+            try:
                 _s4, _r4 = ema21_pullback_signal(df, idx)
-                if _s4 > 0:
-                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
-                elif _s4 < 0:
-                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
-                # Liquidity Grab
+                if _s4 != 0:
+                    net_score += _s4; reason = (reason + "+" + _r4) if _r4 and reason else (_r4 or reason)
+            except Exception:
+                pass
+            # Liquidity Grab
+            try:
                 _s5, _r5 = liquidity_grab_signal(df, idx)
                 if _s5 != 0:
-                    net_score += _s5; reason = reason + "+" + _r5 if reason else _r5
-                # Inside Bar
+                    net_score += _s5; reason = (reason + "+" + _r5) if _r5 and reason else (_r5 or reason)
+            except Exception:
+                pass
+            # Inside Bar
+            try:
                 _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
                 if _s6 != 0:
-                    net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
-                # Momentum Ignition
+                    net_score += _s6; reason = (reason + "+" + _r6) if _r6 and reason else (_r6 or reason)
+            except Exception:
+                pass
+            # Momentum Ignition
+            try:
                 _s12, _r12 = momentum_ignition_signal(df, idx)
                 if _s12 != 0:
                     net_score += _s12; reason = (reason + "+" + _r12) if _r12 and reason else (_r12 or reason)
-                # Institutional Accumulation / Distribution
+            except Exception:
+                pass
+            # Institutional Accumulation / Distribution
+            try:
                 _s13, _r13 = institutional_accumulation_signal(df, idx)
                 if _s13 != 0:
                     net_score += _s13; reason = (reason + "+" + _r13) if _r13 and reason else (_r13 or reason)
-                # Pullback Continuation
+            except Exception:
+                pass
+            # Pullback Continuation
+            try:
                 _s14, _r14 = pullback_continuation_signal(df, idx)
                 if _s14 != 0:
                     net_score += _s14; reason = (reason + "+" + _r14) if _r14 and reason else (_r14 or reason)
-                # Range Expansion (NR4/NR7 breakout)
+            except Exception:
+                pass
+            # Range Expansion (NR4/NR7 breakout)
+            try:
                 _s15, _r15 = range_expansion_signal(df, idx)
                 if _s15 != 0:
                     net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
-                # Confirmed Momentum (highest conviction)
+            except Exception:
+                pass
+            # Confirmed Momentum (highest conviction)
+            try:
                 _s16, _r16 = confirmed_momentum_signal(df, idx)
                 if _s16 != 0:
                     net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
-                # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+            except Exception:
+                pass
+            # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+            try:
                 _sv, _rv = vwap_bounce_signal(df, idx)
                 if _sv != 0:
                     net_score += _sv; reason = (reason + "+" + _rv) if _rv and reason else (_rv or reason)
-                # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            except Exception:
+                pass
+            # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            try:
                 _so, _ro = orb_momentum_signal(df, idx)
                 if _so != 0:
                     net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
-                # Hammer Reversal (pin-bar reversal at support)
+            except Exception:
+                pass
+            # Hammer Reversal (pin-bar reversal at support)
+            try:
                 _sh, _rh = hammer_reversal_signal(df, idx)
                 if _sh != 0:
                     net_score += _sh; reason = (reason + "+" + _rh) if _rh and reason else (_rh or reason)
-                # ATR Squeeze Breakout (volatility expansion from squeeze)
+            except Exception:
+                pass
+            # ATR Squeeze Breakout (volatility expansion from squeeze)
+            try:
                 _sq, _rq = atr_squeeze_breakout_signal(df, idx)
                 if _sq != 0:
                     net_score += _sq; reason = (reason + "+" + _rq) if _rq and reason else (_rq or reason)
-                # Intraday Momentum (today's established directional drift)
+            except Exception:
+                pass
+            # Intraday Momentum (today's established directional drift)
+            try:
                 _si, _ri = intraday_momentum_signal(df, idx)
                 if _si != 0:
                     net_score += _si; reason = (reason + "+" + _ri) if _ri and reason else (_ri or reason)
-
-                # Re-determine direction after new strategies
-                if net_score > 0:
-                    direction = "LONG"
-                elif net_score < 0:
-                    direction = "SHORT"
             except Exception:
                 pass
+
+            # Re-determine direction after new strategies
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
 
             # ── Gap bias: weight toward gap direction (don't hard-block) ─────
             try:
@@ -3397,60 +3434,104 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                                                hammer_reversal_signal,
                                                atr_squeeze_breakout_signal,
                                                intraday_momentum_signal)
+            except Exception:
+                pass
+            # EMA21 Pullback
+            try:
                 _s4, _r4 = ema21_pullback_signal(df, idx)
-                if _s4 > 0:
-                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
-                elif _s4 < 0:
-                    net_score += _s4; reason = reason + "+" + _r4 if reason else _r4
+                if _s4 != 0:
+                    net_score += _s4; reason = (reason + "+" + _r4) if _r4 and reason else (_r4 or reason)
+            except Exception:
+                pass
+            # Liquidity Grab
+            try:
                 _s5, _r5 = liquidity_grab_signal(df, idx)
                 if _s5 != 0:
-                    net_score += _s5; reason = reason + "+" + _r5 if reason else _r5
+                    net_score += _s5; reason = (reason + "+" + _r5) if _r5 and reason else (_r5 or reason)
+            except Exception:
+                pass
+            # Inside Bar
+            try:
                 _s6, _r6 = inside_bar_breakout_signal(df, idx, now_ts)
                 if _s6 != 0:
-                    net_score += _s6; reason = reason + "+" + _r6 if reason else _r6
+                    net_score += _s6; reason = (reason + "+" + _r6) if _r6 and reason else (_r6 or reason)
+            except Exception:
+                pass
+            # Momentum Ignition
+            try:
                 _s12, _r12 = momentum_ignition_signal(df, idx)
                 if _s12 != 0:
                     net_score += _s12; reason = (reason + "+" + _r12) if _r12 and reason else (_r12 or reason)
+            except Exception:
+                pass
+            # Institutional Accumulation / Distribution
+            try:
                 _s13, _r13 = institutional_accumulation_signal(df, idx)
                 if _s13 != 0:
                     net_score += _s13; reason = (reason + "+" + _r13) if _r13 and reason else (_r13 or reason)
+            except Exception:
+                pass
+            # Pullback Continuation
+            try:
                 _s14, _r14 = pullback_continuation_signal(df, idx)
                 if _s14 != 0:
                     net_score += _s14; reason = (reason + "+" + _r14) if _r14 and reason else (_r14 or reason)
+            except Exception:
+                pass
+            # Range Expansion (NR4/NR7 breakout)
+            try:
                 _s15, _r15 = range_expansion_signal(df, idx)
                 if _s15 != 0:
                     net_score += _s15; reason = (reason + "+" + _r15) if _r15 and reason else (_r15 or reason)
-                # Confirmed Momentum (highest conviction)
+            except Exception:
+                pass
+            # Confirmed Momentum (highest conviction)
+            try:
                 _s16, _r16 = confirmed_momentum_signal(df, idx)
                 if _s16 != 0:
                     net_score += _s16; reason = (reason + "+" + _r16) if _r16 and reason else (_r16 or reason)
-                # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+            except Exception:
+                pass
+            # VWAP Bounce (71% WR: absorption at VWAP then breakout)
+            try:
                 _sv, _rv = vwap_bounce_signal(df, idx)
                 if _sv != 0:
                     net_score += _sv; reason = (reason + "+" + _rv) if _rv and reason else (_rv or reason)
-                # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            except Exception:
+                pass
+            # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            try:
                 _so, _ro = orb_momentum_signal(df, idx)
                 if _so != 0:
                     net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
-                # Hammer Reversal (pin-bar reversal at support)
+            except Exception:
+                pass
+            # Hammer Reversal (pin-bar reversal at support)
+            try:
                 _sh, _rh = hammer_reversal_signal(df, idx)
                 if _sh != 0:
                     net_score += _sh; reason = (reason + "+" + _rh) if _rh and reason else (_rh or reason)
-                # ATR Squeeze Breakout (volatility expansion from squeeze)
+            except Exception:
+                pass
+            # ATR Squeeze Breakout (volatility expansion from squeeze)
+            try:
                 _sq, _rq = atr_squeeze_breakout_signal(df, idx)
                 if _sq != 0:
                     net_score += _sq; reason = (reason + "+" + _rq) if _rq and reason else (_rq or reason)
-                # Intraday Momentum (today's established directional drift)
+            except Exception:
+                pass
+            # Intraday Momentum (today's established directional drift)
+            try:
                 _si, _ri = intraday_momentum_signal(df, idx)
                 if _si != 0:
                     net_score += _si; reason = (reason + "+" + _ri) if _ri and reason else (_ri or reason)
-
-                if net_score > 0:
-                    direction = "LONG"
-                elif net_score < 0:
-                    direction = "SHORT"
             except Exception:
                 pass
+
+            if net_score > 0:
+                direction = "LONG"
+            elif net_score < 0:
+                direction = "SHORT"
 
             # ── Gap bias: weight toward gap direction (don't hard-block) ─────
             try:
