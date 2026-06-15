@@ -1111,7 +1111,7 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 9.0    # Base threshold — lowered to allow sufficient trade frequency
+MIN_SCORE    = 10.0   # Base threshold — balanced between frequency and signal quality
 MAX_OPEN     = 12     # Allow up to 12 simultaneous positions for diversification
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
@@ -1187,18 +1187,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     except Exception:
         pass
 
-    # ── Load walk-forward optimal parameters (if available) ──────────────────
-    try:
-        from optimizer_india import load_optimal_params as _load_opt
-        _opt = _load_opt()
-        if _opt:
-            global MIN_SCORE, _ADAPTIVE_MIN_SCORE
-            if "MIN_SCORE" in _opt:
-                MIN_SCORE = float(_opt["MIN_SCORE"])
-                _ADAPTIVE_MIN_SCORE = MIN_SCORE
-                print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
-    except Exception:
-        pass
+    # ── Walk-forward params: only load when USE_WF_PARAMS=1 is set ───────────
+    # Auto-loading is disabled: stale optimal_params.json overrides MIN_SCORE
+    # to high values → few entries → adaptive tightening → 0 trades for months.
+    # Enable only after a validated fresh optimization run on live data.
+    if os.environ.get("USE_WF_PARAMS", "0") == "1":
+        try:
+            from optimizer_india import load_optimal_params as _load_opt
+            _opt = _load_opt()
+            if _opt:
+                global MIN_SCORE, _ADAPTIVE_MIN_SCORE
+                if "MIN_SCORE" in _opt:
+                    MIN_SCORE = float(_opt["MIN_SCORE"])
+                    _ADAPTIVE_MIN_SCORE = MIN_SCORE
+                    print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
+        except Exception:
+            pass
 
     print("Connecting to Upstox API ...")
     client = get_upstox_client()
@@ -1721,8 +1725,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Skip new entries during lunch lull (narrow to 30 min)
             if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Allow entries from 9:30 AM — ORB and morning momentum are highest value
-            if now_ts.time() < dtime(9, 30):
+            # Allow entries from 9:45 AM — pre-filter handles 9:15-9:44 (OPENING_BLACKOUT)
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
@@ -2471,18 +2475,19 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     except Exception:
         pass
 
-    # ── Load walk-forward optimal parameters (if available) ──────────────────
-    try:
-        from optimizer_india import load_optimal_params as _load_opt
-        _opt = _load_opt()
-        if _opt:
-            global MIN_SCORE, _ADAPTIVE_MIN_SCORE
-            if "MIN_SCORE" in _opt:
-                MIN_SCORE = float(_opt["MIN_SCORE"])
-                _ADAPTIVE_MIN_SCORE = MIN_SCORE
-                print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
-    except Exception:
-        pass
+    # ── Walk-forward params: only load when USE_WF_PARAMS=1 is set ───────────
+    if os.environ.get("USE_WF_PARAMS", "0") == "1":
+        try:
+            from optimizer_india import load_optimal_params as _load_opt
+            _opt = _load_opt()
+            if _opt:
+                global MIN_SCORE, _ADAPTIVE_MIN_SCORE
+                if "MIN_SCORE" in _opt:
+                    MIN_SCORE = float(_opt["MIN_SCORE"])
+                    _ADAPTIVE_MIN_SCORE = MIN_SCORE
+                    print(f"  WF params loaded: MIN_SCORE={MIN_SCORE:.1f} (from optimal_params.json)")
+        except Exception:
+            pass
 
     # Ensure ORB columns are computed (handles both 5-min and 1h data)
     for sym in list(data.keys()):
@@ -2982,8 +2987,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Narrow lunch lull to 30 min only
             if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Allow entries from 9:30 AM — ORB and morning momentum are highest value
-            if now_ts.time() < dtime(9, 30):
+            # Allow entries from 9:45 AM — pre-filter handles 9:15-9:44 (OPENING_BLACKOUT)
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
