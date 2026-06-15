@@ -369,6 +369,16 @@ def get_streak_multiplier() -> float:
 
 # ── Core Dynamic Kelly function ───────────────────────────────────────────────
 
+def get_kelly_regime_mult(regime, direction: str = "LONG") -> float:
+    """Map market regime to Kelly sizing multiplier."""
+    try:
+        from regime_detector import REGIME_SCORE_MULTS
+        mults = REGIME_SCORE_MULTS.get(regime, {})
+        return float(mults.get(direction, 1.0))
+    except Exception:
+        return 1.0
+
+
 def dynamic_kelly_size(
     recent_trades: List[float],
     capital: float,
@@ -376,6 +386,8 @@ def dynamic_kelly_size(
     atr_pct: float,
     max_risk_pct: float = 0.02,
     max_pos_pct: float = 0.25,
+    regime_mult: float = 1.0,
+    recent_returns: list = None,
 ) -> float:
     """
     Full Kelly x Sharpe/Sortino-scaler x Score-scaler x Volatility-scaler x Omega x CVaR-cap.
@@ -391,6 +403,13 @@ def dynamic_kelly_size(
         max_risk_pct:   Hard cap on risk per trade (default 2% = 0.02).
         max_pos_pct:    Hard cap on position value as fraction of capital
                         (default 25% = 0.25).  Caller enforces this separately.
+        regime_mult:    Market regime Kelly multiplier (from get_kelly_regime_mult).
+                        Applied BEFORE the minimum floor so bear regimes are not
+                        propped up. Default 1.0 (no adjustment).
+        recent_returns: Reserved for future use. NOT passed to get_vol_target_scalar
+                        (which expects equity curve values, not P&L fractions).
+                        Vol targeting on the equity curve is done by the caller
+                        via apply_vol_target_to_risk(risk_pct, equity_curve).
 
     Returns:
         risk_fraction -- fraction of capital to risk on this trade.
@@ -473,11 +492,23 @@ def dynamic_kelly_size(
         # ── Combine all scalers ───────────────────────────────────────────────
         raw = half_kelly * ratio_scaler * score_scale * vol_scale * om_mult
 
-        # ── Minimum floor before CVaR cap ─────────────────────────────────────
+        # ── Apply regime multiplier BEFORE floor ──────────────────────────────
+        # Apply regime scaling first so the floor doesn't prop up sizes in
+        # unfavourable regimes. E.g. BEAR_STRONG LONG regime_mult=0.20 should
+        # result in minimal sizing, not a floored 0.012 that gets only partially
+        # reduced. recent_returns (P&L fractions) are intentionally NOT passed to
+        # get_vol_target_scalar here — vol targeting on the equity curve is done
+        # by the caller via apply_vol_target_to_risk(risk_pct, equity_curve).
+        raw = raw * regime_mult
+
+        # ── Minimum floor after regime scaling ────────────────────────────────
         # Only apply floor when Kelly signals a positive edge (full_kelly > 0.005).
         # If full_kelly=0 (p*b < q = genuinely losing edge), respect that — don't bet.
         if full_kelly > 0.005:
             raw = max(raw, 0.012)
+
+        # ── Cap at 14% per position (prevents >1.7x leverage at 12 positions) ─
+        raw = min(raw, 0.14)
 
         # ── Step 7: CVaR cap ──────────────────────────────────────────────────
         # After computing base_risk, apply CVaR cap
@@ -687,17 +718,28 @@ def compute_exit_stages(
     atr: float,
     direction: str,
     qty: int,
+    signal_type: str = "",
 ) -> dict:
     """
     Pre-compute all 3 exit price levels for a trade at entry.
 
+    Args:
+        entry:       Entry price.
+        atr:         ATR value in price units.
+        direction:   "LONG" or "SHORT".
+        qty:         Total quantity for the trade.
+        signal_type: Signal type string. High-conviction signals (containing
+                     "CONFIRMED", "IGNITION", "MOM_IGN", or "INST_ACC") use
+                     an earlier stage1 exit at 1.0R (50%) to lock in profits
+                     sooner. Normal signals use 1.5R (40%).
+
     Returns:
         {
-            "stage1_price":     float,  # 1.5R target (40% exit)
+            "stage1_price":     float,  # R-target (40-50% exit)
             "stage2_price":     float,  # 3.0R target (runner reference, no partial)
-            "stage1_qty":       int,    # qty to sell at stage 1 (40%)
+            "stage1_qty":       int,    # qty to sell at stage 1
             "stage2_qty":       int,    # 0 — no partial at stage2, chandelier exits runner
-            "runner_qty":       int,    # qty to run with trailing stop (60%)
+            "runner_qty":       int,    # qty to run with trailing stop
             "sl":               float,  # initial stop loss (1.5×ATR)
             "be_sl":            float,  # break-even stop (entry ± 0.1%)
             "be_trigger_price": float,  # price at which SL moves to BE (0.8R profit)
@@ -710,14 +752,28 @@ def compute_exit_stages(
     sl    = entry - sl_dist if is_long else entry + sl_dist
     be_sl = entry * 1.001  if is_long else entry * 0.999   # 0.1% buffer
 
-    # Stage 1: take 40% at 1.5R
-    stage1_price = entry + THREE_STAGE_EXIT["stage1_r"] * r if is_long else entry - THREE_STAGE_EXIT["stage1_r"] * r
+    # Earlier lock-in for high-conviction momentum signals
+    if any(k in signal_type for k in ("CONFIRMED", "IGNITION", "MOM_IGN", "INST_ACC")):
+        stage1_r = 1.0   # 1R partial exit: lock in 50% at 1R
+        stage1_pct = 0.50
+    else:
+        stage1_r = 1.5   # normal: 40% at 1.5R
+        stage1_pct = 0.40
+
+    # Stage 1: take partial at stage1_r
+    stage1_price = entry + stage1_r * r if is_long else entry - stage1_r * r
     # Stage 2: runner target at 3R (not used for partial exit, just reference)
     stage2_price = entry + THREE_STAGE_EXIT["stage2_r"] * r if is_long else entry - THREE_STAGE_EXIT["stage2_r"] * r
 
-    stage1_qty = max(1, int(qty * THREE_STAGE_EXIT["stage1_pct"]))
+    # When qty=1, skip stage1 partial to avoid runner_qty=0 (nothing left to run).
+    # For single-lot trades, hold the full position and let the chandelier exit.
+    if qty <= 1:
+        stage1_qty = 0
+        runner_qty = qty
+    else:
+        stage1_qty = max(1, int(qty * stage1_pct))
+        runner_qty = max(0, qty - stage1_qty)
     stage2_qty = 0   # No partial at stage2
-    runner_qty = max(0, qty - stage1_qty)
 
     # Break-even trigger price: price level at which SL is moved to break-even
     be_trigger_r     = THREE_STAGE_EXIT["sl_to_be_at"]  # 0.8R
