@@ -56,7 +56,8 @@ SQUAREOFF    = dtime(15, 15)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
 # NSE is long-biased: only short in clear bear sessions (reduces false signals)
-LONG_ONLY_NSE = True   # Set False to re-enable shorts for testing
+LONG_ONLY_NSE  = True   # Set False to re-enable shorts for testing
+BULL_DAY_ONLY  = True   # Only take new entries on confirmed bull sessions (breadth ≥ 0.50)
 
 # ── Pure OHLCV indicators ────────────────────────────────────────────────────
 
@@ -2166,6 +2167,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
+            # Bull-day filter: only enter on sessions where breadth ≥ 50%
+            if BULL_DAY_ONLY and _session_breadth < 0.50:
+                continue
 
             # ── Entry quality gates ──────────────────────────────────────────
             try:
@@ -3493,6 +3497,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue   # Market is bearish — skip counter-trend LONG
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
+                continue
+            # Bull-day filter: only enter on sessions where breadth ≥ 50%
+            if BULL_DAY_ONLY and _session_breadth < 0.50:
                 continue
 
             # ── Entry quality gates ──────────────────────────────────────────
