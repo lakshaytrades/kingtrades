@@ -2140,23 +2140,24 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     elif _c1h < _e21h and _e21h < _e50h and _e50h > 0: _1h_bear = True
 
                 if direction == "LONG":
-                    # Penalty: 15m bearish while trying to go LONG (restored to -10 from -7:
-                    # -7 was insufficient — score-22 signals absorbed it and entered counter-trend)
+                    # TF alignment penalty — capped at -8 total to prevent killing valid high-WR signals
+                    _tf_penalty = 0
                     if _15m_bear:
-                        net_score -= 10
+                        _tf_penalty -= 7
                         reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
-                    # Extra penalty if 1h also bearish — double-bearish TF = extra -5
                     if _15m_bear and _1h_bear:
-                        net_score -= 5
+                        _tf_penalty -= min(4, 8 + _tf_penalty)  # cap total at -8
                         reason = (reason + "+1H_BEAR_PENALTY") if reason else "1H_BEAR_PENALTY"
+                    net_score += max(_tf_penalty, -8)
                 elif direction == "SHORT":
-                    # Penalty: 15m bullish while trying to go SHORT
+                    _tf_penalty = 0
                     if _15m_bull:
-                        net_score += 7
+                        _tf_penalty += 7
                         reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
                     if _15m_bull and _1h_bull:
-                        net_score += 5
+                        _tf_penalty += min(4, 8 - _tf_penalty)
                         reason = (reason + "+1H_BULL_PENALTY") if reason else "1H_BULL_PENALTY"
+                    net_score += min(_tf_penalty, 8)
                 # Re-derive direction after penalty
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
@@ -2265,10 +2266,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: 45% = 18/40 stocks above open — below this is a bear tape
-            # (0.40 was too low: 16/40 stocks up = 24 stocks declining = clear bear session)
+            # Breadth floor: hard block extreme bear tape; moderate weakness gets score penalty
+            if BULL_DAY_ONLY and _session_breadth < 0.30:
+                continue  # Hard block: extreme bear tape only
             if BULL_DAY_ONLY and _session_breadth < 0.45:
-                continue
+                net_score -= 4  # Weak day: penalize but don't block
+                if abs(net_score) < _eff_min_score:
+                    continue  # Re-check threshold after breadth penalty
 
             # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
@@ -3536,23 +3540,24 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     elif _c1h < _e21h and _e21h < _e50h and _e50h > 0: _1h_bear = True
 
                 if direction == "LONG":
-                    # Penalty: 15m bearish while trying to go LONG (restored to -10 from -7:
-                    # -7 was insufficient — score-22 signals absorbed it and entered counter-trend)
+                    # TF alignment penalty — capped at -8 total to prevent killing valid high-WR signals
+                    _tf_penalty = 0
                     if _15m_bear:
-                        net_score -= 10
+                        _tf_penalty -= 7
                         reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
-                    # Extra penalty if 1h also bearish — double-bearish TF = extra -5
                     if _15m_bear and _1h_bear:
-                        net_score -= 5
+                        _tf_penalty -= min(4, 8 + _tf_penalty)  # cap total at -8
                         reason = (reason + "+1H_BEAR_PENALTY") if reason else "1H_BEAR_PENALTY"
+                    net_score += max(_tf_penalty, -8)
                 elif direction == "SHORT":
-                    # Penalty: 15m bullish while trying to go SHORT
+                    _tf_penalty = 0
                     if _15m_bull:
-                        net_score += 7
+                        _tf_penalty += 7
                         reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
                     if _15m_bull and _1h_bull:
-                        net_score += 5
+                        _tf_penalty += min(4, 8 - _tf_penalty)
                         reason = (reason + "+1H_BULL_PENALTY") if reason else "1H_BULL_PENALTY"
+                    net_score += min(_tf_penalty, 8)
                 # Re-derive direction after penalty
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
@@ -3689,10 +3694,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: 45% = 18/40 stocks above open — below this is a bear tape
-            # (0.40 was too low: 16/40 stocks up = 24 stocks declining = clear bear session)
+            # Breadth floor: hard block extreme bear tape; moderate weakness gets score penalty
+            if BULL_DAY_ONLY and _session_breadth < 0.30:
+                continue  # Hard block: extreme bear tape only
             if BULL_DAY_ONLY and _session_breadth < 0.45:
-                continue
+                net_score -= 4  # Weak day: penalize but don't block
+                if abs(net_score) < _eff_min_score:
+                    continue  # Re-check threshold after breadth penalty
 
             # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
