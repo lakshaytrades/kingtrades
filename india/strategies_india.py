@@ -107,7 +107,7 @@ def gap_analysis_signal(
 # Strategy 2: VWAP Mean Reversion (institutional-grade)
 # ---------------------------------------------------------------------------
 
-def vwap_reversion_signal(
+def vwap_reversion_band_signal(
     close: float,
     vwap: float,
     upper_band: float,
@@ -251,6 +251,96 @@ def opening_drive_signal(
         logger.debug("opening_drive_signal: %s", exc)
 
     return 0, ""
+
+
+# ---------------------------------------------------------------------------
+# Strategy 2b: VWAP Mean-Reversion (row-dict version, ADX-gated)
+# Used by _score_bar in backtest_engine_india.py
+# ---------------------------------------------------------------------------
+
+def vwap_reversion_signal(row, adx: float = None) -> tuple:
+    """
+    VWAP mean-reversion: price extended from VWAP snaps back.
+    Only active in range-bound markets (ADX < 15).
+
+    Accepts a row dict/Series with keys: close, vwap, rsi, rvol.
+    adx can be passed explicitly or read from row["adx"].
+
+    Returns (score_delta, reason_str) — positive=LONG, negative=SHORT.
+    """
+    try:
+        # ADX gate: only in non-trending markets
+        _adx = adx if adx is not None else row.get("adx", 25.0)
+        if _adx is None or _adx >= 15:
+            return (0, "")
+
+        vwap  = float(row.get("vwap", 0) or 0)
+        close = float(row.get("close", 0) or 0)
+        rsi   = float(row.get("rsi", 50) or 50)
+        rvol  = float(row.get("rvol", 1.0) or 1.0)
+
+        if not vwap or vwap <= 0 or not close or close <= 0:
+            return (0, "")
+
+        vwap_dev = (close - vwap) / vwap
+
+        # LONG: price 0.8%+ BELOW VWAP + oversold RSI + volume
+        if vwap_dev <= -0.008 and rsi < 38 and rvol >= 1.2:
+            return (14, "VWAP_REVERSION_LONG")
+
+        # SHORT: price 0.8%+ ABOVE VWAP + overbought RSI + volume
+        if vwap_dev >= 0.008 and rsi > 62 and rvol >= 1.2:
+            return (-14, "VWAP_REVERSION_SHORT")
+
+        return (0, "")
+    except Exception:
+        return (0, "")
+
+
+# ---------------------------------------------------------------------------
+# Strategy 3b: Opening Drive Continuation (row-dict version, ADX-gated)
+# Used by _score_bar in backtest_engine_india.py
+# ---------------------------------------------------------------------------
+
+def session_drive_signal(row, adx: float = None) -> tuple:
+    """
+    Session direction continuation: sustained move from day open in established trend.
+    Fires when ADX > 20 AND price has moved 0.8%+ from day open in the trend direction.
+    No time gate — the outer loop's 11:00 AM new-entry gate handles timing.
+
+    Accepts a row dict/Series with keys: close, day_open, vwap, rvol, ema9, ema21.
+    Returns (score_delta, reason_str) — positive=LONG, negative=SHORT.
+    """
+    try:
+        _adx = adx if adx is not None else row.get("adx", 25.0)
+        if _adx is None or _adx < 20:
+            return (0, "")
+
+        close    = float(row.get("close", 0) or 0)
+        day_open = float(row.get("day_open", 0) or 0)
+        vwap     = float(row.get("vwap", 0) or 0)
+        rvol     = float(row.get("rvol", 1.0) or 1.0)
+        ema9     = float(row.get("ema9", 0) or 0)
+        ema21    = float(row.get("ema21", 0) or 0)
+
+        if not close or not day_open or close <= 0 or day_open <= 0:
+            return (0, "")
+
+        sess_move = (close - day_open) / day_open
+
+        # LONG: session up 0.8%+ + above VWAP + EMA bull stack + volume surge
+        if (sess_move > 0.008 and close > vwap and
+                ema9 > ema21 and rvol >= 1.8):
+            return (15, "SESSION_DRIVE_LONG")
+
+        # SHORT: session down 0.8%+ + below VWAP + EMA bear stack + volume surge
+        if (sess_move < -0.008 and close < vwap and
+                ema9 < ema21 and rvol >= 1.8):
+            return (-15, "SESSION_DRIVE_SHORT")
+
+        return (0, "")
+    except Exception:
+        return (0, "")
 
 
 # ---------------------------------------------------------------------------
