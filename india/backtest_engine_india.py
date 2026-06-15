@@ -1902,6 +1902,48 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend longs in bear session
 
+            # ── 3-Timeframe alignment gate ────────────────────────────────────
+            # 15m penalty (currently only bonus exists; disagreement has zero cost)
+            # Hard block when BOTH 15m AND 1h disagree with direction
+            try:
+                _15m_bull = False; _15m_bear = False
+                _1h_bull  = False; _1h_bear  = False
+                if df_15m is not None and not df_15m.empty:
+                    _r15 = df_15m.iloc[-1]
+                    _e9_15  = float(_r15.get("ema9",  0) or 0)
+                    _e21_15 = float(_r15.get("ema21", 0) or 0)
+                    if _e9_15 > _e21_15 > 0: _15m_bull = True
+                    elif _e9_15 < _e21_15 and _e21_15 > 0: _15m_bear = True
+                if df_1h is not None and not df_1h.empty:
+                    _r1h = df_1h.iloc[-1]
+                    _c1h  = float(_r1h.get("close", 0) or 0)
+                    _e21h = float(_r1h.get("ema21", 0) or 0)
+                    _e50h = float(_r1h.get("ema50", 0) or 0)
+                    if _c1h > _e21h > _e50h > 0: _1h_bull = True
+                    elif _c1h < _e21h and _e21h < _e50h and _e50h > 0: _1h_bear = True
+
+                if direction == "LONG":
+                    # Penalty: 15m bearish while trying to go LONG
+                    if _15m_bear:
+                        net_score -= 10
+                        reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
+                    # Hard block: BOTH 15m AND 1h bearish on a LONG signal
+                    if _15m_bear and _1h_bear:
+                        continue  # all higher TFs against LONG — skip
+                elif direction == "SHORT":
+                    # Penalty: 15m bullish while trying to go SHORT
+                    if _15m_bull:
+                        net_score += 10
+                        reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
+                    # Hard block: BOTH 15m AND 1h bullish on a SHORT signal
+                    if _15m_bull and _1h_bull:
+                        continue  # all higher TFs against SHORT — skip
+                # Re-derive direction after penalty
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+            except Exception:
+                pass
+
             # ── Hard momentum confirmation gates ─────────────────────────────
             # Stock must already be moving in signal direction with volume.
             # Prevents entries in "potential" momentum (not yet confirmed).
@@ -3003,6 +3045,48 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if _nifty_session_bear and direction == "LONG":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend longs in bear session
+
+            # ── 3-Timeframe alignment gate ────────────────────────────────────
+            # 15m penalty (currently only bonus exists; disagreement has zero cost)
+            # Hard block when BOTH 15m AND 1h disagree with direction
+            try:
+                _15m_bull = False; _15m_bear = False
+                _1h_bull  = False; _1h_bear  = False
+                if df_15m is not None and not df_15m.empty:
+                    _r15 = df_15m.iloc[-1]
+                    _e9_15  = float(_r15.get("ema9",  0) or 0)
+                    _e21_15 = float(_r15.get("ema21", 0) or 0)
+                    if _e9_15 > _e21_15 > 0: _15m_bull = True
+                    elif _e9_15 < _e21_15 and _e21_15 > 0: _15m_bear = True
+                if df_1h is not None and not df_1h.empty:
+                    _r1h = df_1h.iloc[-1]
+                    _c1h  = float(_r1h.get("close", 0) or 0)
+                    _e21h = float(_r1h.get("ema21", 0) or 0)
+                    _e50h = float(_r1h.get("ema50", 0) or 0)
+                    if _c1h > _e21h > _e50h > 0: _1h_bull = True
+                    elif _c1h < _e21h and _e21h < _e50h and _e50h > 0: _1h_bear = True
+
+                if direction == "LONG":
+                    # Penalty: 15m bearish while trying to go LONG
+                    if _15m_bear:
+                        net_score -= 10
+                        reason = (reason + "+15M_BEAR_PENALTY") if reason else "15M_BEAR_PENALTY"
+                    # Hard block: BOTH 15m AND 1h bearish on a LONG signal
+                    if _15m_bear and _1h_bear:
+                        continue  # all higher TFs against LONG — skip
+                elif direction == "SHORT":
+                    # Penalty: 15m bullish while trying to go SHORT
+                    if _15m_bull:
+                        net_score += 10
+                        reason = (reason + "+15M_BULL_PENALTY") if reason else "15M_BULL_PENALTY"
+                    # Hard block: BOTH 15m AND 1h bullish on a SHORT signal
+                    if _15m_bull and _1h_bull:
+                        continue  # all higher TFs against SHORT — skip
+                # Re-derive direction after penalty
+                if net_score > 0: direction = "LONG"
+                elif net_score < 0: direction = "SHORT"
+            except Exception:
+                pass
 
             # ── Hard momentum confirmation gates ─────────────────────────────
             # Stock must already be moving in signal direction with volume.
