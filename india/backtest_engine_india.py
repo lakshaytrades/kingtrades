@@ -2020,12 +2020,21 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _e21_g = float(row.get("ema21", 0) or 0)
                 if _close_g > 0 and _day_open_g > 0:
                     _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
-                    _sr_thresh = 0.0015 if _is_5m_data else 0.003   # 0.15% for 5m, 0.3% for 1h
+                    # High-conviction signals get a lower session_return bar
+                    # Use abs(net_score) so SHORT signals (negative) also benefit
+                    _abs_score = abs(net_score)
+                    if _abs_score >= 18:
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006
+                    elif _abs_score >= 14:
+                        _sr_thresh = 0.0008 if _is_5m_data else 0.0015
+                    else:
+                        _sr_thresh = 0.0015 if _is_5m_data else 0.003
+                    _rvol_min = 1.3 if _abs_score >= 18 else (1.4 if _abs_score >= 14 else 1.5)
                     if direction == "LONG":
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
                         if _sess_ret_g < _sr_thresh:
                             continue
-                        if _rvol_g < 1.5:
+                        if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
@@ -2040,16 +2049,35 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         # SHORT: stock must be down in signal direction
                         if _sess_ret_g > -_sr_thresh:
                             continue
-                        if _rvol_g < 1.5:
+                        if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
                         if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
+                        elif _sess_ret_g < -_sr_thresh and _rvol_g > 1.5:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+            except Exception:
+                pass
+
+            # Market breadth alignment scoring (+3/-3 to avoid over-stacking with existing breadth signals)
+            try:
+                if direction == "LONG":
+                    if _session_breadth > 0.62:
+                        net_score += 3
+                        reason = (reason + "+MKTBIAS_LONG") if reason else "MKTBIAS_LONG"
+                    elif _session_breadth < 0.38:
+                        net_score -= 3
+                        reason = (reason + "+MKTBIAS_CONTRA") if reason else "MKTBIAS_CONTRA"
+                elif direction == "SHORT":
+                    if _session_breadth < 0.38:
+                        net_score -= 3  # more negative = stronger SHORT
+                        reason = (reason + "+MKTBIAS_SHORT") if reason else "MKTBIAS_SHORT"
+                    elif _session_breadth > 0.62:
+                        net_score += 3  # less negative = weaker SHORT = penalty
+                        reason = (reason + "+MKTBIAS_CONTRA") if reason else "MKTBIAS_CONTRA"
             except Exception:
                 pass
 
@@ -3222,12 +3250,21 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _e21_g = float(row.get("ema21", 0) or 0)
                 if _close_g > 0 and _day_open_g > 0:
                     _sess_ret_g = (_close_g - _day_open_g) / _day_open_g
-                    _sr_thresh = 0.0015 if _is_5m_data else 0.003   # 0.15% for 5m, 0.3% for 1h
+                    # High-conviction signals get a lower session_return bar
+                    # Use abs(net_score) so SHORT signals (negative) also benefit
+                    _abs_score = abs(net_score)
+                    if _abs_score >= 18:
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0006
+                    elif _abs_score >= 14:
+                        _sr_thresh = 0.0008 if _is_5m_data else 0.0015
+                    else:
+                        _sr_thresh = 0.0015 if _is_5m_data else 0.003
+                    _rvol_min = 1.3 if _abs_score >= 18 else (1.4 if _abs_score >= 14 else 1.5)
                     if direction == "LONG":
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
                         if _sess_ret_g < _sr_thresh:
                             continue
-                        if _rvol_g < 1.5:
+                        if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g <= _e21_g:
                             continue   # bearish EMA — no long
@@ -3242,16 +3279,35 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         # SHORT: stock must be down in signal direction
                         if _sess_ret_g > -_sr_thresh:
                             continue
-                        if _rvol_g < 1.5:
+                        if _rvol_g < _rvol_min:
                             continue
                         if _e9_g > 0 and _e21_g > 0 and _e9_g >= _e21_g:
                             continue   # bullish EMA — no short
                         if _sess_ret_g < -_sr_thresh * 2 and _rvol_g > 2.0 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -0.003 and _rvol_g > 1.5:
+                        elif _sess_ret_g < -_sr_thresh and _rvol_g > 1.5:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+            except Exception:
+                pass
+
+            # Market breadth alignment scoring (+3/-3 to avoid over-stacking with existing breadth signals)
+            try:
+                if direction == "LONG":
+                    if _session_breadth > 0.62:
+                        net_score += 3
+                        reason = (reason + "+MKTBIAS_LONG") if reason else "MKTBIAS_LONG"
+                    elif _session_breadth < 0.38:
+                        net_score -= 3
+                        reason = (reason + "+MKTBIAS_CONTRA") if reason else "MKTBIAS_CONTRA"
+                elif direction == "SHORT":
+                    if _session_breadth < 0.38:
+                        net_score -= 3  # more negative = stronger SHORT
+                        reason = (reason + "+MKTBIAS_SHORT") if reason else "MKTBIAS_SHORT"
+                    elif _session_breadth > 0.62:
+                        net_score += 3  # less negative = weaker SHORT = penalty
+                        reason = (reason + "+MKTBIAS_CONTRA") if reason else "MKTBIAS_CONTRA"
             except Exception:
                 pass
 
