@@ -936,7 +936,8 @@ def _kelly_size(wins: int, losses: int, capital: float, max_pct: float = 0.20) -
 
 
 def _dynamic_kelly_size(recent_trades: list, capital: float,
-                         net_score: float, atr: float, entry: float) -> float:
+                         net_score: float, atr: float, entry: float,
+                         regime_mult: float = 1.0) -> float:
     """
     Dynamic Kelly sizing using risk_manager.dynamic_kelly_size.
 
@@ -950,6 +951,7 @@ def _dynamic_kelly_size(recent_trades: list, capital: float,
         net_score:     absolute signal net score (0-100 scale)
         atr:           ATR value in price units
         entry:         entry price
+        regime_mult:   market regime Kelly multiplier (from get_kelly_regime_mult)
 
     Returns:
         risk_fraction — fraction of capital to risk on this trade.
@@ -971,6 +973,8 @@ def _dynamic_kelly_size(recent_trades: list, capital: float,
         base = dynamic_kelly_size(
             recent_trades, capital, score_norm, atr_pct,
             max_risk_pct=max_risk, max_pos_pct=0.25,
+            regime_mult=regime_mult,
+            recent_returns=list(recent_trades),
         )
         if getattr(_cfg, "ANTI_MARTINGALE_ENABLED", True):
             base = min(base * get_streak_multiplier(), max_risk)
@@ -2096,8 +2100,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
 
-            # Dynamic Kelly sizing (with Sharpe/Omega/streak scalers)
-            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
+            # Dynamic Kelly sizing (with Sharpe/Omega/streak/regime scalers)
+            try:
+                from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
+                _regime_mult = _kelly_regime_mult(_regime, direction)
+            except Exception:
+                _regime_mult = 1.0
+            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry,
+                                           regime_mult=_regime_mult)
 
             # ── IC-weighted Kelly + correlation-adjusted sizing ───────────────
             try:
@@ -2158,7 +2168,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
             try:
                 from risk_manager import compute_exit_stages as _exits
-                _stages = _exits(entry, atr, direction, qty)
+                _stages = _exits(entry, atr, direction, qty, signal_type=reason or "")
                 trade.stage1_price = _stages["stage1_price"]
                 trade.stage2_price = _stages["stage2_price"]
                 trade.stage1_qty   = _stages["stage1_qty"]
@@ -3278,7 +3288,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             t1    = entry + 2.25 * atr if long else entry - 2.25 * atr  # 1.5R (was 1.0R = same as stop = 1:1 R:R)
             t2    = entry + 4.5 * atr if long else entry - 4.5 * atr    # 3R runner (was 2R)
 
-            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry)
+            try:
+                from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
+                _regime_mult = _kelly_regime_mult(_regime, direction)
+            except Exception:
+                _regime_mult = 1.0
+            risk_pct = _dynamic_kelly_size(recent_trades, equity, net_score, atr, entry,
+                                           regime_mult=_regime_mult)
 
             # ── IC-weighted Kelly + correlation-adjusted sizing ───────────────
             try:
@@ -3337,7 +3353,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             trade = Trade(sym, direction, entry, sl, t1, t2, qty, now_ts, atr_at_entry=float(atr))
             try:
                 from risk_manager import compute_exit_stages as _exits
-                _stages = _exits(entry, atr, direction, qty)
+                _stages = _exits(entry, atr, direction, qty, signal_type=reason or "")
                 trade.stage1_price = _stages["stage1_price"]
                 trade.stage2_price = _stages["stage2_price"]
                 trade.stage1_qty   = _stages["stage1_qty"]
