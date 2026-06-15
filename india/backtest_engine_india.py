@@ -407,7 +407,8 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     # RSI crossing 50 from below = bullish momentum shift (not overbought, just starting)
     # RSI crossing 50 from above = bearish momentum shift
     rsi_v  = float(row.get("rsi",  50.0) or 50.0)
-    prsi_v = float(prev.get("rsi", rsi_v) or rsi_v)
+    _prsi_raw = prev.get("rsi", None)
+    prsi_v = float(_prsi_raw) if (_prsi_raw is not None and _prsi_raw == _prsi_raw) else rsi_v
     _rsi_bull_cross = (prsi_v < 50.0) and (rsi_v >= 50.0)  # just crossed 50 from below
     _rsi_bear_cross = (prsi_v > 50.0) and (rsi_v <= 50.0)  # just crossed 50 from above
     if _rsi_bull_cross:
