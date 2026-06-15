@@ -1813,8 +1813,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
-            if now_ts.time() < dtime(10, 30):
+            # Opening blackout: skip first 45 min (9:15-10:00) — pre-ORB noise
+            if now_ts.time() < dtime(10, 0):
                 continue
             if now_ts not in df.index:
                 continue
@@ -2253,10 +2253,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
                     ))
-                    # Hard floor: LONG only when stock is trending up on the day (no bypass)
-                    # Flat/down stocks have ~35% WR regardless of signal quality
-                    if direction == "LONG" and _sess_ret_g < 0.005:
-                        continue
+                    # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
+                    # HAMMER) are self-confirming — they predict the coming move, not
+                    # confirm a past one. Non-bypass signals need stock already trending.
+                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.003:
+                        continue  # Non-bypass LONG: require stock up >= 0.3% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -2340,11 +2341,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: pattern + market confirmation ──
-            # Rule: must have 1 named pattern AND 1 confirmation (volume/session).
-            # STRONG_CONFIRM = stock up 0.5%+ on day with RVOL > 2.0 (institutional flow)
-            # MOD_CONFIRM    = stock up on day with RVOL > 1.5 (moderate confirmation)
-            # This is the professional entry criteria: signal + tape confirmation.
+            # ── Named-setup quality gate: pattern + confirmation ──
+            # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
+            # their own internal volume/price checks — count as self-confirming.
+            # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -2355,6 +2355,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "INSIDE_BAR", "ACCUM", "DISTRIB",
                              "STRONG_CONFIRM", "MOD_CONFIRM")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            _is_self_confirm = any(s in reason for s in (
+                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
+                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+                "ATR_SQUEEZE_BREAKOUT",
+            ))
+            if _is_self_confirm:
+                _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
                 continue  # Need pattern + confirmation — pure patterns without tape = noise
             # ────────────────────────────────────────────────────────────────
@@ -3287,8 +3295,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
-            if now_ts.time() < dtime(10, 30):
+            # Opening blackout: skip first 45 min (9:15-10:00) — pre-ORB noise
+            if now_ts.time() < dtime(10, 0):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3718,10 +3726,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
                         "ATR_SQUEEZE_BREAKOUT",
                     ))
-                    # Hard floor: LONG only when stock is trending up on the day (no bypass)
-                    # Flat/down stocks have ~35% WR regardless of signal quality
-                    if direction == "LONG" and _sess_ret_g < 0.005:
-                        continue
+                    # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
+                    # HAMMER) are self-confirming — they predict the coming move, not
+                    # confirm a past one. Non-bypass signals need stock already trending.
+                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.003:
+                        continue  # Non-bypass LONG: require stock up >= 0.3% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
@@ -3821,11 +3830,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # overbought — wait for pullback
             except Exception:
                 pass
-            # ── Named-setup quality gate: pattern + market confirmation ──
-            # Rule: must have 1 named pattern AND 1 confirmation (volume/session).
-            # STRONG_CONFIRM = stock up 0.5%+ on day with RVOL > 2.0 (institutional flow)
-            # MOD_CONFIRM    = stock up on day with RVOL > 1.5 (moderate confirmation)
-            # This is the professional entry criteria: signal + tape confirmation.
+            # ── Named-setup quality gate: pattern + confirmation ──
+            # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
+            # their own internal volume/price checks — count as self-confirming.
+            # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -3836,6 +3844,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "INSIDE_BAR", "ACCUM", "DISTRIB",
                              "STRONG_CONFIRM", "MOD_CONFIRM")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            _is_self_confirm = any(s in reason for s in (
+                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",
+                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+                "ATR_SQUEEZE_BREAKOUT",
+            ))
+            if _is_self_confirm:
+                _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
                 continue  # Need pattern + confirmation — pure patterns without tape = noise
             # ────────────────────────────────────────────────────────────────
