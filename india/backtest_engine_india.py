@@ -480,26 +480,33 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         elif vd < -0.003:
             score_short += 2
 
-    # ── Signal 5: Volume-direction confirmation ──────────────────────────────
+    # ── Signal 5: Volume-direction confirmation (CONTEXT ONLY) ─────────────────
+    # VOL signals are CONFIRMERS, not primary drivers. Score capped at 6 so they
+    # cannot trigger entries alone (MIN_SCORE=10). A 2× blow-off bar is often
+    # exhaustion — buying it directly is top-buying; only useful as confirmation.
+    # VOL_BEAR on a bar we'd want to go LONG = hard contradiction → flagged here,
+    # blocked in the engine entry gate.
     bar_bull = c > o and (c - o) > (h - lo) * 0.3   # Strong bullish body
     bar_bear = c < o and (o - c) > (h - lo) * 0.3   # Strong bearish body
     if rvol > 2.0:
-        if bar_bull:    score_long  += 14; reasons.append(f"VOL_BULL_{rvol:.1f}x")
-        elif bar_bear:  score_short += 14; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
-    elif rvol > 1.4:
-        if bar_bull:    score_long  += 8;  reasons.append(f"VOL_BULL_{rvol:.1f}x")
-        elif bar_bear:  score_short += 8;  reasons.append(f"VOL_BEAR_{rvol:.1f}x")
+        if bar_bull:    score_long  += 6; reasons.append(f"VOL_BULL_{rvol:.1f}x")
+        elif bar_bear:  score_short += 6; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
+    elif rvol > 1.5:
+        if bar_bull:    score_long  += 3
+        elif bar_bear:  score_short += 3
 
-    # ── Signal 6: Today's-open momentum (real-time session direction) ────────
+    # ── Signal 6: Today's-open momentum (CONTEXT ONLY) ──────────────────────────
+    # Threshold raised: 0.5% from open is normal drift, not momentum. Only 1.5%+
+    # shows real intraday directional commitment. Score capped at 6 (context only).
     day_open = float(row.get("day_open", 0) or 0)
     if day_open > 0:
         from_open = (c - day_open) / day_open
-        if from_open > 0.005:    score_long  += 10; reasons.append(f"DAY_MOM(+{from_open*100:.1f}%)")
-        elif from_open > 0.002:  score_long  += 5
-        elif from_open > 0.0005: score_long  += 2
-        if from_open < -0.005:   score_short += 10; reasons.append(f"DAY_MOM({from_open*100:.1f}%)")
-        elif from_open < -0.002: score_short += 5
-        elif from_open < -0.0005:score_short += 2
+        if from_open > 0.015:    score_long  += 6; reasons.append(f"DAY_MOM(+{from_open*100:.1f}%)")
+        elif from_open > 0.010:  score_long  += 3
+        elif from_open > 0.005:  score_long  += 1
+        if from_open < -0.015:   score_short += 6; reasons.append(f"DAY_MOM({from_open*100:.1f}%)")
+        elif from_open < -0.010: score_short += 3
+        elif from_open < -0.005: score_short += 1
 
     # ── ADX gate: kill choppy markets (multiplier only, not a signal) ────────
     adx_v = float(row.get("adx", 25) or 25)
@@ -3474,9 +3481,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0002   # medium: 0.03%/0.02%
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
-                    # RVOL: 5m needs institutional breakout participation (1.3×);
-                    # 1h is calmer — normal hourly range is 0.8-1.2× so 1.1× is already elevated
-                    if _is_5m_data:
+                    # RVOL floor by signal type:
+                    # VWAP_RECLAIM — quiet drift back to VWAP needs no volume spike; 1.0× ok
+                    # EMA_BULL_STACK — fresh EMA cross; 1.1× enough
+                    # ORB / momentum — needs genuine institutional volume: 1.3×
+                    _vwap_signal = "VWAP_RECLAIM" in reason or "VWAP_REJECT" in reason
+                    _ema_signal  = "EMA_BULL_STACK" in reason or "EMA_BEAR_STACK" in reason
+                    if _vwap_signal:
+                        _rvol_min = 0.9   # VWAP reclaim can be quiet
+                    elif _ema_signal:
+                        _rvol_min = 1.1   # fresh EMA cross: moderate confirmation
+                    elif _is_5m_data:
                         _rvol_min = 1.1 if _abs_score >= 18 else 1.3
                     else:
                         _rvol_min = 1.0 if _abs_score >= 18 else 1.1
@@ -3488,6 +3503,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
                     if direction == "LONG":
+                        # Hard block: VOL_BEAR in reason means current bar is a strong DOWN bar.
+                        # Going LONG on a heavy-selling bar = fighting the tape.
+                        if any("VOL_BEAR" in r for r in reason.split("+")):
+                            continue
                         # LONG: stock must be up in signal direction, volume elevated, EMA aligned
                         if not _orb_bypass and _sess_ret_g < _sr_thresh:
                             continue
