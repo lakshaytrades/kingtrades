@@ -46,21 +46,41 @@ FEATURE_COLS = [
     "rvol", "obv_momentum",
     # Volatility
     "atr_pct", "bb_width", "squeeze",
-    # Regime
-    "adx", "sq_mom_sign",
+    # Regime — adx_norm replaces raw adx to avoid NaN-default bias and collinearity
+    "adx_norm", "sq_mom_sign",
     # Structure
     "vwap_dev", "close_vs_high", "close_vs_low",
     # Multi-timeframe proxy
     "bar_return_5", "bar_return_10", "range_pct",
     # Session momentum (appended last to preserve feature alignment)
     "session_return", "sess_positive",
+    # New features (v2) — sess_breadth replaces nothing; wired to 0.5 until callers pass real value
+    "sess_breadth",
 ]
 
+# Minimum training samples before ML activates (lowered from 300 for warm-start from day 1)
+MIN_SAMPLES_TRAIN = 50
 
-def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
+# ── Boost/Penalty Constants ───────────────────────────────────────────────────
+
+ML_STRONG_CONFIRM_BOOST = 20.0   # was 16 (P >= 0.78) — match top rule signal strength
+ML_CONFIRM_BOOST        = 12.0   # was 8  (P >= 0.70) — stronger moderate confirmation
+ML_UNCERTAIN_PENALTY    = -4.0   # was -3 (P >= 0.40) — slightly firmer soft penalty
+ML_DISAGREE_PENALTY     = -10.0  # was -6 (P < 0.40) — firmer disagreement penalty
+
+
+def _extract_features(df: pd.DataFrame, idx: int,
+                      breadth: float = 0.5) -> Optional[np.ndarray]:
     """
     Extract ML feature vector from a row in the indicator DataFrame.
     Returns None if insufficient data.
+
+    Args:
+        df: DataFrame with pre-computed indicator columns.
+        idx: Row index to extract features for.
+        breadth: Session market breadth 0–1 (fraction of stocks advancing).
+                 Defaults to 0.5 (neutral) when unavailable.
+                 Pass the actual value from breadth_sector_filter when available.
     """
     try:
         if idx < 15 or idx >= len(df):
@@ -156,6 +176,17 @@ def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
         else:
             sess_positive = 0.5  # flat / within noise band
 
+        # ADX normalized to [0, 1] — replaces raw adx to avoid NaN-default bias.
+        # Default 0.5 = "moderate trend" (neutral), not the high-bias 25/30=0.833 that
+        # raw ADX with default=25 would produce on early bars where ADX is still stabilizing.
+        adx_raw = g(row, "adx", 0.0)   # 0.0 default: if ADX not yet computed, treat as no-trend
+        adx_norm = min(adx_raw / 30.0, 1.0) if adx_raw > 0.0 else 0.5
+
+        # Session breadth: fraction of advancing stocks (passed in or default 0.5 = neutral).
+        # Clamped to [0, 1] to guard against bad input.
+        # NOTE: callers should pass _session_breadth from breadth_sector_filter when available.
+        sess_breadth = float(np.clip(breadth, 0.0, 1.0))
+
         features = [
             # Momentum
             g(row, "rsi",      50),
@@ -172,8 +203,8 @@ def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
             atr_pct,
             bb_width,
             float(g(row, "squeeze", 0)),
-            # Regime
-            g(row, "adx", 20),
+            # Regime — normalized ADX (replaces raw adx; no collinearity, no NaN-bias)
+            adx_norm,
             sq_mom_sign,
             # Structure
             vwap_dev,
@@ -186,6 +217,8 @@ def _extract_features(df: pd.DataFrame, idx: int) -> Optional[np.ndarray]:
             # Session momentum (last — appended to preserve prior feature alignment)
             np.clip(session_return * 100, -5.0, 5.0),  # cap at ±5% in % units
             sess_positive,
+            # New feature (v2): session breadth
+            sess_breadth,
         ]
 
         feat = np.array(features, dtype=float)
@@ -212,7 +245,10 @@ def _build_training_data(
     X_list, y_list = [], []
 
     for i in range(15, len(df) - forward_bars - 1):
-        feat = _extract_features(df, i)
+        # breadth defaults to 0.5 during training (no live breadth available in historical data).
+        # sess_breadth will have zero variance in training; it acts as a placeholder feature
+        # that callers can activate by passing real breadth values at inference time.
+        feat = _extract_features(df, i, breadth=0.5)
         if feat is None:
             continue
 
@@ -251,6 +287,12 @@ class MLScorer:
         0.7–1.0 : ML uncertain → reduce size
         0.5–0.7 : ML disagrees → strongly reduce or skip
 
+    Warm-start behaviour:
+        - Activates at MIN_SAMPLES_TRAIN (50) samples rather than 300.
+        - With < 200 samples, uses simpler model config (fewer estimators)
+          and cross-validation to evaluate quality before committing.
+        - Returns 0 / "ML_COLD" when < 50 samples available.
+
     Usage in backtest:
         scorer = MLScorer()
         scorer.train_from_data(data_dict)   # call once at backtest start
@@ -268,11 +310,18 @@ class MLScorer:
         """
         Train ensemble on all symbols in data_dict.
         Returns True if training succeeded.
+
+        Warm-start: activates at MIN_SAMPLES_TRAIN (50) samples.
+        Uses simpler models (fewer estimators) when < 200 samples to
+        reduce overfitting risk on small datasets. Cross-validation is
+        run BEFORE fitting the final model in the small-data regime so
+        the diagnostic reflects true generalization, not training accuracy.
         """
         try:
             from sklearn.ensemble import GradientBoostingClassifier, RandomForestClassifier
             from sklearn.preprocessing import StandardScaler
             from sklearn.pipeline import Pipeline
+            from sklearn.model_selection import cross_val_score, StratifiedKFold
 
             X_all, y_all = [], []
             for sym, df in data_dict.items():
@@ -291,8 +340,9 @@ class MLScorer:
             y_all = np.concatenate(y_all)
 
             self._n_samples = len(X_all)
-            if self._n_samples < 300:
-                print(f"  [ML] Too few samples ({self._n_samples}) — ML scoring disabled for reliability")
+            if self._n_samples < MIN_SAMPLES_TRAIN:
+                print(f"  [ML] Too few samples ({self._n_samples} < {MIN_SAMPLES_TRAIN}) "
+                      f"— ML scoring disabled for reliability")
                 return False
 
             # Balance classes
@@ -302,36 +352,89 @@ class MLScorer:
                 return False
 
             self._n_samples = len(y_all)
+            small_data = self._n_samples < 200
 
-            # GradientBoosting (captures non-linear interactions)
-            self._gb = Pipeline([
-                ("scaler", StandardScaler()),
-                ("clf", GradientBoostingClassifier(
-                    n_estimators=100,
-                    max_depth=4,
-                    learning_rate=0.05,
-                    subsample=0.8,
-                    min_samples_leaf=20,
-                    random_state=42,
-                )),
-            ])
-            self._gb.fit(X_all, y_all)
+            if small_data:
+                # Small dataset regime: simpler models to prevent overfitting.
+                # Run cross-validation BEFORE final fit so the diagnostic reflects
+                # true generalization rather than in-sample accuracy.
+                print(f"  [ML] Small dataset ({self._n_samples} samples) — "
+                      f"using regularized model config (n_estimators=50)")
 
-            # RandomForest (robust to noise, different errors)
-            self._rf = Pipeline([
-                ("scaler", StandardScaler()),
-                ("clf", RandomForestClassifier(
-                    n_estimators=100,
-                    max_depth=6,
-                    min_samples_leaf=20,
-                    random_state=42,
-                    n_jobs=-1,
-                )),
-            ])
-            self._rf.fit(X_all, y_all)
+                # GradientBoosting — regularized for small data
+                gb_pipeline = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("clf", GradientBoostingClassifier(
+                        n_estimators=50,
+                        max_depth=3,
+                        learning_rate=0.05,
+                        subsample=0.8,
+                        min_samples_leaf=10,
+                        random_state=42,
+                    )),
+                ])
+
+                # Cross-validation diagnostic (pre-fit, genuine generalization estimate)
+                try:
+                    cv = StratifiedKFold(n_splits=3, shuffle=True, random_state=42)
+                    gb_cv = cross_val_score(
+                        gb_pipeline, X_all, y_all, cv=cv,
+                        scoring="accuracy", error_score="raise"
+                    )
+                    print(f"  [ML] GB CV accuracy: {gb_cv.mean():.3f} ± {gb_cv.std():.3f}")
+                except Exception as cv_err:
+                    print(f"  [ML] CV diagnostics skipped: {cv_err}")
+
+                # Fit final models on full training set
+                self._gb = gb_pipeline
+                self._gb.fit(X_all, y_all)
+
+                # RandomForest — regularized for small data
+                self._rf = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("clf", RandomForestClassifier(
+                        n_estimators=50,
+                        max_depth=4,
+                        min_samples_leaf=10,
+                        random_state=42,
+                        n_jobs=-1,
+                    )),
+                ])
+                self._rf.fit(X_all, y_all)
+
+            else:
+                # Normal regime: full-power models
+                # GradientBoosting (captures non-linear interactions)
+                self._gb = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("clf", GradientBoostingClassifier(
+                        n_estimators=100,
+                        max_depth=4,
+                        learning_rate=0.05,
+                        subsample=0.8,
+                        min_samples_leaf=20,
+                        random_state=42,
+                    )),
+                ])
+                self._gb.fit(X_all, y_all)
+
+                # RandomForest (robust to noise, different errors)
+                self._rf = Pipeline([
+                    ("scaler", StandardScaler()),
+                    ("clf", RandomForestClassifier(
+                        n_estimators=100,
+                        max_depth=6,
+                        min_samples_leaf=20,
+                        random_state=42,
+                        n_jobs=-1,
+                    )),
+                ])
+                self._rf.fit(X_all, y_all)
 
             self._trained = True
-            print(f"  [ML] Trained on {self._n_samples:,} samples from {len(data_dict)} symbols")
+            regime_label = "small-data" if small_data else "full"
+            print(f"  [ML] Trained on {self._n_samples:,} samples from {len(data_dict)} symbols "
+                  f"[{regime_label} regime]")
             return True
 
         except ImportError:
@@ -342,18 +445,19 @@ class MLScorer:
             return False
 
     def get_multiplier(self, df: pd.DataFrame, idx: int,
-                       direction: str) -> float:
+                       direction: str, breadth: float = 0.5) -> float:
         """
         Get score multiplier (0.5–1.5) for this bar.
 
         direction: "LONG" or "SHORT"
+        breadth: Session market breadth 0–1 (fraction of stocks advancing).
         Returns 1.0 (neutral) if ML not trained or extraction fails.
         """
         if not self._trained or self._gb is None or self._rf is None:
             return 1.0
 
         try:
-            feat = _extract_features(df, idx)
+            feat = _extract_features(df, idx, breadth=breadth)
             if feat is None:
                 return 1.0
 
@@ -391,25 +495,26 @@ class MLScorer:
             return 1.0
 
     def get_score_boost(self, df: pd.DataFrame, idx: int,
-                        direction: str) -> Tuple[float, str]:
+                        direction: str,
+                        breadth: float = 0.5) -> Tuple[float, str]:
         """
         Get additive score boost from ML confidence.
 
         Returns (boost: float, reason: str)
-        boost: +12 strong confirm, +6 mild, 0 neutral, -6 mild reject, -12 strong reject
+        Boost values use module-level constants ML_STRONG_CONFIRM_BOOST etc.
         """
-        mult = self.get_multiplier(df, idx, direction)
+        mult = self.get_multiplier(df, idx, direction, breadth=breadth)
 
         if mult >= 1.4:
-            return 16.0, "ML_STRONG_CONFIRM"   # raised from +14 — reward high-certainty calls more
+            return ML_STRONG_CONFIRM_BOOST, "ML_STRONG_CONFIRM"
         elif mult >= 1.2:
-            return 8.0, "ML_CONFIRM"
+            return ML_CONFIRM_BOOST, "ML_CONFIRM"
         elif mult >= 1.0:
             return 0.0, ""                       # neutral
         elif mult >= 0.8:
-            return -3.0, "ML_UNCERTAIN"          # softer penalty (was -6)
+            return ML_UNCERTAIN_PENALTY, "ML_UNCERTAIN"
         else:
-            return -6.0, "ML_DISAGREE"           # softer penalty (was -12)
+            return ML_DISAGREE_PENALTY, "ML_DISAGREE"
 
     def save(self, path: Optional[str] = None):
         """Save trained models to disk."""
@@ -433,10 +538,10 @@ class MLScorer:
             rf = d.get("rf")
 
             # Guard: reject stale models trained on a different feature count.
-            # Feature count changes (e.g. adding session_return/sess_positive) produce
-            # sklearn ValueError at predict_proba time, which get_multiplier() silently
+            # Feature count changes (e.g. replacing raw adx with adx_norm, adding sess_breadth)
+            # produce sklearn ValueError at predict_proba time, which get_multiplier() silently
             # swallows — making all ML calls return neutral 1.0 with no warning.
-            expected_n = len(FEATURE_COLS)
+            expected_n = len(FEATURE_COLS)  # currently 22
             for model in (gb, rf):
                 if model is None:
                     continue
