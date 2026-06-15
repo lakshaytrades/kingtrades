@@ -481,31 +481,30 @@ def _score_bar(row: pd.Series, prev: pd.Series,
             score_short += 2
 
     # ── Signal 5: Volume-direction confirmation (CONTEXT ONLY) ─────────────────
-    # VOL signals are CONFIRMERS, not primary drivers. Score capped at 6 so they
-    # cannot trigger entries alone (MIN_SCORE=10). A 2× blow-off bar is often
-    # exhaustion — buying it directly is top-buying; only useful as confirmation.
-    # VOL_BEAR on a bar we'd want to go LONG = hard contradiction → flagged here,
-    # blocked in the engine entry gate.
+    # VOL is a CONFIRMER only — not a primary signal. Intentionally UNLABELED so
+    # it cannot satisfy the quality gate alone. High-rvol bars are often exhaustion
+    # (blow-off top for VOL_BULL; capitulation low for VOL_BEAR) — dangerous as entry.
+    # bar_bear is captured here for the engine's entry hard-block below.
     bar_bull = c > o and (c - o) > (h - lo) * 0.3   # Strong bullish body
     bar_bear = c < o and (o - c) > (h - lo) * 0.3   # Strong bearish body
     if rvol > 2.0:
-        if bar_bull:    score_long  += 6; reasons.append(f"VOL_BULL_{rvol:.1f}x")
-        elif bar_bear:  score_short += 6; reasons.append(f"VOL_BEAR_{rvol:.1f}x")
+        if bar_bull:    score_long  += 5  # unlabeled: context boost only
+        elif bar_bear:  score_short += 5
     elif rvol > 1.5:
-        if bar_bull:    score_long  += 3
-        elif bar_bear:  score_short += 3
+        if bar_bull:    score_long  += 2
+        elif bar_bear:  score_short += 2
 
-    # ── Signal 6: Today's-open momentum (CONTEXT ONLY) ──────────────────────────
-    # Threshold raised: 0.5% from open is normal drift, not momentum. Only 1.5%+
-    # shows real intraday directional commitment. Score capped at 6 (context only).
+    # ── Signal 6: Today's-open momentum (CONTEXT ONLY, UNLABELED) ───────────────
+    # Unlabeled: pure DAY_MOM entries have 0% WR in all backtest periods.
+    # Kept as a small context nudge only; quality gate blocks unlabeled entries.
     day_open = float(row.get("day_open", 0) or 0)
     if day_open > 0:
         from_open = (c - day_open) / day_open
-        if from_open > 0.015:    score_long  += 6; reasons.append(f"DAY_MOM(+{from_open*100:.1f}%)")
-        elif from_open > 0.010:  score_long  += 3
+        if from_open > 0.015:    score_long  += 3   # unlabeled: pure DAY_MOM = 0% WR
+        elif from_open > 0.010:  score_long  += 2
         elif from_open > 0.005:  score_long  += 1
-        if from_open < -0.015:   score_short += 6; reasons.append(f"DAY_MOM({from_open*100:.1f}%)")
-        elif from_open < -0.010: score_short += 3
+        if from_open < -0.015:   score_short += 3
+        elif from_open < -0.010: score_short += 2
         elif from_open < -0.005: score_short += 1
 
     # ── ADX gate: kill choppy markets (multiplier only, not a signal) ────────
@@ -1796,8 +1795,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Skip new entries during lunch lull (narrow to 30 min)
             if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Allow entries from 9:45 AM — pre-filter handles 9:15-9:44 (OPENING_BLACKOUT)
-            if now_ts.time() < dtime(9, 45):
+            # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -1974,6 +1973,20 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < 8.0:
                 continue
+
+            # Hard block: strong BEARISH bar → never go LONG (fighting the tape)
+            try:
+                _bc  = float(row.get("close", 0) or 0)
+                _bo  = float(row.get("open",  0) or 0)
+                _bh  = float(row.get("high",  0) or 0)
+                _blo = float(row.get("low",   0) or 0)
+                _brv = float(row.get("rvol", 0.0) or 0.0)
+                _brange = _bh - _blo
+                if (_brange > 0 and _bc > 0 and _bo > 0 and direction == "LONG"
+                        and (_bo - _bc) > _brange * 0.3 and _brv > 1.3):
+                    continue  # Strong selling bar — entry would be fighting tape
+            except Exception:
+                pass
 
             # ── New strategies boost (called with full DataFrame context) ─────
             try:
@@ -2264,8 +2277,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
-            if reason and not any(q in reason for q in _QUALITY_SIGS):
-                if abs(net_score) < 20:
+            if not any(q in reason for q in _QUALITY_SIGS):
+                if abs(net_score) < 22:
                     continue  # No named high-WR setup and score not exceptional
             # ────────────────────────────────────────────────────────────────
 
@@ -2406,32 +2419,32 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     # strategies_india.py.  Order matters: first match wins, so put the most
     # diagnostic / highest-value signals first.
     _STRAT_KEYS = [
-        # ORB signals (ORB_BULL_CONFIRM, ORB_BULL_WEAK, ORB_BEAR_CONFIRM, ORB_BEAR_WEAK)
-        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK", "ORB_BREAK",
-        # EMA stack signals (EMA_BULL_STACK, EMA_BEAR_STACK)
+        # ── High-WR named setups (new strategies — highest priority in attribution)
+        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",        # 71% WR
+        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",             # 60-65% WR
+        "ORB_BULL_PARTIAL", "ORB_BEAR_PARTIAL",
+        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+        "ATR_SQUEEZE_BREAKOUT",
+        "INTRADAY_MOM_UP", "INTRADAY_MOM_DN",
+        # ── _score_bar named signals
+        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
-        # MACD signals (MACD_XOVER_UP, MACD_XOVER_DN) — "MACD_XOVER" matches both
         "MACD_XOVER",
-        # VWAP signals
-        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT", "VWAP_RECLAIM_LONG",
+        "VWAP_RECLAIM", "VWAP_REJECT",                  # transition signals
+        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT",
         "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
-        # Volume momentum (VOL_BULL_1.5x, VOL_BEAR_2.0x, etc.)
-        "VOL_BULL", "VOL_BEAR",
-        # Session drive signals
+        # ── Strategies from strategy block
+        "CONFIRMED_MOMENTUM",
+        "PULLBACK_CONT", "RANGE_EXP",
+        "MOMENTUM_IGNITION", "ACCUM", "DISTRIB",
+        "LIQ_GRAB", "INSIDE_BAR",
+        # ── Context/confirmation signals
         "SESSION_DRIVE_LONG", "SESSION_DRIVE_SHORT", "SESSION_DRIVE",
-        # Day momentum
-        "DAY_MOM",
-        # Session breadth
         "SESSION_BULL", "SESSION_BEAR",
-        # Confirmation signals
         "STRONG_CONFIRM", "MOD_CONFIRM",
-        # Market bias
         "MKTBIAS",
-        # Named strategies
-        "LIQ_GRAB", "INSIDE_BAR", "SQUEEZE_FIRE",
         "BOS_BULL", "BOS_BEAR",
         "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-        "OBI_BULL", "OBI_BEAR",
         "ML_STRONG", "ML_CONFIRM",
         "CONFIRMED_BULL", "CONFIRMED_BEAR",
     ]
@@ -3196,8 +3209,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Narrow lunch lull to 30 min only
             if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Opening blackout: first 45 min is maximum noise (0% WR on 09:45-10:00 too)
-            if now_ts.time() < dtime(10, 0):
+            # Opening blackout: 10:00-11:30 has only 9% WR — extend to 10:30
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3355,6 +3368,20 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < 8.0:
                 continue
+
+            # Hard block: strong BEARISH bar → never go LONG (fighting the tape)
+            try:
+                _bc  = float(row.get("close", 0) or 0)
+                _bo  = float(row.get("open",  0) or 0)
+                _bh  = float(row.get("high",  0) or 0)
+                _blo = float(row.get("low",   0) or 0)
+                _brv = float(row.get("rvol", 0.0) or 0.0)
+                _brange = _bh - _blo
+                if (_brange > 0 and _bc > 0 and _bo > 0 and direction == "LONG"
+                        and (_bo - _bc) > _brange * 0.3 and _brv > 1.3):
+                    continue  # Strong selling bar — entry would be fighting tape
+            except Exception:
+                pass
 
             try:
                 from strategies_india import (ema21_pullback_signal,
@@ -3665,8 +3692,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB")
-            if reason and not any(q in reason for q in _QUALITY_SIGS):
-                if abs(net_score) < 20:
+            if not any(q in reason for q in _QUALITY_SIGS):
+                if abs(net_score) < 22:
                     continue  # No named high-WR setup and score not exceptional
             # ────────────────────────────────────────────────────────────────
 
@@ -3785,32 +3812,32 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     # strategies_india.py.  Order matters: first match wins, so put the most
     # diagnostic / highest-value signals first.
     _STRAT_KEYS = [
-        # ORB signals (ORB_BULL_CONFIRM, ORB_BULL_WEAK, ORB_BEAR_CONFIRM, ORB_BEAR_WEAK)
-        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK", "ORB_BREAK",
-        # EMA stack signals (EMA_BULL_STACK, EMA_BEAR_STACK)
+        # ── High-WR named setups (new strategies — highest priority in attribution)
+        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",        # 71% WR
+        "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",             # 60-65% WR
+        "ORB_BULL_PARTIAL", "ORB_BEAR_PARTIAL",
+        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
+        "ATR_SQUEEZE_BREAKOUT",
+        "INTRADAY_MOM_UP", "INTRADAY_MOM_DN",
+        # ── _score_bar named signals
+        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
-        # MACD signals (MACD_XOVER_UP, MACD_XOVER_DN) — "MACD_XOVER" matches both
         "MACD_XOVER",
-        # VWAP signals
-        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT", "VWAP_RECLAIM_LONG",
+        "VWAP_RECLAIM", "VWAP_REJECT",                  # transition signals
+        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT",
         "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
-        # Volume momentum (VOL_BULL_1.5x, VOL_BEAR_2.0x, etc.)
-        "VOL_BULL", "VOL_BEAR",
-        # Session drive signals
+        # ── Strategies from strategy block
+        "CONFIRMED_MOMENTUM",
+        "PULLBACK_CONT", "RANGE_EXP",
+        "MOMENTUM_IGNITION", "ACCUM", "DISTRIB",
+        "LIQ_GRAB", "INSIDE_BAR",
+        # ── Context/confirmation signals
         "SESSION_DRIVE_LONG", "SESSION_DRIVE_SHORT", "SESSION_DRIVE",
-        # Day momentum
-        "DAY_MOM",
-        # Session breadth
         "SESSION_BULL", "SESSION_BEAR",
-        # Confirmation signals
         "STRONG_CONFIRM", "MOD_CONFIRM",
-        # Market bias
         "MKTBIAS",
-        # Named strategies
-        "LIQ_GRAB", "INSIDE_BAR", "SQUEEZE_FIRE",
         "BOS_BULL", "BOS_BEAR",
         "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-        "OBI_BULL", "OBI_BEAR",
         "ML_STRONG", "ML_CONFIRM",
         "CONFIRMED_BULL", "CONFIRMED_BEAR",
     ]
