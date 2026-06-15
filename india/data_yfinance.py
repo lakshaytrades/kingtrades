@@ -20,14 +20,16 @@ NSE_SUFFIX = ".NS"
 
 # Ordered by intraday momentum quality: banking/auto/metals have strongest 1h trends.
 # IT stocks (TCS, INFY, WIPRO) placed at back — they trend slowly intraday.
-# Default backtest uses first 20: all high-momentum sectors.
+# Default backtest uses first 40: covers high-momentum sectors across NSE.
+# NOTE: TATAMOTORS replaced with M&M (Mahindra & Mahindra, Yahoo: M&M.NS) —
+#       TATAMOTORS.NS returns HTTP 404 on Yahoo Finance.
 DEFAULT_SYMBOLS = [
     # Banking & Finance (strong intraday momentum, institutional volume)
     "HDFCBANK", "ICICIBANK", "SBIN", "AXISBANK", "KOTAKBANK", "BAJFINANCE", "INDUSINDBK",
     # Energy & Commodities (trending, volume-driven)
     "RELIANCE", "ONGC", "BPCL", "COALINDIA",
-    # Auto (momentum sector, strong trends)
-    "TATAMOTORS", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT",
+    # Auto (momentum sector, strong trends) — M&M replaces TATAMOTORS (404 on Yahoo)
+    "M&M", "MARUTI", "BAJAJ-AUTO", "HEROMOTOCO", "EICHERMOT",
     # Metals & Infrastructure (high beta, strong momentum)
     "TATASTEEL", "JSWSTEEL", "HINDALCO", "LT",
     # IT (slower intraday momentum — move to back)
@@ -131,9 +133,16 @@ def load_nse_data_yfinance(
 
         except Exception as e:
             if verbose:
-                print(f"  [{i+1}/{total}] {sym}: error - {e}")
+                print(f"  [{i+1}/{total}] {sym}: WARNING: skipped due to error - {e}")
             continue
 
+    loaded = len(result)
+    if verbose:
+        print(f"  Loaded {loaded}/{total} symbols successfully.")
+        # Only warn when the requested universe is large enough that 30+ is expected
+        if total >= 30 and loaded < 30:
+            print(f"  WARNING: Only {loaded} symbols loaded (target: 30+). "
+                  "Some symbols may be unavailable on Yahoo Finance.")
     return result
 
 
