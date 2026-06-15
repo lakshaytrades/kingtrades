@@ -2591,11 +2591,20 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         except Exception:
             pass
 
+    # Detect input bar interval before building resamples
+    # 1h input: resampling to 15min repeats the same bars (no real sub-bars) → fake 15m data
+    # doubles the TF-alignment penalty in run_backtest_from_data; skip it for 1h.
+    _pre_vals = list(data.values())
+    _is_5m_input = False
+    if _pre_vals and len(_pre_vals[0]) > 1:
+        _bm_pre = (_pre_vals[0].index[1] - _pre_vals[0].index[0]).total_seconds() / 60
+        _is_5m_input = (_bm_pre <= 7)
+
     # Pre-compute 15-min and 1-hour resamples once per symbol
     data_15m: Dict[str, pd.DataFrame] = {}
     data_1h:  Dict[str, pd.DataFrame] = {}
     for sym, df in data.items():
-        data_15m[sym] = _resample(df, "15min")
+        data_15m[sym] = _resample(df, "15min") if _is_5m_input else None
         data_1h[sym]  = _resample(df, "1h")
 
     # ── ML Scorer ────────────────────────────────────────────────────────────
@@ -3108,8 +3117,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Narrow lunch lull to 30 min only
             if dtime(13, 0) <= now_ts.time() <= dtime(13, 30):
                 continue
-            # Allow entries from 9:45 AM — pre-filter handles 9:15-9:44 (OPENING_BLACKOUT)
-            if now_ts.time() < dtime(9, 45):
+            # Opening blackout: first 45 min is maximum noise (0% WR on 09:45-10:00 too)
+            if now_ts.time() < dtime(10, 0):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3157,6 +3166,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 continue
 
+            _bull_bars = 0; _bear_bars = 0
             try:
                 _today_date = now_ts.date()
                 _today_bars = df[(df.index.date == _today_date) & (df.index <= now_ts)]
@@ -3164,13 +3174,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     _last4 = _today_bars.iloc[-4:]
                     _bull_bars = int((_last4["close"] > _last4["open"]).sum())
                     _bear_bars = int((_last4["close"] < _last4["open"]).sum())
-                    if _bull_bars >= 3 and direction == "SHORT":
-                        net_score += 12
-                        reason = (reason + "+TODAY_BULL_PENALIZE_SHORT") if reason else "TODAY_BULL_PENALIZE_SHORT"
-                    elif _bear_bars >= 3 and direction == "LONG":
-                        net_score -= 12
-                        reason = (reason + "+TODAY_BEAR_PENALIZE_LONG") if reason else "TODAY_BEAR_PENALIZE_LONG"
-                    elif _bull_bars >= 3 and direction == "LONG":
+                    # Alignment BONUS only — counter-trend hard gate is applied AFTER all session/ML
+                    # boosts so SESSION_BULL cannot rescue a falling-knife LONG entry
+                    if _bull_bars >= 3 and direction == "LONG":
                         net_score += 6
                         reason = (reason + "+TODAY_ALIGN_BULL") if reason else "TODAY_ALIGN_BULL"
                     elif _bear_bars >= 3 and direction == "SHORT":
@@ -3427,12 +3433,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # Use abs(net_score) so SHORT signals (negative) also benefit
                     _abs_score = abs(net_score)
                     if _abs_score >= 18:
-                        _sr_thresh = 0.0001 if _is_5m_data else 0.0002   # near-zero: self-confirming signal
+                        _sr_thresh = 0.0001   # strong: near-zero — signal is self-confirming
                     elif _abs_score >= 14:
-                        _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
+                        _sr_thresh = 0.0003 if _is_5m_data else 0.0002   # medium: 0.03%/0.02%
                     else:
-                        _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.1 if _abs_score >= 18 else 1.3  # high-conviction lower bar; base needs 1.3× to confirm institutional participation
+                        _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
+                    # RVOL: 5m needs institutional breakout participation (1.3×);
+                    # 1h is calmer — normal hourly range is 0.8-1.2× so 1.1× is already elevated
+                    if _is_5m_data:
+                        _rvol_min = 1.1 if _abs_score >= 18 else 1.3
+                    else:
+                        _rvol_min = 1.0 if _abs_score >= 18 else 1.1
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
@@ -3446,6 +3457,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if _rvol_g < _rvol_min:
                             continue
+                        # ORB_BULL_CONFIRM: NSE ORB breakouts are trap-prone without real volume
+                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.8:
+                            continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
                             net_score -= 5  # EMA bearish: soft penalty, not hard block
@@ -3458,6 +3472,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         elif not _ema_bearish_g and _sess_ret_g > _bonus_thresh and _rvol_g > 1.5:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
+                        # EMA_BULL_STACK: price must be near EMA21 — chasing extended moves loses
+                        if "EMA_BULL_STACK" in reason and _e21_g > 0 and _close_g > 0:
+                            if (_close_g - _e21_g) / _e21_g > 0.005:  # >0.5% above EMA21 = too extended
+                                continue
                     elif direction == "SHORT":
                         # SHORT: stock must be down in signal direction
                         if not _orb_bypass and _sess_ret_g > -_sr_thresh:
@@ -3493,6 +3511,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         reason = (reason + "+MKTBIAS_CONTRA") if reason else "MKTBIAS_CONTRA"
             except Exception:
                 pass
+
+            # Hard today-bar gate: applied AFTER all session/ML boosts so SESSION_BULL
+            # cannot rescue a falling-knife LONG (3+ recent bear bars = local downtrend).
+            if _bear_bars >= 3 and direction == "LONG":
+                continue
+            if _bull_bars >= 3 and direction == "SHORT":
+                continue
 
             if abs(net_score) < _eff_min_score:
                 continue
