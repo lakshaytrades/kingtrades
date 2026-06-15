@@ -2167,27 +2167,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Bull-day filter: only enter on sessions where breadth ≥ 50%
-            if BULL_DAY_ONLY and _session_breadth < 0.50:
+            # Soft breadth floor: skip entries in confirmed bear sessions only
+            if BULL_DAY_ONLY and _session_breadth < 0.40:
                 continue
 
-            # ── Entry quality gates ──────────────────────────────────────────
+            # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
-                _bar_t  = now_ts.time()
-                _rsi_q  = float(row.get("rsi", 50) or 50)
-                _ema9_q = float(row.get("ema9", 0) or 0)
-                _cls_q  = float(row.get("close", 0) or 0)
-                # RSI overbought — skip LONG when stock already extended
-                if direction == "LONG" and _rsi_q > 65:
-                    continue
-                # ORB time gate — breakout entry is noise after 10:15 AM
-                if ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason):
-                    if _bar_t > dtime(10, 15):
-                        continue
-                # EMA stack pullback gate — require price within 1.5% of EMA9
-                if "EMA_BULL_STACK" in reason and "ORB" not in reason:
-                    if _ema9_q > 0 and _cls_q > _ema9_q * 1.015:
-                        continue  # extended above EMA9; wait for pullback
+                _rsi_q = float(row.get("rsi", 50) or 50)
+                if direction == "LONG" and _rsi_q > 68:
+                    continue  # overbought — wait for pullback
             except Exception:
                 pass
             # ────────────────────────────────────────────────────────────────
@@ -2198,9 +2186,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 2.0 * atr     # 2×ATR SL — room for intraday noise before real move
-            t1_dist = 3.0 * atr     # 1.5R first target
-            t2_dist = 6.0 * atr     # 3R runner
+            sl_dist = 1.5 * atr     # tighter SL — limits loss per trade
+            t1_dist = 2.0 * atr     # closer T1 (1.33R) — actually gets hit intraday
+            t2_dist = 4.0 * atr     # 2.67R runner
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3498,27 +3486,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Bull-day filter: only enter on sessions where breadth ≥ 50%
-            if BULL_DAY_ONLY and _session_breadth < 0.50:
+            # Soft breadth floor: skip entries in confirmed bear sessions only
+            if BULL_DAY_ONLY and _session_breadth < 0.40:
                 continue
 
-            # ── Entry quality gates ──────────────────────────────────────────
+            # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
-                _bar_t  = now_ts.time()
-                _rsi_q  = float(row.get("rsi", 50) or 50)
-                _ema9_q = float(row.get("ema9", 0) or 0)
-                _cls_q  = float(row.get("close", 0) or 0)
-                # RSI overbought — skip LONG when stock already extended
-                if direction == "LONG" and _rsi_q > 65:
-                    continue
-                # ORB time gate — breakout entry is noise after 10:15 AM
-                if ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason):
-                    if _bar_t > dtime(10, 15):
-                        continue
-                # EMA stack pullback gate — require price within 1.5% of EMA9
-                if "EMA_BULL_STACK" in reason and "ORB" not in reason:
-                    if _ema9_q > 0 and _cls_q > _ema9_q * 1.015:
-                        continue  # extended above EMA9; wait for pullback
+                _rsi_q = float(row.get("rsi", 50) or 50)
+                if direction == "LONG" and _rsi_q > 68:
+                    continue  # overbought — wait for pullback
             except Exception:
                 pass
             # ────────────────────────────────────────────────────────────────
@@ -3528,9 +3504,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 2.0 * atr if long else entry + 2.0 * atr   # 2×ATR SL — room for intraday noise
-            t1    = entry + 3.0 * atr if long else entry - 3.0 * atr   # 1.5R first target
-            t2    = entry + 6.0 * atr if long else entry - 6.0 * atr   # 3R runner
+            sl    = entry - 1.5 * atr if long else entry + 1.5 * atr   # tighter SL
+            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr   # closer T1 (1.33R)
+            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr   # 2.67R runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
