@@ -1316,6 +1316,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         if _loop_prev_day != _today:
             global _rolling_win_halt
             _rolling_win_halt = False
+            _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _loop_prev_day = _today
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
@@ -2279,11 +2280,39 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             recent_trades.append(pnl / max(capital, 1e-9))
 
     # Build strategy attribution from trade reasons
-    _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
-                   "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
-                   "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM",
-                   "CONFIRMED_BULL_MOMENTUM", "CONFIRMED_BEAR_MOMENTUM"]
+    # Keys must be substrings of actual reason strings emitted by _score_bar /
+    # strategies_india.py.  Order matters: first match wins, so put the most
+    # diagnostic / highest-value signals first.
+    _STRAT_KEYS = [
+        # ORB signals (ORB_BULL_CONFIRM, ORB_BULL_WEAK, ORB_BEAR_CONFIRM, ORB_BEAR_WEAK)
+        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK", "ORB_BREAK",
+        # EMA stack signals (EMA_BULL_STACK, EMA_BEAR_STACK)
+        "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
+        # MACD signals (MACD_XOVER_UP, MACD_XOVER_DN) — "MACD_XOVER" matches both
+        "MACD_XOVER",
+        # VWAP signals
+        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT", "VWAP_RECLAIM_LONG",
+        "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
+        # Volume momentum (VOL_BULL_1.5x, VOL_BEAR_2.0x, etc.)
+        "VOL_BULL", "VOL_BEAR",
+        # Session drive signals
+        "SESSION_DRIVE_LONG", "SESSION_DRIVE_SHORT", "SESSION_DRIVE",
+        # Day momentum
+        "DAY_MOM",
+        # Session breadth
+        "SESSION_BULL", "SESSION_BEAR",
+        # Confirmation signals
+        "STRONG_CONFIRM", "MOD_CONFIRM",
+        # Market bias
+        "MKTBIAS",
+        # Named strategies
+        "LIQ_GRAB", "INSIDE_BAR", "SQUEEZE_FIRE",
+        "BOS_BULL", "BOS_BEAR",
+        "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
+        "OBI_BULL", "OBI_BEAR",
+        "ML_STRONG", "ML_CONFIRM",
+        "CONFIRMED_BULL", "CONFIRMED_BEAR",
+    ]
     for t in trades:
         r = getattr(t, "reason", "") or ""
         matched = False
@@ -2615,6 +2644,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         if _loop_prev_day2 != _today2:
             global _rolling_win_halt
             _rolling_win_halt = False
+            _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _loop_prev_day2 = _today2
 
         # ── Session breadth: % of symbols above today's open ─────────────────
@@ -3508,11 +3538,40 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             _win_history.append(1 if pnl > 0 else 0)
             recent_trades.append(pnl / max(capital, 1e-9))
 
-    _STRAT_KEYS = ["EMA21_PULLBACK", "LIQ_GRAB", "INSIDE_BAR", "ORB_BREAK",
-                   "SQUEEZE_FIRE", "BOS_BULL", "BOS_BEAR", "MACD_XOVER",
-                   "VWAP_REVERSION", "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
-                   "OBI_BULL", "OBI_BEAR", "ML_STRONG", "ML_CONFIRM",
-                   "CONFIRMED_BULL_MOMENTUM", "CONFIRMED_BEAR_MOMENTUM"]
+    # Build strategy attribution from trade reasons
+    # Keys must be substrings of actual reason strings emitted by _score_bar /
+    # strategies_india.py.  Order matters: first match wins, so put the most
+    # diagnostic / highest-value signals first.
+    _STRAT_KEYS = [
+        # ORB signals (ORB_BULL_CONFIRM, ORB_BULL_WEAK, ORB_BEAR_CONFIRM, ORB_BEAR_WEAK)
+        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK", "ORB_BREAK",
+        # EMA stack signals (EMA_BULL_STACK, EMA_BEAR_STACK)
+        "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
+        # MACD signals (MACD_XOVER_UP, MACD_XOVER_DN) — "MACD_XOVER" matches both
+        "MACD_XOVER",
+        # VWAP signals
+        "VWAP_REVERSION_LONG", "VWAP_REVERSION_SHORT", "VWAP_RECLAIM_LONG",
+        "ABOVE_VWAP", "BELOW_VWAP", "VWAP_REVERSION", "VWAP_BOUNCE",
+        # Volume momentum (VOL_BULL_1.5x, VOL_BEAR_2.0x, etc.)
+        "VOL_BULL", "VOL_BEAR",
+        # Session drive signals
+        "SESSION_DRIVE_LONG", "SESSION_DRIVE_SHORT", "SESSION_DRIVE",
+        # Day momentum
+        "DAY_MOM",
+        # Session breadth
+        "SESSION_BULL", "SESSION_BEAR",
+        # Confirmation signals
+        "STRONG_CONFIRM", "MOD_CONFIRM",
+        # Market bias
+        "MKTBIAS",
+        # Named strategies
+        "LIQ_GRAB", "INSIDE_BAR", "SQUEEZE_FIRE",
+        "BOS_BULL", "BOS_BEAR",
+        "OPENING_DRIVE", "GAP_GO", "SUPERTREND",
+        "OBI_BULL", "OBI_BEAR",
+        "ML_STRONG", "ML_CONFIRM",
+        "CONFIRMED_BULL", "CONFIRMED_BEAR",
+    ]
     for t in trades:
         r = getattr(t, "reason", "") or ""
         matched = False
