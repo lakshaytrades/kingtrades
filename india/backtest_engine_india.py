@@ -1813,10 +1813,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: _pre_filter already blocks 9:15-9:44.
-            # 9:45 is the effective gate — MACD/EMA/VWAP change-of-state signals
-            # fire at 9:45-10:30 and were invisible with the old 10:30 blackout.
-            if now_ts.time() < dtime(9, 45):
+            # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
+            # MACD/EMA change-of-state signals that fire in this window are caught by the
+            # bypass override when they re-trigger later mid-morning (10:30-13:00).
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3331,10 +3331,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: _pre_filter already blocks 9:15-9:44.
-            # 9:45 is the effective gate — MACD/EMA/VWAP change-of-state signals
-            # fire at 9:45-10:30 and were invisible with the old 10:30 blackout.
-            if now_ts.time() < dtime(9, 45):
+            # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
+            # MACD/EMA change-of-state signals that fire in this window are caught by the
+            # bypass override when they re-trigger later mid-morning (10:30-13:00).
+            if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
                 continue
