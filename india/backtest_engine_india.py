@@ -681,9 +681,9 @@ def _pre_filter(row: pd.Series, prev: pd.Series, bar_ts,
         ema50_dist = (c - ema50) / max(ema50, 1e-9) * 100
         macd_just_bull = macd_h > 0 and p_macd <= 0
         macd_just_bear = macd_h < 0 and p_macd >= 0
-        if macd_just_bull and ema50_dist < -2.5:
+        if macd_just_bull and ema50_dist < -4.0:
             return True, "PRE_MACD_VS_EMA50"
-        if macd_just_bear and ema50_dist >  2.5:
+        if macd_just_bear and ema50_dist >  4.0:
             return True, "PRE_MACD_VS_EMA50"
 
         if df_15m is not None and len(df_15m) >= 5:
@@ -1813,8 +1813,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 10:00-10:30 = 0% WR (ORB fakeouts) — wait for trend to confirm
-            if now_ts.time() < dtime(10, 30):
+            # Opening blackout: _pre_filter already blocks 9:15-9:44.
+            # 9:45 is the effective gate — MACD/EMA/VWAP change-of-state signals
+            # fire at 9:45-10:30 and were invisible with the old 10:30 blackout.
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
@@ -1987,6 +1989,22 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     pass
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
+
+            # Bypass: high-conviction reversal signals override 1H_BEAR score suppression.
+            # 1H_BEAR inside _score_bar multiplies score_long × 0.4, which can flip
+            # direction to SHORT when score_short > reduced score_long. These signals
+            # identify the START of a reversal — 1H_BEAR is exactly when they're most
+            # valuable, not when they should be filtered out.
+            _bypass_long_sigs_g = (
+                "VWAP_RECLAIM",   # _score_bar: price reclaimed VWAP — institutional buy
+                "MACD_XOVER_UP",  # _score_bar: MACD histogram just turned positive
+                "EMA_BULL_STACK", # _score_bar: EMA9 just crossed above EMA21
+                "RSI_BULL_CROSS", # _score_bar: RSI just crossed 50 from below
+            )
+            if any(s in reason for s in _bypass_long_sigs_g):
+                direction = "LONG"
+                if abs(net_score) < 8.0:
+                    net_score = 8.0
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < 8.0:
@@ -2376,6 +2394,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "EMA21_PULLBACK",
                 "PULLBACK_CONT",
                 "CONFIRMED_MOMENTUM",
+                "RSI_BULL_CROSS",  # RSI crossing 50 from below — built-in price check
+                "EMA_BULL_STACK",  # EMA9 crossing EMA21 — fresh momentum shift
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
@@ -3311,8 +3331,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Block all entries after 13:00 — afternoon has 0% WR in backtests
             if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 10:00-10:30 = 0% WR (ORB fakeouts) — wait for trend to confirm
-            if now_ts.time() < dtime(10, 30):
+            # Opening blackout: _pre_filter already blocks 9:15-9:44.
+            # 9:45 is the effective gate — MACD/EMA/VWAP change-of-state signals
+            # fire at 9:45-10:30 and were invisible with the old 10:30 blackout.
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3466,6 +3488,19 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     pass
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
+
+            # Bypass: high-conviction reversal signals override 1H_BEAR score suppression.
+            # Same logic as run_backtest — see comment there for full explanation.
+            _bypass_long_sigs_g = (
+                "VWAP_RECLAIM",   # _score_bar: price reclaimed VWAP — institutional buy
+                "MACD_XOVER_UP",  # _score_bar: MACD histogram just turned positive
+                "EMA_BULL_STACK", # _score_bar: EMA9 just crossed above EMA21
+                "RSI_BULL_CROSS", # _score_bar: RSI just crossed 50 from below
+            )
+            if any(s in reason for s in _bypass_long_sigs_g):
+                direction = "LONG"
+                if abs(net_score) < 8.0:
+                    net_score = 8.0
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < 8.0:
@@ -3880,6 +3915,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "EMA21_PULLBACK",
                 "PULLBACK_CONT",
                 "CONFIRMED_MOMENTUM",
+                "RSI_BULL_CROSS",  # RSI crossing 50 from below — built-in price check
+                "EMA_BULL_STACK",  # EMA9 crossing EMA21 — fresh momentum shift
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
