@@ -1810,8 +1810,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Block all entries after 13:00 — afternoon has 0% WR in backtests
-            if now_ts.time() >= dtime(13, 0):
+            # Block entries after 14:00 — only 75 min left to squareoff at 15:15.
+            # Was 13:00 but that blocked 25% of good mid-session setups with no basis.
+            if now_ts.time() >= dtime(14, 0):
                 continue
             # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
             # MACD/EMA change-of-state signals that fire in this window are caught by the
@@ -1915,9 +1916,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             elif _session_breadth > 0.52:
                 net_score += 5
             elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
-                net_score -= 8; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                net_score -= 5; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
                 if direction == "LONG":
-                    net_score -= 8  # Moderate penalty (was 18 = too harsh with small symbol sets)
+                    net_score -= 5  # Reduced from -8: contrarian entries work on weak breadth days
                     reason += "+COUNTER_SESSION"
             elif _session_breadth < 0.48:
                 net_score -= 5
@@ -2105,10 +2106,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
             # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            # Skip if _score_bar already scored ORB to prevent double-counting (+33 = inflated)
             try:
-                _so, _ro = orb_momentum_signal(df, idx)
-                if _so != 0:
-                    net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
+                if "ORB_BULL" not in reason and "ORB_BEAR" not in reason:
+                    _so, _ro = orb_momentum_signal(df, idx)
+                    if _so != 0:
+                        net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
             except Exception:
                 pass
             # Hammer Reversal (pin-bar reversal at support)
@@ -2257,7 +2260,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.1 if _abs_score >= 18 else 1.3  # high-conviction lower bar; base needs 1.3× to confirm institutional participation
+                    _rvol_min = 1.0 if _abs_score >= 18 else 1.1  # entry bar has normal vol; surge follows — 1.3 was too strict
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
@@ -2394,8 +2397,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "EMA21_PULLBACK",
                 "PULLBACK_CONT",
                 "CONFIRMED_MOMENTUM",
-                "RSI_BULL_CROSS",  # RSI crossing 50 from below — built-in price check
-                "EMA_BULL_STACK",  # EMA9 crossing EMA21 — fresh momentum shift
+                "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
+                "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
+                "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
+                "ORB_BULL_WEAK",       # ORB breakout without full volume — still directional
+                "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
+                "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
@@ -3328,8 +3335,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Block all entries after 13:00 — afternoon has 0% WR in backtests
-            if now_ts.time() >= dtime(13, 0):
+            # Block entries after 14:00 — only 75 min left to squareoff at 15:15.
+            # Was 13:00 but that blocked 25% of good mid-session setups with no basis.
+            if now_ts.time() >= dtime(14, 0):
                 continue
             # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
             # MACD/EMA change-of-state signals that fire in this window are caught by the
@@ -3416,9 +3424,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             elif _session_breadth > 0.52:
                 net_score += 5
             elif _session_breadth < 0.40:  # 40%- stocks rising → bearish session
-                net_score -= 8; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
+                net_score -= 5; reason = (reason + "+SESSION_BEAR") if reason else "SESSION_BEAR"
                 if direction == "LONG":
-                    net_score -= 8  # Moderate penalty (was 18 = too harsh with small symbol sets)
+                    net_score -= 5  # Reduced from -8: contrarian entries work on weak breadth days
                     reason += "+COUNTER_SESSION"
             elif _session_breadth < 0.48:
                 net_score -= 5
@@ -3600,10 +3608,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
             # ORB Momentum (60-65% WR: clean ORB breakout with volume)
+            # Skip if _score_bar already scored ORB to prevent double-counting (+33 = inflated)
             try:
-                _so, _ro = orb_momentum_signal(df, idx)
-                if _so != 0:
-                    net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
+                if "ORB_BULL" not in reason and "ORB_BEAR" not in reason:
+                    _so, _ro = orb_momentum_signal(df, idx)
+                    if _so != 0:
+                        net_score += _so; reason = (reason + "+" + _ro) if _ro and reason else (_ro or reason)
             except Exception:
                 pass
             # Hammer Reversal (pin-bar reversal at support)
@@ -3915,8 +3925,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "EMA21_PULLBACK",
                 "PULLBACK_CONT",
                 "CONFIRMED_MOMENTUM",
-                "RSI_BULL_CROSS",  # RSI crossing 50 from below — built-in price check
-                "EMA_BULL_STACK",  # EMA9 crossing EMA21 — fresh momentum shift
+                "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
+                "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
+                "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
+                "ORB_BULL_WEAK",       # ORB breakout without full volume — still directional
+                "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
+                "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
