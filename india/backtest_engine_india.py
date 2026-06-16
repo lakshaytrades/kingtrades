@@ -2272,8 +2272,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
-                            net_score -= 5  # EMA bearish: soft penalty, not hard block
-                            if net_score < 0: direction = "SHORT"
+                            if not _high_wr_bypass:
+                                # EMA bearish: soft penalty (bypass signals expect bearish EMAs — they signal the TURN)
+                                net_score -= 5
+                                if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum — guarded: EMA bearish blocks both bonuses
                         # so the penalty is not silently overridden by MOD_CONFIRM within the same block
                         if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
@@ -2298,6 +2300,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
                 pass
+
+            # Bypass signals are self-confirming — don't let TF counter-trend compression kill them.
+            # These predict the trend CHANGE, so 15M/1H bearish is expected at entry.
+            # Guarantee minimum passing score so they survive _eff_min_score check.
+            if _high_wr_bypass and 0 < abs(net_score) < MIN_SCORE:
+                net_score = MIN_SCORE * (1 if net_score > 0 else -1)
 
             # Market breadth alignment scoring (+3/-3 to avoid over-stacking with existing breadth signals)
             try:
@@ -3761,8 +3769,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
-                            net_score -= 5  # EMA bearish: soft penalty, not hard block
-                            if net_score < 0: direction = "SHORT"
+                            if not _high_wr_bypass:
+                                # EMA bearish: soft penalty (bypass signals expect bearish EMAs — they signal the TURN)
+                                net_score -= 5
+                                if net_score < 0: direction = "SHORT"
                         # Bonus for strongly confirmed momentum — guarded: EMA bearish blocks both bonuses
                         # so the penalty is not silently overridden by MOD_CONFIRM within the same block
                         if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
@@ -3791,6 +3801,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
                 pass
+
+            # Bypass signals are self-confirming — don't let TF counter-trend compression kill them.
+            if _high_wr_bypass and 0 < abs(net_score) < MIN_SCORE:
+                net_score = MIN_SCORE * (1 if net_score > 0 else -1)
 
             # Market breadth alignment scoring (+3/-3 to avoid over-stacking with existing breadth signals)
             try:
