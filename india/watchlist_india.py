@@ -61,7 +61,7 @@ _CORE_WATCHLIST: List[str] = [
     # ── T3: Capital Goods, Defence & Industrials ───────────────────────────
     "HAL",        "BEL",        "BHEL",      "KEC",        "ENGINERSIN",
     "THERMAX",    "SCHAEFFLER", "SKFINDIA",  "CERA",       "KAJARIA",
-    "BDL",        "MAZAGON",    "NBCC",
+    "BDL",        "MAZDOCK",    "NBCC",
 
     # ── T3: Real Estate ────────────────────────────────────────────────────
     "DLF",        "GODREJPROP", "PRESTIGE",  "OBEROIRLTY", "BRIGADE",

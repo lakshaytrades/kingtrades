@@ -2007,8 +2007,17 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < 8.0:
                     net_score = 8.0
 
+            # Time-graduated score floor: later entries need higher conviction.
+            # 10:30-11:30 = prime window (lowest noise): min 8.0
+            # 11:30-13:00 = mid-session (more noise): min 10.0
+            # 13:00-14:00 = late session (highest noise): min 12.0
+            _now_t = now_ts.time()
+            _time_min_score = (8.0 if _now_t < dtime(11, 30)
+                               else 10.0 if _now_t < dtime(13, 0)
+                               else 12.0)
+
             # Pre-filter: skip clearly weak signals before calling new strategies
-            if abs(net_score) < 8.0:
+            if abs(net_score) < _time_min_score:
                 continue
 
             # Hard block: strong BEARISH bar → never go LONG (fighting the tape)
@@ -2024,6 +2033,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # Strong selling bar — entry would be fighting tape
             except Exception:
                 pass
+
+            # Nifty alignment: skip weak LONG signals when broad market is strongly down.
+            # Market proxy return computed earlier (_nifty_proxy_return).
+            # ATR_SQUEEZE and ORB are structural — allowed in any market condition.
+            # All other LONGs need Nifty to be at least neutral (-0.3% floor).
+            if (direction == "LONG"
+                    and _nifty_proxy_return < -0.003  # Nifty down >0.3% from open
+                    and not any(s in reason for s in ("ATR_SQUEEZE", "ORB_BULL", "VWAP_RECLAIM"))):
+                continue
 
             # ── New strategies boost (called with full DataFrame context) ─────
             try:
@@ -3510,8 +3528,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if abs(net_score) < 8.0:
                     net_score = 8.0
 
+            # Time-graduated score floor (same logic as run_backtest)
+            _now_t = now_ts.time()
+            _time_min_score = (8.0 if _now_t < dtime(11, 30)
+                               else 10.0 if _now_t < dtime(13, 0)
+                               else 12.0)
+
             # Pre-filter: skip clearly weak signals before calling new strategies
-            if abs(net_score) < 8.0:
+            if abs(net_score) < _time_min_score:
                 continue
 
             # Hard block: strong BEARISH bar → never go LONG (fighting the tape)
@@ -3527,6 +3551,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # Strong selling bar — entry would be fighting tape
             except Exception:
                 pass
+
+            # Nifty alignment filter (same as run_backtest)
+            if (direction == "LONG"
+                    and _nifty_proxy_return < -0.003
+                    and not any(s in reason for s in ("ATR_SQUEEZE", "ORB_BULL", "VWAP_RECLAIM"))):
+                continue
 
             try:
                 from strategies_india import (ema21_pullback_signal,
@@ -4145,8 +4175,13 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            from data_yfinance import DEFAULT_SYMBOLS
-            syms = DEFAULT_SYMBOLS[:40]
+            # Use the priority watchlist (200 stocks) — DEFAULT_SYMBOLS was only 40
+            try:
+                from watchlist_india import get_priority_watchlist
+                syms = get_priority_watchlist()
+            except Exception:
+                from data_yfinance import DEFAULT_SYMBOLS
+                syms = DEFAULT_SYMBOLS
         raw_data = _load_cache(syms, interval=interval)
         if not raw_data:
             print(
@@ -4187,7 +4222,12 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            syms = DEFAULT_SYMBOLS[:40]
+            # Use the full 200-stock priority watchlist — was hardcoded to 40
+            try:
+                from watchlist_india import get_priority_watchlist
+                syms = get_priority_watchlist()
+            except Exception:
+                syms = DEFAULT_SYMBOLS
 
         print(f"Loading yfinance data: {len(syms)} symbols, interval={interval}, period={period}")
         raw_data = load_nse_data_yfinance(syms, period=period, interval=interval,
