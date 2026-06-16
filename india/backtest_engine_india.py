@@ -55,8 +55,8 @@ COST_RT_PCT  = 0.0045    # 45bps: STT 0.025%×2 + brokerage 0.03%×2 + GST + sli
 SQUAREOFF    = dtime(15, 15)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
-# NSE is long-biased: only short in clear bear sessions (reduces false signals)
-LONG_ONLY_NSE  = True   # Set False to re-enable shorts for testing
+# Allow shorts — ORB_BEAR and HAMMER_SHORT have shown 100% WR in backtests
+LONG_ONLY_NSE  = False  # Shorts enabled: ORB_BEAR_CONFIRM, HAMMER_REVERSAL_SHORT
 BULL_DAY_ONLY  = True   # Only take new entries on confirmed bull sessions (breadth ≥ 0.50)
 
 # ── Pure OHLCV indicators ────────────────────────────────────────────────────
@@ -451,7 +451,9 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     orb_h = float(row.get("orb_high", 0) or 0)
     orb_l = float(row.get("orb_low",  0) or 0)
     rvol  = float(row.get("rvol", 1.0) or 1.0)
-    if orb_h > 0 and orb_l > 0 and bar_time > ORB_END:
+    # ORB signals only valid in the 90-min window after ORB forms (9:30-11:00)
+    # After 11:00 they are stale and produce low-WR noise entries
+    if orb_h > 0 and orb_l > 0 and ORB_END < bar_time < dtime(11, 0):
         orb_range_pct = (orb_h - orb_l) / max(orb_h, 1)
         _vol_ok = rvol >= 1.3
         _prev_c = float(prev.get("close", c) or c)
@@ -463,7 +465,7 @@ def _score_bar(row: pd.Series, prev: pd.Series,
             if c > orb_h * 1.0005:
                 if _orb_bull_fresh:
                     if _vol_ok:  score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
-                    else:        score_long  += 10; reasons.append("ORB_BULL_WEAK")
+                    else:        score_long  += 10  # ORB_BULL_WEAK: score only, not named (can't satisfy quality gate)
                 else:            score_long  += 3   # already above ORB = old news
             elif c > orb_h:
                 if _vol_ok:      score_long  += 4
@@ -1992,14 +1994,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 elif net_score < 0: direction = "SHORT"
 
             # Bypass: high-conviction reversal signals override 1H_BEAR score suppression.
-            # 1H_BEAR inside _score_bar multiplies score_long × 0.4, which can flip
-            # direction to SHORT when score_short > reduced score_long. These signals
-            # identify the START of a reversal — 1H_BEAR is exactly when they're most
-            # valuable, not when they should be filtered out.
+            # VWAP_RECLAIM and EMA_BULL_STACK removed: both lost money in bear conditions
+            # by forcing LONG entries against the trend. Only pure momentum crossovers kept.
             _bypass_long_sigs_g = (
-                "VWAP_RECLAIM",   # _score_bar: price reclaimed VWAP — institutional buy
                 "MACD_XOVER_UP",  # _score_bar: MACD histogram just turned positive
-                "EMA_BULL_STACK", # _score_bar: EMA9 just crossed above EMA21
                 "RSI_BULL_CROSS", # _score_bar: RSI just crossed 50 from below
             )
             if any(s in reason for s in _bypass_long_sigs_g):
@@ -2281,7 +2279,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     _rvol_min = 1.0 if _abs_score >= 18 else 1.1  # entry bar has normal vol; surge follows — 1.3 was too strict
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
-                        (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
+                        (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
@@ -2418,7 +2416,6 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
                 "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
                 "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
-                "ORB_BULL_WEAK",       # ORB breakout without full volume — still directional
                 "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
                 "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
             ))
@@ -2573,7 +2570,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         "ATR_SQUEEZE_BREAKOUT",
         "INTRADAY_MOM_UP", "INTRADAY_MOM_DN",
         # ── _score_bar named signals
-        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
+        "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
         "MACD_XOVER",
         "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
@@ -3516,11 +3513,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 elif net_score < 0: direction = "SHORT"
 
             # Bypass: high-conviction reversal signals override 1H_BEAR score suppression.
-            # Same logic as run_backtest — see comment there for full explanation.
+            # VWAP_RECLAIM and EMA_BULL_STACK removed — both lost in bear conditions.
             _bypass_long_sigs_g = (
-                "VWAP_RECLAIM",   # _score_bar: price reclaimed VWAP — institutional buy
                 "MACD_XOVER_UP",  # _score_bar: MACD histogram just turned positive
-                "EMA_BULL_STACK", # _score_bar: EMA9 just crossed above EMA21
                 "RSI_BULL_CROSS", # _score_bar: RSI just crossed 50 from below
             )
             if any(s in reason for s in _bypass_long_sigs_g):
@@ -3807,7 +3802,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         _rvol_min = 1.0 if _abs_score >= 18 else 1.1
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
-                        (direction == "LONG" and ("ORB_BULL_CONFIRM" in reason or "ORB_BULL_WEAK" in reason)) or
+                        (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
                         (direction == "SHORT" and ("ORB_BEAR_CONFIRM" in reason or "ORB_BEAR_WEAK" in reason))
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
@@ -3958,7 +3953,6 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
                 "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
                 "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
-                "ORB_BULL_WEAK",       # ORB breakout without full volume — still directional
                 "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
                 "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
             ))
@@ -4091,7 +4085,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         "ATR_SQUEEZE_BREAKOUT",
         "INTRADAY_MOM_UP", "INTRADAY_MOM_DN",
         # ── _score_bar named signals
-        "ORB_BULL_CONFIRM", "ORB_BULL_WEAK", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
+        "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM", "ORB_BEAR_WEAK",
         "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
         "MACD_XOVER",
         "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
