@@ -999,8 +999,7 @@ def orb_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, s
         confirmations = sum([vol_ok, ema_ok, vwap_ok, bar_bull])
         if confirmations >= 3:
             return 15.0, "ORB_BULL_CLEAN"
-        elif confirmations >= 2:
-            return 10.0, "ORB_BULL_PARTIAL"
+        # ORB_BULL_PARTIAL removed: 29 losing trades in backtest (< 3 confirmations = noise)
 
     # SHORT: clean ORB breakdown below
     if c < orb_low * 0.998:    # Close >0.2% below ORB low
@@ -1011,8 +1010,7 @@ def orb_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, s
         confirmations = sum([vol_ok, ema_ok, vwap_ok, bar_bear])
         if confirmations >= 3:
             return -15.0, "ORB_BEAR_CLEAN"
-        elif confirmations >= 2:
-            return -10.0, "ORB_BEAR_PARTIAL"
+        # ORB_BEAR_PARTIAL removed: partial confirmations = noise
 
     return 0.0, ""
 

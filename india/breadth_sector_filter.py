@@ -8,6 +8,7 @@ Key functions:
 - compute_market_breadth(data_dict, now_ts) → BreadthState
 - get_sector_bias(data_dict, now_ts) → dict
 - get_breadth_score_boost(symbol, breadth_state, sector_bias, direction) → (int, str)
+- print_sector_strength(data_dict, now_ts) → prints sector rankings to stdout
 """
 from __future__ import annotations
 
@@ -174,6 +175,18 @@ def compute_market_breadth(
     )
 
 
+def _get_sector_map() -> Dict[str, str]:
+    """Return the best available sector map (watchlist_india preferred, fallback to built-in)."""
+    try:
+        from watchlist_india import _SECTOR_MAP as _wl_map
+        # Merge: watchlist map takes priority, built-in fills gaps
+        merged = dict(NSE_SECTOR_MAP)
+        merged.update({k.upper(): v for k, v in _wl_map.items()})
+        return merged
+    except Exception:
+        return NSE_SECTOR_MAP
+
+
 def get_sector_bias(
     data_dict: Dict[str, pd.DataFrame],
     now_ts,
@@ -185,7 +198,7 @@ def get_sector_bias(
     Returns SectorBias with top_sectors (bull) and bottom_sectors (bear).
     """
     if sector_map is None:
-        sector_map = NSE_SECTOR_MAP
+        sector_map = _get_sector_map()
 
     sector_scores: Dict[str, List[float]] = {}
 
@@ -349,3 +362,48 @@ class BreadthCache:
         except Exception:
             pass
         return self._sector_bias
+
+
+def print_sector_strength(
+    data_dict: Dict[str, pd.DataFrame],
+    now_ts,
+    top_n: int = 5,
+) -> SectorBias:
+    """
+    Compute and print a formatted sector strength table for the given timestamp.
+    Called at bot startup and once per trading day.
+
+    Returns the SectorBias object so the caller can use it for trade filtering.
+    """
+    sector_map = _get_sector_map()
+    bias = get_sector_bias(data_dict, now_ts, sector_map=sector_map)
+
+    if not bias.scores:
+        print("  [Sector] No sector data available yet.")
+        return bias
+
+    sorted_sectors = sorted(bias.scores.items(), key=lambda x: x[1], reverse=True)
+
+    date_str = now_ts.strftime("%Y-%m-%d %H:%M IST") if hasattr(now_ts, "strftime") else str(now_ts)
+    print(f"\n{'='*56}")
+    print(f"  SECTOR STRENGTH RANKING  —  {date_str}")
+    print(f"{'='*56}")
+    print(f"  {'Rank':<5} {'Sector':<18} {'Score':>8}  {'Bias'}")
+    print(f"  {'-'*50}")
+    for rank, (sector, score) in enumerate(sorted_sectors, 1):
+        if rank <= len(bias.top_sectors) and sector in bias.top_sectors:
+            tag = "BULL ▲"
+        elif sector in bias.bottom_sectors:
+            tag = "BEAR ▼"
+        else:
+            tag = "neutral"
+        marker = ">>>" if rank == 1 else ("  " if rank > 1 else "")
+        print(f"  {rank:<5} {sector:<18} {score:>+8.4f}  {tag}")
+        if rank >= top_n + len(bias.bottom_sectors):
+            break
+
+    print(f"\n  TOP    sectors: {', '.join(bias.top_sectors)}")
+    print(f"  BOTTOM sectors: {', '.join(bias.bottom_sectors)}")
+    print(f"  Strategy: PRIORITISE {bias.top_sectors[0] if bias.top_sectors else 'N/A'} trades today")
+    print(f"{'='*56}\n")
+    return bias

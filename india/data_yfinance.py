@@ -51,103 +51,129 @@ DEFAULT_SYMBOLS = [
 ]
 
 
+def _process_raw_df(raw: pd.DataFrame, interval: str) -> Optional[pd.DataFrame]:
+    """Normalize a raw yfinance DataFrame to standard OHLCV IST format."""
+    if raw is None or raw.empty:
+        return None
+    raw = raw.copy()
+    raw.columns = [c.lower() for c in raw.columns]
+    cols = [c for c in ["open", "high", "low", "close", "volume"] if c in raw.columns]
+    if not cols or "close" not in cols:
+        return None
+    df = raw[cols]
+    if df.index.tz is None:
+        df.index = df.index.tz_localize("UTC")
+    df.index = df.index.tz_convert(IST)
+    if interval not in ("1d", "1wk"):
+        df = df.between_time("09:15", "15:30")
+    df = df.dropna(subset=["close"])
+    df = df[df["close"] > 0]
+    return df if len(df) >= 20 else None
+
+
 def load_nse_data_yfinance(
     symbols: List[str],
     period: str = "2y",
     interval: str = "1h",
     verbose: bool = True,
+    batch_size: int = 50,
 ) -> Dict[str, pd.DataFrame]:
     """
-    Load NSE historical data from Yahoo Finance.
+    Load NSE historical data from Yahoo Finance using batch downloads.
+
+    Uses yf.download() to fetch all tickers in parallel batches — much faster
+    than one-by-one Ticker.history() calls (200 symbols: ~30s vs ~10 min).
 
     Args:
-        symbols: List of NSE symbols WITHOUT .NS suffix (e.g. ["RELIANCE", "TCS"])
-        period: "1y", "2y", "3y", "5y" (Yahoo Finance period string)
-        interval: "1h" hourly (2yr max), "5m" 5-min (60d max), "1d" daily (unlimited)
+        symbols: NSE symbols WITHOUT .NS suffix (e.g. ["RELIANCE", "TCS"])
+        period: "1y", "2y", "3y", "5y"
+        interval: "1h", "5m", "1d"
         verbose: Print loading progress
-
-    Returns:
-        Dict[symbol -> pd.DataFrame] with columns: open, high, low, close, volume
-        Index is IST-timezone DatetimeIndex.
+        batch_size: Symbols per yf.download() call (50 is safe for Yahoo rate limits)
     """
     try:
         import yfinance as yf
     except ImportError:
         raise ImportError("yfinance not installed. Run: pip install yfinance")
 
-    result: Dict[str, pd.DataFrame] = {}
+    # Cap 5m/intraday to 60 days (Yahoo Finance hard limit)
+    _period_days = {"1y": 365, "2y": 730, "3y": 1095, "5y": 1825}.get(period, 730)
+    if interval in ("1m", "2m", "5m", "15m", "30m", "90m") and _period_days > 60:
+        effective_period = "60d"
+        if verbose:
+            print(f"  Note: {interval} limited to 60 days on yfinance → using period=60d")
+    else:
+        effective_period = period
+
+    symbols = [s.upper() for s in symbols]
+    tickers_ns = [s + NSE_SUFFIX for s in symbols]
+    sym_map = {s + NSE_SUFFIX: s for s in symbols}  # "RELIANCE.NS" → "RELIANCE"
     total = len(symbols)
+    result: Dict[str, pd.DataFrame] = {}
 
-    for i, sym in enumerate(symbols):
-        ticker_str = sym.upper() + NSE_SUFFIX
+    if verbose:
+        print(f"  Batch-downloading {total} symbols in groups of {batch_size} "
+              f"(interval={interval}, period={effective_period}) ...")
+
+    # Download in batches to avoid Yahoo rate limits
+    for batch_start in range(0, total, batch_size):
+        batch_ns = tickers_ns[batch_start: batch_start + batch_size]
+        batch_num = batch_start // batch_size + 1
+        total_batches = (total + batch_size - 1) // batch_size
+        if verbose:
+            syms_preview = ", ".join(s.replace(NSE_SUFFIX, "") for s in batch_ns[:5])
+            print(f"  Batch {batch_num}/{total_batches}: {len(batch_ns)} symbols ({syms_preview}...)")
         try:
-            ticker = yf.Ticker(ticker_str)
-
-            # Adjust period based on interval limits
-            _INTERVAL_MAX_PERIOD = {
-                "1m": "7d", "2m": "60d", "5m": "60d", "15m": "60d", "30m": "60d",
-                "60m": "730d", "1h": "730d", "90m": "60d", "1d": "max",
-                "1wk": "max", "1mo": "max",
-            }
-            _period_days = {"1y": 365, "2y": 730, "3y": 1095, "5y": 1825}.get(period, 730)
-            _effective_period = period
-            if interval in ("5m", "2m", "1m", "15m", "30m", "90m") and _period_days > 60:
-                _effective_period = "60d"
-                if verbose and i == 0:
-                    print(f"  Note: {interval} data limited to 60 days on yfinance, using period=60d")
-
-            # For intervals > 1d, Yahoo caps at 730 days; use "max" for daily
-            if interval in ("1d", "1wk"):
-                raw = ticker.history(period=_effective_period, interval=interval, auto_adjust=True)
-            else:
-                # Hourly/intraday: Yahoo caps vary by interval
-                raw = ticker.history(period=_effective_period, interval=interval, auto_adjust=True)
-
-            if raw is None or raw.empty:
-                if verbose:
-                    print(f"  [{i+1}/{total}] {sym}: no data from Yahoo")
-                continue
-
-            # Rename to lowercase
-            raw.columns = [c.lower() for c in raw.columns]
-
-            # Keep only OHLCV columns
-            cols_needed = [c for c in ["open", "high", "low", "close", "volume"] if c in raw.columns]
-            df = raw[cols_needed].copy()
-
-            # Convert index to IST
-            if df.index.tz is None:
-                df.index = df.index.tz_localize("UTC")
-            df.index = df.index.tz_convert(IST)
-
-            # For intraday intervals, filter to market hours only
-            if interval not in ("1d", "1wk"):
-                df = df.between_time("09:15", "15:30")
-
-            # Drop rows with NaN close
-            df = df.dropna(subset=["close"])
-            df = df[df["close"] > 0]
-
-            if len(df) < 20:
-                if verbose:
-                    print(f"  [{i+1}/{total}] {sym}: too few bars ({len(df)}), skipping")
-                continue
-
-            result[sym] = df
-            if verbose:
-                print(f"  [{i+1}/{total}] {sym}: {len(df)} bars ({df.index[0].date()} -> {df.index[-1].date()})")
-
+            raw_all = yf.download(
+                tickers=batch_ns,
+                period=effective_period,
+                interval=interval,
+                auto_adjust=True,
+                progress=False,
+                group_by="ticker",
+                threads=True,
+            )
         except Exception as e:
             if verbose:
-                print(f"  [{i+1}/{total}] {sym}: WARNING: skipped due to error - {e}")
+                print(f"  Batch {batch_num} failed: {e}")
             continue
+
+        if raw_all is None or raw_all.empty:
+            continue
+
+        # Single ticker: yf.download returns flat columns (no MultiIndex)
+        if len(batch_ns) == 1:
+            sym_ns = batch_ns[0]
+            sym = sym_map[sym_ns]
+            df = _process_raw_df(raw_all, interval)
+            if df is not None:
+                result[sym] = df
+                if verbose:
+                    print(f"    {sym}: {len(df)} bars")
+            continue
+
+        # Multiple tickers: MultiIndex columns — level 0 = ticker, level 1 = OHLCV field
+        loaded_batch = 0
+        for sym_ns in batch_ns:
+            sym = sym_map[sym_ns]
+            try:
+                if sym_ns not in raw_all.columns.get_level_values(0):
+                    continue
+                ticker_df = raw_all[sym_ns].copy()
+                df = _process_raw_df(ticker_df, interval)
+                if df is not None:
+                    result[sym] = df
+                    loaded_batch += 1
+            except Exception:
+                continue
+        if verbose:
+            print(f"    → {loaded_batch}/{len(batch_ns)} symbols loaded")
 
     loaded = len(result)
     if verbose:
-        print(f"  Loaded {loaded}/{total} symbols successfully.")
-        # Only warn when the requested universe is large enough that 30+ is expected
+        print(f"\n  Loaded {loaded}/{total} symbols successfully.")
         if total >= 30 and loaded < 30:
-            print(f"  WARNING: Only {loaded} symbols loaded (target: 30+). "
+            print(f"  WARNING: Only {loaded} symbols loaded. "
                   "Some symbols may be unavailable on Yahoo Finance.")
     return result
 

@@ -1175,7 +1175,7 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 10.0   # Base threshold — balanced between frequency and signal quality
+MIN_SCORE    = 13.0   # High conviction only: 3-signal confluence required for entry
 MAX_OPEN     = 12     # Allow up to 12 simultaneous positions for diversification
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
@@ -1328,6 +1328,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
     recent_trades: List[float] = []
     _win_history: list = []
     _loop_prev_day = None  # track day boundary to reset circuit breaker daily
+    _sector_printed_days: set = set()  # days where sector strength was printed
 
     # Initialise anti-martingale streak state for the backtest run
     try:
@@ -1385,6 +1386,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
             _loop_prev_day = _today
+
+        # Print sector strength once per day at 10:30 (after ORB window, enough opening data)
+        if (_today not in _sector_printed_days and now_ts.time() >= dtime(10, 30)):
+            _sector_printed_days.add(_today)
+            try:
+                from breadth_sector_filter import print_sector_strength
+                print_sector_strength(data, now_ts)
+            except Exception:
+                pass
 
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
 
@@ -2005,14 +2015,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < 8.0:
                     net_score = 8.0
 
-            # Time-graduated score floor: later entries need higher conviction.
-            # 10:30-11:30 = prime window (lowest noise): min 8.0
-            # 11:30-13:00 = mid-session (more noise): min 10.0
-            # 13:00-14:00 = late session (highest noise): min 12.0
+            # Time-graduated score floor: strict quality tiers.
+            # 10:30-11:30 = prime window: min 11.0 (high conviction only)
+            # 11:30-13:00 = mid-session: min 13.0 (rising noise, tighten)
+            # 13:00-14:00 = late session: min 15.0 (very few high-quality setups)
             _now_t = now_ts.time()
-            _time_min_score = (8.0 if _now_t < dtime(11, 30)
-                               else 10.0 if _now_t < dtime(13, 0)
-                               else 12.0)
+            _time_min_score = (11.0 if _now_t < dtime(11, 30)
+                               else 13.0 if _now_t < dtime(13, 0)
+                               else 15.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -2276,7 +2286,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.0 if _abs_score >= 18 else 1.1  # entry bar has normal vol; surge follows — 1.3 was too strict
+                    _rvol_min = 1.2 if _abs_score >= 18 else 1.4  # require real volume: surge proves conviction
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -2402,7 +2412,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB",
-                             "STRONG_CONFIRM", "MOD_CONFIRM")
+                             "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "BREADTH_BULL", "BREADTH_BEAR",
+                             "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
@@ -2421,8 +2433,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 2:
-                continue  # Need pattern + confirmation — pure patterns without tape = noise
+            if _qual_count < 3:
+                continue  # Need 3-way: primary + technical confirm + market/sector alignment
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP
@@ -2887,6 +2899,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
     recent_trades: List[float] = []
     _win_history: list = []
     _loop_prev_day2 = None  # track day boundary to reset circuit breaker daily
+    _sector_printed_days2: set = set()  # days where sector strength was printed
 
     try:
         from risk_manager import reset_streak as _reset_streak
@@ -2944,6 +2957,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             _win_history.clear()  # discard cross-day loss tail so circuit re-checks from clean slate
             _ADAPTIVE_MIN_SCORE = MIN_SCORE  # each day starts fresh — intraday bot, not swing
             _loop_prev_day2 = _today2
+
+        # Print sector strength once per day at 10:30 (after ORB window, enough opening data)
+        if (_today2 not in _sector_printed_days2 and now_ts.time() >= dtime(10, 30)):
+            _sector_printed_days2.add(_today2)
+            try:
+                from breadth_sector_filter import print_sector_strength
+                print_sector_strength(data, now_ts)
+            except Exception:
+                pass
 
         # ── Session breadth: % of symbols above today's open ─────────────────
         _brd_today = now_ts.date()
@@ -3523,11 +3545,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if abs(net_score) < 8.0:
                     net_score = 8.0
 
-            # Time-graduated score floor (same logic as run_backtest)
+            # Time-graduated score floor: strict quality tiers (same logic as run_backtest)
             _now_t = now_ts.time()
-            _time_min_score = (8.0 if _now_t < dtime(11, 30)
-                               else 10.0 if _now_t < dtime(13, 0)
-                               else 12.0)
+            _time_min_score = (11.0 if _now_t < dtime(11, 30)
+                               else 13.0 if _now_t < dtime(13, 0)
+                               else 15.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -3790,16 +3812,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # VWAP_RECLAIM — quiet drift back to VWAP needs no volume spike; 1.0× ok
                     # EMA_BULL_STACK — fresh EMA cross; 1.1× enough
                     # ORB / momentum — needs genuine institutional volume: 1.3×
-                    _vwap_signal = "VWAP_RECLAIM" in reason or "VWAP_REJECT" in reason
-                    _ema_signal  = "EMA_BULL_STACK" in reason or "EMA_BEAR_STACK" in reason
-                    if _vwap_signal:
-                        _rvol_min = 0.9   # VWAP reclaim can be quiet
-                    elif _ema_signal:
-                        _rvol_min = 1.1   # fresh EMA cross: moderate confirmation
-                    elif _is_5m_data:
-                        _rvol_min = 1.1 if _abs_score >= 18 else 1.3
-                    else:
-                        _rvol_min = 1.0 if _abs_score >= 18 else 1.1
+                    # Require real volume: surge confirms conviction across all signal types
+                    _rvol_min = 1.2 if _abs_score >= 18 else 1.4
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -3939,7 +3953,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
                              "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
                              "INSIDE_BAR", "ACCUM", "DISTRIB",
-                             "STRONG_CONFIRM", "MOD_CONFIRM")
+                             "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "BREADTH_BULL", "BREADTH_BEAR",
+                             "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
@@ -3958,8 +3974,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 2:
-                continue  # Need pattern + confirmation — pure patterns without tape = noise
+            if _qual_count < 3:
+                continue  # Need 3-way: primary + technical confirm + market/sector alignment
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
@@ -4169,7 +4185,6 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            # Use the priority watchlist (200 stocks) — DEFAULT_SYMBOLS was only 40
             try:
                 from watchlist_india import get_priority_watchlist
                 syms = get_priority_watchlist()
@@ -4216,7 +4231,7 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
         else:
-            # Use the full 200-stock priority watchlist — was hardcoded to 40
+            # Use full 200-stock priority watchlist for best trade frequency
             try:
                 from watchlist_india import get_priority_watchlist
                 syms = get_priority_watchlist()
