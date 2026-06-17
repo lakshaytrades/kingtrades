@@ -2446,7 +2446,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _sl_mult, _tp_mult = 1.5, 3.0
             sl_dist = _sl_mult * atr     # 1.5×ATR: room for intraday noise without false stops
             t1_dist = _tp_mult * atr     # 3×ATR first target: 2:1 R:R minimum
-            t2_dist = _tp_mult * 2.0 * atr   # 6×ATR runner (2× the T1 distance = same R ratio)
+            t2_dist = 3.0 * atr   # 3×ATR runner (T1=2×, T2=3×)
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3987,7 +3987,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _sl_m, _tp_m = 1.5, 3.0
             sl    = entry - _sl_m * atr if long else entry + _sl_m * atr   # 1.5×ATR
             t1    = entry + _tp_m * atr if long else entry - _tp_m * atr   # 3×ATR (2:1 R:R)
-            t2    = entry + _tp_m * 2 * atr if long else entry - _tp_m * 2 * atr  # 6×ATR runner
+            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr  # 3×ATR runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
