@@ -4164,8 +4164,8 @@ Examples:
     ap.add_argument("--to",       dest="to_date",   type=str, default="")
     ap.add_argument("--capital",  type=float, default=500_000.0)
     ap.add_argument("--source",   default="upstox",
-                    choices=["upstox", "yfinance", "cache"],
-                    help="Data source: upstox (default, 90 days), yfinance (up to 3 years), or cache (offline local Parquet/CSV)")
+                    choices=["upstox", "yfinance", "cache", "synthetic"],
+                    help="Data source: yfinance (internet), cache (offline), synthetic (no internet needed)")
     ap.add_argument("--years",    type=int,   default=0,
                     help="Years of data for yfinance source (1-5, overrides --days)")
     ap.add_argument("--interval", default="1h",
@@ -4268,6 +4268,37 @@ Examples:
             print("ERROR: No symbols with valid indicators. Exiting.")
             sys.exit(1)
 
+        run_backtest_from_data(data, capital=args.capital)
+        sys.exit(0)
+
+    # ── Synthetic data path (no internet needed) ──────────────────────────────
+    if args.source == "synthetic":
+        print("Generating synthetic NSE data (no internet required) ...")
+        from generate_synthetic_data import generate_nse_data
+        from data_yfinance import DEFAULT_SYMBOLS
+        try:
+            from watchlist_india import get_priority_watchlist
+            syms = get_priority_watchlist()
+        except Exception:
+            syms = DEFAULT_SYMBOLS
+        if args.symbols:
+            syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
+
+        raw_data = generate_nse_data(syms, days=60)
+        if not raw_data:
+            print("ERROR: Synthetic data generation failed.")
+            sys.exit(1)
+        print(f"\nGenerated {len(raw_data)} symbols of synthetic 5m data")
+        print("Computing indicators ...")
+        data: Dict[str, pd.DataFrame] = {}
+        for sym, df in raw_data.items():
+            try:
+                data[sym] = _build_orb(_compute_all(df))
+            except Exception as e:
+                print(f"  {sym}: indicator error — {e}")
+        if not data:
+            print("ERROR: No symbols with valid indicators.")
+            sys.exit(1)
         run_backtest_from_data(data, capital=args.capital)
         sys.exit(0)
 
