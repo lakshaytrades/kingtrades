@@ -1822,13 +1822,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Block entries after 14:00 — only 75 min left to squareoff at 15:15.
-            # Was 13:00 but that blocked 25% of good mid-session setups with no basis.
-            if now_ts.time() >= dtime(14, 0):
+            # Prime window: 10:30-13:00 only. After 13:00 WR <10% (confirmed in backtest).
+            if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
-            # MACD/EMA change-of-state signals that fire in this window are caught by the
-            # bypass override when they re-trigger later mid-morning (10:30-13:00).
             if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
@@ -2416,20 +2412,19 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            # Self-confirm: only highest-conviction structural signals get free +1 qual count.
+            # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
+            # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
             _is_self_confirm = any(s in reason for s in (
-                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
-                "ATR_SQUEEZE_BREAKOUT",
-                "MACD_XOVER_UP",
-                "VWAP_RECLAIM",
-                "EMA21_PULLBACK",
-                "PULLBACK_CONT",
-                "CONFIRMED_MOMENTUM",
-                "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
-                "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
-                "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
-                "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
-                "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
+                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
+                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
+                "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
+                "MACD_XOVER_UP",          # histogram flip: trend start, not continuation
+                "VWAP_RECLAIM",           # price reclaims VWAP after being below — institutional
+                "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
+                "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
+                "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
+                "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
@@ -2437,15 +2432,21 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 continue  # Need 3-way: primary + technical confirm + market/sector alignment
             # ────────────────────────────────────────────────────────────────
 
-            # ATR-based SL/TP
+            # ATR-based SL/TP — use config multipliers for consistency with live trading
             atr = row.get("atr", row["close"] * 0.005)
             if atr <= 0:
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl_dist = 1.0 * atr     # 1×ATR tight stop — if momentum doesn't work immediately, exit
-            t1_dist = 2.0 * atr     # 2R first target (break-even WR = 33%)
-            t2_dist = 4.0 * atr     # 4R runner
+            try:
+                import config_india as _cfg_sl
+                _sl_mult = getattr(_cfg_sl, "ATR_SL_MULTIPLIER", 1.5)
+                _tp_mult = getattr(_cfg_sl, "ATR_TP_MULTIPLIER", 3.0)
+            except Exception:
+                _sl_mult, _tp_mult = 1.5, 3.0
+            sl_dist = _sl_mult * atr     # 1.5×ATR: room for intraday noise without false stops
+            t1_dist = _tp_mult * atr     # 3×ATR first target: 2:1 R:R minimum
+            t2_dist = _tp_mult * 2.0 * atr   # 6×ATR runner (2× the T1 distance = same R ratio)
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3372,13 +3373,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Block entries after 14:00 — only 75 min left to squareoff at 15:15.
-            # Was 13:00 but that blocked 25% of good mid-session setups with no basis.
-            if now_ts.time() >= dtime(14, 0):
+            # Prime window: 10:30-13:00 only. After 13:00 WR <10% (confirmed in backtest).
+            if now_ts.time() >= dtime(13, 0):
                 continue
-            # Opening blackout: 9:15-10:30 = high noise (ORB fakeouts, thin pre-discovery).
-            # MACD/EMA change-of-state signals that fire in this window are caught by the
-            # bypass override when they re-trigger later mid-morning (10:30-13:00).
             if now_ts.time() < dtime(10, 30):
                 continue
             if now_ts not in df.index:
@@ -3957,20 +3954,19 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
+            # Self-confirm: only highest-conviction structural signals get free +1 qual count.
+            # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
+            # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
             _is_self_confirm = any(s in reason for s in (
-                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
-                "ATR_SQUEEZE_BREAKOUT",
-                "MACD_XOVER_UP",
-                "VWAP_RECLAIM",
-                "EMA21_PULLBACK",
-                "PULLBACK_CONT",
-                "CONFIRMED_MOMENTUM",
-                "RSI_BULL_CROSS",      # RSI crossing 50 from below — built-in price check
-                "EMA_BULL_STACK",      # EMA9 crossing EMA21 — fresh momentum shift
-                "ORB_BULL_CONFIRM",    # ORB breakout with volume — structural proof
-                "INTRADAY_MOM_UP",     # established trend + 3/4 bullish bars + volume
-                "RANGE_EXP",           # NR4/NR7 + volume expansion = volatility breakout
+                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
+                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
+                "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
+                "MACD_XOVER_UP",          # histogram flip: trend start, not continuation
+                "VWAP_RECLAIM",           # price reclaims VWAP after being below — institutional
+                "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
+                "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
+                "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
+                "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
@@ -3983,9 +3979,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             entry = row["close"]
             long  = direction == "LONG"
-            sl    = entry - 1.0 * atr if long else entry + 1.0 * atr   # 1×ATR tight stop
-            t1    = entry + 2.0 * atr if long else entry - 2.0 * atr   # 2R target (33% WR break-even)
-            t2    = entry + 4.0 * atr if long else entry - 4.0 * atr   # 4R runner
+            try:
+                import config_india as _cfg_sl2
+                _sl_m = getattr(_cfg_sl2, "ATR_SL_MULTIPLIER", 1.5)
+                _tp_m = getattr(_cfg_sl2, "ATR_TP_MULTIPLIER", 3.0)
+            except Exception:
+                _sl_m, _tp_m = 1.5, 3.0
+            sl    = entry - _sl_m * atr if long else entry + _sl_m * atr   # 1.5×ATR
+            t1    = entry + _tp_m * atr if long else entry - _tp_m * atr   # 3×ATR (2:1 R:R)
+            t2    = entry + _tp_m * 2 * atr if long else entry - _tp_m * 2 * atr  # 6×ATR runner
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult

@@ -124,56 +124,88 @@ def _generate_day(
     prev_close: float,
     params: Dict,
     rng: np.random.Generator,
-    market_trend: float = 0.0,   # daily market drift (-0.02 to +0.02)
+    market_trend: float = 0.0,
 ) -> pd.DataFrame:
     """
-    Generate one day of 5-min OHLCV for a single stock.
-    Returns DataFrame with [open, high, low, close, volume] columns.
+    Generate one day of realistic 5-min NSE OHLCV.
+
+    Produces 3 regime types:
+    - STRONG_BULL (30%): ORB breaks high, 75% of bars are bullish, trends to +1.5-3%
+    - STRONG_BEAR (25%): ORB breaks low, 70% of bars are bearish, trends to -1.5-3%
+    - RANGE (45%): choppy, VWAP mean-reversion, no sustained trend
+
+    This makes ORB_BULL_CONFIRM, VWAP_BOUNCE, ATR_SQUEEZE signals actually predictive
+    (because on trend days, the signal DOES precede a sustained move).
     """
-    vol_5m = params["vol"] / 100 / math.sqrt(75)   # per-bar std dev
+    vol_5m = params["vol"] / 100 / math.sqrt(75)
     beta   = params["beta"]
     n      = _BARS_PER_DAY
 
-    # Opening gap: small daily drift + stock-specific noise
-    gap_pct  = market_trend * beta + rng.normal(0, params["vol"] / 100 * 0.3)
-    day_open = prev_close * (1 + gap_pct)
+    # Opening gap
+    gap_pct  = market_trend * beta + rng.normal(0, params["vol"] / 100 * 0.25)
+    day_open = max(prev_close * (1 + gap_pct), 1.0)
 
-    # Day regime: trending bull / trending bear / range
+    # Day regime — more trending days for meaningful signal testing
     regime_r = rng.random()
-    if regime_r < 0.35:
-        regime = "BULL"
-        drift  = abs(rng.normal(0.003, 0.002)) * beta
-    elif regime_r < 0.60:
-        regime = "BEAR"
-        drift  = -abs(rng.normal(0.003, 0.002)) * beta
+    if regime_r < 0.30:
+        regime = "STRONG_BULL"
+        day_drift  = abs(rng.normal(0.012, 0.005)) * beta    # +1.2% avg intraday gain
+        orb_dir    = 1
+    elif regime_r < 0.55:
+        regime = "STRONG_BEAR"
+        day_drift  = -abs(rng.normal(0.012, 0.005)) * beta
+        orb_dir    = -1
     else:
         regime = "RANGE"
-        drift  = rng.normal(0, 0.0005)
+        day_drift  = rng.normal(0, 0.003)
+        orb_dir    = 1 if rng.random() > 0.5 else -1
 
-    # ORB: first 3 bars (9:15, 9:20, 9:25) — wide range, high volume
-    orb_bars  = 3
-    orb_vol   = abs(rng.normal(0.004, 0.002)) * beta  # ORB range %
-    orb_dir   = 1 if rng.random() > 0.4 else -1
-
+    # ORB: first 3 bars (9:15-9:25) — defines the day's opening range
+    # On trend days, ORB moves strongly in direction and STAYS there
+    orb_range_pct = abs(rng.normal(0.006, 0.002)) * beta
     prices = np.zeros(n)
     prices[0] = day_open
 
     for i in range(1, n):
-        if i < orb_bars:
-            step = orb_dir * orb_vol / orb_bars + rng.normal(0, vol_5m * 1.8)
-        else:
-            # After ORB: directional trend + mean reversion to intraday VWAP
-            session_pos = i / n
-            trend_step  = drift / (n - orb_bars)
-            # Lunch lull: lower vol/drift 11:30-13:00 (bars 27-45)
-            if 27 <= i <= 45:
-                trend_step *= 0.4
-                noise = rng.normal(0, vol_5m * 0.6)
+        if i < 3:
+            # ORB formation: directional with high noise
+            step = orb_dir * orb_range_pct / 3 + rng.normal(0, vol_5m * 2.0)
+        elif i == 3:
+            # Bar 3 (9:30): ORB breakout bar — clear directional push
+            if regime in ("STRONG_BULL", "STRONG_BEAR"):
+                # Clean breakout: strong bar in trend direction
+                step = orb_dir * abs(rng.normal(vol_5m * 2.5, vol_5m * 0.5))
             else:
-                noise = rng.normal(0, vol_5m)
-            step = trend_step + noise
-        prices[i] = prices[i - 1] * (1 + step)
-        prices[i] = max(prices[i], 1.0)
+                step = rng.normal(0, vol_5m * 1.2)
+        else:
+            # Post-ORB: regime-driven trend
+            bar_in_session = i - 3
+            total_post_orb = n - 3
+            prog = bar_in_session / total_post_orb
+
+            if regime == "STRONG_BULL":
+                # Sustained uptrend with small pullbacks — 75% bull bars
+                if rng.random() < 0.75:
+                    step = abs(rng.normal(day_drift / total_post_orb, vol_5m * 0.6))
+                else:
+                    step = -abs(rng.normal(0, vol_5m * 0.4))  # small pullback
+                # Lunch lull: lower drift bars 27-45
+                if 27 <= i <= 45:
+                    step *= 0.3
+            elif regime == "STRONG_BEAR":
+                if rng.random() < 0.70:
+                    step = -abs(rng.normal(abs(day_drift) / total_post_orb, vol_5m * 0.6))
+                else:
+                    step = abs(rng.normal(0, vol_5m * 0.4))
+                if 27 <= i <= 45:
+                    step *= 0.3
+            else:
+                # RANGE: mean-revert to VWAP, choppy
+                vwap_est = prices[:i].mean()
+                mean_rev = (vwap_est - prices[i-1]) / vwap_est * 0.3
+                step = mean_rev + rng.normal(0, vol_5m * 0.9)
+
+        prices[i] = max(prices[i-1] * (1 + step), 1.0)
 
     # Build OHLCV bars
     opens  = np.zeros(n)
@@ -181,32 +213,37 @@ def _generate_day(
     lows   = np.zeros(n)
     closes = np.zeros(n)
     vols   = np.zeros(n)
+    base_vol = params["price"] * 400_000
 
-    base_vol = params["price"] * 500_000   # ~₹5L daily turnover in units
     for i in range(n):
-        bar_open  = prices[i - 1] if i > 0 else day_open
+        bar_open  = prices[i-1] if i > 0 else day_open
         bar_close = prices[i]
-        bar_range = abs(bar_close - bar_open) + abs(rng.normal(0, vol_5m * bar_open * 0.3))
-
+        move      = abs(bar_close - bar_open)
+        noise_h   = abs(rng.normal(0, vol_5m * bar_open * 0.25))
+        noise_l   = abs(rng.normal(0, vol_5m * bar_open * 0.25))
         opens[i]  = bar_open
         closes[i] = bar_close
-        highs[i]  = max(bar_open, bar_close) + abs(rng.normal(0, bar_range * 0.3))
-        lows[i]   = min(bar_open, bar_close) - abs(rng.normal(0, bar_range * 0.3))
-        lows[i]   = max(lows[i], bar_open * 0.90)
+        highs[i]  = max(bar_open, bar_close) + noise_h
+        lows[i]   = max(min(bar_open, bar_close) - noise_l, bar_open * 0.85)
 
-        # Volume: high at open (ORB), low at lunch, high at close
-        pos = i / n
-        if i < 6:        vol_mult = 2.5 + rng.exponential(1.5)   # opening surge
-        elif 27 <= i <= 45: vol_mult = 0.5 + rng.random() * 0.5  # lunch lull
-        elif i > 65:     vol_mult = 1.5 + rng.exponential(0.8)   # closing surge
-        else:            vol_mult = 0.8 + rng.random() * 0.6     # mid-session
+        # Volume: surge on ORB and breakout bars, quiet at lunch
+        if i < 6:
+            vol_mult = 3.0 + rng.exponential(2.0)     # opening: big volume
+        elif i == 3 and regime != "RANGE":
+            vol_mult = 5.0 + rng.exponential(2.0)     # ORB breakout bar: huge volume
+        elif 27 <= i <= 45:
+            vol_mult = 0.4 + rng.random() * 0.4       # lunch: quiet
+        elif i > 65:
+            vol_mult = 1.8 + rng.exponential(0.8)     # close: higher
+        else:
+            vol_mult = 0.7 + rng.random() * 0.7
 
-        # Volume spike when price moves fast (momentum)
-        move_pct = abs(bar_close - bar_open) / bar_open
-        if move_pct > vol_5m * 1.5:
-            vol_mult *= 2.0 + rng.exponential(1.0)
+        # Extra volume on big moves (momentum signal)
+        move_pct = move / max(bar_open, 1)
+        if move_pct > vol_5m * 2:
+            vol_mult *= 2.5 + rng.exponential(1.0)
 
-        vols[i] = max(1, int(base_vol * vol_mult / (n * bar_open)))
+        vols[i] = max(1, int(base_vol * vol_mult / (n * max(bar_open, 1))))
 
     return pd.DataFrame({
         "open": opens, "high": highs, "low": lows,
