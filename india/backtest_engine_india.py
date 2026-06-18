@@ -1175,7 +1175,7 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 18.0   # Ultra-strict: only top-tier multi-signal confluence passes
+MIN_SCORE    = 22.0   # Ultra-strict: only top-tier multi-signal confluence passes
 MAX_OPEN     = 3      # Concentrate on 3 highest-conviction setups only
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
@@ -1821,8 +1821,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Prime window: 10:30-13:00 only. After 13:00 WR <10% (confirmed in backtest).
-            if now_ts.time() >= dtime(13, 0):
+            # Prime window: 10:30-12:00 only. After 12:00 momentum fades (WR <10%).
+            if now_ts.time() >= dtime(12, 0):
                 continue
             if now_ts.time() < dtime(10, 30):
                 continue
@@ -2277,15 +2277,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
                     # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
+                    # Only structural reversal/expansion setups bypass trend checks.
+                    # MACD_XOVER_UP, EMA21_PULLBACK, PULLBACK_CONT removed — need prior trend.
                     _high_wr_bypass = any(sig in reason for sig in (
-                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
-                        "ATR_SQUEEZE_BREAKOUT",
-                        "MACD_XOVER_UP",       # MACD cross = trend start — doesn't need prior gain
-                        "VWAP_RECLAIM",        # price reclaims VWAP = institutional buy
-                        "EMA21_PULLBACK",      # buy dip in uptrend near EMA21
-                        "PULLBACK_CONT",       # momentum continuation after pullback
-                        "CONFIRMED_MOMENTUM",  # highest conviction composite
+                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
+                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
+                        "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
+                        "VWAP_RECLAIM",           # price reclaims VWAP — institutional conviction
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -2311,7 +2309,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif not _ema_bearish_g and _sess_ret_g > 0.002 and _rvol_g > 1.2:
+                        elif not _ema_bearish_g and _sess_ret_g > 0.006 and _rvol_g > 1.8:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                     elif direction == "SHORT":
@@ -2325,17 +2323,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         if _sess_ret_g < -0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -0.002 and _rvol_g > 1.2:
+                        elif _sess_ret_g < -0.006 and _rvol_g > 1.8:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
                 pass
 
-            # Bypass signals are self-confirming — don't let TF counter-trend compression kill them.
-            # These predict the trend CHANGE, so 15M/1H bearish is expected at entry.
-            # Guarantee minimum passing score so they survive _eff_min_score check.
-            if _high_wr_bypass and 0 < abs(net_score) < MIN_SCORE:
-                net_score = MIN_SCORE * (1 if net_score > 0 else -1)
+            # No score floor guarantee — even reversal signals must earn MIN_SCORE on their own.
 
             # Market breadth alignment scoring (+3/-3 to avoid over-stacking with existing breadth signals)
             try:
@@ -2381,21 +2375,26 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _rsi_q = float(row.get("rsi", 50) or 50)
                 if direction == "LONG" and _rsi_q > 68:
                     continue  # overbought — wait for pullback
+                if direction == "LONG" and _rsi_q < 45:
+                    continue  # too weak — momentum not yet established
             except Exception:
                 pass
             # ── Named-setup quality gate: pattern + confirmation ──
             # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
             # their own internal volume/price checks — count as self-confirming.
             # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
+            # Only structural, named setups with proven edge count toward qual_count.
+            # Removed: INTRADAY_MOM (lagging noise), LIQ_GRAB (low WR), INSIDE_BAR (ambiguous),
+            #          ACCUM/DISTRIB (slow, intraday unreliable), MOD_CONFIRM (too easy: 0.2% move),
+            #          MOMENTUM_IGNITION (fires too early, noise).
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
                              "VWAP_RECLAIM", "VWAP_REJECT",
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
-                             "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
-                             "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
-                             "INSIDE_BAR", "ACCUM", "DISTRIB",
-                             "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "HAMMER_REVERSAL", "PULLBACK_CONT",
+                             "RANGE_EXP",
+                             "STRONG_CONFIRM",
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
@@ -3359,8 +3358,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Prime window: 10:30-13:00 only. After 13:00 WR <10% (confirmed in backtest).
-            if now_ts.time() >= dtime(13, 0):
+            # Prime window: 10:30-12:00 only. After 12:00 momentum fades (WR <10%).
+            if now_ts.time() >= dtime(12, 0):
                 continue
             if now_ts.time() < dtime(10, 30):
                 continue
@@ -3789,15 +3788,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
                     # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
+                    # Only structural reversal/expansion setups bypass trend checks.
+                    # MACD_XOVER_UP, EMA21_PULLBACK, PULLBACK_CONT removed — need prior trend.
                     _high_wr_bypass = any(sig in reason for sig in (
-                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",
-                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",
-                        "ATR_SQUEEZE_BREAKOUT",
-                        "MACD_XOVER_UP",       # MACD cross = trend start — doesn't need prior gain
-                        "VWAP_RECLAIM",        # price reclaims VWAP = institutional buy
-                        "EMA21_PULLBACK",      # buy dip in uptrend near EMA21
-                        "PULLBACK_CONT",       # momentum continuation after pullback
-                        "CONFIRMED_MOMENTUM",  # highest conviction composite
+                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
+                        "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
+                        "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
+                        "VWAP_RECLAIM",           # price reclaims VWAP — institutional conviction
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -3830,7 +3827,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         if not _ema_bearish_g and _sess_ret_g > 0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g > _e21_g):
                             net_score += 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif not _ema_bearish_g and _sess_ret_g > 0.002 and _rvol_g > 1.2:
+                        elif not _ema_bearish_g and _sess_ret_g > 0.006 and _rvol_g > 1.8:
                             net_score += 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
                         # EMA_BULL_STACK: block only extremely extended moves (>1.5% above EMA21)
@@ -3848,7 +3845,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         if _sess_ret_g < -0.005 and _rvol_g > 1.8 and (_e9_g <= 0 or _e9_g < _e21_g):
                             net_score -= 18
                             reason = (reason + "+STRONG_CONFIRM") if reason else "STRONG_CONFIRM"
-                        elif _sess_ret_g < -0.002 and _rvol_g > 1.2:
+                        elif _sess_ret_g < -0.006 and _rvol_g > 1.8:
                             net_score -= 8
                             reason = (reason + "+MOD_CONFIRM") if reason else "MOD_CONFIRM"
             except Exception:
@@ -3907,21 +3904,26 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _rsi_q = float(row.get("rsi", 50) or 50)
                 if direction == "LONG" and _rsi_q > 68:
                     continue  # overbought — wait for pullback
+                if direction == "LONG" and _rsi_q < 45:
+                    continue  # too weak — momentum not yet established
             except Exception:
                 pass
             # ── Named-setup quality gate: pattern + confirmation ──
             # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
             # their own internal volume/price checks — count as self-confirming.
             # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
+            # Only structural, named setups with proven edge count toward qual_count.
+            # Removed: INTRADAY_MOM (lagging noise), LIQ_GRAB (low WR), INSIDE_BAR (ambiguous),
+            #          ACCUM/DISTRIB (slow, intraday unreliable), MOD_CONFIRM (too easy: 0.2% move),
+            #          MOMENTUM_IGNITION (fires too early, noise).
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
                              "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
                              "VWAP_RECLAIM", "VWAP_REJECT",
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
-                             "HAMMER_REVERSAL", "MOMENTUM_IGNITION", "PULLBACK_CONT",
-                             "RANGE_EXP", "INTRADAY_MOM", "LIQ_GRAB",
-                             "INSIDE_BAR", "ACCUM", "DISTRIB",
-                             "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "HAMMER_REVERSAL", "PULLBACK_CONT",
+                             "RANGE_EXP",
+                             "STRONG_CONFIRM",
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
