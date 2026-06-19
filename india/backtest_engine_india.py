@@ -1175,8 +1175,8 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 22.0   # Ultra-strict: only top-tier multi-signal confluence passes
-MAX_OPEN     = 3      # Concentrate on 3 highest-conviction setups only
+MIN_SCORE    = 15.0   # Balanced: strict enough to filter noise, loose enough for 20-30 trades/month
+MAX_OPEN     = 5      # 5 concurrent positions — enough diversification without spreading thin
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate.
@@ -1426,13 +1426,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # Regime-aware effective threshold — supplements rolling-win adaptive mechanism
         # Strong bull days: lower bar to harvest momentum opportunities
         # Bear days: raise bar to only take highest-conviction signals
-        # No bull-day relaxation — strict quality required regardless of breadth
+        # Regime-aware threshold: no bull relaxation but capped tightening on bear days
         if _session_breadth >= 0.55:
-            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # good tape: use adaptive floor
-        elif _session_breadth >= 0.40:
-            _eff_min_score = _ADAPTIVE_MIN_SCORE + 2.0              # weak tape: tighten
+            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # good tape: use adaptive
+        elif _session_breadth >= 0.42:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE + 1.5              # neutral: slightly tighter
         else:
-            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 4.0, MIN_SCORE + 5.0)  # bear: hard floor
+            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 3.0, MIN_SCORE + 3.0)  # bear: tighter but capped
         _eff_min_score_history.append(_eff_min_score)
 
         # ── Exit open trades ────────────────────────────────────────────────
@@ -1821,10 +1821,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Prime window: 10:30-12:00 only. After 12:00 momentum fades (WR <10%).
-            if now_ts.time() >= dtime(12, 0):
+            # Prime window: 9:45-13:00. Before 9:45 = opening noise; after 13:00 WR < 15%.
+            if now_ts.time() >= dtime(13, 0):
                 continue
-            if now_ts.time() < dtime(10, 30):
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
@@ -2003,9 +2003,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # 11:30-13:00 = mid-session: min 16.0 (rising noise, very strict)
             # 13:00+ = no new entries (WR < 10% historically)
             _now_t = now_ts.time()
-            _time_min_score = (14.0 if _now_t < dtime(11, 30)
-                               else 16.0 if _now_t < dtime(13, 0)
-                               else 20.0)
+            _time_min_score = (13.0 if _now_t < dtime(11, 30)
+                               else 15.0 if _now_t < dtime(13, 0)
+                               else 18.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -2269,7 +2269,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.5  # strict: real volume surge required across all signal types
+                    _rvol_min = 1.4  # require genuine volume: 1.4× average is real participation
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -2362,20 +2362,20 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 50%; moderate weakness gets score penalty
-            if BULL_DAY_ONLY and _session_breadth < 0.50:
-                continue  # Hard block: need majority of stocks rising
-            if BULL_DAY_ONLY and _session_breadth < 0.60:
-                net_score -= 4  # Below ideal: penalize score
+            # Breadth floor: hard block below 40%; moderate weakness gets score penalty
+            if BULL_DAY_ONLY and _session_breadth < 0.40:
+                continue  # Hard block: extreme bear tape
+            if BULL_DAY_ONLY and _session_breadth < 0.52:
+                net_score -= 3  # Weak tape: penalty
                 if abs(net_score) < _eff_min_score:
-                    continue  # Re-check threshold after breadth penalty
+                    continue  # Re-check after penalty
 
             # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
-                if direction == "LONG" and _rsi_q > 68:
+                if direction == "LONG" and _rsi_q > 72:
                     continue  # overbought — wait for pullback
-                if direction == "LONG" and _rsi_q < 45:
+                if direction == "LONG" and _rsi_q < 42:
                     continue  # too weak — momentum not yet established
             except Exception:
                 pass
@@ -2414,8 +2414,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 4:
-                continue  # Need 4-way confluence: primary + 2 confirms + market/sector alignment
+            if _qual_count < 3:
+                continue  # Need 3-way confluence: primary + confirmation + market alignment
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP — use config multipliers for consistency with live trading
@@ -2982,13 +2982,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         # Regime-aware effective threshold — supplements rolling-win adaptive mechanism
         # Strong bull days: lower bar to harvest momentum opportunities
         # Bear days: raise bar to only take highest-conviction signals
-        # No bull-day relaxation — strict quality required regardless of breadth
+        # Regime-aware threshold: no bull relaxation but capped tightening on bear days
         if _session_breadth >= 0.55:
-            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # good tape: use adaptive floor
-        elif _session_breadth >= 0.40:
-            _eff_min_score = _ADAPTIVE_MIN_SCORE + 2.0              # weak tape: tighten
+            _eff_min_score = _ADAPTIVE_MIN_SCORE                    # good tape: use adaptive
+        elif _session_breadth >= 0.42:
+            _eff_min_score = _ADAPTIVE_MIN_SCORE + 1.5              # neutral: slightly tighter
         else:
-            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 4.0, MIN_SCORE + 5.0)  # bear: hard floor
+            _eff_min_score = min(_ADAPTIVE_MIN_SCORE + 3.0, MIN_SCORE + 3.0)  # bear: tighter but capped
         _eff_min_score_history.append(_eff_min_score)
 
         # ── Exit open trades ────────────────────────────────────────────────
@@ -3358,10 +3358,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
         for sym, df in data.items():
             if sym in open_trades or len(open_trades) >= MAX_OPEN:
                 continue
-            # Prime window: 10:30-12:00 only. After 12:00 momentum fades (WR <10%).
-            if now_ts.time() >= dtime(12, 0):
+            # Prime window: 9:45-13:00. Before 9:45 = opening noise; after 13:00 WR < 15%.
+            if now_ts.time() >= dtime(13, 0):
                 continue
-            if now_ts.time() < dtime(10, 30):
+            if now_ts.time() < dtime(9, 45):
                 continue
             if now_ts not in df.index:
                 continue
@@ -3518,9 +3518,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
             # Time-graduated score floor: ultra-strict quality tiers (same logic as run_backtest)
             _now_t = now_ts.time()
-            _time_min_score = (14.0 if _now_t < dtime(11, 30)
-                               else 16.0 if _now_t < dtime(13, 0)
-                               else 20.0)
+            _time_min_score = (13.0 if _now_t < dtime(11, 30)
+                               else 15.0 if _now_t < dtime(13, 0)
+                               else 18.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -3780,7 +3780,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
                     # Strict RVOL floor: 1.5× required across all signal types
-                    _rvol_min = 1.5  # strict: real volume surge required across all signal types
+                    _rvol_min = 1.4  # require genuine volume: 1.4× average is real participation
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -3891,20 +3891,20 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 50%; moderate weakness gets score penalty
-            if BULL_DAY_ONLY and _session_breadth < 0.50:
-                continue  # Hard block: need majority of stocks rising
-            if BULL_DAY_ONLY and _session_breadth < 0.60:
-                net_score -= 4  # Below ideal: penalize score
+            # Breadth floor: hard block below 40%; moderate weakness gets score penalty
+            if BULL_DAY_ONLY and _session_breadth < 0.40:
+                continue  # Hard block: extreme bear tape
+            if BULL_DAY_ONLY and _session_breadth < 0.52:
+                net_score -= 3  # Weak tape: penalty
                 if abs(net_score) < _eff_min_score:
-                    continue  # Re-check threshold after breadth penalty
+                    continue  # Re-check after penalty
 
             # ── Entry quality gate: RSI overbought filter only ───────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
-                if direction == "LONG" and _rsi_q > 68:
+                if direction == "LONG" and _rsi_q > 72:
                     continue  # overbought — wait for pullback
-                if direction == "LONG" and _rsi_q < 45:
+                if direction == "LONG" and _rsi_q < 42:
                     continue  # too weak — momentum not yet established
             except Exception:
                 pass
@@ -3943,8 +3943,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 4:
-                continue  # Need 4-way confluence: primary + 2 confirms + market/sector alignment
+            if _qual_count < 3:
+                continue  # Need 3-way confluence: primary + confirmation + market alignment
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
