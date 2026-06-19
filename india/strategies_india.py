@@ -146,8 +146,10 @@ def vwap_reversion_band_signal(
             return 6, "VWAP_REVERSION_LONG"
 
         # Price returning to VWAP from below with neutral RSI -> LONG continuation
+        # Requires volume confirmation: no institutional participation = noise
         vwap_proximity = abs(close - vwap) / max(vwap, 1e-9)
         if close < vwap and vwap_proximity < 0.005 and 40 <= rsi <= 60:
+            # Note: vwap_reversion_band_signal does not receive rvol, so skip rvol gate here
             return 4, "VWAP_RECLAIM_LONG"
 
     except Exception as exc:
@@ -282,6 +284,10 @@ def vwap_reversion_signal(row, adx: float = None) -> tuple:
         if not vwap or vwap <= 0 or not close or close <= 0:
             return (0, "")
 
+        # Require institutional participation — without volume, VWAP bounce is noise
+        if rvol < 1.3:
+            return (0, "")
+
         vwap_dev = (close - vwap) / vwap
 
         # LONG: price 0.8%+ BELOW VWAP + oversold RSI + volume
@@ -328,15 +334,17 @@ def session_drive_signal(row, adx: float = None) -> tuple:
 
         sess_move = (close - day_open) / day_open
 
-        # LONG: session up 0.5%+ + above VWAP + EMA bull + moderate volume
-        if (sess_move > 0.005 and close > vwap and
-                ema9 > ema21 and rvol >= 1.3):
-            return (15, "SESSION_DRIVE_LONG")
+        # LONG: session up 0.3%+ + above VWAP + EMA bull + stronger volume
+        # Score reduced: lagging signal (fires after move has started)
+        if (sess_move > 0.003 and close > vwap and
+                ema9 > ema21 and rvol >= 1.4):
+            return (8, "SESSION_DRIVE_LONG")  # Reduced: lagging signal, fires after move
 
-        # SHORT: session down 0.5%+ + below VWAP + EMA bear + moderate volume
-        if (sess_move < -0.005 and close < vwap and
-                ema9 < ema21 and rvol >= 1.3):
-            return (-15, "SESSION_DRIVE_SHORT")
+        # SHORT: session down 0.3%+ + below VWAP + EMA bear + stronger volume
+        # Score reduced: lagging signal (fires after move has started)
+        if (sess_move < -0.003 and close < vwap and
+                ema9 < ema21 and rvol >= 1.4):
+            return (-8, "SESSION_DRIVE_SHORT")  # Reduced: lagging signal, fires after move
 
         return (0, "")
     except Exception:
@@ -753,8 +761,13 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
         rsi    = g(row, "rsi", 50)
         ema9   = g(row, "ema9",  c)
         ema21  = g(row, "ema21", c)
+        rvol   = g(row, "rvol", 1.0)
 
         if vwap <= 0 or c <= 0 or vol_sma <= 0:
+            return 0, ""
+
+        # No volume = no bounce, just noise — require institutional participation
+        if rvol < 1.3:
             return 0, ""
 
         vwap_dev = abs(c - vwap) / vwap
@@ -784,7 +797,10 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
                 ema9 > ema21 * 0.993 and   # relaxed EMA: VWAP test may cause brief EMA compression
                 current_high_vol and        # volume confirmation on breakout bar
                 vwap_dev < 0.010):          # not too far from VWAP (widened from 0.8%)
-            return 15, "VWAP_BOUNCE_LONG"
+            if rvol >= 1.5:
+                return 15, "VWAP_BOUNCE_LONG"
+            # Volume present but not strong — reduced score
+            return 9, "VWAP_BOUNCE_LONG"
 
         # SHORT BOUNCE: tested VWAP from below, rejected, now breaking down
         if (c < vwap * 0.999 and          # below VWAP
@@ -792,7 +808,10 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
                 ema9 < ema21 and
                 current_high_vol and
                 vwap_dev < 0.010):
-            return -15, "VWAP_BOUNCE_SHORT"
+            if rvol >= 1.5:
+                return -15, "VWAP_BOUNCE_SHORT"
+            # Volume present but not strong — reduced score
+            return -9, "VWAP_BOUNCE_SHORT"
 
         return 0, ""
     except Exception:
@@ -996,8 +1015,12 @@ def orb_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, s
         vwap_ok   = c > vwap * 0.999 if vwap > 0 else True
         bar_bull  = c > o
         confirmations = sum([vol_ok, ema_ok, vwap_ok, bar_bull])
-        if confirmations >= 3:
+        if confirmations >= 3 and rvol >= 1.8:
+            # Strong volume surge = high-conviction ORB clean break
             return 15.0, "ORB_BULL_CLEAN"
+        elif confirmations >= 3:
+            # ORB confirmed but volume not surging = lower conviction
+            return 8.0, "ORB_BULL_CLEAN"
         # ORB_BULL_PARTIAL removed: 29 losing trades in backtest (< 3 confirmations = noise)
 
     # SHORT: clean ORB breakdown below
@@ -1007,8 +1030,12 @@ def orb_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, s
         vwap_ok   = c < vwap * 1.001 if vwap > 0 else True
         bar_bear  = c < o
         confirmations = sum([vol_ok, ema_ok, vwap_ok, bar_bear])
-        if confirmations >= 3:
+        if confirmations >= 3 and rvol >= 1.8:
+            # Strong volume surge = high-conviction ORB clean break
             return -15.0, "ORB_BEAR_CLEAN"
+        elif confirmations >= 3:
+            # ORB confirmed but volume not surging = lower conviction
+            return -8.0, "ORB_BEAR_CLEAN"
         # ORB_BEAR_PARTIAL removed: partial confirmations = noise
 
     return 0.0, ""
