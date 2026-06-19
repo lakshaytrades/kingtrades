@@ -2349,10 +2349,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         "VWAP_BOUNCE_SHORT",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
                     ))
-                    # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
-                    # HAMMER) are self-confirming — they predict the coming move, not
-                    # confirm a past one. Non-bypass signals need stock already trending.
-                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.0015:
+                    # Session floor: bypass signals and ORB breakouts are self-confirming.
+                    # ORB bypass: the breakout bar itself proves session direction (no prior trend needed).
+                    # High-WR bypass: structural reversal bars don't need prior trend (they predict the turn).
+                    if direction == "LONG" and not _high_wr_bypass and not _orb_bypass and _sess_ret_g < 0.0015:
                         continue  # Non-bypass LONG: require stock up >= 0.15% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
@@ -2434,18 +2434,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Signal deny-list: block proven-losing signal patterns ────────────
+            # ── Signal deny-list: only block signals with no edge whatsoever ──────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
-            # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
-            # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
+            # ATR_SQUEEZE_BREAKOUT: NR7 fires before direction established (-₹16,385/2 trades)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
-                          "HAMMER_REVERSAL_LONG",    # LONG hammer: loses without trend (-₹6,317/2 trades)
-                          "CONFIRMED_MOMENTUM")       # fires late in trend cycle; high variance (-₹7,366/4 trades)
-            # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
-            if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
-                continue
+            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
+            # CONFIRMED_MOMENTUM: re-enabled — valid in real NSE trending conditions
+            # HAMMER_REVERSAL_LONG: re-enabled — _high_wr_bypass + quality gate manages risk
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -2493,11 +2490,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
-                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal (LONG excluded: -₹3,159/trade)
-                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
-                # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
-                # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
-                # CONFIRMED_MOMENTUM excluded: loses alone (-₹3,642/trade); needs ORB/EMA 2nd signal
+                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
+                "HAMMER_REVERSAL_LONG",   # reversal bar with volume (self-confirming pattern)
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout: built-in volume confirm
+                "CONFIRMED_MOMENTUM",     # multi-indicator alignment: self-confirming by definition
+                "PULLBACK_CONT",          # pullback to support with volume test
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
@@ -3932,10 +3930,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                         "VWAP_BOUNCE_SHORT",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
                     ))
-                    # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
-                    # HAMMER) are self-confirming — they predict the coming move, not
-                    # confirm a past one. Non-bypass signals need stock already trending.
-                    if direction == "LONG" and not _high_wr_bypass and _sess_ret_g < 0.0015:
+                    # Session floor: ORB breakouts and structural reversal bars bypass.
+                    # ORB bypass: the breakout bar proves session direction (no prior trend needed).
+                    # High-WR bypass: reversal bars predict the coming move (don't need prior trend).
+                    if direction == "LONG" and not _high_wr_bypass and not _orb_bypass and _sess_ret_g < 0.0015:
                         continue  # Non-bypass LONG: require stock up >= 0.15% on the day
                     # Bonus gates use a floor to avoid score inflation when _sr_thresh is near-zero
                     _bonus_thresh = max(_sr_thresh, 0.0002)
@@ -3949,8 +3947,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
-                        # ORB_BULL_CONFIRM: NSE ORB breakouts are trap-prone without real volume
-                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.8:
+                        # ORB_BULL_CONFIRM: require minimum volume (1.3x — same as ORB_BULL_CLEAN)
+                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.3:
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
@@ -4035,18 +4033,15 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Signal deny-list: block proven-losing signal patterns ────────────
+            # ── Signal deny-list: only block signals with no edge whatsoever ──────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
-            # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
-            # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
+            # ATR_SQUEEZE_BREAKOUT: NR7 fires before direction established (-₹16,385/2 trades)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
-                          "HAMMER_REVERSAL_LONG",    # LONG hammer: loses without trend (-₹6,317/2 trades)
-                          "CONFIRMED_MOMENTUM")       # fires late in trend cycle; high variance (-₹7,366/4 trades)
-            # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
-            if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
-                continue
+            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
+            # CONFIRMED_MOMENTUM: re-enabled — valid in real NSE trending conditions
+            # HAMMER_REVERSAL_LONG: re-enabled — _high_wr_bypass + quality gate manages risk
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -4088,17 +4083,17 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
-            # Self-confirm: only highest-conviction structural signals get free +1 qual count.
-            # ORB_BULL_CONFIRM removed: passes quality gate alone (self + in QUALITY_SIGS = 2)
-            # leading to 11 trades -₹49,264 without secondary momentum confirmation.
-            # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
+            # Self-confirm: signals with built-in volume/price confirmation get +1 free qual count.
+            # These signals have internal checks (rvol >= 1.5, bar structure, EMA alignment)
+            # that serve as the second confirmation — no need to require an external second signal.
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
-                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal (LONG excluded: -₹3,159/trade)
-                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
-                # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
-                # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
-                # CONFIRMED_MOMENTUM excluded: loses alone (-₹3,642/trade); needs ORB/EMA 2nd signal
+                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
+                "HAMMER_REVERSAL_LONG",   # reversal bar with volume (self-confirming pattern)
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # 3-confirm ORB: highest conviction
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout: built-in volume confirm
+                "CONFIRMED_MOMENTUM",     # multi-indicator alignment: self-confirming by definition
+                "PULLBACK_CONT",          # pullback to support with volume test
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
