@@ -1218,52 +1218,40 @@ def get_strategies_score(
 
 def momentum_ignition_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
     """
-    3+ consecutive bars same direction with ACCELERATING volume.
-    Institutional accelerator pattern — high WR when all 4 criteria met.
-    Returns signed score: positive=LONG, negative=SHORT.
+    MOMENTUM_IGNITION: 3 consecutive bars accelerating in same direction with rising volume.
+    Classic institutional accumulation pattern. Score: +14 LONG, -14 SHORT.
     """
     try:
-        if current_idx < 4 or df is None or df.empty:
-            return 0.0, ""
-        bars = df.iloc[current_idx - 3: current_idx + 1]
-        if len(bars) < 4:
+        if current_idx < 5 or df is None or len(df) < current_idx + 1:
             return 0.0, ""
 
-        closes = bars["close"].values.astype(float)
-        opens  = bars["open"].values.astype(float)
-        vols   = bars["volume"].values.astype(float)
+        recent = df.iloc[max(0, current_idx - 3): current_idx + 1]
+        if len(recent) < 3:
+            return 0.0, ""
 
-        bull_bars = all(closes[i] > opens[i] for i in range(4))
-        bear_bars = all(closes[i] < opens[i] for i in range(4))
-        vol_accel = all(vols[i] > vols[i - 1] for i in range(1, 4))
+        closes  = [float(recent.iloc[i].get("close", 0) or 0) for i in range(len(recent))]
+        volumes = [float(recent.iloc[i].get("volume", 0) or 0) for i in range(len(recent))]
+        rvols   = [float(recent.iloc[i].get("rvol", 1.0) or 1.0) for i in range(len(recent))]
 
-        rvol  = float(df.iloc[current_idx].get("rvol", 1.0) or 1.0)
-        if rvol < 1.8:
-            return 0, ""
-        e9    = float(df.iloc[current_idx].get("ema9",  closes[-1]) or closes[-1])
-        e21   = float(df.iloc[current_idx].get("ema21", closes[-1]) or closes[-1])
-        ema_bull = e9 > e21 > 0
-        ema_bear = e9 < e21
+        if any(c <= 0 for c in closes):
+            return 0.0, ""
 
-        if bull_bars:
-            criteria = int(vol_accel) + int(rvol > 1.5) + int(ema_bull)
-            if criteria >= 3:
-                return 18.0, "MOM_IGNITION_BULL"
-            if criteria >= 2:
-                return 12.0, "MOM_IGNITION_BULL_P"
-            if vol_accel:
-                return 8.0, "VOL_ACCEL_BULL"
-        if bear_bars:
-            criteria = int(vol_accel) + int(rvol > 1.5) + int(ema_bear)
-            if criteria >= 3:
-                return -18.0, "MOM_IGNITION_BEAR"
-            if criteria >= 2:
-                return -12.0, "MOM_IGNITION_BEAR_P"
-            if vol_accel:
-                return -8.0, "VOL_ACCEL_BEAR"
+        # Check 3 consecutive bullish bars
+        bull_bars = all(closes[i] > closes[i-1] for i in range(1, len(closes)))
+        bear_bars = all(closes[i] < closes[i-1] for i in range(1, len(closes)))
+        # Rising volume (each bar more than previous)
+        rising_vol = all(volumes[i] >= volumes[i-1] * 0.9 for i in range(1, len(volumes)))
+        # Current bar has real volume surge
+        curr_rvol = rvols[-1] >= 1.5
+
+        if bull_bars and rising_vol and curr_rvol:
+            return 14.0, "MOMENTUM_IGNITION_UP"
+        if bear_bars and rising_vol and curr_rvol:
+            return -14.0, "MOMENTUM_IGNITION_DN"
+
+        return 0.0, ""
     except Exception:
-        pass
-    return 0.0, ""
+        return 0.0, ""
 
 
 def institutional_accumulation_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
@@ -1444,40 +1432,55 @@ def range_expansion_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, s
     return 0.0, ""
 
 
-def confirmed_momentum_signal(df: pd.DataFrame, idx: int) -> tuple:
+def confirmed_momentum_signal(df: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
     """
-    Strong momentum signal: stock up ≥1% from open with 2×+ volume on 3 consecutive bull bars.
-    This is the highest-conviction setup for NSE intraday momentum.
-    Returns (score, reason). Max score ±20.
+    CONFIRMED_MOMENTUM: High-conviction composite signal.
+    All 3 must align: EMA stack (trend), VWAP position (institutional), volume surge.
+    Only fires when 3 independent factors confirm momentum direction.
+    Returns: +16 LONG, -16 SHORT, 0 no signal
     """
-    if idx < 3:
-        return 0, ""
     try:
-        row = df.iloc[idx]
-        e9  = float(row.get("ema9",  0) or 0)
-        e21 = float(row.get("ema21", 0) or 0)
-        e50 = float(row.get("ema50", 0) or 0)
-        rvol = float(row.get("rvol", 1.0) or 1.0)
-        day_open = float(row.get("day_open", 0) or 0)
-        close = float(row.get("close", 0) or 0)
-        if close <= 0 or day_open <= 0:
-            return 0, ""
-        sess_ret = (close - day_open) / day_open
+        if current_idx < 20 or df is None or len(df) < current_idx + 1:
+            return 0.0, ""
+        row = df.iloc[current_idx]
 
-        # Full EMA stack + session return + volume surge.
-        # Threshold was 1.0% — a filter not a signal, fires after 75% of the move is done.
-        # Lowered to 0.4%: catches the first institutional acceleration, not the tail.
-        if e9 > e21 > e50 and sess_ret > 0.004 and rvol > 1.5:
-            last3 = df.iloc[idx-2:idx+1]
-            if (last3["close"] > last3["open"]).all():
-                return 20, "CONFIRMED_BULL_MOMENTUM"
+        def g(col, default=0.0):
+            v = row.get(col, default)
+            return float(v) if v is not None and v == v else default
 
-        # Bearish mirror
-        if e9 < e21 < e50 and sess_ret < -0.004 and rvol > 1.5:
-            last3 = df.iloc[idx-2:idx+1]
-            if (last3["close"] < last3["open"]).all():
-                return -20, "CONFIRMED_BEAR_MOMENTUM"
+        c     = g("close")
+        e9    = g("ema9",  c)
+        e21   = g("ema21", c)
+        e50   = g("ema50", c)
+        vwap  = g("vwap",  c)
+        rvol  = g("rvol",  1.0)
+        rsi   = g("rsi",   50.0)
+        day_open = g("day_open", c)
 
-        return 0, ""
+        if c <= 0 or vwap <= 0:
+            return 0.0, ""
+
+        sess_ret = (c - day_open) / day_open if day_open > 0 else 0.0
+
+        # LONG: EMA bull stack + price above VWAP + volume surge + RSI in momentum zone
+        ema_bull = e9 > e21 > e50 > 0
+        above_vwap = c > vwap * 1.001   # 0.1% above VWAP (institutional buy zone)
+        vol_surge = rvol >= 1.5
+        rsi_momentum = 50 <= rsi <= 70
+        session_positive = sess_ret > 0.002   # Session up 0.2%+
+
+        if ema_bull and above_vwap and vol_surge and rsi_momentum and session_positive:
+            return 16.0, "CONFIRMED_MOMENTUM_LONG"
+
+        # SHORT: EMA bear stack + price below VWAP + volume surge + RSI bearish
+        ema_bear = e9 < e21 < e50
+        below_vwap = c < vwap * 0.999
+        rsi_bearish = 30 <= rsi <= 50
+        session_negative = sess_ret < -0.002
+
+        if ema_bear and below_vwap and vol_surge and rsi_bearish and session_negative:
+            return -16.0, "CONFIRMED_MOMENTUM_SHORT"
+
+        return 0.0, ""
     except Exception:
-        return 0, ""
+        return 0.0, ""
