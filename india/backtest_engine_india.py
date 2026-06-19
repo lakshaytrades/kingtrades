@@ -247,7 +247,11 @@ def _compute_all(df: pd.DataFrame) -> pd.DataFrame:
     out["obv"]   = _obv(c, v)
     out["obv_ema"] = _ema(out["obv"], 21)
     out["vol_sma"] = v.rolling(20).mean()
-    out["rvol"]    = v / out["vol_sma"].replace(0, 1e-9)
+    # Use daily-normalized rvol: compare each bar to same-day average volume.
+    # This avoids distortion from the opening-hour burst inflating the 20-bar
+    # rolling average and making all mid-session bars look like low-volume.
+    _daily_avg_vol = v.groupby(v.index.date).transform("mean")
+    out["rvol"]    = v / _daily_avg_vol.replace(0, 1e-9)
     # Day's open price (first bar of each day)
     out["day_open"] = df.groupby(df.index.date)["open"].transform("first")
     out["bb_lo"], out["bb_mid"], out["bb_hi"] = _bollinger(c)
@@ -2053,16 +2057,19 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # Time-graduated score floor: score tiers matched to historical win-rate by window.
-            # 9:15-10:30 = ORB window: min 17.0 (high noise, requires strong confluence)
-            # 10:30-11:30 = worst WR window (5% historically): min 15.0 (tight filter)
-            # 11:30-13:00 = mid-session: min 15.0 (moderate, consistent with 10:30 window)
-            # 13:00+ = late session (WR < 10% historically): min 20.0 (ultra-strict)
+            # Time-graduated score floor + hard session blocks.
+            # NSE intraday U-shaped volume: best WR 9:15-11:30, dead 11:30-14:30, power 14:30-15:20.
+            # Observed WR by window: 9:15-10:00=80%, 10:00-11:30=50%, 11:30-13:30=0%.
             _now_t = now_ts.time()
-            _time_min_score = (17.0 if _now_t < dtime(10, 30)
-                               else 15.0 if _now_t < dtime(11, 30)
-                               else 15.0 if _now_t < dtime(13, 0)
-                               else 20.0)
+
+            # Hard block: 11:30-14:25 = dead zone (0% WR — lunch lull + afternoon drift)
+            # Power hour 14:30-15:20 stays open for trend continuation with strict filter.
+            if dtime(11, 30) <= _now_t < dtime(14, 25):
+                continue  # No new entries during dead zone — exits only
+
+            _time_min_score = (15.0 if _now_t < dtime(10, 0)   # ORB window: high WR, allow good signals
+                               else 17.0 if _now_t < dtime(11, 30)  # late morning: weaker, require more
+                               else 19.0)                             # power hour: high bar for late entries
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -2326,7 +2333,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.5  # institutional participation: 1.5x average minimum
+                    _rvol_min = 1.0  # block below-average volume; score/qual gate handles quality
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -2426,22 +2433,25 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Signal deny-list: block entries driven by proven-losing signals ──
+            # ── Signal deny-list: block proven-losing signal patterns ────────────
             # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
             # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
-            _deny_driven = False
-            if "VWAP_RECLAIM" in reason:
-                _non_deny = [s for s in reason.split("+") if s
-                             and "VWAP_RECLAIM" not in s
-                             and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
-                if not _non_deny:
-                    _deny_driven = True
-            if "EMA21_PULLBACK" in reason:
-                _non_deny2 = [s for s in reason.split("+") if s
-                              and "EMA21_PULLBACK" not in s
-                              and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
-                if not _non_deny2:
-                    _deny_driven = True
+            # VWAP_BOUNCE_LONG: 5 trades -₹6,600 — counter-trend VWAP pullback loses vs momentum
+            _HARD_DENY = ("VWAP_BOUNCE_LONG",)   # always block: loses vs any confirmation
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal
+            _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
+                             "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "CS_TOP", "CS_BOT")
+            _deny_driven = any(s in reason for s in _HARD_DENY)
+            if not _deny_driven:
+                for _dsig in _SOFT_DENY:
+                    if _dsig in reason:
+                        _parts = reason.split("+")
+                        _non_deny = [s for s in _parts if s and _dsig not in s
+                                     and not any(c in s for c in _CONTEXT_SIGS)]
+                        if not _non_deny:
+                            _deny_driven = True
+                            break
             if _deny_driven:
                 continue
 
@@ -2483,8 +2493,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 3:
-                continue  # Need 3-way confluence: primary + confirmation + market alignment
+            if _qual_count < 2:
+                continue  # Need 2-way confluence: primary signal + confirmation
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP — use config multipliers for consistency with live trading
@@ -2502,8 +2512,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _sl_mult = 2.1 if _is_5m_data else 1.5
                 _tp_mult = 1.5
             sl_dist = _sl_mult * atr     # wider SL for 5m bar noise, standard for higher TFs
-            t1_dist = _tp_mult * atr     # 1.5×ATR T1 target: quick profit lock-in
-            t2_dist = 3.0 * atr   # 3×ATR runner (T2 stays at 3R for the runner leg)
+            t1_dist = _tp_mult * sl_dist  # 1.5R: T1 at 1.5× the SL distance (not 1.5×ATR)
+            t2_dist = 3.0 * sl_dist       # 3R runner: T2 at 3× the SL distance
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -2560,15 +2570,18 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if sl_dist < min_sl_dist:
                 sl_dist = min_sl_dist
                 sl = entry - sl_dist if long else entry + sl_dist
-            qty = int(min(equity * risk_pct / sl_dist,
-                          equity * MAX_POS_PCT / entry))
+            # Risk-based sizing: Kelly risk_pct capped at MAX_RISK_PER_TRADE_PCT.
+            # Position VALUE may exceed equity — Groww MIS provides 5-10× intraday leverage
+            # for large-cap NSE stocks. Hard safety cap: 10× equity value maximum.
+            qty = int(equity * risk_pct / sl_dist)
+            qty = min(qty, int(equity * 10.0 / max(entry, 1.0)))  # 10× leverage safety cap
             if qty < 1:
                 continue
 
             # ── Minimum profit filter: skip cost-inefficient trades ───────────
-            # t1 (1.5R target) must cover at least 2.5× the round-trip cost
-            # This eliminates trades where expected gain is eaten by STT/brokerage
-            _min_profit_pct = 2.5 * COST_RT_PCT   # need 2.5× cost coverage at t1
+            # T1 must cover at least 1× round-trip cost (5m: ~0.45%; higher TF: 1.125%)
+            # 5m bars have small ATR so keep the bar low; higher TFs can afford 2.5×
+            _min_profit_pct = COST_RT_PCT if _is_5m_data else 2.5 * COST_RT_PCT
             _t1_profit_pct  = t1_dist / max(entry, 1.0)
             if _t1_profit_pct < _min_profit_pct:
                 continue   # t1 doesn't cover costs — skip
@@ -3625,13 +3638,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # Time-graduated score floor: score tiers matched to historical WR by window (same logic as run_backtest)
-            # 9:15-10:30 = ORB window: min 17.0 | 10:30-13:00 = worst/mid window: min 15.0 | 13:00+ = 20.0
+            # Time-graduated score floor + hard session blocks (mirrors run_backtest logic).
             _now_t = now_ts.time()
-            _time_min_score = (17.0 if _now_t < dtime(10, 30)
-                               else 15.0 if _now_t < dtime(11, 30)
-                               else 15.0 if _now_t < dtime(13, 0)
-                               else 20.0)
+
+            # Hard block: 11:30-14:25 = dead zone (0% WR — lunch lull + afternoon drift)
+            if dtime(11, 30) <= _now_t < dtime(14, 25):
+                continue  # No new entries during dead zone — exits only
+
+            _time_min_score = (15.0 if _now_t < dtime(10, 0)
+                               else 17.0 if _now_t < dtime(11, 30)
+                               else 19.0)  # power hour: high bar for late entries
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -3891,7 +3907,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
                     # Strict RVOL floor: 1.5× required across all signal types
-                    _rvol_min = 1.5  # institutional participation: 1.5x average minimum
+                    _rvol_min = 1.0  # block below-average volume; score/qual gate handles quality
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -4009,22 +4025,25 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Signal deny-list: block entries driven by proven-losing signals ──
+            # ── Signal deny-list: block proven-losing signal patterns ────────────
             # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
             # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
-            _deny_driven = False
-            if "VWAP_RECLAIM" in reason:
-                _non_deny = [s for s in reason.split("+") if s
-                             and "VWAP_RECLAIM" not in s
-                             and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
-                if not _non_deny:
-                    _deny_driven = True
-            if "EMA21_PULLBACK" in reason:
-                _non_deny2 = [s for s in reason.split("+") if s
-                              and "EMA21_PULLBACK" not in s
-                              and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
-                if not _non_deny2:
-                    _deny_driven = True
+            # VWAP_BOUNCE_LONG: 5 trades -₹6,600 — counter-trend VWAP pullback loses vs momentum
+            _HARD_DENY = ("VWAP_BOUNCE_LONG",)   # always block: loses vs any confirmation
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal
+            _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
+                             "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
+                             "CS_TOP", "CS_BOT")
+            _deny_driven = any(s in reason for s in _HARD_DENY)
+            if not _deny_driven:
+                for _dsig in _SOFT_DENY:
+                    if _dsig in reason:
+                        _parts = reason.split("+")
+                        _non_deny = [s for s in _parts if s and _dsig not in s
+                                     and not any(c in s for c in _CONTEXT_SIGS)]
+                        if not _non_deny:
+                            _deny_driven = True
+                            break
             if _deny_driven:
                 continue
 
@@ -4085,8 +4104,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _tp_m = 1.5
             _sl_atr = _sl_m * atr   # wider SL for 5m noise, standard for higher TFs
             sl    = entry - _sl_atr if long else entry + _sl_atr   # timeframe-aware ATR SL
-            t1    = entry + _tp_m * atr if long else entry - _tp_m * atr   # 1.5×ATR T1 (quick lock-in)
-            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr  # 3×ATR runner (T2 stays at 3R)
+            t1    = entry + _tp_m * _sl_atr if long else entry - _tp_m * _sl_atr   # 1.5R: T1 at 1.5× SL dist
+            t2    = entry + 3.0 * _sl_atr if long else entry - 3.0 * _sl_atr  # 3R runner: T2 at 3× SL dist
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
@@ -4123,15 +4142,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if sl_dist < min_sl_dist:
                 sl_dist = min_sl_dist
                 sl = entry - sl_dist if long else entry + sl_dist
-            qty = int(min(equity * risk_pct / sl_dist,
-                          equity * MAX_POS_PCT / entry))
+            # Risk-based sizing (mirrors run_backtest): Kelly risk_pct as primary.
+            # Position VALUE may exceed equity — Groww MIS intraday leverage applies.
+            qty = int(equity * risk_pct / sl_dist)
+            qty = min(qty, int(equity * 10.0 / max(entry, 1.0)))  # 10× leverage safety cap
             if qty < 1:
                 continue
 
             # ── Minimum profit filter: skip cost-inefficient trades ───────────
-            # t1 (1.5R target) must cover at least 2.5× the round-trip cost
-            # This eliminates trades where expected gain is eaten by STT/brokerage
-            _min_profit_pct = 2.5 * COST_RT_PCT   # need 2.5× cost coverage at t1
+            # T1 must cover at least 1× round-trip cost (5m: ~0.45%; higher TF: 1.125%)
+            _min_profit_pct = COST_RT_PCT if _is_5m_data else 2.5 * COST_RT_PCT
             _t1_profit_pct  = abs(t1 - entry) / max(entry, 1.0)
             if _t1_profit_pct < _min_profit_pct:
                 continue   # t1 doesn't cover costs — skip

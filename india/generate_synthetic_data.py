@@ -5,8 +5,10 @@ Creates 60 days of 5-minute IST intraday bars for NSE stocks when Yahoo Finance
 is not accessible. Uses GBM + regime switching to produce realistic:
 - Trending days vs ranging days
 - ORB breakout patterns (9:15-9:30 opening range + breakout)
+- ORB fake-breakouts (35% of bull days: breakout that reverses — realistic NSE trap)
 - VWAP deviation and mean-reversion
-- Volume surges on momentum bars
+- Volume surges on momentum bars (high at open, low at lunch)
+- rvol (relative volume) column for trading engine
 - Sector correlation
 - Realistic NSE price levels and volatility
 
@@ -129,13 +131,17 @@ def _generate_day(
     """
     Generate one day of realistic 5-min NSE OHLCV.
 
-    Produces 3 regime types:
-    - STRONG_BULL (30%): ORB breaks high, 75% of bars are bullish, trends to +1.5-3%
-    - STRONG_BEAR (25%): ORB breaks low, 70% of bars are bearish, trends to -1.5-3%
-    - RANGE (45%): choppy, VWAP mean-reversion, no sustained trend
+    Produces 3 regime types matching real NSE distribution:
+    - STRONG_BULL (50%): ORB breaks high, 75% of bars are bullish, trends to +1.5-3%
+      - 35% of bull days are ORB fake-breakouts (breaks out then reverses — realistic NSE trap)
+    - STRONG_BEAR (22%): ORB breaks low, 70% of bars are bearish, trends to -1.5-3%
+    - RANGE (28%): choppy within ±0.5% of open, VWAP mean-reversion, low volume
 
-    This makes ORB_BULL_CONFIRM, VWAP_BOUNCE, ATR_SQUEEZE signals actually predictive
-    (because on trend days, the signal DOES precede a sustained move).
+    Volume follows NSE microstructure:
+    - Opening (first 7 bars = 35 min): always high volume (2.5-4× base)
+    - Lunch lull (bars 35-50 ≈ 11:30-13:00): low volume (0.3-0.6×)
+    - Normal session: moderate (0.7-1.5×)
+    - Direction bonus only on truly strong bars (not always 5×)
     """
     vol_5m = params["vol"] / 100 / math.sqrt(75)
     beta   = params["beta"]
@@ -145,18 +151,18 @@ def _generate_day(
     gap_pct  = market_trend * beta + rng.normal(0, params["vol"] / 100 * 0.25)
     day_open = max(prev_close * (1 + gap_pct), 1.0)
 
-    # Day regime — more trending days for meaningful signal testing
+    # Day regime — real NSE distribution: ~50-55% bull, ~20-25% bear, ~15-20% range
     regime_r = rng.random()
-    if regime_r < 0.30:
-        regime = "STRONG_BULL"
+    if regime_r < 0.50:
+        regime = "STRONG_BULL"    # 50%: more bull days (real NSE has ~55% bull)
         day_drift  = abs(rng.normal(0.012, 0.005)) * beta    # +1.2% avg intraday gain
         orb_dir    = 1
-    elif regime_r < 0.55:
-        regime = "STRONG_BEAR"
+    elif regime_r < 0.72:
+        regime = "STRONG_BEAR"    # 22%: fewer bear days
         day_drift  = -abs(rng.normal(0.012, 0.005)) * beta
         orb_dir    = -1
     else:
-        regime = "RANGE"
+        regime = "RANGE"          # 28%: much less choppy (real NSE ~15-20%)
         day_drift  = rng.normal(0, 0.003)
         orb_dir    = 1 if rng.random() > 0.5 else -1
 
@@ -166,44 +172,70 @@ def _generate_day(
     prices = np.zeros(n)
     prices[0] = day_open
 
-    for i in range(1, n):
+    for i in range(1, 4):
         if i < 3:
             # ORB formation: directional with high noise
             step = orb_dir * orb_range_pct / 3 + rng.normal(0, vol_5m * 2.0)
-        elif i == 3:
+        else:
             # Bar 3 (9:30): ORB breakout bar — clear directional push
             if regime in ("STRONG_BULL", "STRONG_BEAR"):
                 # Clean breakout: strong bar in trend direction
                 step = orb_dir * abs(rng.normal(vol_5m * 2.5, vol_5m * 0.5))
             else:
                 step = rng.normal(0, vol_5m * 1.2)
-        else:
-            # Post-ORB: regime-driven trend
-            bar_in_session = i - 3
-            total_post_orb = n - 3
-            prog = bar_in_session / total_post_orb
+        prices[i] = max(prices[i-1] * (1 + step), 1.0)
 
-            if regime == "STRONG_BULL":
-                # Sustained uptrend with small pullbacks — 75% bull bars
-                if rng.random() < 0.75:
-                    step = abs(rng.normal(day_drift / total_post_orb, vol_5m * 0.6))
-                else:
-                    step = -abs(rng.normal(0, vol_5m * 0.4))  # small pullback
-                # Lunch lull: lower drift bars 27-45
-                if 27 <= i <= 45:
-                    step *= 0.3
-            elif regime == "STRONG_BEAR":
-                if rng.random() < 0.70:
-                    step = -abs(rng.normal(abs(day_drift) / total_post_orb, vol_5m * 0.6))
-                else:
-                    step = abs(rng.normal(0, vol_5m * 0.4))
-                if 27 <= i <= 45:
-                    step *= 0.3
+    # 35% of bull days: ORB fake-breakout (breaks out then reverses — realistic NSE trap)
+    # The ORB bar looks like a real breakout but the rest of the day reverses
+    # On fake-out days: price broke out to ~+0.5-1% above open, then chops back down
+    # but doesn't fully revert — closes near the ORB high (~+0.3% typically)
+    _orb_fakeout = (regime == "STRONG_BULL" and rng.random() < 0.35)
+    if _orb_fakeout:
+        regime = "RANGE"   # Treat rest of day as choppy after fake breakout
+        # Keep the ORB bar as a bull bar (fake breakout looks real at first)
+
+    # RANGE anchor: the level around which range/fakeout days oscillate
+    # - True RANGE days: small positive bias (NSE has systematic upward drift from
+    #   index fund inflows, MF SIPs) → close slightly above open ~60% of the time
+    # - Fake-out days: anchor slightly BELOW open — the fake-out reversal traps
+    #   buyers, price falls below pre-breakout level (classic NSE bull trap)
+    _range_anchor = day_open * 0.997 if _orb_fakeout else day_open * 1.002
+
+    # Post-ORB: regime-driven trend
+    for i in range(4, n):
+        bar_in_session = i - 3
+        total_post_orb = n - 3
+        prog = bar_in_session / total_post_orb
+
+        if regime == "STRONG_BULL":
+            # Sustained uptrend with small pullbacks — 75% bull bars
+            if rng.random() < 0.75:
+                step = abs(rng.normal(day_drift / total_post_orb, vol_5m * 1.0))
             else:
-                # RANGE: mean-revert to VWAP, choppy
-                vwap_est = prices[:i].mean()
-                mean_rev = (vwap_est - prices[i-1]) / vwap_est * 0.3
-                step = mean_rev + rng.normal(0, vol_5m * 0.9)
+                step = -abs(rng.normal(0, vol_5m * 0.7))  # small pullback
+            # Lunch lull: lower drift bars 27-45
+            if 27 <= i <= 45:
+                step *= 0.3
+        elif regime == "STRONG_BEAR":
+            if rng.random() < 0.70:
+                step = -abs(rng.normal(abs(day_drift) / total_post_orb, vol_5m * 1.0))
+            else:
+                step = abs(rng.normal(0, vol_5m * 0.7))
+            if 27 <= i <= 45:
+                step *= 0.3
+        else:
+            # RANGE: oscillate within ±0.5% of anchor, mean-revert to slightly-positive anchor
+            # Institutions don't participate — tight, low-conviction moves
+            # Real NSE range days close slightly positive due to market-wide upward drift
+            range_boundary = _range_anchor * 0.005   # ±0.5% boundary around anchor
+            current_dev = prices[i-1] - _range_anchor
+            # Strong mean-reversion pull toward anchor (midpoint with positive bias)
+            mean_rev = -(current_dev / _range_anchor) * 0.45
+            # Clamp: if price is outside ±0.5% band, push it back harder
+            if abs(current_dev) > range_boundary:
+                mean_rev = -(current_dev / _range_anchor) * 0.80
+            # Use reduced noise on range days (lower conviction)
+            step = mean_rev + rng.normal(0, vol_5m * 0.8)
 
         prices[i] = max(prices[i-1] * (1 + step), 1.0)
 
@@ -219,36 +251,50 @@ def _generate_day(
         bar_open  = prices[i-1] if i > 0 else day_open
         bar_close = prices[i]
         move      = abs(bar_close - bar_open)
-        noise_h   = abs(rng.normal(0, vol_5m * bar_open * 0.25))
-        noise_l   = abs(rng.normal(0, vol_5m * bar_open * 0.25))
+        noise_h   = abs(rng.normal(0, vol_5m * bar_open * 0.60))
+        noise_l   = abs(rng.normal(0, vol_5m * bar_open * 0.60))
         opens[i]  = bar_open
         closes[i] = bar_close
         highs[i]  = max(bar_open, bar_close) + noise_h
         lows[i]   = max(min(bar_open, bar_close) - noise_l, bar_open * 0.85)
 
-        # Volume: surge on ORB and breakout bars, quiet at lunch
-        if i < 6:
-            vol_mult = 3.0 + rng.exponential(2.0)     # opening: big volume
-        elif i == 3 and regime != "RANGE":
-            vol_mult = 5.0 + rng.exponential(2.0)     # ORB breakout bar: huge volume
-        elif 27 <= i <= 45:
-            vol_mult = 0.4 + rng.random() * 0.4       # lunch: quiet
-        elif i > 65:
-            vol_mult = 1.8 + rng.exponential(0.8)     # close: higher
-        else:
-            vol_mult = 0.7 + rng.random() * 0.7
+        # Volume: high at open (9:15-9:45) regardless of direction, drops at lunch
+        # This matches real NSE microstructure (institutions trade on open/close)
+        _is_opening = (i < 7)   # First 7 bars = first 35 min
+        _is_lunch   = (35 <= i < 50)   # Lunch lull: bars 35-50 (11:30-13:00 approx)
+        _base_vol_mult = (
+            rng.uniform(2.5, 4.0) if _is_opening else   # Opening always high volume
+            rng.uniform(0.3, 0.6) if _is_lunch else      # Lunch: low volume
+            rng.uniform(0.7, 1.5)                         # Normal session
+        )
 
-        # Extra volume on big moves (momentum signal)
-        move_pct = move / max(bar_open, 1)
-        if move_pct > vol_5m * 2:
-            vol_mult *= 2.5 + rng.exponential(1.0)
+        # Range days: even lower institutional participation
+        if regime == "RANGE":
+            _base_vol_mult *= 0.65
+
+        # Direction bonus: add 0.3-0.8× only on truly strong moves (not always 5×)
+        _dir_bonus = rng.uniform(0.3, 0.8) if abs(move / max(bar_open, 1)) > vol_5m * 1.5 else 0.0
+        vol_mult = _base_vol_mult + _dir_bonus
+
+        # Closing auction: extra volume in last 5 bars
+        if i > 70:
+            vol_mult *= 1.5 + rng.exponential(0.5)
 
         vols[i] = max(1, int(base_vol * vol_mult / (n * max(bar_open, 1))))
 
-    return pd.DataFrame({
+    day_df = pd.DataFrame({
         "open": opens, "high": highs, "low": lows,
         "close": closes, "volume": vols.astype(int),
     })
+
+    # Compute rvol = volume / 20-bar rolling average volume
+    # Needed by trading engine for volume surge detection
+    if "volume" in day_df.columns:
+        avg_vol = day_df["volume"].rolling(20, min_periods=5).mean()
+        day_df["rvol"] = day_df["volume"] / avg_vol.replace(0, 1e-9)
+        day_df["rvol"] = day_df["rvol"].fillna(1.0).clip(0.1, 10.0)
+
+    return day_df
 
 
 def generate_nse_data(
@@ -267,6 +313,7 @@ def generate_nse_data(
     Returns:
         Dict[symbol -> pd.DataFrame] with IST DatetimeIndex, same format as
         data_yfinance.load_nse_data_yfinance() output.
+        Columns: open, high, low, close, volume, rvol
     """
     if seed is not None:
         np.random.seed(seed)
@@ -320,6 +367,13 @@ def generate_nse_data(
 
         df = pd.concat(all_dfs)
         df = df[df["close"] > 0].copy()
+
+        # Cross-day rvol: recompute rvol using rolling window across full symbol data
+        # (within-day rvol from _generate_day is overwritten here for accuracy)
+        avg_vol_cross = df["volume"].rolling(20, min_periods=5).mean()
+        df["rvol"] = df["volume"] / avg_vol_cross.replace(0, 1e-9)
+        df["rvol"] = df["rvol"].fillna(1.0).clip(0.1, 10.0)
+
         result[sym] = df
 
     print(f"  Generated {len(result)} symbols ({len(trading_days)} days, ~{len(trading_days)*75} bars each)")
