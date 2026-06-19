@@ -1406,13 +1406,23 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
         # Lunch lull: exits still processed; new-entry skip handled by _pre_filter LUNCH_LULL gate
 
         # ── Session breadth: % of symbols above today's open ─────────────────
+        # Use PRIOR bar for breadth to avoid lookahead bias:
+        # current bar's close is correlated with entry signal direction by construction.
         _brd_today = now_ts.date()
+        _prior_ts_breadth = None
+        for _bsym_chk, _bdf_chk in data.items():
+            if now_ts in _bdf_chk.index:
+                _idx_chk = _bdf_chk.index.get_loc(now_ts)
+                if _idx_chk > 0:
+                    _prior_ts_breadth = _bdf_chk.index[_idx_chk - 1]
+                break
         _brd_above = 0; _brd_total = 0
         for _bsym, _bdf in data.items():
             try:
-                if now_ts not in _bdf.index:
+                _ts_to_use = _prior_ts_breadth if _prior_ts_breadth is not None else now_ts
+                if _ts_to_use not in _bdf.index:
                     continue
-                _brd_bar = _bdf.loc[now_ts]
+                _brd_bar = _bdf.loc[_ts_to_use]
                 # Get today's first bar open for this symbol
                 _brd_key = f"{_bsym}_{_brd_today}"
                 if _brd_key not in _session_open:
@@ -3003,13 +3013,23 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 pass
 
         # ── Session breadth: % of symbols above today's open ─────────────────
+        # Use PRIOR bar for breadth to avoid lookahead bias:
+        # current bar's close is correlated with entry signal direction by construction.
         _brd_today = now_ts.date()
+        _prior_ts_breadth = None
+        for _bsym_chk, _bdf_chk in data.items():
+            if now_ts in _bdf_chk.index:
+                _idx_chk = _bdf_chk.index.get_loc(now_ts)
+                if _idx_chk > 0:
+                    _prior_ts_breadth = _bdf_chk.index[_idx_chk - 1]
+                break
         _brd_above = 0; _brd_total = 0
         for _bsym, _bdf in data.items():
             try:
-                if now_ts not in _bdf.index:
+                _ts_to_use = _prior_ts_breadth if _prior_ts_breadth is not None else now_ts
+                if _ts_to_use not in _bdf.index:
                     continue
-                _brd_bar = _bdf.loc[now_ts]
+                _brd_bar = _bdf.loc[_ts_to_use]
                 # Get today's first bar open for this symbol
                 _brd_key = f"{_bsym}_{_brd_today}"
                 if _brd_key not in _session_open:
