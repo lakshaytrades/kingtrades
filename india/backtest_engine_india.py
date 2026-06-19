@@ -55,8 +55,8 @@ COST_RT_PCT  = 0.0045    # 45bps: STT 0.025%×2 + brokerage 0.03%×2 + GST + sli
 SQUAREOFF    = dtime(15, 15)
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
-# Allow shorts — ORB_BEAR and HAMMER_SHORT have shown 100% WR in backtests
-LONG_ONLY_NSE  = False  # Shorts enabled: ORB_BEAR_CONFIRM, HAMMER_REVERSAL_SHORT
+# LONG_ONLY: short signals added noise (-₹699 across 3 signals) with no net benefit
+LONG_ONLY_NSE  = True   # Long-only mode: NSE intraday momentum favours upside
 BULL_DAY_ONLY  = True   # Only take new entries on confirmed bull sessions (breadth ≥ 0.50)
 
 # ── Pure OHLCV indicators ────────────────────────────────────────────────────
@@ -411,15 +411,16 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     prsi_v = float(_prsi_raw) if (_prsi_raw is not None and _prsi_raw == _prsi_raw) else rsi_v
     _rsi_bull_cross = (prsi_v < 50.0) and (rsi_v >= 50.0)  # just crossed 50 from below
     _rsi_bear_cross = (prsi_v > 50.0) and (rsi_v <= 50.0)  # just crossed 50 from above
+    # RSI cross: demoted to context-only (+3, no label). Alone it has no edge —
+    # 50-line crosses are noise events. Only useful as confirming context.
     if _rsi_bull_cross:
-        score_long  += 8; reasons.append("RSI_BULL_CROSS")
+        score_long  += 3   # context only: do NOT label — prevents RSI_BULL_CROSS-only entries
     elif _rsi_bear_cross:
-        score_short += 8; reasons.append("RSI_BEAR_CROSS")
-    # Additional context: RSI position (not labeled — pure context)
+        score_short += 3   # context only
     elif rsi_v >= 55 and rsi_v < 68:
-        score_long  += 2  # RSI in bullish zone but not crossing = minor context
+        score_long  += 2
     elif rsi_v <= 45 and rsi_v > 32:
-        score_short += 2  # RSI in bearish zone but not crossing = minor context
+        score_short += 2
 
     # ── Signal 2: EMA momentum stack ────────────────────────────────────────
     e9  = float(row.get("ema9",  c) or c)
@@ -487,18 +488,22 @@ def _score_bar(row: pd.Series, prev: pd.Series,
         # Price already extended >0.3% above VWAP = potential exhaustion, NOT an entry signal.
         _vwap_reclaim = (c > vwap) and (pc < pvwap)   # just crossed VWAP from below
         _vwap_reject  = (c < vwap) and (pc > pvwap)   # just fell below VWAP
+        # VWAP_RECLAIM demoted to context-only (+4, no label).
+        # Single-bar VWAP cross fires 15-20× per day per symbol — pure noise without
+        # additional volume/momentum confirmation. Label removed so it cannot drive entries.
         if _vwap_reclaim:
-            score_long  += 14; reasons.append("VWAP_RECLAIM")  # strongest: institutional buy
+            score_long  += 4   # context: direction correct, but no label
         elif 0 < vd <= 0.003:
-            score_long  += 4   # near VWAP from above = modest support context
+            score_long  += 3
         elif vd > 0.003:
-            score_long  += 2   # far above VWAP = late entry risk; minimal score
+            score_long  += 1
+        # VWAP_REJECT: keep as labeled signal — shorts need more signals than longs
         if _vwap_reject:
-            score_short += 14; reasons.append("VWAP_REJECT")   # strongest: institutional sell
+            score_short += 10; reasons.append("VWAP_REJECT")
         elif -0.003 <= vd < 0:
-            score_short += 4
+            score_short += 3
         elif vd < -0.003:
-            score_short += 2
+            score_short += 1
 
     # ── Signal 5: Volume-direction confirmation (CONTEXT ONLY) ─────────────────
     # VOL is a CONFIRMER only — not a primary signal. Intentionally UNLABELED so
@@ -2277,13 +2282,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
                     # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
-                    # Only structural reversal/expansion setups bypass trend checks.
-                    # MACD_XOVER_UP, EMA21_PULLBACK, PULLBACK_CONT removed — need prior trend.
+                    # Only the 3 structural reversal/expansion setups bypass trend checks.
+                    # VWAP_RECLAIM removed: too noisy (17 losing trades), not truly structural.
                     _high_wr_bypass = any(sig in reason for sig in (
                         "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
                         "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
-                        "VWAP_RECLAIM",           # price reclaims VWAP — institutional conviction
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -2370,7 +2374,26 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Entry quality gate: RSI overbought filter only ───────────────
+            # ── Signal deny-list: block entries driven by proven-losing signals ──
+            # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
+            # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
+            _deny_driven = False
+            if "VWAP_RECLAIM" in reason:
+                _non_deny = [s for s in reason.split("+") if s
+                             and "VWAP_RECLAIM" not in s
+                             and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
+                if not _non_deny:
+                    _deny_driven = True
+            if "EMA21_PULLBACK" in reason:
+                _non_deny2 = [s for s in reason.split("+") if s
+                              and "EMA21_PULLBACK" not in s
+                              and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
+                if not _non_deny2:
+                    _deny_driven = True
+            if _deny_driven:
+                continue
+
+            # ── Entry quality gate: RSI momentum window ──────────────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
                 if direction == "LONG" and _rsi_q > 72:
@@ -2380,17 +2403,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             except Exception:
                 pass
             # ── Named-setup quality gate: pattern + confirmation ──
-            # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
-            # their own internal volume/price checks — count as self-confirming.
-            # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
             # Only structural, named setups with proven edge count toward qual_count.
-            # Removed: INTRADAY_MOM (lagging noise), LIQ_GRAB (low WR), INSIDE_BAR (ambiguous),
-            #          ACCUM/DISTRIB (slow, intraday unreliable), MOD_CONFIRM (too easy: 0.2% move),
-            #          MOMENTUM_IGNITION (fires too early, noise).
+            # Removed: INTRADAY_MOM, LIQ_GRAB, INSIDE_BAR, ACCUM/DISTRIB, MOD_CONFIRM,
+            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
-                             "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
-                             "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
-                             "VWAP_RECLAIM", "VWAP_REJECT",
+                             "EMA_BULL_STACK", "EMA_BEAR_STACK",
+                             "MACD_XOVER",
+                             "VWAP_REJECT",
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "PULLBACK_CONT",
                              "RANGE_EXP",
@@ -2405,8 +2424,6 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
                 "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
-                "MACD_XOVER_UP",          # histogram flip: trend start, not continuation
-                "VWAP_RECLAIM",           # price reclaims VWAP after being below — institutional
                 "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
                 "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
                 "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
@@ -3788,13 +3805,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     )
                     # High-WR setup bypass: self-confirming signals don't need prior tape trend.
                     # These signals PREDICT the coming move — requiring prior 0.3% gain is circular.
-                    # Only structural reversal/expansion setups bypass trend checks.
-                    # MACD_XOVER_UP, EMA21_PULLBACK, PULLBACK_CONT removed — need prior trend.
+                    # Only the 3 structural reversal/expansion setups bypass trend checks.
+                    # VWAP_RECLAIM removed: too noisy (17 losing trades), not truly structural.
                     _high_wr_bypass = any(sig in reason for sig in (
                         "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
                         "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
-                        "VWAP_RECLAIM",           # price reclaims VWAP — institutional conviction
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -3899,7 +3915,26 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
-            # ── Entry quality gate: RSI overbought filter only ───────────────
+            # ── Signal deny-list: block entries driven by proven-losing signals ──
+            # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
+            # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
+            _deny_driven = False
+            if "VWAP_RECLAIM" in reason:
+                _non_deny = [s for s in reason.split("+") if s
+                             and "VWAP_RECLAIM" not in s
+                             and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
+                if not _non_deny:
+                    _deny_driven = True
+            if "EMA21_PULLBACK" in reason:
+                _non_deny2 = [s for s in reason.split("+") if s
+                              and "EMA21_PULLBACK" not in s
+                              and "BREADTH" not in s and "SECTOR" not in s and "MKTBIAS" not in s]
+                if not _non_deny2:
+                    _deny_driven = True
+            if _deny_driven:
+                continue
+
+            # ── Entry quality gate: RSI momentum window ──────────────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
                 if direction == "LONG" and _rsi_q > 72:
@@ -3909,17 +3944,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             except Exception:
                 pass
             # ── Named-setup quality gate: pattern + confirmation ──
-            # Bypass signals (ATR_SQUEEZE, ORB_CLEAN, VWAP_BOUNCE, HAMMER) have
-            # their own internal volume/price checks — count as self-confirming.
-            # All other patterns need external tape confirmation (MOD/STRONG_CONFIRM).
             # Only structural, named setups with proven edge count toward qual_count.
-            # Removed: INTRADAY_MOM (lagging noise), LIQ_GRAB (low WR), INSIDE_BAR (ambiguous),
-            #          ACCUM/DISTRIB (slow, intraday unreliable), MOD_CONFIRM (too easy: 0.2% move),
-            #          MOMENTUM_IGNITION (fires too early, noise).
+            # Removed: INTRADAY_MOM, LIQ_GRAB, INSIDE_BAR, ACCUM/DISTRIB, MOD_CONFIRM,
+            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
-                             "EMA_BULL_STACK", "EMA_BEAR_STACK", "EMA21_PULLBACK",
-                             "MACD_XOVER", "RSI_BULL_CROSS", "RSI_BEAR_CROSS",
-                             "VWAP_RECLAIM", "VWAP_REJECT",
+                             "EMA_BULL_STACK", "EMA_BEAR_STACK",
+                             "MACD_XOVER",
+                             "VWAP_REJECT",
                              "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
                              "HAMMER_REVERSAL", "PULLBACK_CONT",
                              "RANGE_EXP",
@@ -3934,8 +3965,6 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
                 "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
-                "MACD_XOVER_UP",          # histogram flip: trend start, not continuation
-                "VWAP_RECLAIM",           # price reclaims VWAP after being below — institutional
                 "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
                 "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
                 "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned

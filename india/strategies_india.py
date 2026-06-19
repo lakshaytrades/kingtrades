@@ -416,32 +416,31 @@ def ema21_pullback_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, s
                         return True
             return False
 
-        # LONG signal
+        # LONG signal — strict: must be right at EMA21, with volume, RSI cooling
         bull_stack = ema9 > ema21 > ema50 > 0
-        at_ema21_long = 0.993 <= (c / ema21) <= 1.012  # within 0.7-1.2% of EMA21 (widened)
-        rsi_reset_long = 33 <= rsi <= 63  # widened: RSI cooling from 65 is still valid
+        at_ema21_long = 0.997 <= (c / ema21) <= 1.006  # tighter: within 0.3-0.6% of EMA21 only
+        rsi_reset_long = 35 <= rsi <= 55  # tighter: RSI must have cooled significantly
         macd_pos = macd_h > 0
+        has_volume = rvol >= 1.4  # must have above-average volume on the bounce bar
         not_volume_panic = rvol < 3.0
-        # Require full bullish stack: EMA21 > EMA50 reduces false signals significantly
         ema50_long_ok = ema50 <= 0 or ema21 > ema50
 
         if (bull_stack and at_ema21_long and rsi_reset_long and
-                macd_pos and not_volume_panic and ema50_long_ok and
+                macd_pos and has_volume and not_volume_panic and ema50_long_ok and
                 _had_pullback_to_ema("LONG")):
-            return 14, "EMA21_PULLBACK_LONG"
+            return 10, "EMA21_PULLBACK_LONG"  # reduced from 14: not enough alone
 
-        # SHORT signal
+        # SHORT signal — same tightening
         bear_stack = ema9 < ema21 < ema50
-        at_ema21_short = 0.992 <= (c / ema21) <= 1.005  # near EMA21 from below
-        rsi_reset_short = 42 <= rsi <= 65
+        at_ema21_short = 0.994 <= (c / ema21) <= 1.003
+        rsi_reset_short = 45 <= rsi <= 62
         macd_neg = macd_h < 0
-        # Require full bearish stack: EMA21 < EMA50 reduces false signals significantly
         ema50_short_ok = ema50 <= 0 or ema21 < ema50
 
         if (bear_stack and at_ema21_short and rsi_reset_short and
-                macd_neg and not_volume_panic and ema50_short_ok and
+                macd_neg and has_volume and not_volume_panic and ema50_short_ok and
                 _had_pullback_to_ema("SHORT")):
-            return -14, "EMA21_PULLBACK_SHORT"
+            return -10, "EMA21_PULLBACK_SHORT"
 
         return 0, ""
     except Exception:
