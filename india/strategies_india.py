@@ -901,74 +901,11 @@ def intraday_momentum_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[flo
 
 def atr_squeeze_breakout_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[float, str]:
     """
-    ATR squeeze breakout: consolidation → expansion.
-    Looks for 5+ bars of narrowing range, then current bar expands.
-    NSE proven: 65% WR on breakout direction when volume > 1.5x average.
-
-    Returns (score_delta, reason) — positive LONG, negative SHORT.
+    ATR squeeze breakout: consolidation to expansion.
+    DISABLED: consistently losing across all backtests (-32003 INR/14 trades in 200-symbol run,
+    -16385 INR/2 trades in smaller tests). NR7 fires before direction is established.
+    Returns (0.0, "") always - kept as stub to avoid ImportError in callers.
     """
-    if current_idx < 15:
-        return 0.0, ""
-
-    try:
-        row = df_5m.iloc[current_idx]
-        prev = df_5m.iloc[current_idx - 1]
-
-        current_close = float(row.get("close", 0) or 0)
-        current_open  = float(row.get("open", 0) or 0)
-        if current_close <= 0:
-            return 0.0, ""
-
-        # Compute recent bar ranges
-        lookback = df_5m.iloc[current_idx - 10: current_idx]
-        bar_ranges = lookback["high"] - lookback["low"]
-        if len(bar_ranges) < 6:
-            return 0.0, ""
-
-        avg_range = float(bar_ranges.mean())
-        min_range_5 = float(bar_ranges.iloc[-5:].min())  # smallest range in last 5 bars
-        cur_range  = float(row["high"] - row["low"])
-
-        # ATR for context
-        atr_now = float(row.get("atr", avg_range) or avg_range)
-        if atr_now <= 0:
-            atr_now = avg_range
-
-        # Squeeze condition: last 5 bars had range < 60% of 10-bar average
-        squeeze_active = min_range_5 < avg_range * 0.65
-
-        # Breakout condition: current bar range > 130% of avg
-        breakout_active = cur_range > avg_range * 1.30
-
-        if not (squeeze_active and breakout_active):
-            return 0.0, ""
-
-        # Volume confirmation
-        vol_sma_20 = float(df_5m.iloc[max(0, current_idx-20):current_idx]["volume"].mean())
-        cur_vol = float(row.get("volume", 0) or 0)
-        rvol = cur_vol / max(vol_sma_20, 1.0)
-
-        if rvol < 1.4:  # Need strong volume on breakout
-            return 0.0, ""
-
-        # Direction: is the breakout bar bullish or bearish?
-        bar_body = current_close - current_open
-        bar_move_pct = bar_body / max(current_open, 1.0)
-
-        # MACD histogram for trend confirmation
-        macd_h = float(row.get("macd_hist", 0) or 0)
-
-        if bar_move_pct > 0.001 and bar_body > 0:  # Bullish breakout
-            score = 14.0 if macd_h > 0 else 10.0
-            return score, "ATR_SQUEEZE_BREAKOUT"
-
-        if bar_move_pct < -0.001 and bar_body < 0:  # Bearish breakout
-            score = -14.0 if macd_h < 0 else -10.0
-            return score, "ATR_SQUEEZE_BREAKOUT"
-
-    except Exception as exc:
-        logger.debug("atr_squeeze_breakout_signal: %s", exc)
-
     return 0.0, ""
 
 

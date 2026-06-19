@@ -2095,7 +2095,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # All other LONGs need Nifty to be at least neutral (-0.3% floor).
             if (direction == "LONG"
                     and _nifty_proxy_return < -0.003  # Nifty down >0.3% from open
-                    and not any(s in reason for s in ("ATR_SQUEEZE", "ORB_BULL", "VWAP_RECLAIM"))):
+                    and not any(s in reason for s in ("ORB_BULL", "VWAP_RECLAIM"))):
                 continue
 
             # ── New strategies boost (called with full DataFrame context) ─────
@@ -2437,9 +2437,13 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Signal deny-list: block proven-losing signal patterns ────────────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
             # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
+            # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
+            if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
+                continue
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -2469,12 +2473,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Named-setup quality gate: pattern + confirmation ──
             # Only structural, named setups with proven edge count toward qual_count.
             # Removed: INTRADAY_MOM, LIQ_GRAB, INSIDE_BAR, ACCUM/DISTRIB, MOD_CONFIRM,
-            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK.
+            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK, ATR_SQUEEZE.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK",
                              "MACD_XOVER",
                              "VWAP_REJECT",
-                             "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "CONFIRMED_MOMENTUM",
                              "HAMMER_REVERSAL", "PULLBACK_CONT",
                              "RANGE_EXP",
                              "STRONG_CONFIRM",
@@ -2482,16 +2486,16 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             # Self-confirm: only highest-conviction structural signals get free +1 qual count.
-            # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
-            # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
-            # VWAP_BOUNCE_LONG removed: hard-denied signal.
-            # ATR_SQUEEZE_BREAKOUT removed: hard-denied signal.
+            # ORB_BULL_CONFIRM removed: passes quality gate alone (self + in QUALITY_SIGS = 2)
+            # leading to 11 trades -₹49,264 without secondary momentum confirmation.
+            # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
-                "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
-                "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
-                "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
+                # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
+                # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
+                # CONFIRMED_MOMENTUM excluded: loses alone (-₹3,642/trade); needs ORB/EMA 2nd signal
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
@@ -3673,7 +3677,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Nifty alignment filter (same as run_backtest)
             if (direction == "LONG"
                     and _nifty_proxy_return < -0.003
-                    and not any(s in reason for s in ("ATR_SQUEEZE", "ORB_BULL", "VWAP_RECLAIM"))):
+                    and not any(s in reason for s in ("ORB_BULL", "VWAP_RECLAIM"))):
                 continue
 
             try:
@@ -4032,9 +4036,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Signal deny-list: block proven-losing signal patterns ────────────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
             # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
+            # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
+            if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
+                continue
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -4064,12 +4072,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Named-setup quality gate: pattern + confirmation ──
             # Only structural, named setups with proven edge count toward qual_count.
             # Removed: INTRADAY_MOM, LIQ_GRAB, INSIDE_BAR, ACCUM/DISTRIB, MOD_CONFIRM,
-            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK.
+            #          MOMENTUM_IGNITION, RSI_BULL_CROSS, VWAP_RECLAIM, EMA21_PULLBACK, ATR_SQUEEZE.
             _QUALITY_SIGS = ("VWAP_BOUNCE", "ORB_BULL", "ORB_BEAR",
                              "EMA_BULL_STACK", "EMA_BEAR_STACK",
                              "MACD_XOVER",
                              "VWAP_REJECT",
-                             "CONFIRMED_MOMENTUM", "ATR_SQUEEZE",
+                             "CONFIRMED_MOMENTUM",
                              "HAMMER_REVERSAL", "PULLBACK_CONT",
                              "RANGE_EXP",
                              "STRONG_CONFIRM",
@@ -4077,22 +4085,22 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             # Self-confirm: only highest-conviction structural signals get free +1 qual count.
-            # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
-            # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
-            # VWAP_BOUNCE_LONG removed: hard-denied signal.
-            # ATR_SQUEEZE_BREAKOUT removed: hard-denied signal.
+            # ORB_BULL_CONFIRM removed: passes quality gate alone (self + in QUALITY_SIGS = 2)
+            # leading to 11 trades -₹49,264 without secondary momentum confirmation.
+            # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
-                "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
-                "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
-                "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
+                # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
+                # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
+                # CONFIRMED_MOMENTUM excluded: loses alone (-₹3,642/trade); needs ORB/EMA 2nd signal
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 3:
-                continue  # Need 3-way confluence: primary + confirmation + market alignment
+            if _qual_count < 2:
+                continue  # Need 2-way confluence: primary signal + confirmation
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
@@ -4411,7 +4419,7 @@ Examples:
         if args.symbols:
             syms = [s.strip().upper() for s in args.symbols.split(",") if s.strip()]
 
-        raw_data = generate_nse_data(syms, days=60)
+        raw_data = generate_nse_data(syms, days=max(args.days, 20))
         if not raw_data:
             print("ERROR: Synthetic data generation failed.")
             sys.exit(1)

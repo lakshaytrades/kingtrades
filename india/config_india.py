@@ -220,7 +220,7 @@ STRATEGIES_ENABLED           = _flag("INDIA_STRATEGIES_ENABLED")            # ga
 
 # -- Dynamic Kelly + Anti-martingale sizing (Sharpe >= 2 / 15-20% monthly) ----
 DYNAMIC_KELLY_ENABLED   = bool(os.getenv("INDIA_DYNAMIC_KELLY",    "True") == "True")
-MAX_RISK_PER_TRADE_PCT  = float(os.getenv("INDIA_MAX_RISK_PCT",    "0.02"))   # 2% hard cap per trade
+# MAX_RISK_PER_TRADE_PCT defined above at line 20 — do not redefine here
 ANTI_MARTINGALE_ENABLED = bool(os.getenv("INDIA_ANTI_MARTINGALE",  "True") == "True")
 
 # ── Unit 4: Breadth & Sector Filter ─────────────────────────────────────────
