@@ -2440,7 +2440,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
+                          "HAMMER_REVERSAL_LONG")  # LONG hammer: loses without trend (-₹6,317/2 trades)
             # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
             if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
                 continue
@@ -2491,7 +2492,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
-                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
+                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal (LONG excluded: -₹3,159/trade)
                 "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
                 # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
                 # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
@@ -4039,7 +4040,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ORB_BULL_CONFIRM: loses without ORB_BULL_CLEAN co-confirmation (-₹6,788/5 trades even w/ 2nd signal)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
+                          "HAMMER_REVERSAL_LONG")  # LONG hammer: loses without trend (-₹6,317/2 trades)
             # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
             if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
                 continue
@@ -4090,7 +4092,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
-                "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
+                "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal (LONG excluded: -₹3,159/trade)
                 "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB (7 trades +₹30k)
                 # ORB_BULL_CONFIRM excluded: loses alone (-₹49k); needs 2nd signal
                 # PULLBACK_CONT excluded: loses alone in choppy conditions; needs ORB/EMA 2nd signal
