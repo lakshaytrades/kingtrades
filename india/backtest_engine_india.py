@@ -2344,9 +2344,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     # Only the 3 structural reversal/expansion setups bypass trend checks.
                     # VWAP_RECLAIM removed: too noisy (17 losing trades), not truly structural.
                     _high_wr_bypass = any(sig in reason for sig in (
-                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
+                        # VWAP_BOUNCE_LONG removed: hard-denied (5 trades -₹6,600)
+                        # ATR_SQUEEZE_BREAKOUT removed: hard-denied (2 trades -₹16,385)
+                        "VWAP_BOUNCE_SHORT",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
-                        "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -2434,11 +2435,12 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # Re-check after penalty
 
             # ── Signal deny-list: block proven-losing signal patterns ────────────
-            # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
-            # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
-            # VWAP_BOUNCE_LONG: 5 trades -₹6,600 — counter-trend VWAP pullback loses vs momentum
-            _HARD_DENY = ("VWAP_BOUNCE_LONG",)   # always block: loses vs any confirmation
-            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal
+            # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
+            # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
+            # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
+            # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
                              "CS_TOP", "CS_BOT")
@@ -2482,10 +2484,11 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # Self-confirm: only highest-conviction structural signals get free +1 qual count.
             # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
             # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
+            # VWAP_BOUNCE_LONG removed: hard-denied signal.
+            # ATR_SQUEEZE_BREAKOUT removed: hard-denied signal.
             _is_self_confirm = any(s in reason for s in (
-                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
+                "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
-                "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
                 "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
                 "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
                 "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
@@ -3918,9 +3921,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     # Only the 3 structural reversal/expansion setups bypass trend checks.
                     # VWAP_RECLAIM removed: too noisy (17 losing trades), not truly structural.
                     _high_wr_bypass = any(sig in reason for sig in (
-                        "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",   # bounce off VWAP with volume
+                        # VWAP_BOUNCE_LONG removed: hard-denied (5 trades -₹6,600)
+                        # ATR_SQUEEZE_BREAKOUT removed: hard-denied (2 trades -₹16,385)
+                        "VWAP_BOUNCE_SHORT",
                         "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal
-                        "ATR_SQUEEZE_BREAKOUT",   # NR7 expansion — structural breakout
                     ))
                     # Session floor: bypass signals (ORB_CLEAN, ATR_SQUEEZE, VWAP_BOUNCE,
                     # HAMMER) are self-confirming — they predict the coming move, not
@@ -4026,11 +4030,12 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # Re-check after penalty
 
             # ── Signal deny-list: block proven-losing signal patterns ────────────
-            # VWAP_RECLAIM: 17 trades -₹6,761 — single-bar VWAP cross is noise
-            # EMA21_PULLBACK: 4 trades -₹3,026 — fires without trend confirmation
-            # VWAP_BOUNCE_LONG: 5 trades -₹6,600 — counter-trend VWAP pullback loses vs momentum
-            _HARD_DENY = ("VWAP_BOUNCE_LONG",)   # always block: loses vs any confirmation
-            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal
+            # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
+            # ATR_SQUEEZE_BREAKOUT: NR7 expansion fires before direction established (-₹16,385/2 trades)
+            # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
+            # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")  # always block
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
                              "CS_TOP", "CS_BOT")
@@ -4074,10 +4079,11 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # Self-confirm: only highest-conviction structural signals get free +1 qual count.
             # INTRADAY_MOM_UP removed: 15 losing trades (trend-following noise).
             # EMA_BULL_STACK removed: 8 losing trades (fires too early, before trend confirmed).
+            # VWAP_BOUNCE_LONG removed: hard-denied signal.
+            # ATR_SQUEEZE_BREAKOUT removed: hard-denied signal.
             _is_self_confirm = any(s in reason for s in (
-                "VWAP_BOUNCE_LONG", "VWAP_BOUNCE_SHORT",  # price bounces off VWAP w/ volume
+                "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_LONG", "HAMMER_REVERSAL_SHORT",  # single-bar reversal pattern
-                "ATR_SQUEEZE_BREAKOUT",   # NR7 volatility expansion — structural
                 "ORB_BULL_CONFIRM",       # ORB breakout with volume — strongest daytime signal
                 "PULLBACK_CONT",          # pullback into EMA21 then resume — clean continuation
                 "CONFIRMED_MOMENTUM",     # multi-factor composite: EMA + VWAP + volume all aligned
