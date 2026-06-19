@@ -2441,7 +2441,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
-                          "HAMMER_REVERSAL_LONG")  # LONG hammer: loses without trend (-₹6,317/2 trades)
+                          "HAMMER_REVERSAL_LONG",    # LONG hammer: loses without trend (-₹6,317/2 trades)
+                          "CONFIRMED_MOMENTUM")       # fires late in trend cycle; high variance (-₹7,366/4 trades)
             # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
             if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
                 continue
@@ -4041,7 +4042,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT",
-                          "HAMMER_REVERSAL_LONG")  # LONG hammer: loses without trend (-₹6,317/2 trades)
+                          "HAMMER_REVERSAL_LONG",    # LONG hammer: loses without trend (-₹6,317/2 trades)
+                          "CONFIRMED_MOMENTUM")       # fires late in trend cycle; high variance (-₹7,366/4 trades)
             # ORB_BULL_CONFIRM: soft-deny unless ORB_BULL_CLEAN also fired (stricter ORB confirmation)
             if "ORB_BULL_CONFIRM" in reason and "ORB_BULL_CLEAN" not in reason:
                 continue
