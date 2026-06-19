@@ -456,7 +456,6 @@ def _score_bar(row: pd.Series, prev: pd.Series,
     # After 11:00 they are stale and produce low-WR noise entries
     if orb_h > 0 and orb_l > 0 and ORB_END < bar_time < dtime(11, 0):
         orb_range_pct = (orb_h - orb_l) / max(orb_h, 1)
-        _vol_ok = rvol >= 1.3
         _prev_c = float(prev.get("close", c) or c)
         if 0.0005 <= orb_range_pct <= 0.05:
             # CHANGE-OF-STATE: only the BREAKOUT BAR scores high — previous bar was inside ORB
@@ -465,18 +464,30 @@ def _score_bar(row: pd.Series, prev: pd.Series,
             _orb_bear_fresh = (c < orb_l * 0.9995) and (_prev_c >= orb_l * 0.9995)
             if c > orb_h * 1.0005:
                 if _orb_bull_fresh:
-                    if _vol_ok:  score_long  += 18; reasons.append("ORB_BULL_CONFIRM")
-                    else:        score_long  += 10  # ORB_BULL_WEAK: score only, not named (can't satisfy quality gate)
+                    # Tiered ORB scoring: institutional threshold >=1.5x; genuine surge >=2.0x
+                    if rvol >= 2.0:
+                        score_long += 18; reasons.append("ORB_BULL_CONFIRM")   # Strong institutional surge
+                    elif rvol >= 1.5:
+                        score_long += 12; reasons.append("ORB_BULL_CONFIRM")   # Acceptable institutional surge
+                    elif rvol >= 1.3:
+                        score_long += 6   # Weak volume ORB: context only, no label (can't satisfy quality gate)
+                    # else: ORB without volume = ignore
                 else:            score_long  += 3   # already above ORB = old news
             elif c > orb_h:
-                if _vol_ok:      score_long  += 4
+                if rvol >= 1.5:  score_long  += 4
             if c < orb_l * 0.9995:
                 if _orb_bear_fresh:
-                    if _vol_ok:  score_short += 18; reasons.append("ORB_BEAR_CONFIRM")
-                    else:        score_short += 10; reasons.append("ORB_BEAR_WEAK")
+                    # Tiered ORB scoring: institutional threshold >=1.5x; genuine surge >=2.0x
+                    if rvol >= 2.0:
+                        score_short += 18; reasons.append("ORB_BEAR_CONFIRM")  # Strong institutional surge
+                    elif rvol >= 1.5:
+                        score_short += 12; reasons.append("ORB_BEAR_CONFIRM")  # Acceptable institutional surge
+                    elif rvol >= 1.3:
+                        score_short += 6; reasons.append("ORB_BEAR_WEAK")      # Weak volume: reduced score
+                    # else: ORB without volume = ignore
                 else:            score_short += 3
             elif c < orb_l:
-                if _vol_ok:      score_short += 4
+                if rvol >= 1.5:  score_short += 4
 
     # ── Signal 4: VWAP intraday anchor ──────────────────────────────────────
     vwap  = float(row.get("vwap",  c) or c)
@@ -2315,7 +2326,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.4  # require genuine volume: 1.4× average is real participation
+                    _rvol_min = 1.5  # institutional participation: 1.5x average minimum
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -3880,7 +3891,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
                     # Strict RVOL floor: 1.5× required across all signal types
-                    _rvol_min = 1.4  # require genuine volume: 1.4× average is real participation
+                    _rvol_min = 1.5  # institutional participation: 1.5x average minimum
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or

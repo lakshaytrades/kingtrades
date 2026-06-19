@@ -789,29 +789,31 @@ def vwap_bounce_signal(df_5m: pd.DataFrame, current_idx: int) -> Tuple[int, str]
         if not vwap_tested:
             return 0, ""
 
-        current_high_vol = vol > vol_sma * 1.4   # was 1.6 — slightly lower bar for confirmation
+        rvol = vol / vol_sma if vol_sma > 0 else 1.0
 
         # LONG BOUNCE: tested VWAP from above, held, now breaking up
         if (c > vwap * 1.001 and          # above VWAP
                 43 <= rsi <= 67 and         # RSI in healthy zone (widened from 45-65)
                 ema9 > ema21 * 0.993 and   # relaxed EMA: VWAP test may cause brief EMA compression
-                current_high_vol and        # volume confirmation on breakout bar
+                rvol >= 1.2 and             # at minimum, some volume confirmation required
                 vwap_dev < 0.010):          # not too far from VWAP (widened from 0.8%)
+            # VWAP_BOUNCE: require institutional volume (>=1.5x) or reduce score
             if rvol >= 1.5:
-                return 15, "VWAP_BOUNCE_LONG"
-            # Volume present but not strong — reduced score
-            return 9, "VWAP_BOUNCE_LONG"
+                return 15, "VWAP_BOUNCE_LONG"   # Full score: institutional participation
+            else:
+                return 7, ""   # Reduced score: bounce without institutional volume = weak (no label)
 
         # SHORT BOUNCE: tested VWAP from below, rejected, now breaking down
         if (c < vwap * 0.999 and          # below VWAP
                 33 <= rsi <= 57 and
                 ema9 < ema21 and
-                current_high_vol and
+                rvol >= 1.2 and             # at minimum, some volume confirmation required
                 vwap_dev < 0.010):
+            # VWAP_BOUNCE: require institutional volume (>=1.5x) or reduce score
             if rvol >= 1.5:
-                return -15, "VWAP_BOUNCE_SHORT"
-            # Volume present but not strong — reduced score
-            return -9, "VWAP_BOUNCE_SHORT"
+                return -15, "VWAP_BOUNCE_SHORT"   # Full score: institutional participation
+            else:
+                return -7, ""   # Reduced score: bounce without institutional volume = weak (no label)
 
         return 0, ""
     except Exception:
