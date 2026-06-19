@@ -1605,7 +1605,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     half = int(t.qty * 0.4) or 1
                     pnl_partial = ((t.t1 - t.entry) if long else (t.entry - t.t1)) * half
                     equity += pnl_partial
-                    t.t1_done = True; t.sl = t.entry   # BE stop for runner
+                    t.t1_done = True
+                    # Move SL to lock in small profit: entry + 0.2% (not just breakeven)
+                    _lock_buffer = t.entry * 0.002  # 0.2% profit lock-in after T1
+                    t.sl = (t.entry + _lock_buffer) if long else (t.entry - _lock_buffer)
 
             if t.t1_done:
                 runner = t.qty - (int(t.qty * 0.4) or 1)
@@ -2443,13 +2446,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             long  = direction == "LONG"
             try:
                 import config_india as _cfg_sl
-                _sl_mult = getattr(_cfg_sl, "ATR_SL_MULTIPLIER", 1.5)
-                _tp_mult = getattr(_cfg_sl, "ATR_TP_MULTIPLIER", 3.0)
+                _sl_mult_base = getattr(_cfg_sl, "ATR_SL_MULTIPLIER", 1.5)
+                _sl_mult = _sl_mult_base * (1.4 if _is_5m_data else 1.0)  # 5m bars need wider SL (noise)
+                _tp_mult = getattr(_cfg_sl, "ATR_TP_MULTIPLIER", 1.5)   # T1 at 1.5R: partial exit early
             except Exception:
-                _sl_mult, _tp_mult = 1.5, 3.0
-            sl_dist = _sl_mult * atr     # 1.5×ATR: room for intraday noise without false stops
-            t1_dist = _tp_mult * atr     # 3×ATR first target: 2:1 R:R minimum
-            t2_dist = 3.0 * atr   # 3×ATR runner (T1=2×, T2=3×)
+                _sl_mult = 2.1 if _is_5m_data else 1.5
+                _tp_mult = 1.5
+            sl_dist = _sl_mult * atr     # wider SL for 5m bar noise, standard for higher TFs
+            t1_dist = _tp_mult * atr     # 1.5×ATR T1 target: quick profit lock-in
+            t2_dist = 3.0 * atr   # 3×ATR runner (T2 stays at 3R for the runner leg)
             sl    = entry - sl_dist if long else entry + sl_dist
             t1    = entry + t1_dist if long else entry - t1_dist
             t2    = entry + t2_dist if long else entry - t2_dist
@@ -3169,7 +3174,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     half = int(t.qty * 0.4) or 1
                     pnl_partial = ((t.t1 - t.entry) if long else (t.entry - t.t1)) * half
                     equity += pnl_partial
-                    t.t1_done = True; t.sl = t.entry
+                    t.t1_done = True
+                    # Move SL to lock in small profit: entry + 0.2% (not just breakeven)
+                    _lock_buffer = t.entry * 0.002  # 0.2% profit lock-in after T1
+                    t.sl = (t.entry + _lock_buffer) if long else (t.entry - _lock_buffer)
 
             if t.t1_done:
                 runner = t.qty - (int(t.qty * 0.4) or 1)
@@ -3983,13 +3991,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             long  = direction == "LONG"
             try:
                 import config_india as _cfg_sl2
-                _sl_m = getattr(_cfg_sl2, "ATR_SL_MULTIPLIER", 1.5)
-                _tp_m = getattr(_cfg_sl2, "ATR_TP_MULTIPLIER", 3.0)
+                _sl_m_base = getattr(_cfg_sl2, "ATR_SL_MULTIPLIER", 1.5)
+                _sl_m = _sl_m_base * (1.4 if _is_5m_data else 1.0)  # 5m bars need wider SL (noise)
+                _tp_m = getattr(_cfg_sl2, "ATR_TP_MULTIPLIER", 1.5)  # T1 at 1.5R: partial exit early
             except Exception:
-                _sl_m, _tp_m = 1.5, 3.0
-            sl    = entry - _sl_m * atr if long else entry + _sl_m * atr   # 1.5×ATR
-            t1    = entry + _tp_m * atr if long else entry - _tp_m * atr   # 3×ATR (2:1 R:R)
-            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr  # 3×ATR runner
+                _sl_m = 2.1 if _is_5m_data else 1.5
+                _tp_m = 1.5
+            _sl_atr = _sl_m * atr   # wider SL for 5m noise, standard for higher TFs
+            sl    = entry - _sl_atr if long else entry + _sl_atr   # timeframe-aware ATR SL
+            t1    = entry + _tp_m * atr if long else entry - _tp_m * atr   # 1.5×ATR T1 (quick lock-in)
+            t2    = entry + 3.0 * atr if long else entry - 3.0 * atr  # 3×ATR runner (T2 stays at 3R)
 
             try:
                 from risk_manager import get_kelly_regime_mult as _kelly_regime_mult
