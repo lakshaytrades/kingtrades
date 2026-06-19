@@ -2261,12 +2261,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
-            # Lightweight bear gate: breadth (count-based) ≠ nifty proxy (value-weighted).
-            # breadth=0.42 can coexist with nifty proxy=-0.15% (large-caps down, small-caps flat).
-            # Only block when BOTH metrics indicate bear: proxy negative AND breadth < 0.50.
-            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.50:
-                if abs(net_score) < MIN_SCORE + 2:
-                    continue  # Weak LONG in confirmed bear session (both metrics bearish)
+            # Hard bear gate: when Nifty session is bearish AND breadth below majority,
+            # block ALL new LONG entries — counter-trend trades lose in bear tape.
+            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.52:
+                continue  # Hard block: confirmed bear session (Nifty down + breadth < 52%)
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
             # 15m penalty (currently only bonus exists; disagreement has zero cost)
@@ -2426,23 +2424,23 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 40%; moderate weakness gets score penalty
-            if BULL_DAY_ONLY and _session_breadth < 0.40:
-                continue  # Hard block: extreme bear tape
+            # Breadth floor: hard block below 52% (majority of stocks must be rising for LONGs)
             if BULL_DAY_ONLY and _session_breadth < 0.52:
-                net_score -= 3  # Weak tape: penalty
+                continue  # Hard block: bear tape — majority of stocks are falling
+            if BULL_DAY_ONLY and _session_breadth < 0.60:
+                net_score -= 2  # Moderate tape: minor penalty (52-60% breadth)
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
             # ── Signal deny-list: only block signals with no edge whatsoever ──────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
             # ATR_SQUEEZE_BREAKOUT: NR7 fires before direction established (-₹16,385/2 trades)
+            # HAMMER_REVERSAL_LONG: loses without trend; bypasses session gate dangerously (-₹3,159/trade)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
-            # CONFIRMED_MOMENTUM: re-enabled — valid in real NSE trending conditions
-            # HAMMER_REVERSAL_LONG: re-enabled — _high_wr_bypass + quality gate manages risk
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")
+            # CONFIRMED_MOMENTUM: re-enabled — 5-factor filter prevents firing in bad conditions
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT", "HAMMER_REVERSAL_LONG")
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -2485,17 +2483,15 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
             # Self-confirm: only highest-conviction structural signals get free +1 qual count.
-            # ORB_BULL_CONFIRM removed: passes quality gate alone (self + in QUALITY_SIGS = 2)
-            # leading to 11 trades -₹49,264 without secondary momentum confirmation.
-            # Now requires genuine second signal (e.g., MACD_XOVER, STRONG_CONFIRM).
+            # HAMMER_REVERSAL_LONG removed: loses without trend; dangerous in bear conditions
+            # PULLBACK_CONT removed: needs genuine 2nd signal (e.g., MACD_XOVER, ORB, EMA_STACK)
+            # ORB_BULL_CONFIRM: self-confirming only within strict breadth > 52% regime
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
-                "HAMMER_REVERSAL_LONG",   # reversal bar with volume (self-confirming pattern)
                 "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB
-                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout: built-in volume confirm
-                "CONFIRMED_MOMENTUM",     # multi-indicator alignment: self-confirming by definition
-                "PULLBACK_CONT",          # pullback to support with volume test
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout; bull regime gates above
+                "CONFIRMED_MOMENTUM",     # 5-factor alignment (EMA+VWAP+rvol+RSI+sess): self-confirming
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
@@ -3841,12 +3837,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if _nifty_session_bull and direction == "SHORT":
                 if abs(net_score) < _ADAPTIVE_MIN_SCORE * 1.3:
                     continue  # Block weak counter-trend shorts in bull session
-            # Lightweight bear gate: breadth (count-based) ≠ nifty proxy (value-weighted).
-            # breadth=0.42 can coexist with nifty proxy=-0.15% (large-caps down, small-caps flat).
-            # Only block when BOTH metrics indicate bear: proxy negative AND breadth < 0.50.
-            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.50:
-                if abs(net_score) < MIN_SCORE + 2:
-                    continue  # Weak LONG in confirmed bear session (both metrics bearish)
+            # Hard bear gate: when Nifty session is bearish AND breadth below majority,
+            # block ALL new LONG entries — counter-trend trades lose in bear tape.
+            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.52:
+                continue  # Hard block: confirmed bear session (Nifty down + breadth < 52%)
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
             # 15m penalty (currently only bonus exists; disagreement has zero cost)
@@ -3896,6 +3890,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Hard momentum confirmation gates ─────────────────────────────
             # Stock must already be moving in signal direction with volume.
             # Prevents entries in "potential" momentum (not yet confirmed).
+            _high_wr_bypass = False  # default: no bypass (safe if try block fails)
+            _orb_bypass = False      # default: no bypass
             try:
                 _close_g = float(row.get("close", 0) or 0)
                 _day_open_g = float(row.get("day_open", 0) or 0)
@@ -4025,23 +4021,23 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 40%; moderate weakness gets score penalty
-            if BULL_DAY_ONLY and _session_breadth < 0.40:
-                continue  # Hard block: extreme bear tape
+            # Breadth floor: hard block below 52% (majority of stocks must be rising for LONGs)
             if BULL_DAY_ONLY and _session_breadth < 0.52:
-                net_score -= 3  # Weak tape: penalty
+                continue  # Hard block: bear tape — majority of stocks are falling
+            if BULL_DAY_ONLY and _session_breadth < 0.60:
+                net_score -= 2  # Moderate tape: minor penalty (52-60% breadth)
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
 
             # ── Signal deny-list: only block signals with no edge whatsoever ──────
             # VWAP_BOUNCE_LONG: counter-trend pullback loses vs momentum (-₹6,600/5 trades)
             # ATR_SQUEEZE_BREAKOUT: NR7 fires before direction established (-₹16,385/2 trades)
+            # HAMMER_REVERSAL_LONG: loses without trend; bypasses session gate dangerously (-₹3,159/trade)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
             # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
-            # CONFIRMED_MOMENTUM: re-enabled — valid in real NSE trending conditions
-            # HAMMER_REVERSAL_LONG: re-enabled — _high_wr_bypass + quality gate manages risk
-            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT")
+            # CONFIRMED_MOMENTUM: re-enabled — 5-factor filter prevents firing in bad conditions
+            _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT", "HAMMER_REVERSAL_LONG")
             _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
@@ -4083,17 +4079,16 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                              "BREADTH_BULL", "BREADTH_BEAR",
                              "SECTOR_BULL", "SECTOR_BEAR")
             _qual_count = sum(1 for q in _QUALITY_SIGS if q in reason)
-            # Self-confirm: signals with built-in volume/price confirmation get +1 free qual count.
-            # These signals have internal checks (rvol >= 1.5, bar structure, EMA alignment)
-            # that serve as the second confirmation — no need to require an external second signal.
+            # Self-confirm: only highest-conviction structural signals get free +1 qual count.
+            # HAMMER_REVERSAL_LONG removed: loses without trend; dangerous in bear conditions
+            # PULLBACK_CONT removed: needs genuine 2nd signal (e.g., MACD_XOVER, ORB, EMA_STACK)
+            # ORB_BULL_CONFIRM: self-confirming only within strict breadth > 52% regime
             _is_self_confirm = any(s in reason for s in (
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
-                "HAMMER_REVERSAL_LONG",   # reversal bar with volume (self-confirming pattern)
-                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # 3-confirm ORB: highest conviction
-                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout: built-in volume confirm
-                "CONFIRMED_MOMENTUM",     # multi-indicator alignment: self-confirming by definition
-                "PULLBACK_CONT",          # pullback to support with volume test
+                "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout; bull regime gates above
+                "CONFIRMED_MOMENTUM",     # 5-factor alignment (EMA+VWAP+rvol+RSI+sess): self-confirming
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
             if _is_self_confirm:
