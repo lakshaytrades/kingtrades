@@ -52,7 +52,7 @@ logging.basicConfig(level=logging.WARNING,
 logger = logging.getLogger("backtest_engine")
 
 COST_RT_PCT  = 0.0045    # 45bps: STT 0.025%×2 + brokerage 0.03%×2 + GST + slippage ~0.1%
-SQUAREOFF    = dtime(15, 15)
+SQUAREOFF    = dtime(15, 25)   # Extended: let power hour (14:30-15:20) complete
 MARKET_OPEN  = dtime(9, 15)
 ORB_END      = dtime(9, 30)
 # LONG_ONLY: short signals added noise (-₹699 across 3 signals) with no net benefit
@@ -890,7 +890,8 @@ class Trade:
                  "entry_time", "t1_done", "exit_price", "exit_time", "pnl", "r_mult",
                  "chandelier_sl", "atr_at_entry",
                  "stage1_done", "stage1_price", "stage2_price",
-                 "stage1_qty", "stage2_qty", "runner_qty", "be_sl", "reason")
+                 "stage1_qty", "stage2_qty", "runner_qty", "be_sl", "reason",
+                 "trail_sl")
 
     def __init__(self, symbol, direction, entry, sl, t1, t2, qty, ts, atr_at_entry=0.0):
         self.symbol = symbol; self.direction = direction
@@ -906,6 +907,7 @@ class Trade:
         self.runner_qty = 0
         self.be_sl = 0.0           # break-even stop
         self.reason = ""           # signal reason string for attribution
+        self.trail_sl = 0.0        # Trailing stop price (0 = not activated)
 
 
 def _simulate_exit(trade: Trade, future: pd.DataFrame) -> float:
@@ -1668,6 +1670,30 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             chandelier_triggered = True
                 if chandelier_triggered:
                     continue
+                # ── Trailing stop for runner after T1 ────────────────────────
+                # Uses atr22 from chandelier block (computed above); fall back to atr_at_entry
+                _trail_atr = atr22 if sym in data and now_ts in data[sym].index else t.atr_at_entry
+                _trail_atr = max(_trail_atr, t.atr_at_entry * 0.5)  # never too tight
+                if t.trail_sl == 0.0:
+                    # Initialize: set trailing stop 1×ATR below/above entry (above break-even)
+                    if long:
+                        t.trail_sl = t.entry + _trail_atr * 0.3   # slight buffer above entry
+                    else:
+                        t.trail_sl = t.entry - _trail_atr * 0.3
+                if long:
+                    new_trail = c_bar - _trail_atr   # trail 1 ATR below current close
+                    if new_trail > t.trail_sl:
+                        t.trail_sl = new_trail
+                    # Raise the hard SL to the trailing stop if it's tighter
+                    if t.trail_sl > t.sl:
+                        t.sl = t.trail_sl
+                else:
+                    new_trail = c_bar + _trail_atr   # trail 1 ATR above current close
+                    if new_trail < t.trail_sl:
+                        t.trail_sl = new_trail
+                    # Lower the hard SL to the trailing stop if it's tighter
+                    if t.trail_sl < t.sl:
+                        t.sl = t.trail_sl
                 # ── T2 full exit (runner at 2R) ───────────────────────────────
                 t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
                 if t2_hit:
@@ -3234,6 +3260,31 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             chandelier_triggered = True
                 if chandelier_triggered:
                     continue
+                # ── Trailing stop for runner after T1 ────────────────────────
+                # Uses atr22 from chandelier block (computed above); fall back to atr_at_entry
+                _trail_atr = atr22 if sym in data and now_ts in data[sym].index else t.atr_at_entry
+                _trail_atr = max(_trail_atr, t.atr_at_entry * 0.5)  # never too tight
+                if t.trail_sl == 0.0:
+                    # Initialize: set trailing stop 1×ATR below/above entry (above break-even)
+                    if long:
+                        t.trail_sl = t.entry + _trail_atr * 0.3   # slight buffer above entry
+                    else:
+                        t.trail_sl = t.entry - _trail_atr * 0.3
+                if long:
+                    new_trail = c_bar - _trail_atr   # trail 1 ATR below current close
+                    if new_trail > t.trail_sl:
+                        t.trail_sl = new_trail
+                    # Raise the hard SL to the trailing stop if it's tighter
+                    if t.trail_sl > t.sl:
+                        t.sl = t.trail_sl
+                else:
+                    new_trail = c_bar + _trail_atr   # trail 1 ATR above current close
+                    if new_trail < t.trail_sl:
+                        t.trail_sl = new_trail
+                    # Lower the hard SL to the trailing stop if it's tighter
+                    if t.trail_sl < t.sl:
+                        t.sl = t.trail_sl
+                # ── T2 full exit (runner at 2R) ───────────────────────────────
                 t2_hit = (hi >= t.t2) if long else (lo <= t.t2)
                 if t2_hit:
                     pnl_r = ((t.t2 - t.entry) if long else (t.entry - t.t2)) * runner
