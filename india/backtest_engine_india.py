@@ -1182,7 +1182,7 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 15.0   # Balanced: strict enough to filter noise, loose enough for 20-30 trades/month
+MIN_SCORE    = 16.0   # Slight raise: balanced between too strict (0 trades) and too loose (15% WR)
 MAX_OPEN     = 5      # 5 concurrent positions — enough diversification without spreading thin
 MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
 
@@ -2042,14 +2042,16 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # Time-graduated score floor: ultra-strict quality tiers.
-            # 10:30-11:30 = prime window: min 14.0 (4-signal confluence required)
-            # 11:30-13:00 = mid-session: min 16.0 (rising noise, very strict)
-            # 13:00+ = no new entries (WR < 10% historically)
+            # Time-graduated score floor: score tiers matched to historical win-rate by window.
+            # 9:15-10:30 = ORB window: min 17.0 (high noise, requires strong confluence)
+            # 10:30-11:30 = worst WR window (5% historically): min 15.0 (tight filter)
+            # 11:30-13:00 = mid-session: min 15.0 (moderate, consistent with 10:30 window)
+            # 13:00+ = late session (WR < 10% historically): min 20.0 (ultra-strict)
             _now_t = now_ts.time()
-            _time_min_score = (13.0 if _now_t < dtime(11, 30)
+            _time_min_score = (17.0 if _now_t < dtime(10, 30)
+                               else 15.0 if _now_t < dtime(11, 30)
                                else 15.0 if _now_t < dtime(13, 0)
-                               else 18.0)
+                               else 20.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -3612,11 +3614,13 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 if net_score > 0: direction = "LONG"
                 elif net_score < 0: direction = "SHORT"
 
-            # Time-graduated score floor: ultra-strict quality tiers (same logic as run_backtest)
+            # Time-graduated score floor: score tiers matched to historical WR by window (same logic as run_backtest)
+            # 9:15-10:30 = ORB window: min 17.0 | 10:30-13:00 = worst/mid window: min 15.0 | 13:00+ = 20.0
             _now_t = now_ts.time()
-            _time_min_score = (13.0 if _now_t < dtime(11, 30)
+            _time_min_score = (17.0 if _now_t < dtime(10, 30)
+                               else 15.0 if _now_t < dtime(11, 30)
                                else 15.0 if _now_t < dtime(13, 0)
-                               else 18.0)
+                               else 20.0)
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
