@@ -474,7 +474,7 @@ def _score_bar(row: pd.Series, prev: pd.Series,
                     elif rvol >= 1.5:
                         score_long += 12; reasons.append("ORB_BULL_CONFIRM")   # Acceptable institutional surge
                     elif rvol >= 1.3:
-                        score_long += 6   # Weak volume ORB: context only, no label (can't satisfy quality gate)
+                        score_long += 6; reasons.append("ORB_BULL_CONFIRM")  # Moderate volume ORB: fresh breakout bar = signal
                     # else: ORB without volume = ignore
                 else:            score_long  += 3   # already above ORB = old news
             elif c > orb_h:
@@ -2438,10 +2438,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # HAMMER_REVERSAL_LONG: loses without trend; bypasses session gate dangerously (-₹3,159/trade)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
+            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.3 breakout; quality gate manages risk
             # CONFIRMED_MOMENTUM: re-enabled — 5-factor filter prevents firing in bad conditions
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT", "HAMMER_REVERSAL_LONG")
-            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK", "MACD_XOVER")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
                              "CS_TOP", "CS_BOT")
@@ -2456,6 +2456,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                             _deny_driven = True
                             break
             if _deny_driven:
+                continue
+            # ORB_BULL_CLEAN alone = low-volume fake breakout (0% WR on 11 real trades, -₹10,715)
+            if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
                 continue
 
             # ── Entry quality gate: RSI momentum window ──────────────────────
@@ -2490,7 +2493,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
                 "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB
-                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout; bull regime gates above
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.3 breakout; bull regime gates above
                 "CONFIRMED_MOMENTUM",     # 5-factor alignment (EMA+VWAP+rvol+RSI+sess): self-confirming
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
@@ -3951,8 +3954,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
-                        # ORB_BULL_CONFIRM: require 1.5x volume — institutional ORB = follow-through
-                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.5:
+                        # ORB_BULL_CONFIRM: require 1.3x volume — fresh breakout bar = follow-through
+                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.3:
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
@@ -4043,10 +4046,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # HAMMER_REVERSAL_LONG: loses without trend; bypasses session gate dangerously (-₹3,159/trade)
             # VWAP_RECLAIM: single-bar VWAP cross is noise (-₹6,761/17 trades)
             # EMA21_PULLBACK: fires without trend confirmation (-₹3,026/4 trades)
-            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.5 breakout; quality gate manages risk
+            # ORB_BULL_CONFIRM: re-enabled — rvol>=1.3 breakout; quality gate manages risk
             # CONFIRMED_MOMENTUM: re-enabled — 5-factor filter prevents firing in bad conditions
             _HARD_DENY = ("VWAP_BOUNCE_LONG", "ATR_SQUEEZE_BREAKOUT", "HAMMER_REVERSAL_LONG")
-            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK")  # block unless other primary signal confirms
+            _SOFT_DENY = ("VWAP_RECLAIM", "EMA21_PULLBACK", "MACD_XOVER")  # block unless other primary signal confirms
             _CONTEXT_SIGS = ("BREADTH", "SECTOR", "MKTBIAS", "OPENING_HOUR", "LATE_MORNING",
                              "LUNCH_LULL", "POWER_HOUR", "STRONG_CONFIRM", "MOD_CONFIRM",
                              "CS_TOP", "CS_BOT")
@@ -4061,6 +4064,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             _deny_driven = True
                             break
             if _deny_driven:
+                continue
+            # ORB_BULL_CLEAN alone = low-volume fake breakout (0% WR on 11 real trades, -₹10,715)
+            if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
                 continue
 
             # ── Entry quality gate: RSI momentum window ──────────────────────
@@ -4095,7 +4101,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 "VWAP_BOUNCE_SHORT",      # short VWAP bounce w/ volume
                 "HAMMER_REVERSAL_SHORT",  # SHORT hammer = bearish reversal
                 "ORB_BULL_CLEAN", "ORB_BEAR_CLEAN",   # strategies_india.py: 3-confirm ORB
-                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.5 breakout; bull regime gates above
+                "ORB_BULL_CONFIRM", "ORB_BEAR_CONFIRM",  # rvol>=1.3 breakout; bull regime gates above
                 "CONFIRMED_MOMENTUM",     # 5-factor alignment (EMA+VWAP+rvol+RSI+sess): self-confirming
                 "RANGE_EXP",              # NR4/NR7 + volume expansion = volatility breakout
             ))
