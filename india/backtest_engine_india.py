@@ -1197,9 +1197,9 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 16.0   # Slight raise: balanced between too strict (0 trades) and too loose (15% WR)
-MAX_OPEN     = 5      # 5 concurrent positions — enough diversification without spreading thin
-MAX_POS_PCT  = 0.20   # 20% per position (increased from 15% for better capital utilisation)
+MIN_SCORE    = 18.0   # Raised: filter for 75% WR target — only high-conviction setups
+MAX_OPEN     = 8      # 8 concurrent positions — wider universe (380 stocks) needs more slots
+MAX_POS_PCT  = 0.15   # 15% per position — 8×15%=120% max deployed (realistic intraday usage)
 
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate.
 # CRITICAL: Only relax on good WR; never tighten aggressively — aggressive tightening
@@ -2331,7 +2331,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.0  # block below-average volume; score/qual gate handles quality
+                    _rvol_min = 1.3  # require elevated volume (1.3x avg) — filters low-conviction entries, lifts WR
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -2498,6 +2498,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
                 continue  # Need 2-way confluence: primary signal + confirmation
+            # Sector/breadth confirmation boost: stock moving WITH sector = higher WR.
+            # No sector signal = signal is against market flow → apply score penalty.
+            _has_sector_ctx = any(s in reason for s in (
+                "BREADTH_BULL", "SECTOR_BULL", "STRONG_CONFIRM", "MOD_CONFIRM",
+                "MKTBIAS_LONG", "MKTBIAS_SHORT",
+            ))
+            if not _has_sector_ctx and abs(net_score) < MIN_SCORE + 2:
+                continue  # Require score >= 20 for signals lacking sector confirmation
             # ────────────────────────────────────────────────────────────────
 
             # ATR-based SL/TP — use config multipliers for consistency with live trading
@@ -3910,7 +3918,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
                     # Strict RVOL floor: 1.5× required across all signal types
-                    _rvol_min = 1.0  # block below-average volume; score/qual gate handles quality
+                    _rvol_min = 1.3  # require elevated volume (1.3x avg) — filters low-conviction entries, lifts WR
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -3943,8 +3951,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                             continue
                         if not _high_wr_bypass and _rvol_g < _rvol_min:
                             continue
-                        # ORB_BULL_CONFIRM: require minimum volume (1.3x — same as ORB_BULL_CLEAN)
-                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.3:
+                        # ORB_BULL_CONFIRM: require 1.5x volume — institutional ORB = follow-through
+                        if ("ORB_BULL_CONFIRM" in reason) and _rvol_g < 1.5:
                             continue
                         _ema_bearish_g = (_e9_g > 0 and _e21_g > 0 and _e9_g < _e21_g * 0.998)
                         if _ema_bearish_g:
@@ -4095,6 +4103,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
             if _qual_count < 2:
                 continue  # Need 2-way confluence: primary signal + confirmation
+            # Sector/breadth confirmation boost: stock moving WITH sector = higher WR.
+            # No sector signal = signal is against market flow → apply score penalty.
+            _has_sector_ctx = any(s in reason for s in (
+                "BREADTH_BULL", "SECTOR_BULL", "STRONG_CONFIRM", "MOD_CONFIRM",
+                "MKTBIAS_LONG", "MKTBIAS_SHORT",
+            ))
+            if not _has_sector_ctx and abs(net_score) < MIN_SCORE + 2:
+                continue  # Require score >= 20 for signals lacking sector confirmation
             # ────────────────────────────────────────────────────────────────
 
             atr = row.get("atr", row["close"] * 0.005)
