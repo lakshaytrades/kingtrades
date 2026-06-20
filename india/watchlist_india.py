@@ -1,7 +1,7 @@
 """
 watchlist_india.py — NSE liquid stock watchlist
-200 curated NSE stocks: Nifty 50 + Next 50 + Midcap 100 top picks
-filtered for liquidity, momentum, and Yahoo Finance availability.
+~380 curated NSE stocks: Nifty 50 + Next 50 + Midcap 100 top picks + Smallcap select
+filtered for liquidity, momentum, and Upstox/Groww API availability.
 """
 import logging
 from typing import Dict, List, Optional
@@ -10,8 +10,8 @@ from zoneinfo import ZoneInfo
 logger = logging.getLogger("watchlist_india")
 IST = ZoneInfo("Asia/Kolkata")
 
-# ── 200-stock NSE universe ───────────────────────────────────────────────────
-# Excluded: TATAMOTORS (Yahoo 404), ADANIENT/ADANIPORTS (promoter manipulation/0% WR),
+# ── ~380-stock NSE universe ──────────────────────────────────────────────────
+# Excluded: ADANIENT/ADANIPORTS (promoter manipulation/0% WR),
 #           M&MFIN (broken ticker), SHREECEM (low vol), PAYTM (speculative),
 #           HDFC (merged into HDFCBANK), YESBANK (too speculative)
 _CORE_WATCHLIST: List[str] = [
@@ -22,6 +22,9 @@ _CORE_WATCHLIST: List[str] = [
     "LT",       "ITC",       "TATASTEEL", "MARUTI",     "HCLTECH",
     "WIPRO",    "JSWSTEEL",  "M&M",       "BAJAJFINSV", "ZOMATO",
     "INDUSINDBK", "NTPC",   "TRENT",     "PERSISTENT", "POLYCAB",
+
+    # ── T1 additions: Nifty 50 gap ────
+    "TATAMOTORS",
 
     # ── T2: Nifty 50 remainder + top Nifty Next 50 ─────────────────────────
     "HINDUNILVR", "ASIANPAINT", "TITAN",     "ULTRACEMCO", "NESTLEIND",
@@ -34,6 +37,11 @@ _CORE_WATCHLIST: List[str] = [
     "TATAPOWER",  "HINDPETRO",  "IOC",       "PFC",        "RECLTD",
     "IDFCFIRSTB", "BANKBARODA", "CANBK",     "PNB",        "FEDERALBNK",
     "MUTHOOTFIN", "CHOLAFIN",   "GODREJCP",  "DABUR",      "CROMPTON",
+
+    # ── T2 additions ────
+    "GAIL", "BANDHANBNK", "HINDZINC", "ADANIGREEN", "SUZLON",
+    "ANGELONE", "DIXON", "MACROTECH", "IRCON", "RITES",
+    "SOBHA", "KARURVYSYA", "GODREJIND", "PHOENIXLTD", "ICICIGI",
 
     # ── T3: IT / Software ──────────────────────────────────────────────────
     "COFORGE",    "LTTS",       "TATAELXSI", "CYIENT",     "KPITTECH",
@@ -100,6 +108,59 @@ _CORE_WATCHLIST: List[str] = [
 
     # ── T3: Diversified / Others ───────────────────────────────────────────
     "UPL",        "BALRAMCHIN", "JSWINFRA",
+
+    # ── T3 additions: Banking / Finance ────────────────────────────────────
+    "DCBBANK",    "CITYUNIONBK", "IREDA",    "AAVAS",      "HOMEFIRST",
+    "CREDITACC",  "KFINTECH",    "NIACL",    "GICRE",      "PAISALO",
+    "UJJIVANSFB", "GUJGAS",
+
+    # ── T3 additions: IT / Software ────────────────────────────────────────
+    "BSOFT",      "RATEGAIN",   "TANLA",     "HAPPSTMNDS", "MASTEK",
+    "KPIGLBL",    "XCHANGING",  "NIITMTS",   "NEWGEN",     "ROUTE",
+
+    # ── T3 additions: Auto & Ancillaries ───────────────────────────────────
+    "SUNDRMFAST", "ENDURANCE",  "LUMAXIND",  "MINDAIND",   "SUPRAJIT",
+    "CRAFTSMAN",  "MAHINDCIE",  "SANSERA",
+
+    # ── T3 additions: Pharma & Healthcare ──────────────────────────────────
+    "JBCHEPHARM", "FORTIS",     "MAXHEALTH", "CAPLIPOINT", "ERIS",
+    "ABBOTINDIA", "RAINBOW",    "GLOBALHLTH", "PFIZER",
+
+    # ── T3 additions: Consumer Electronics & EMS ───────────────────────────
+    "AMBERENTERP", "KAYNES",    "SYRMA",     "TITAGARH",
+
+    # ── T3 additions: FMCG & Consumer ──────────────────────────────────────
+    "HATSUN",     "WESTLIFE",   "VSTIND",    "RADICO",     "SAREGAMA",
+    "BATAINDIA",  "KALYANKJIL", "SENCO",     "VMART",      "CAMPUS",
+    "NAZARA",     "BLUESTAR",
+
+    # ── T3 additions: Specialty Chemicals ──────────────────────────────────
+    "CLEAN",      "FINEORG",    "SUMICHEM",  "SUDARSCHEM", "ASTEC",
+
+    # ── T3 additions: Infrastructure & Engineering ──────────────────────────
+    "NCC",        "PNCINFRA",   "KALPATPOW", "TDPOWERSYS", "KPIL",
+    "GRINDWELL",  "ELECON",
+
+    # ── T3 additions: Textiles ──────────────────────────────────────────────
+    "VARDHMANTEXT", "ARVIND",   "WELSPUNLIV", "RAYMOND",
+
+    # ── T3 additions: Metals & Mining ───────────────────────────────────────
+    "GPIL",       "MOIL",       "GRAPHITE",  "TINPLATE",
+
+    # ── T3 additions: Defence / PSU ─────────────────────────────────────────
+    "COCHINSHIP", "MIDHANI",
+
+    # ── T3 additions: Renewable Energy ──────────────────────────────────────
+    "INOXWIND",
+
+    # ── T3 additions: Agro / Specialty ──────────────────────────────────────
+    "COROMANDEL", "KAVERI",
+
+    # ── T3 additions: Logistics ──────────────────────────────────────────────
+    "MAHLOG",     "SIS",
+
+    # ── T3 additions: Exchange / Services ───────────────────────────────────
+    "BSE",
 ]
 
 # De-duplicate while preserving order (TATAPOWER listed twice as guard above)
@@ -113,7 +174,7 @@ _CORE_WATCHLIST = _CORE_WATCHLIST_DEDUP
 
 # ── Momentum tier classification ─────────────────────────────────────────────
 _MOMENTUM_TIER: Dict[str, str] = {
-    # T1 — 25 ultra-liquid symbols (index heavyweights + strongest intraday movers)
+    # T1 — 26 ultra-liquid symbols (index heavyweights + strongest intraday movers)
     "RELIANCE":   "T1", "TCS":        "T1", "HDFCBANK":   "T1",
     "INFY":       "T1", "ICICIBANK":  "T1", "SBIN":       "T1",
     "AXISBANK":   "T1", "KOTAKBANK":  "T1", "BAJFINANCE": "T1",
@@ -123,8 +184,10 @@ _MOMENTUM_TIER: Dict[str, str] = {
     "BAJAJFINSV": "T1", "ZOMATO":     "T1", "INDUSINDBK": "T1",
     "NTPC":       "T1", "TRENT":      "T1", "PERSISTENT": "T1",
     "POLYCAB":    "T1",
+    # T1 additions
+    "TATAMOTORS": "T1",
 
-    # T2 — 50 large/large-mid cap symbols
+    # T2 — 65 large/large-mid cap symbols
     "HINDUNILVR": "T2", "ASIANPAINT": "T2", "TITAN":      "T2",
     "ULTRACEMCO": "T2", "NESTLEIND":  "T2", "TECHM":      "T2",
     "SUNPHARMA":  "T2", "POWERGRID":  "T2", "ONGC":       "T2",
@@ -142,6 +205,12 @@ _MOMENTUM_TIER: Dict[str, str] = {
     "CANBK":      "T2", "PNB":        "T2", "FEDERALBNK": "T2",
     "MUTHOOTFIN": "T2", "CHOLAFIN":   "T2", "GODREJCP":   "T2",
     "DABUR":      "T2", "CROMPTON":   "T2",
+    # T2 additions
+    "GAIL":       "T2", "BANDHANBNK": "T2", "HINDZINC":   "T2",
+    "ADANIGREEN": "T2", "SUZLON":     "T2", "ANGELONE":   "T2",
+    "DIXON":      "T2", "MACROTECH":  "T2", "IRCON":      "T2",
+    "RITES":      "T2", "SOBHA":      "T2", "KARURVYSYA": "T2",
+    "GODREJIND":  "T2", "PHOENIXLTD": "T2", "ICICIGI":    "T2",
 }
 # All others default to T3
 
@@ -232,7 +301,7 @@ _SECTOR_MAP: Dict[str, str] = {
     "BRIGADE":    "RealEstate",
     # Defence & PSU
     "HAL":        "Defence",    "BEL":        "Defence",   "BDL":        "Defence",
-    "MAZAGON":    "Defence",    "BHEL":       "Industrials",
+    "MAZAGON":    "Defence",    "MAZDOCK":    "Defence",   "BHEL":       "Industrials",
     # Telecom & Media
     "BHARTIARTL": "Telecom",    "INDUSTOWER": "Telecom",   "TATACOMM":   "Telecom",
     "SUNTV":      "Media",      "ZEEL":       "Media",
@@ -246,12 +315,87 @@ _SECTOR_MAP: Dict[str, str] = {
     # PSU / Railway
     "RVNL":       "Railways",   "IRFC":       "Railways",  "RAILTEL":    "Railways",
     "COALINDIA":  "Mining",     "SHRIRAMFIN": "Finance",
+
+    # ── New T1/T2 sector mappings ──────────────────────────────────────────
+    "TATAMOTORS": "Auto",
+    "GAIL":       "Energy",     "HINDZINC":   "Metal",     "ADANIGREEN": "Power",
+    "SUZLON":     "Power",      "BANDHANBNK": "Banking",   "KARURVYSYA": "Banking",
+    "ANGELONE":   "Finance",    "ICICIGI":    "Insurance",
+    "DIXON":      "ConsumerDurables",
+    "MACROTECH":  "RealEstate", "SOBHA":      "RealEstate","PHOENIXLTD": "RealEstate",
+    "IRCON":      "Railways",   "RITES":      "Railways",  "GODREJIND":  "Industrials",
+
+    # ── New T3 sector mappings: Banking / Finance ──────────────────────────
+    "DCBBANK":    "Banking",    "CITYUNIONBK":"Banking",   "UJJIVANSFB": "Banking",
+    "IREDA":      "Finance",    "AAVAS":      "Finance",   "HOMEFIRST":  "Finance",
+    "CREDITACC":  "Finance",    "KFINTECH":   "Finance",   "PAISALO":    "Finance",
+    "NIACL":      "Insurance",  "GICRE":      "Insurance",
+    "GUJGAS":     "Energy",
+
+    # ── New T3 sector mappings: IT / Software ─────────────────────────────
+    "BSOFT":      "IT",         "RATEGAIN":   "IT",        "TANLA":      "IT",
+    "HAPPSTMNDS": "IT",         "MASTEK":     "IT",        "KPIGLBL":    "IT",
+    "XCHANGING":  "IT",         "NIITMTS":    "IT",        "NEWGEN":     "IT",
+    "ROUTE":      "Telecom",
+
+    # ── New T3 sector mappings: Auto & Ancillaries ────────────────────────
+    "SUNDRMFAST": "Auto",       "ENDURANCE":  "Auto",      "LUMAXIND":   "Auto",
+    "MINDAIND":   "Auto",       "SUPRAJIT":   "Auto",      "CRAFTSMAN":  "Auto",
+    "MAHINDCIE":  "Auto",       "SANSERA":    "Auto",
+
+    # ── New T3 sector mappings: Pharma & Healthcare ───────────────────────
+    "JBCHEPHARM": "Pharma",     "CAPLIPOINT": "Pharma",    "ERIS":       "Pharma",
+    "ABBOTINDIA": "Pharma",     "PFIZER":     "Pharma",    "ASTEC":      "Pharma",
+    "FORTIS":     "Healthcare", "MAXHEALTH":  "Healthcare","RAINBOW":    "Healthcare",
+    "GLOBALHLTH": "Healthcare",
+
+    # ── New T3 sector mappings: Consumer Electronics & EMS ───────────────
+    "AMBERENTERP":"ConsumerDurables", "KAYNES":  "Industrials",
+    "SYRMA":      "Industrials",      "TITAGARH":"Industrials",
+
+    # ── New T3 sector mappings: FMCG & Consumer ──────────────────────────
+    "HATSUN":     "FMCG",       "WESTLIFE":   "FMCG",      "VSTIND":     "FMCG",
+    "RADICO":     "FMCG",       "BATAINDIA":  "Consumer",  "KALYANKJIL": "Consumer",
+    "SENCO":      "Consumer",   "CAMPUS":     "Consumer",  "VMART":      "Retail",
+    "SAREGAMA":   "Media",      "NAZARA":     "IT",        "BLUESTAR":   "ConsumerDurables",
+
+    # ── New T3 sector mappings: Specialty Chemicals ───────────────────────
+    "CLEAN":      "Chemicals",  "FINEORG":    "Chemicals", "SUMICHEM":   "Chemicals",
+    "SUDARSCHEM": "Chemicals",
+
+    # ── New T3 sector mappings: Infrastructure & Engineering ─────────────
+    "NCC":        "Infra",      "PNCINFRA":   "Infra",     "KPIL":       "Infra",
+    "KALPATPOW":  "Power",      "TDPOWERSYS": "Power",
+    "GRINDWELL":  "Industrials","ELECON":     "Industrials",
+
+    # ── New T3 sector mappings: Textiles ─────────────────────────────────
+    "VARDHMANTEXT":"Textiles",  "ARVIND":     "Textiles",  "WELSPUNLIV": "Textiles",
+    "RAYMOND":    "Textiles",
+
+    # ── New T3 sector mappings: Metals & Mining ───────────────────────────
+    "GPIL":       "Metal",      "GRAPHITE":   "Metal",     "TINPLATE":   "Metal",
+    "MOIL":       "Mining",
+
+    # ── New T3 sector mappings: Defence / PSU ────────────────────────────
+    "COCHINSHIP": "Defence",    "MIDHANI":    "Defence",
+
+    # ── New T3 sector mappings: Renewable Energy ──────────────────────────
+    "INOXWIND":   "Power",
+
+    # ── New T3 sector mappings: Agro / Specialty ─────────────────────────
+    "COROMANDEL": "Agro",       "KAVERI":     "Agro",
+
+    # ── New T3 sector mappings: Logistics ────────────────────────────────
+    "MAHLOG":     "Logistics",  "SIS":        "Logistics",
+
+    # ── New T3 sector mappings: Exchange / Services ───────────────────────
+    "BSE":        "Finance",
 }
 
 
 def get_priority_watchlist() -> List[str]:
     """
-    Return full 200-stock watchlist ordered by tier: T1 first, then T2, then T3.
+    Return full 380-stock watchlist ordered by tier: T1 first, then T2, then T3.
     Within each tier preserves _CORE_WATCHLIST insertion order.
     """
     t1 = [s for s in _CORE_WATCHLIST if _MOMENTUM_TIER.get(s) == "T1"]
