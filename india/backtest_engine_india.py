@@ -1201,6 +1201,14 @@ MIN_SCORE    = 18.0   # Raised: filter for 75% WR target — only high-convictio
 MAX_OPEN     = 8      # 8 concurrent positions — wider universe (380 stocks) needs more slots
 MAX_POS_PCT  = 0.15   # 15% per position — 8×15%=120% max deployed (realistic intraday usage)
 
+# ── Tunable entry-filter constants (read at call time — optimizer can override via module attrs) ──
+ENTRY_RVOL_MIN     = 1.3   # Minimum relative volume for any entry
+ENTRY_RSI_LONG_MAX = 72    # RSI upper bound for LONG entry (overbought block)
+ENTRY_RSI_LONG_MIN = 42    # RSI lower bound for LONG entry (momentum floor)
+BREADTH_BULL_HARD  = 0.52  # Hard breadth threshold: below = no new LONGs
+BREADTH_BULL_SOFT  = 0.60  # Soft breadth threshold: below = score penalty
+MIN_QUAL_COUNT     = 2     # Minimum named-setup quality count required for entry
+
 # Adaptive threshold: auto-adjusts MIN_SCORE based on rolling win rate.
 # CRITICAL: Only relax on good WR; never tighten aggressively — aggressive tightening
 # creates a death spiral (losses → threshold rises → no new trades → no recovery).
@@ -2067,9 +2075,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if dtime(11, 30) <= _now_t < dtime(14, 25):
                 continue  # No new entries during dead zone — exits only
 
-            _time_min_score = (15.0 if _now_t < dtime(10, 0)   # ORB window: high WR, allow good signals
-                               else 17.0 if _now_t < dtime(11, 30)  # late morning: weaker, require more
-                               else 19.0)                             # power hour: high bar for late entries
+            _time_min_score = (MIN_SCORE if _now_t < dtime(10, 0)       # ORB window: apply full threshold
+                               else MIN_SCORE + 2 if _now_t < dtime(11, 30)  # late morning (10:00-11:30): WR 22% → require higher conviction
+                               else MIN_SCORE + 3)                            # power hour: very high bar for late entries
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -2263,7 +2271,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                     continue  # Block weak counter-trend shorts in bull session
             # Hard bear gate: when Nifty session is bearish AND breadth below majority,
             # block ALL new LONG entries — counter-trend trades lose in bear tape.
-            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.52:
+            if _nifty_session_bear and direction == "LONG" and _session_breadth < BREADTH_BULL_HARD:
                 continue  # Hard block: confirmed bear session (Nifty down + breadth < 52%)
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
@@ -2331,7 +2339,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
                         _sr_thresh = 0.0003 if _is_5m_data else 0.0005   # 0.03%/0.05% — medium conviction
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0008   # 0.04%/0.08% — weak signals need movement
-                    _rvol_min = 1.3  # require elevated volume (1.3x avg) — filters low-conviction entries, lifts WR
+                    _rvol_min = ENTRY_RVOL_MIN  # require elevated volume — filters low-conviction entries, lifts WR
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -2424,10 +2432,10 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 52% (majority of stocks must be rising for LONGs)
-            if BULL_DAY_ONLY and _session_breadth < 0.52:
+            # Breadth floor: hard block below threshold (majority of stocks must be rising for LONGs)
+            if BULL_DAY_ONLY and _session_breadth < BREADTH_BULL_HARD:
                 continue  # Hard block: bear tape — majority of stocks are falling
-            if BULL_DAY_ONLY and _session_breadth < 0.60:
+            if BULL_DAY_ONLY and _session_breadth < BREADTH_BULL_SOFT:
                 net_score -= 2  # Moderate tape: minor penalty (52-60% breadth)
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
@@ -2464,9 +2472,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             # ── Entry quality gate: RSI momentum window ──────────────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
-                if direction == "LONG" and _rsi_q > 72:
+                if direction == "LONG" and _rsi_q > ENTRY_RSI_LONG_MAX:
                     continue  # overbought — wait for pullback
-                if direction == "LONG" and _rsi_q < 42:
+                if direction == "LONG" and _rsi_q < ENTRY_RSI_LONG_MIN:
                     continue  # too weak — momentum not yet established
             except Exception:
                 pass
@@ -2499,7 +2507,7 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 2:
+            if _qual_count < MIN_QUAL_COUNT:
                 continue  # Need 2-way confluence: primary signal + confirmation
             # Sector/breadth confirmation boost: stock moving WITH sector = higher WR.
             # No sector signal = signal is against market flow → apply score penalty.
@@ -3659,9 +3667,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if dtime(11, 30) <= _now_t < dtime(14, 25):
                 continue  # No new entries during dead zone — exits only
 
-            _time_min_score = (15.0 if _now_t < dtime(10, 0)
-                               else 17.0 if _now_t < dtime(11, 30)
-                               else 19.0)  # power hour: high bar for late entries
+            _time_min_score = (MIN_SCORE if _now_t < dtime(10, 0)
+                               else MIN_SCORE + 2 if _now_t < dtime(11, 30)  # late morning: 22% WR → tighter
+                               else MIN_SCORE + 3)  # power hour: very high bar for late entries
 
             # Pre-filter: skip clearly weak signals before calling new strategies
             if abs(net_score) < _time_min_score:
@@ -3850,7 +3858,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     continue  # Block weak counter-trend shorts in bull session
             # Hard bear gate: when Nifty session is bearish AND breadth below majority,
             # block ALL new LONG entries — counter-trend trades lose in bear tape.
-            if _nifty_session_bear and direction == "LONG" and _session_breadth < 0.52:
+            if _nifty_session_bear and direction == "LONG" and _session_breadth < BREADTH_BULL_HARD:
                 continue  # Hard block: confirmed bear session (Nifty down + breadth < 52%)
 
             # ── 3-Timeframe alignment gate ────────────────────────────────────
@@ -3921,7 +3929,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                     else:
                         _sr_thresh = 0.0004 if _is_5m_data else 0.0004   # weak: 0.04% both TFs
                     # Strict RVOL floor: 1.5× required across all signal types
-                    _rvol_min = 1.3  # require elevated volume (1.3x avg) — filters low-conviction entries, lifts WR
+                    _rvol_min = ENTRY_RVOL_MIN  # require elevated volume — filters low-conviction entries, lifts WR
                     # ORB bypass: direction-matched flag — breakout proves session direction
                     _orb_bypass = (
                         (direction == "LONG" and "ORB_BULL_CONFIRM" in reason) or
@@ -4032,10 +4040,10 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # NSE long-only mode: never take shorts (Groww MIS LONG positions only)
             if LONG_ONLY_NSE and direction == "SHORT":
                 continue
-            # Breadth floor: hard block below 52% (majority of stocks must be rising for LONGs)
-            if BULL_DAY_ONLY and _session_breadth < 0.52:
+            # Breadth floor: hard block below threshold (majority of stocks must be rising for LONGs)
+            if BULL_DAY_ONLY and _session_breadth < BREADTH_BULL_HARD:
                 continue  # Hard block: bear tape — majority of stocks are falling
-            if BULL_DAY_ONLY and _session_breadth < 0.60:
+            if BULL_DAY_ONLY and _session_breadth < BREADTH_BULL_SOFT:
                 net_score -= 2  # Moderate tape: minor penalty (52-60% breadth)
                 if abs(net_score) < _eff_min_score:
                     continue  # Re-check after penalty
@@ -4072,9 +4080,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             # ── Entry quality gate: RSI momentum window ──────────────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
-                if direction == "LONG" and _rsi_q > 72:
+                if direction == "LONG" and _rsi_q > ENTRY_RSI_LONG_MAX:
                     continue  # overbought — wait for pullback
-                if direction == "LONG" and _rsi_q < 42:
+                if direction == "LONG" and _rsi_q < ENTRY_RSI_LONG_MIN:
                     continue  # too weak — momentum not yet established
             except Exception:
                 pass
@@ -4107,7 +4115,7 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             ))
             if _is_self_confirm:
                 _qual_count += 1  # Built-in volume/price checks = one free confirmation
-            if _qual_count < 2:
+            if _qual_count < MIN_QUAL_COUNT:
                 continue  # Need 2-way confluence: primary signal + confirmation
             # Sector/breadth confirmation boost: stock moving WITH sector = higher WR.
             # No sector signal = signal is against market flow → apply score penalty.
