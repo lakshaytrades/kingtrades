@@ -147,11 +147,16 @@ def main():
     ap.add_argument("--capital", type=float, default=500_000.0)
     ap.add_argument("--dry-run", action="store_true",
                     help="Print winning params without patching the engine")
+    ap.add_argument("--no-telegram", action="store_true",
+                    help="Skip Telegram notification (save report to file only)")
+    ap.add_argument("--report", type=str, default="optimizer_report.txt",
+                    help="File to save full report (default: optimizer_report.txt)")
     args = ap.parse_args()
 
     print("=" * 65)
     print("  NSE Backtest Parameter Optimizer")
     print(f"  Target: WR >= {TARGET_WR*100:.0f}% | Trades >= {TARGET_TRADES_PM}/mo | Return >= {TARGET_MONTHLY}%/mo")
+    print(f"  Report: {args.report}")
     print("=" * 65, flush=True)
 
     # ── Load data once ────────────────────────────────────────────────────────
@@ -323,57 +328,127 @@ def main():
             print(f"    {k} = {v}")
     print("=" * 65, flush=True)
 
-    # ── Telegram notification ─────────────────────────────────────────────────
-    try:
-        import config_india as cfg
-        import requests as _req
-        token = cfg.TELEGRAM_BOT_TOKEN
-        chat  = cfg.TELEGRAM_CHAT_ID
-        if token and chat:
-            wr_pct  = best_metrics.get("wr", 0) * 100
-            tpm_val = best_metrics.get("trades_pm", 0)
-            mp_val  = best_metrics.get("monthly_pct", 0)
-            if found_target:
-                msg = (
-                    f"✅ *Optimizer TARGET HIT!*\n"
-                    f"WR: {wr_pct:.1f}%  |  Trades/mo: {tpm_val:.1f}  |  Return: {mp_val:.1f}%\n\n"
-                    f"*Winning parameters:*\n"
-                    + "\n".join(f"  {k} = {v}" for k, v in best_params.items())
-                    + "\n\nEngine patched automatically ✓"
-                )
-            else:
-                msg = (
-                    f"⚠️ *Optimizer finished — target NOT fully met*\n"
-                    f"Best found: WR {wr_pct:.1f}% | Trades/mo {tpm_val:.1f} | Return {mp_val:.1f}%\n"
-                    f"Target was: WR {TARGET_WR*100:.0f}% | {TARGET_TRADES_PM}/mo | {TARGET_MONTHLY}%/mo\n"
-                    f"Engine patched with best found params."
-                )
-            _req.post(
-                f"https://api.telegram.org/bot{token}/sendMessage",
-                json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
-                timeout=10,
-            )
-            print("  Telegram notification sent.", flush=True)
-    except Exception as _te:
-        print(f"  (Telegram notification skipped: {_te})", flush=True)
-
+    # ── Save report to file ───────────────────────────────────────────────────
+    report_lines = []
+    report_lines.append("=" * 65)
+    report_lines.append(f"  NSE Optimizer Report")
+    report_lines.append(f"  {'TARGET ACHIEVED' if found_target else 'Best found (target not met)'}")
+    report_lines.append("=" * 65)
+    report_lines.append(f"\n  Best parameters:")
+    for k, v in best_params.items():
+        report_lines.append(f"    {k} = {v}")
+    report_lines.append(f"\n  Best metrics:")
+    for k, v in best_metrics.items():
+        val = f"{v:.3f}" if isinstance(v, float) else str(v)
+        report_lines.append(f"    {k} = {val}")
     if not found_target:
-        print(
-            "\n  DIAGNOSIS: Even the best parameter combo doesn't hit all 3 targets.")
-        print("  Likely causes:")
-        print("    • Test period has too many bear days (breadth < threshold)")
-        print("    • Signal patterns need further filtering (see Strategy Attribution above)")
-        print("    • WIN RATE gap: check which signal types are losing in the best run")
-        print("  Consider running on a longer/more recent dataset.")
+        wr_pct  = best_metrics.get("wr", 0) * 100
+        tpm_val = best_metrics.get("trades_pm", 0)
+        mp_val  = best_metrics.get("monthly_pct", 0)
+        report_lines.append(f"\n  Gap to target:")
+        if wr_pct  < TARGET_WR * 100:    report_lines.append(f"    WR:     {wr_pct:.1f}% (need {TARGET_WR*100:.0f}%)")
+        if tpm_val < TARGET_TRADES_PM:   report_lines.append(f"    Trades: {tpm_val:.1f}/mo (need {TARGET_TRADES_PM})")
+        if mp_val  < TARGET_MONTHLY:     report_lines.append(f"    Return: {mp_val:.1f}% (need {TARGET_MONTHLY}%)")
+    report_lines.append("=" * 65)
+    report_txt = "\n".join(report_lines)
+    try:
+        report_path = Path(__file__).parent.parent / args.report
+        report_path.write_text(report_txt)
+        print(f"\n  Report saved to: {report_path}", flush=True)
+        print(f"  View it anytime with:  cat {args.report}", flush=True)
+    except Exception as _re:
+        print(f"  (Report save failed: {_re})", flush=True)
+
+    # ── Round 2: auto-retry with stricter grid if target not met ─────────────
+    if not found_target:
+        print("\n  Round 1 did not hit target. Running Round 2 with stricter filters ...", flush=True)
+        GRID_R2 = {
+            "MIN_SCORE":          [20.0, 21.0, 22.0, 23.0],
+            "MIN_QUAL_COUNT":     [3],
+            "ENTRY_RSI_LONG_MAX": [68, 65, 62],
+            "ENTRY_RSI_LONG_MIN": [45, 48],
+            "ENTRY_RVOL_MIN":     [1.4, 1.5],
+            "BREADTH_BULL_HARD":  [0.55, 0.58, 0.60],
+            "BREADTH_BULL_SOFT":  [0.65, 0.70],
+        }
+        keys2   = list(GRID_R2.keys())
+        combos2 = list(product(*GRID_R2.values()))
+        print(f"  Round 2: {len(combos2)} combinations ...\n", flush=True)
+
+        best_score2 = -99.0; best_params2 = {}; best_metrics2 = {}; found2 = False
+        originals2 = {k: getattr(bk, k) for k in keys2}
+        try:
+            for idx2, combo2 in enumerate(combos2, 1):
+                params2 = dict(zip(keys2, combo2))
+                if params2["ENTRY_RSI_LONG_MIN"] >= params2["ENTRY_RSI_LONG_MAX"] - 10: continue
+                if params2["BREADTH_BULL_HARD"] >= params2["BREADTH_BULL_SOFT"]: continue
+                print(f"  R2 [{idx2:>3}/{len(combos2)}] {params2}", end=" ", flush=True)
+                m2 = _run_combo(bk, data, params2)
+                if not m2: print("→ ERROR", flush=True); continue
+                wr2  = m2.get("wr", 0); tpm2 = m2.get("trades_pm", 0); mp2 = m2.get("monthly_pct", -99)
+                sc2  = _score_params(m2)
+                print(f"→ WR={wr2*100:.1f}% Trades={tpm2:.1f}/mo Return={mp2:.1f}%", flush=True)
+                if sc2 > best_score2: best_score2 = sc2; best_params2 = params2; best_metrics2 = m2
+                if wr2 >= TARGET_WR and tpm2 >= TARGET_TRADES_PM and mp2 >= TARGET_MONTHLY:
+                    found2 = True; print(f"\n  R2 TARGET MET!", flush=True); break
+        finally:
+            for k, v in originals2.items(): setattr(bk, k, v)
+
+        if found2 or best_score2 > best_score:
+            best_params  = best_params2
+            best_metrics = best_metrics2
+            found_target = found2
+            print(f"\n  Round 2 improved result. Using Round 2 params.", flush=True)
+        else:
+            print(f"\n  Round 2 did not improve. Keeping Round 1 best.", flush=True)
+
+        # Update report file with round 2 result
+        try:
+            r2_lines = ["\n--- Round 2 Result ---",
+                        f"  Found target: {found_target}",
+                        f"  Best WR: {best_metrics.get('wr',0)*100:.1f}%",
+                        f"  Best trades/mo: {best_metrics.get('trades_pm',0):.1f}",
+                        f"  Best return: {best_metrics.get('monthly_pct',0):.1f}%"]
+            report_path.write_text(report_txt + "\n".join(r2_lines))
+        except Exception:
+            pass
+
+    # ── Telegram notification (unless --no-telegram) ──────────────────────────
+    if not args.no_telegram:
+        try:
+            import config_india as cfg
+            import requests as _req
+            token = cfg.TELEGRAM_BOT_TOKEN
+            chat  = cfg.TELEGRAM_CHAT_ID
+            if token and chat:
+                wr_pct  = best_metrics.get("wr", 0) * 100
+                tpm_val = best_metrics.get("trades_pm", 0)
+                mp_val  = best_metrics.get("monthly_pct", 0)
+                icon = "✅" if found_target else "⚠️"
+                status = "TARGET HIT!" if found_target else "Best found (not fully met)"
+                msg = (
+                    f"{icon} *NSE Optimizer — {status}*\n"
+                    f"WR: {wr_pct:.1f}%  |  Trades/mo: {tpm_val:.1f}  |  Return: {mp_val:.1f}%\n\n"
+                    f"*Parameters:*\n"
+                    + "\n".join(f"  {k} = {v}" for k, v in best_params.items())
+                    + f"\n\nFull report: {args.report}"
+                )
+                _req.post(
+                    f"https://api.telegram.org/bot{token}/sendMessage",
+                    json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
+                    timeout=10,
+                )
+                print("  Telegram notification sent.", flush=True)
+        except Exception as _te:
+            print(f"  (Telegram skipped: {_te})", flush=True)
 
     # ── Patch engine ─────────────────────────────────────────────────────────
     if best_params and not args.dry_run:
         print(f"\n[3/3] Patching engine with best parameters ...", flush=True)
         _patch_engine(best_params)
-        print(f"\n  Done. Run the backtest again to confirm:", flush=True)
-        print(f"    python3 india/backtest_engine_india.py --source cache", flush=True)
-        print(f"  Or with Upstox:", flush=True)
+        print(f"\n  Done. Verify with:", flush=True)
         print(f"    python3 india/backtest_engine_india.py --source upstox", flush=True)
+        print(f"  Full report: cat {args.report}", flush=True)
     elif args.dry_run:
         print("\n  [dry-run] Engine not patched.", flush=True)
 
