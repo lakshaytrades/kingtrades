@@ -205,19 +205,26 @@ def main():
         from_s  = from_dt.strftime("%Y-%m-%d")
         to_s    = to_dt.strftime("%Y-%m-%d")
         from watchlist_india import get_active_watchlist
-        from data_fetch_upstox import fetch_ohlcv_batch
+        from auth_upstox import get_upstox_client, verify_connection
+        import data_fetch_upstox as dfu
         import backtest_engine_india as _bk
         syms = get_active_watchlist()
-        print(f"  Fetching {len(syms)} symbols from Upstox ({from_s} → {to_s}) ...", flush=True)
-        raw = fetch_ohlcv_batch(syms, from_date=from_s, to_date=to_s, interval="5minute")
-        for sym, df in raw.items():
-            if df is not None and len(df) > 10:
-                try:
-                    df2 = _bk._compute_all(df)
-                    df3 = _bk._build_orb(df2)
-                    data[sym] = df3
-                except Exception:
-                    pass
+        print(f"  Connecting to Upstox ...", flush=True)
+        client = get_upstox_client()
+        if not client or not verify_connection(client):
+            print("  ERROR: Upstox connection failed. Check UPSTOX_ACCESS_TOKEN in .env", flush=True)
+            sys.exit(1)
+        dfu.set_upstox_client(client)
+        print(f"  Fetching {len(syms)} symbols ({from_s} → {to_s}) ...", flush=True)
+        for i, sym in enumerate(syms, 1):
+            if i % 20 == 0:
+                print(f"    {i}/{len(syms)} fetched ...", flush=True)
+            try:
+                df = _bk._fetch(client, sym, from_s, to_s)
+                if df is not None and len(df) > 10:
+                    data[sym] = df   # _fetch already calls _compute_all + _build_orb
+            except Exception:
+                pass
         print(f"  Fetched {len(data)} symbols.", flush=True)
 
     if not data:
