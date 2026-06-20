@@ -323,6 +323,40 @@ def main():
             print(f"    {k} = {v}")
     print("=" * 65, flush=True)
 
+    # ── Telegram notification ─────────────────────────────────────────────────
+    try:
+        import config_india as cfg
+        import requests as _req
+        token = cfg.TELEGRAM_BOT_TOKEN
+        chat  = cfg.TELEGRAM_CHAT_ID
+        if token and chat:
+            wr_pct  = best_metrics.get("wr", 0) * 100
+            tpm_val = best_metrics.get("trades_pm", 0)
+            mp_val  = best_metrics.get("monthly_pct", 0)
+            if found_target:
+                msg = (
+                    f"✅ *Optimizer TARGET HIT!*\n"
+                    f"WR: {wr_pct:.1f}%  |  Trades/mo: {tpm_val:.1f}  |  Return: {mp_val:.1f}%\n\n"
+                    f"*Winning parameters:*\n"
+                    + "\n".join(f"  {k} = {v}" for k, v in best_params.items())
+                    + "\n\nEngine patched automatically ✓"
+                )
+            else:
+                msg = (
+                    f"⚠️ *Optimizer finished — target NOT fully met*\n"
+                    f"Best found: WR {wr_pct:.1f}% | Trades/mo {tpm_val:.1f} | Return {mp_val:.1f}%\n"
+                    f"Target was: WR {TARGET_WR*100:.0f}% | {TARGET_TRADES_PM}/mo | {TARGET_MONTHLY}%/mo\n"
+                    f"Engine patched with best found params."
+                )
+            _req.post(
+                f"https://api.telegram.org/bot{token}/sendMessage",
+                json={"chat_id": chat, "text": msg, "parse_mode": "Markdown"},
+                timeout=10,
+            )
+            print("  Telegram notification sent.", flush=True)
+    except Exception as _te:
+        print(f"  (Telegram notification skipped: {_te})", flush=True)
+
     if not found_target:
         print(
             "\n  DIAGNOSIS: Even the best parameter combo doesn't hit all 3 targets.")
