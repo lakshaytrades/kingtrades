@@ -30,17 +30,19 @@ TARGET_WR        = 0.75    # 75% win rate
 TARGET_TRADES_PM = 25      # minimum trades per month
 TARGET_MONTHLY   = 4.0     # minimum monthly return %
 
-# ── Parameter search grid (coarse → fine) ────────────────────────────────────
-# Listed in order of expected impact on WR.
-# Optimizer stops as soon as it finds a combo meeting ALL 3 targets.
+# ── Parameter search grid ────────────────────────────────────────────────────
+# Compact: only the 3 parameters that most affect WR.
+# Other params are fixed at known-good values (from real trade analysis).
+# This gives 4×3×2 = 24 combos → completes in ~2 hours on a VPS.
 GRID = {
-    "MIN_SCORE":          [18.0, 19.0, 20.0, 21.0, 22.0],
-    "MIN_QUAL_COUNT":     [2, 3],
-    "ENTRY_RSI_LONG_MAX": [72, 68, 65],
-    "ENTRY_RSI_LONG_MIN": [42, 45],
-    "ENTRY_RVOL_MIN":     [1.3, 1.4, 1.5],
-    "BREADTH_BULL_HARD":  [0.52, 0.55, 0.58],
-    "BREADTH_BULL_SOFT":  [0.60, 0.65],
+    "MIN_SCORE":          [19.0, 20.0, 21.0, 22.0],   # 4 values — key filter
+    "ENTRY_RVOL_MIN":     [1.3, 1.4, 1.5],             # 3 values — volume gate
+    "MIN_QUAL_COUNT":     [2, 3],                        # 2 values — quality gate
+    # Fixed at known-good values (not varied to keep combos low):
+    "ENTRY_RSI_LONG_MAX": [68],
+    "ENTRY_RSI_LONG_MIN": [45],
+    "BREADTH_BULL_HARD":  [0.55],
+    "BREADTH_BULL_SOFT":  [0.65],
 }
 
 # ── Parser ────────────────────────────────────────────────────────────────────
@@ -192,9 +194,9 @@ def main():
     ap.add_argument("--source", default="upstox",
                     choices=["upstox", "cache", "synthetic"],
                     help="Data source (default: upstox, uses disk cache when available)")
-    ap.add_argument("--days", type=int, default=90, help="Days of history to fetch (default: 90)")
-    ap.add_argument("--max-symbols", type=int, default=50,
-                    help="Max symbols to include (default: 50 most liquid NSE stocks)")
+    ap.add_argument("--days", type=int, default=60, help="Days of history to fetch (default: 60)")
+    ap.add_argument("--max-symbols", type=int, default=30,
+                    help="Max symbols to include (default: 30 most liquid NSE stocks)")
     ap.add_argument("--force-fetch", action="store_true",
                     help="Ignore disk cache and re-fetch all data from Upstox")
     ap.add_argument("--capital", type=float, default=500_000.0)
@@ -439,13 +441,13 @@ def main():
     if not found_target:
         print("\n  Round 1 did not hit target. Running Round 2 with stricter filters ...", flush=True)
         GRID_R2 = {
-            "MIN_SCORE":          [20.0, 21.0, 22.0, 23.0],
-            "MIN_QUAL_COUNT":     [3],
-            "ENTRY_RSI_LONG_MAX": [68, 65, 62],
-            "ENTRY_RSI_LONG_MIN": [45, 48],
+            "MIN_SCORE":          [21.0, 22.0, 23.0],
             "ENTRY_RVOL_MIN":     [1.4, 1.5],
-            "BREADTH_BULL_HARD":  [0.55, 0.58, 0.60],
-            "BREADTH_BULL_SOFT":  [0.65, 0.70],
+            "MIN_QUAL_COUNT":     [3],
+            "ENTRY_RSI_LONG_MAX": [65],
+            "ENTRY_RSI_LONG_MIN": [48],
+            "BREADTH_BULL_HARD":  [0.58],
+            "BREADTH_BULL_SOFT":  [0.68],
         }
         keys2   = list(GRID_R2.keys())
         combos2 = list(product(*GRID_R2.values()))
