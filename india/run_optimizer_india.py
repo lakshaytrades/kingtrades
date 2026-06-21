@@ -138,12 +138,65 @@ def _patch_engine(params: Dict):
     print(f"\n  Engine patched with winning parameters.", flush=True)
 
 
+CACHE_FILE = Path(__file__).parent / "optimizer_cache.pkl"
+CACHE_MAX_AGE_DAYS = 7
+
+# Top 50 most liquid NSE stocks — covers all major sectors, representative
+TOP50_NSE = [
+    "RELIANCE", "TCS", "HDFCBANK", "INFY", "ICICIBANK",
+    "HINDUNILVR", "ITC", "SBIN", "BHARTIARTL", "KOTAKBANK",
+    "LT", "AXISBANK", "ASIANPAINT", "MARUTI", "BAJFINANCE",
+    "TITAN", "HCLTECH", "SUNPHARMA", "ULTRACEMCO", "WIPRO",
+    "ONGC", "POWERGRID", "NTPC", "COALINDIA", "TATAMOTORS",
+    "JSWSTEEL", "HINDALCO", "TECHM", "INDUSINDBK", "BAJAJFINSV",
+    "DIVISLAB", "DRREDDY", "CIPLA", "EICHERMOT", "HEROMOTOCO",
+    "BRITANNIA", "GRASIM", "TATACONSUM", "NESTLEIND", "APOLLOHOSP",
+    "ADANIPORTS", "BPCL", "SHREECEM", "HDFCLIFE", "SBILIFE",
+    "BAJAJ-AUTO", "M&M", "TATASTEEL", "UPL", "PIDILITIND",
+]
+
+
+def _load_cache() -> Optional[Dict]:
+    """Load cached optimizer data if fresh enough."""
+    import pickle, datetime as _dt
+    if not CACHE_FILE.exists():
+        return None
+    age_days = (_dt.datetime.now().timestamp() - CACHE_FILE.stat().st_mtime) / 86400
+    if age_days > CACHE_MAX_AGE_DAYS:
+        print(f"  Cache is {age_days:.1f} days old (>{CACHE_MAX_AGE_DAYS}d) — will re-fetch.", flush=True)
+        return None
+    try:
+        with open(CACHE_FILE, "rb") as f:
+            d = pickle.load(f)
+        print(f"  Loaded {len(d)} symbols from cache ({age_days:.1f}d old).", flush=True)
+        return d
+    except Exception as e:
+        print(f"  Cache load failed: {e} — will re-fetch.", flush=True)
+        return None
+
+
+def _save_cache(data: Dict):
+    """Persist fetched data to disk for reuse."""
+    import pickle
+    try:
+        CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
+        with open(CACHE_FILE, "wb") as f:
+            pickle.dump(data, f, protocol=4)
+        print(f"  Saved {len(data)} symbols to cache: {CACHE_FILE}", flush=True)
+    except Exception as e:
+        print(f"  (Cache save failed: {e})", flush=True)
+
+
 def main():
     ap = argparse.ArgumentParser(description="Self-running parameter optimizer for NSE backtest")
-    ap.add_argument("--source", default="cache",
+    ap.add_argument("--source", default="upstox",
                     choices=["upstox", "cache", "synthetic"],
-                    help="Data source (default: cache)")
-    ap.add_argument("--days", type=int, default=90, help="Days of history for cache/upstox")
+                    help="Data source (default: upstox, uses disk cache when available)")
+    ap.add_argument("--days", type=int, default=90, help="Days of history to fetch (default: 90)")
+    ap.add_argument("--max-symbols", type=int, default=50,
+                    help="Max symbols to include (default: 50 most liquid NSE stocks)")
+    ap.add_argument("--force-fetch", action="store_true",
+                    help="Ignore disk cache and re-fetch all data from Upstox")
     ap.add_argument("--capital", type=float, default=500_000.0)
     ap.add_argument("--dry-run", action="store_true",
                     help="Print winning params without patching the engine")
@@ -156,7 +209,7 @@ def main():
     print("=" * 65)
     print("  NSE Backtest Parameter Optimizer")
     print(f"  Target: WR >= {TARGET_WR*100:.0f}% | Trades >= {TARGET_TRADES_PM}/mo | Return >= {TARGET_MONTHLY}%/mo")
-    print(f"  Report: {args.report}")
+    print(f"  Symbols: up to {args.max_symbols} | Days: {args.days} | Report: {args.report}")
     print("=" * 65, flush=True)
 
     # ── Load data once ────────────────────────────────────────────────────────
@@ -165,11 +218,9 @@ def main():
 
     if args.source == "synthetic":
         print("  WARNING: Synthetic data has uncorrelated breadth — WR stats are not realistic.", flush=True)
-        print("  Use --source cache or --source upstox for meaningful optimization.", flush=True)
         from generate_synthetic_data import generate_nse_data
-        from watchlist_india import get_active_watchlist
         import backtest_engine_india as _bk
-        syms = get_active_watchlist()[:50]
+        syms = TOP50_NSE[:args.max_symbols]
         raw = generate_nse_data(symbols=syms, days=60, seed=42)
         for sym, df in raw.items():
             try:
@@ -187,7 +238,7 @@ def main():
             sys.exit(1)
         from watchlist_india import get_active_watchlist
         import backtest_engine_india as _bk
-        syms = get_active_watchlist()
+        syms = get_active_watchlist()[:args.max_symbols]
         raw = load_cache(syms, interval="5m")
         if not raw:
             raw = load_cache(syms, interval="1h")
@@ -205,32 +256,57 @@ def main():
 
     elif args.source == "upstox":
         import datetime
-        to_dt   = datetime.date.today()
-        from_dt = to_dt - datetime.timedelta(days=args.days)
-        from_s  = from_dt.strftime("%Y-%m-%d")
-        to_s    = to_dt.strftime("%Y-%m-%d")
-        from watchlist_india import get_active_watchlist
-        from auth_upstox import get_upstox_client, verify_connection
-        import data_fetch_upstox as dfu
         import backtest_engine_india as _bk
-        syms = get_active_watchlist()
-        print(f"  Connecting to Upstox ...", flush=True)
-        client = get_upstox_client()
-        if not client or not verify_connection(client):
-            print("  ERROR: Upstox connection failed. Check UPSTOX_ACCESS_TOKEN in .env", flush=True)
-            sys.exit(1)
-        dfu.set_upstox_client(client)
-        print(f"  Fetching {len(syms)} symbols ({from_s} → {to_s}) ...", flush=True)
-        for i, sym in enumerate(syms, 1):
-            if i % 20 == 0:
-                print(f"    {i}/{len(syms)} fetched ...", flush=True)
+
+        # Try disk cache first (unless --force-fetch)
+        if not args.force_fetch:
+            cached = _load_cache()
+            if cached is not None:
+                # Slice to requested max_symbols
+                syms_cached = list(cached.keys())[:args.max_symbols]
+                data = {s: cached[s] for s in syms_cached if s in cached}
+                print(f"  Using {len(data)} symbols from disk cache. Use --force-fetch to re-download.", flush=True)
+
+        if not data:
+            # No cache — fetch from Upstox
+            to_dt   = datetime.date.today()
+            from_dt = to_dt - datetime.timedelta(days=args.days)
+            from_s  = from_dt.strftime("%Y-%m-%d")
+            to_s    = to_dt.strftime("%Y-%m-%d")
+            from auth_upstox import get_upstox_client, verify_connection
+            import data_fetch_upstox as dfu
+
+            # Use curated top-50 + any extras from watchlist up to max_symbols
             try:
-                df = _bk._fetch(client, sym, from_s, to_s)
-                if df is not None and len(df) > 10:
-                    data[sym] = df   # _fetch already calls _compute_all + _build_orb
+                from watchlist_india import get_active_watchlist
+                wl = get_active_watchlist()
             except Exception:
-                pass
-        print(f"  Fetched {len(data)} symbols.", flush=True)
+                wl = []
+            extra = [s for s in wl if s not in TOP50_NSE]
+            syms = (TOP50_NSE + extra)[:args.max_symbols]
+
+            print(f"  Connecting to Upstox ...", flush=True)
+            client = get_upstox_client()
+            if not client or not verify_connection(client):
+                print("  ERROR: Upstox connection failed. Check UPSTOX_ACCESS_TOKEN in .env", flush=True)
+                sys.exit(1)
+            dfu.set_upstox_client(client)
+            print(f"  Fetching {len(syms)} symbols ({from_s} → {to_s}) ...", flush=True)
+            t_fetch = time.time()
+            for i, sym in enumerate(syms, 1):
+                if i % 10 == 0:
+                    elapsed = time.time() - t_fetch
+                    eta = (elapsed / i) * (len(syms) - i)
+                    print(f"    {i}/{len(syms)} fetched  ETA:{eta/60:.0f}m ...", flush=True)
+                try:
+                    df = _bk._fetch(client, sym, from_s, to_s)
+                    if df is not None and len(df) > 10:
+                        data[sym] = df
+                except Exception:
+                    pass
+            print(f"  Fetched {len(data)}/{len(syms)} symbols in {(time.time()-t_fetch)/60:.1f}m.", flush=True)
+            # Save to disk so next run is instant
+            _save_cache(data)
 
     if not data:
         print("  ERROR: No data loaded. Aborting.", flush=True)
