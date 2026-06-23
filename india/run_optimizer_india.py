@@ -35,14 +35,14 @@ TARGET_MONTHLY   = 4.0     # minimum monthly return %
 # Other params are fixed at known-good values (from real trade analysis).
 # This gives 4×3×2 = 24 combos → completes in ~2 hours on a VPS.
 GRID = {
-    "MIN_SCORE":          [19.0, 20.0, 21.0, 22.0],   # 4 values — key filter
-    "ENTRY_RVOL_MIN":     [1.3, 1.4, 1.5],             # 3 values — volume gate
-    "MIN_QUAL_COUNT":     [2, 3],                        # 2 values — quality gate
-    # Fixed at known-good values (not varied to keep combos low):
-    "ENTRY_RSI_LONG_MAX": [68],
-    "ENTRY_RSI_LONG_MIN": [45],
-    "BREADTH_BULL_HARD":  [0.55],
-    "BREADTH_BULL_SOFT":  [0.65],
+    "MIN_SCORE":          [10.0, 12.0, 14.0, 16.0],   # ORB rvol1.5=+12, rvol2.0=+18
+    "ENTRY_RVOL_MIN":     [1.5, 1.8, 2.0],             # require genuine volume surge
+    "MIN_QUAL_COUNT":     [1, 2],                        # ORB alone may be enough
+    # Fixed at known-good values:
+    "ENTRY_RSI_LONG_MAX": [75],
+    "ENTRY_RSI_LONG_MIN": [40],
+    "BREADTH_BULL_HARD":  [0.52],
+    "BREADTH_BULL_SOFT":  [0.60],
 }
 
 # ── Parser ────────────────────────────────────────────────────────────────────

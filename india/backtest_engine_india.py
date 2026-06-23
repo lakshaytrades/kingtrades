@@ -468,14 +468,12 @@ def _score_bar(row: pd.Series, prev: pd.Series,
             _orb_bear_fresh = (c < orb_l * 0.9995) and (_prev_c >= orb_l * 0.9995)
             if c > orb_h * 1.0005:
                 if _orb_bull_fresh:
-                    # Tiered ORB scoring: institutional threshold >=1.5x; genuine surge >=2.0x
+                    # Tiered ORB scoring: only accept genuine volume surge
                     if rvol >= 2.0:
                         score_long += 18; reasons.append("ORB_BULL_CONFIRM")   # Strong institutional surge
                     elif rvol >= 1.5:
                         score_long += 12; reasons.append("ORB_BULL_CONFIRM")   # Acceptable institutional surge
-                    elif rvol >= 1.3:
-                        score_long += 6; reasons.append("ORB_BULL_CONFIRM")  # Moderate volume ORB: fresh breakout bar = signal
-                    # else: ORB without volume = ignore
+                    # rvol < 1.5 = low-volume fake breakout, ignore entirely
                 else:            score_long  += 3   # already above ORB = old news
             elif c > orb_h:
                 if rvol >= 1.5:  score_long  += 4
@@ -1197,7 +1195,7 @@ def _opt_record_trade(t) -> None:
         pass
 
 
-MIN_SCORE    = 18.0   # Raised: filter for 75% WR target — only high-conviction setups
+MIN_SCORE    = 12.0   # ORB-only mode: rvol≥1.5 ORB = +12, self-sufficient entry
 MAX_OPEN     = 8      # 8 concurrent positions — wider universe (380 stocks) needs more slots
 MAX_POS_PCT  = 0.15   # 15% per position — 8×15%=120% max deployed (realistic intraday usage)
 
