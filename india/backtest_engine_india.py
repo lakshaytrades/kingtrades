@@ -2469,6 +2469,14 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
                 continue
 
+            # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
+            # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
+            # SESSION_BULL: broad market strength gate — adds conviction to any entry.
+            # All other signals are unproven or net-negative in backtest (30.6% WR).
+            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM", "SESSION_BULL")
+            if not any(s in reason for s in _PRIMARY_WHITELIST):
+                continue
+
             # ── Entry quality gate: RSI momentum window ──────────────────────
             try:
                 _rsi_q = float(row.get("rsi", 50) or 50)
@@ -4075,6 +4083,14 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
                 continue
             # ORB_BULL_CLEAN alone = low-volume fake breakout (0% WR on 11 real trades, -₹10,715)
             if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
+                continue
+
+            # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
+            # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
+            # SESSION_BULL: broad market strength gate — adds conviction to any entry.
+            # All other signals are unproven or net-negative in backtest (30.6% WR).
+            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM", "SESSION_BULL")
+            if not any(s in reason for s in _PRIMARY_WHITELIST):
                 continue
 
             # ── Entry quality gate: RSI momentum window ──────────────────────
