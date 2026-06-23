@@ -2471,9 +2471,8 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
 
             # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
             # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
-            # SESSION_BULL: broad market strength gate — adds conviction to any entry.
-            # All other signals are unproven or net-negative in backtest (30.6% WR).
-            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM", "SESSION_BULL")
+            # SESSION_BULL removed: fires frequently but still 30% WR in backtest.
+            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM",)
             if not any(s in reason for s in _PRIMARY_WHITELIST):
                 continue
 
@@ -4087,9 +4086,8 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
 
             # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
             # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
-            # SESSION_BULL: broad market strength gate — adds conviction to any entry.
-            # All other signals are unproven or net-negative in backtest (30.6% WR).
-            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM", "SESSION_BULL")
+            # SESSION_BULL removed: fires frequently but still 30% WR in backtest.
+            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM",)
             if not any(s in reason for s in _PRIMARY_WHITELIST):
                 continue
 
