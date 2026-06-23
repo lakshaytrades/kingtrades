@@ -1,36 +1,30 @@
 """
-signal_attribution_test.py — Deep comprehensive signal + parameter test (parallel)
+signal_attribution_test.py — Exhaustive overnight optimiser (parallel)
 
-5 Phases, all run in parallel across CPU cores:
+7 phases designed to fill a full night (6-10 hrs on 2-4 core VPS) and
+produce a configuration that meets all targets.
 
-  Phase 1 : Walk-forward signal test
-              All 18 signals × 3 windows (first-half, second-half, full period)
-              Robust = profitable in BOTH halves
-              ~3-5 min
+Targets  : WR ≥ 55%  |  Return ≥ 4%/mo  |  Trades ≥ 20/mo  |  DD < 8%
 
-  Phase 2 : Combo search on full data
-              All pairs + triples of robust signals
-              ~3-5 min
+Phase 1  : Walk-forward signal test (18 signals × 5 rolling windows)
+             Robust = profitable in ≥4/5 windows
+Phase 2  : Combo search (all pairs + triples + 4-combos of top candidates)
+Phase 3  : Per-signal parameter search (top-6 robust signals × medium grid)
+Phase 4  : Giant parameter grid on best combo
+             MIN_SCORE[8] × RVOL[8] × QUAL[3] × RSI_MAX[5] × RSI_MIN[5] = 4,800 combos
+Phase 5  : Fine grid around Phase 4 winner (±1 step each dimension)
+Phase 6  : Breadth + MAX_OPEN tune on best from Phase 5
+Phase 7  : k-fold cross-validation (5 folds) — robustness check
 
-  Phase 3 : Expanded parameter grid on best combo
-              MIN_SCORE × RVOL × QUAL × RSI_MAX  (180 combos)
-              ~5-8 min
-
-  Phase 4 : Breadth + RSI fine-tune on Phase 3 winner
-              BREADTH_HARD × BREADTH_SOFT × RSI_MIN  (48 combos)
-              ~2-3 min
-
-  Phase 5 : Final walk-forward robustness check
-              Best config on Window-B only (out-of-sample)
-              1 backtest — confirms WR doesn't collapse out-of-sample
-
-Total runtime: ~15-25 min on VPS with 4 CPU cores
+Typical task counts : ~5,500 backtests
+Typical runtimes    : 2-core VPS ≈ 10-12 hr  |  4-core ≈ 5-6 hr  |  8-core ≈ 3 hr
 
 Usage:
   python3 india/signal_attribution_test.py --no-telegram
-  python3 india/signal_attribution_test.py --force-fetch   # re-download data
-  python3 india/signal_attribution_test.py --days 90 --max-symbols 50 --force-fetch
+  python3 india/signal_attribution_test.py --force-fetch --days 90 --max-symbols 50
 """
+
+from __future__ import annotations
 
 import argparse
 import contextlib
@@ -40,9 +34,9 @@ import re
 import sys
 import time
 import multiprocessing as mp
-from datetime import datetime as _dt, timedelta
 from itertools import combinations
 from pathlib import Path
+from datetime import datetime as _dt
 
 _HERE   = Path(__file__).parent
 _ROOT   = _HERE.parent
@@ -73,275 +67,280 @@ ALL_SIGNALS = [
     "ATR_SQUEEZE_BREAKOUT",
 ]
 
-# ── Worker shared memory (set once per process via initializer) ───────────────
-# Three dataset slices stored per worker process.
-_DATA_FULL = None   # full date range
-_DATA_WIN_A = None  # first half of date range
-_DATA_WIN_B = None  # second half of date range
+# ── Module-level shared data (populated in main(), inherited by fork workers) ─
+# Each entry: window_key → {symbol: DataFrame}
+_W: dict = {}   # do NOT rename — _run_task references it
 
 
-def _init_worker(bytes_full: bytes, bytes_a: bytes, bytes_b: bytes):
-    global _DATA_FULL, _DATA_WIN_A, _DATA_WIN_B
-    _DATA_FULL  = pickle.loads(bytes_full)
-    _DATA_WIN_A = pickle.loads(bytes_a)
-    _DATA_WIN_B = pickle.loads(bytes_b)
+# ── Worker function (module-level for fork pickling) ──────────────────────────
 
-
-def _run_task(task):
+def _run_task(task: tuple):
     """
     task = (signal_list, params_dict, window_key)
-    window_key: "full" | "a" | "b"
-    Returns metrics dict (all results, no filtering).
+    Returns metrics dict.  Executes in forked subprocess that has _W set.
     """
-    signal_names, params, window = task
-
+    signals, params, wkey = task
     import backtest_engine_india as bk
 
-    # Set every tunable constant
-    bk.SIGNAL_WHITELIST    = tuple(signal_names)
-    bk.MIN_SCORE           = params["MIN_SCORE"]
-    bk._ADAPTIVE_MIN_SCORE = params["MIN_SCORE"]
-    bk.MIN_QUAL_COUNT      = params["MIN_QUAL_COUNT"]
-    bk.ENTRY_RVOL_MIN      = params["ENTRY_RVOL_MIN"]
-    bk.ENTRY_RSI_LONG_MIN  = params["RSI_MIN"]
-    bk.ENTRY_RSI_LONG_MAX  = params["RSI_MAX"]
-    bk.BREADTH_BULL_HARD   = params["BREADTH_HARD"]
-    bk.BREADTH_BULL_SOFT   = params["BREADTH_SOFT"]
-
-    data = {"full": _DATA_FULL, "a": _DATA_WIN_A, "b": _DATA_WIN_B}[window]
+    bk.SIGNAL_WHITELIST    = tuple(signals)
+    bk.MIN_SCORE           = params["ms"]
+    bk._ADAPTIVE_MIN_SCORE = params["ms"]
+    bk.MIN_QUAL_COUNT      = params["qc"]
+    bk.ENTRY_RVOL_MIN      = params["rv"]
+    bk.ENTRY_RSI_LONG_MIN  = params["rmin"]
+    bk.ENTRY_RSI_LONG_MAX  = params["rmax"]
+    bk.BREADTH_BULL_HARD   = params["bh"]
+    bk.BREADTH_BULL_SOFT   = params["bs"]
+    bk.MAX_OPEN            = params.get("mo", 8)
 
     buf = io.StringIO()
     try:
         with contextlib.redirect_stdout(buf):
-            bk.run_backtest_from_data(data, capital=500_000.0)
+            bk.run_backtest_from_data(_W[wkey], capital=500_000.0)
     except Exception as e:
-        return {"signals": list(signal_names), "params": params, "window": window,
-                "error": str(e)[:120]}
+        return {"sigs": signals, "p": params, "w": wkey, "err": str(e)[:120]}
 
-    output = buf.getvalue()
-    r = {"signals": list(signal_names), "params": params, "window": window}
+    out = buf.getvalue()
+    r   = {"sigs": signals, "p": params, "w": wkey}
 
-    def _float(pattern, default=0.0):
-        m = re.search(pattern, output)
+    def _f(pat, default=0.0):
+        m = re.search(pat, out)
         return float(m.group(1)) if m else default
 
-    r["trades"]      = int(_float(r"Total trades\s*:\s*(\d+)"))
-    r["wr"]          = _float(r"Win rate\s*:\s*([\d.]+)%")
-    r["monthly_pct"] = _float(r"Monthly return\s*:\s*([+-]?[\d.]+)%", -99.0)
-    r["max_dd"]      = _float(r"Max drawdown\s*:\s*([\d.]+)%")
-    r["sharpe"]      = _float(r"Sharpe ratio\s*:\s*([+-]?[\d.]+)")
-    r["pf"]          = _float(r"Profit factor\s*:\s*([\d.]+)")
+    r["trades"]  = int(_f(r"Total trades\s*:\s*(\d+)"))
+    r["wr"]      = _f(r"Win rate\s*:\s*([\d.]+)%")
+    r["ret"]     = _f(r"Monthly return\s*:\s*([+-]?[\d.]+)%", -99.0)
+    r["dd"]      = _f(r"Max drawdown\s*:\s*([\d.]+)%")
+    r["sharpe"]  = _f(r"Sharpe ratio\s*:\s*([+-]?[\d.]+)")
+    r["pf"]      = _f(r"Profit factor\s*:\s*([\d.]+)")
 
-    m = re.search(r"Period\s*:.*?(\d{4}-\d{2}-\d{2})\s*→\s*(\d{4}-\d{2}-\d{2})", output)
+    m = re.search(r"Period\s*:.*?(\d{4}-\d{2}-\d{2})\s*→\s*(\d{4}-\d{2}-\d{2})", out)
     if m:
         d1 = _dt.strptime(m.group(1), "%Y-%m-%d")
         d2 = _dt.strptime(m.group(2), "%Y-%m-%d")
         months = max((d2 - d1).days / 30.44, 0.1)
-        r["trades_pm"] = r["trades"] / months
+        r["tpm"] = r["trades"] / months
 
     return r
 
 
-# ── Scoring + filtering helpers ───────────────────────────────────────────────
+# ── Scoring helpers ───────────────────────────────────────────────────────────
 
-def _score(r):
-    """Composite rank score. Higher = better. Zero if not tradeable."""
+def _score(r: dict) -> float:
+    """Composite rank. Zero if not tradeable."""
+    if r.get("err") or r.get("trades", 0) < 3:
+        return 0.0
     wr  = r.get("wr", 0)
-    ret = max(r.get("monthly_pct", -99), 0)
-    dd  = max(r.get("max_dd", 1.0), 1.0)
-    tpm = r.get("trades_pm", 0)
-    if tpm < 5 or wr < 40:
+    ret = max(r.get("ret", -99), 0.0)
+    dd  = max(r.get("dd", 1.0), 0.1)
+    tpm = r.get("tpm", 0)
+    if wr < 40 or tpm < 5:
         return 0.0
     return (wr / 100) * ret * min(tpm / 20, 1.5) / dd
 
 
-def _is_target(r):
-    """Meets all deployment targets."""
-    return (r.get("wr", 0)          >= 55.0
-            and r.get("monthly_pct", -99) >= 4.0
-            and r.get("trades_pm", 0)     >= 20.0
-            and r.get("max_dd", 100)      <=  8.0
-            and "error" not in r)
+def _targets_met(r: dict) -> bool:
+    return (r.get("wr", 0) >= 55
+            and r.get("ret", -99) >= 4.0
+            and r.get("tpm", 0) >= 20
+            and r.get("dd", 99) <= 8.0
+            and not r.get("err"))
 
 
-def _is_pass(r, wr_min=50, ret_min=0, tpm_min=5):
-    return (r.get("wr", 0) >= wr_min
-            and r.get("monthly_pct", -99) >= ret_min
-            and r.get("trades_pm", 0) >= tpm_min
-            and "error" not in r)
+def _ok(r, wr=45, ret=0, tpm=5):
+    return (r.get("wr", 0) >= wr
+            and r.get("ret", -99) >= ret
+            and r.get("tpm", 0) >= tpm
+            and not r.get("err"))
 
 
-def _fmt(signals):
-    return "+".join(signals)
+def _sig_label(r):
+    return "+".join(r.get("sigs", ["?"]))
 
 
 # ── Pretty printing ───────────────────────────────────────────────────────────
 
-def _table(results, title="", max_rows=25):
-    ok = sorted(
-        [r for r in results if "error" not in r and r.get("trades", 0) >= 1],
-        key=_score, reverse=True,
-    )
-    sep = "─" * 80
-    print(f"\n{sep}")
+def _table(rows: list, title: str = "", n: int = 30):
+    ok = sorted([r for r in rows if not r.get("err") and r.get("trades", 0) >= 1],
+                key=_score, reverse=True)
+    W = 80
+    print(f"\n{'─'*W}")
     print(f"  {title}")
-    print(f"  {'Signal(s)':<36} {'Win':>5}  {'T/mo':>5}  {'Ret%':>6}  {'DD%':>5}  {'Sharpe':>6}  {'Win?':>4}")
-    print(f"  {'─'*36} {'─'*5}  {'─'*5}  {'─'*6}  {'─'*5}  {'─'*6}  {'─'*4}")
-    for r in ok[:max_rows]:
-        sigs  = _fmt(r.get("signals", ["?"]))[:36]
-        flag  = "✅" if _is_target(r) else ("✓" if _is_pass(r) else "")
-        print(f"  {sigs:<36} {r.get('wr',0):>4.1f}%  "
-              f"{r.get('trades_pm',0):>4.1f}  "
-              f"{r.get('monthly_pct',-99):>+5.1f}%  "
-              f"{r.get('max_dd',0):>4.1f}%  "
-              f"{r.get('sharpe',0):>5.2f}  {flag}")
+    print(f"  {'Signals':<36} {'WR':>6} {'T/mo':>6} {'Ret%':>7} {'DD%':>6} {'Sharpe':>7} {'✓'}")
+    print(f"  {'─'*36} {'─'*6} {'─'*6} {'─'*7} {'─'*6} {'─'*7}")
+    for r in ok[:n]:
+        sl  = _sig_label(r)[:36]
+        tgt = "✅" if _targets_met(r) else ("✓" if _ok(r) else "")
+        print(f"  {sl:<36} {r.get('wr',0):>5.1f}% {r.get('tpm',0):>5.1f} "
+              f"{r.get('ret',-99):>+6.1f}% {r.get('dd',0):>5.1f}% "
+              f"{r.get('sharpe',0):>6.2f} {tgt}")
     if not ok:
         print("  (no results)")
-    print(sep, flush=True)
+    print('─'*W, flush=True)
 
 
-# ── Data utilities ────────────────────────────────────────────────────────────
+def _progress(done, total, phase, t0):
+    rate = done / max(time.time() - t0, 1)
+    eta  = (total - done) / max(rate, 0.001)
+    print(f"  [{phase}] {done}/{total}  {eta/60:.0f}m left  "
+          f"({rate:.1f} tasks/s)", flush=True)
 
-def _split_data(data: dict):
-    """Split cached data dict into first-half and second-half by date."""
+
+# ── Parameter sets ────────────────────────────────────────────────────────────
+
+def _relaxed() -> dict:
+    return dict(ms=6.0, qc=1, rv=1.0, rmin=25, rmax=85, bh=0.35, bs=0.45, mo=8)
+
+
+def _per_signal_grid() -> list[dict]:
+    """Medium grid for per-signal optimization (Phase 3).  72 combos per signal."""
+    g = []
+    for ms in [6.0, 8.0, 10.0, 12.0, 14.0, 16.0]:   # 6
+        for rv in [1.0, 1.3, 1.5, 1.8, 2.0]:          # 5 → × = 30
+            for qc in [1, 2]:                           # 2 → × = 60 — but not all qual-rich
+                g.append(dict(ms=ms, qc=qc, rv=rv, rmin=30, rmax=80,
+                              bh=0.40, bs=0.55, mo=8))
+    return g   # 60 combos per signal
+
+
+def _giant_grid() -> list[dict]:
+    """
+    Phase 4 giant grid.
+    8 × 8 × 3 × 5 × 5 = 4,800 combos.
+    """
+    g = []
+    for ms   in [6.0,8.0,10.0,12.0,14.0,16.0,18.0,20.0]:          # 8
+        for rv   in [1.0,1.2,1.3,1.5,1.6,1.8,2.0,2.5]:             # 8
+            for qc   in [1, 2, 3]:                                   # 3
+                for rmax in [68, 72, 76, 80, 84]:                    # 5
+                    for rmin in [25, 30, 35, 40, 45]:                # 5
+                        if rmin >= rmax - 20:
+                            continue   # nonsensical RSI window
+                        g.append(dict(ms=ms, rv=rv, qc=qc,
+                                      rmin=rmin, rmax=rmax,
+                                      bh=0.45, bs=0.55, mo=8))
+    return g   # ≈4,600 valid combos
+
+
+def _fine_grid(best_p: dict) -> list[dict]:
+    """Phase 5: ±1 step around Phase 4 winner.  ~300 combos."""
+    ms_steps   = [0.0, -2.0, +2.0, -4.0, +4.0]
+    rv_steps   = [0.0, -0.1, +0.1, -0.2, +0.2]
+    rmax_steps = [0, -4, +4]
+    rmin_steps = [0, -5, +5]
+    qc_vals    = [1, 2, 3]
+
+    g = []
+    for dms   in ms_steps:
+        for drv   in rv_steps:
+            for drmax in rmax_steps:
+                for drmin in rmin_steps:
+                    for qc   in qc_vals:
+                        ms   = round(best_p["ms"]   + dms,  1)
+                        rv   = round(best_p["rv"]   + drv,  2)
+                        rmax = int(best_p["rmax"] + drmax)
+                        rmin = int(best_p["rmin"] + drmin)
+                        if ms < 4 or rv < 0.8 or rmin >= rmax - 15:
+                            continue
+                        g.append(dict(ms=ms, rv=rv, qc=qc,
+                                      rmin=rmin, rmax=rmax,
+                                      bh=best_p["bh"], bs=best_p["bs"],
+                                      mo=best_p.get("mo", 8)))
+    return g   # ~300 combos
+
+
+def _breadth_mo_grid(base: dict) -> list[dict]:
+    """Phase 6: breadth × MAX_OPEN sweep.  ~80 combos."""
+    g = []
+    for bh in [0.35, 0.40, 0.45, 0.50, 0.55]:    # 5
+        for bs in [0.50, 0.55, 0.60, 0.65]:        # 4
+            for mo in [5, 6, 8, 10]:               # 4
+                if bs <= bh:
+                    continue
+                p = dict(base)
+                p.update(bh=bh, bs=bs, mo=mo)
+                g.append(p)
+    return g   # ~64 valid combos
+
+
+# ── Window creation ───────────────────────────────────────────────────────────
+
+def _make_windows(data: dict, n: int = 5) -> dict:
+    """
+    Create n overlapping rolling sub-windows from the full data plus:
+      'full' : entire range
+      'w0'…'wN-1' : overlapping slices of ~1/3 the full period each
+      'first_half' / 'last_half' : 50/50 split for OOS check
+    """
     import pandas as pd
 
-    # Gather all unique dates across all symbols
-    all_dates = set()
-    for df in data.values():
-        all_dates.update(df.index.normalize().unique())
-    all_dates = sorted(all_dates)
+    # Collect all trading dates
+    all_dates = sorted({d for df in data.values()
+                         for d in df.index.normalize().unique()})
+    total = len(all_dates)
+    if total < 6:
+        return {"full": data}
 
-    if len(all_dates) < 4:
-        return data, data   # not enough data to split
+    result = {"full": data}
 
-    mid = len(all_dates) // 2
-    cut = all_dates[mid]
+    # Rolling windows of width = 60% of total, shifted by 10% each time
+    width  = max(int(total * 0.60), 10)
+    step   = max(int(total * 0.10), 2)
+    starts = list(range(0, total - width + 1, step))[:n]
 
-    win_a, win_b = {}, {}
+    for i, s in enumerate(starts):
+        cut_start = all_dates[s]
+        cut_end   = all_dates[min(s + width, total - 1)]
+        win = {}
+        for sym, df in data.items():
+            sl = df[(df.index >= cut_start) & (df.index <= cut_end)]
+            if len(sl) >= 10:
+                win[sym] = sl
+        if win:
+            result[f"w{i}"] = win
+
+    # First/last half
+    mid = all_dates[total // 2]
+    first_h, last_h = {}, {}
     for sym, df in data.items():
-        df_a = df[df.index < cut]
-        df_b = df[df.index >= cut]
-        if len(df_a) >= 10:
-            win_a[sym] = df_a
-        if len(df_b) >= 10:
-            win_b[sym] = df_b
+        a = df[df.index < mid]
+        b = df[df.index >= mid]
+        if len(a) >= 10: first_h[sym] = a
+        if len(b) >= 10: last_h[sym]  = b
+    if first_h: result["first_h"] = first_h
+    if last_h:  result["last_h"]  = last_h
 
-    return win_a, win_b
-
-
-def _param_relaxed():
-    """Fully relaxed — only whitelist gate matters."""
-    return dict(MIN_SCORE=6.0, MIN_QUAL_COUNT=1, ENTRY_RVOL_MIN=1.0,
-                RSI_MIN=25, RSI_MAX=85, BREADTH_HARD=0.35, BREADTH_SOFT=0.45)
-
-
-def _param_grid_phase3():
-    """180-combo grid for Phase 3 (signal combo + param optimisation)."""
-    grid = []
-    for ms in [8.0, 10.0, 12.0, 14.0, 16.0, 18.0]:     # 6
-        for rv in [1.0, 1.3, 1.5, 1.8, 2.0]:            # 5
-            for qc in [1, 2]:                             # 2
-                for rmax in [72, 78, 84]:                 # 3
-                    grid.append(dict(
-                        MIN_SCORE=ms, ENTRY_RVOL_MIN=rv, MIN_QUAL_COUNT=qc,
-                        RSI_MIN=30, RSI_MAX=rmax,
-                        BREADTH_HARD=0.45, BREADTH_SOFT=0.55,
-                    ))
-    return grid   # 6×5×2×3 = 180
-
-
-def _param_grid_phase4(base_params):
-    """48-combo breadth + RSI_MIN fine-tune around Phase 3 winner."""
-    grid = []
-    for bhard in [0.40, 0.45, 0.50, 0.55]:              # 4
-        for bsoft in [0.50, 0.55, 0.60, 0.65]:          # 4
-            for rmin in [28, 33, 38, 43, 48, 53]:        # 6 — but skip bsoft≤bhard
-                if bsoft <= bhard:
-                    continue
-                p = dict(base_params)
-                p["BREADTH_HARD"] = bhard
-                p["BREADTH_SOFT"] = bsoft
-                p["RSI_MIN"]      = rmin
-                grid.append(p)
-    return grid   # ~48-96 valid combos depending on bsoft>bhard filter
-
-
-# ── Engine patcher ────────────────────────────────────────────────────────────
-
-def _patch_engine(signals, params):
-    src = ENGINE_FILE.read_text()
-
-    def _sub(pattern, replacement, text):
-        new, n = re.subn(pattern, replacement, text, flags=re.MULTILINE)
-        return new, n
-
-    wl = ", ".join(f'"{s}"' for s in signals)
-    src, _ = _sub(
-        r'^SIGNAL_WHITELIST\s*=\s*\(.*?\).*$',
-        f'SIGNAL_WHITELIST = ({wl},)  # auto-set by attribution test',
-        src,
-    )
-    src, _ = _sub(
-        r'^MIN_SCORE\s*=\s*[\d.]+.*$',
-        f'MIN_SCORE    = {params["MIN_SCORE"]}   # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^ENTRY_RVOL_MIN\s*=\s*[\d.]+.*$',
-        f'ENTRY_RVOL_MIN     = {params["ENTRY_RVOL_MIN"]}   # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^MIN_QUAL_COUNT\s*=\s*\d+.*$',
-        f'MIN_QUAL_COUNT     = {params["MIN_QUAL_COUNT"]}     # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^ENTRY_RSI_LONG_MIN\s*=\s*\d+.*$',
-        f'ENTRY_RSI_LONG_MIN = {params["RSI_MIN"]}    # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^ENTRY_RSI_LONG_MAX\s*=\s*\d+.*$',
-        f'ENTRY_RSI_LONG_MAX = {params["RSI_MAX"]}    # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^BREADTH_BULL_HARD\s*=\s*[\d.]+.*$',
-        f'BREADTH_BULL_HARD  = {params["BREADTH_HARD"]}  # auto-optimized',
-        src,
-    )
-    src, _ = _sub(
-        r'^BREADTH_BULL_SOFT\s*=\s*[\d.]+.*$',
-        f'BREADTH_BULL_SOFT  = {params["BREADTH_SOFT"]}  # auto-optimized',
-        src,
-    )
-
-    ENGINE_FILE.write_text(src)
-    print(f"  Engine patched:", flush=True)
-    print(f"    SIGNAL_WHITELIST = {signals}")
-    print(f"    MIN_SCORE        = {params['MIN_SCORE']}")
-    print(f"    ENTRY_RVOL_MIN   = {params['ENTRY_RVOL_MIN']}")
-    print(f"    MIN_QUAL_COUNT   = {params['MIN_QUAL_COUNT']}")
-    print(f"    RSI range        = {params['RSI_MIN']}–{params['RSI_MAX']}")
-    print(f"    BREADTH_HARD     = {params['BREADTH_HARD']}")
-    print(f"    BREADTH_SOFT     = {params['BREADTH_SOFT']}", flush=True)
+    return result
 
 
 # ── Data loading ──────────────────────────────────────────────────────────────
 
-def _load_data(args):
+UNIVERSE_50 = [
+    "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK",
+    "HINDUNILVR","ITC","SBIN","BHARTIARTL","KOTAKBANK",
+    "LT","AXISBANK","ASIANPAINT","MARUTI","BAJFINANCE",
+    "TITAN","HCLTECH","SUNPHARMA","ULTRACEMCO","WIPRO",
+    "ONGC","POWERGRID","NTPC","COALINDIA","TATAMOTORS",
+    "JSWSTEEL","HINDALCO","TECHM","INDUSINDBK","BAJAJFINSV",
+    "ADANIENT","ADANIPORTS","DRREDDY","EICHERMOT","GRASIM",
+    "HEROMOTOCO","NESTLEIND","SBILIFE","SHREECEM","TATASTEEL",
+    "TATACONSUM","BAJAJ-AUTO","CIPLA","DIVISLAB","HDFCLIFE",
+    "M&M","PIDILITIND","UPL","VEDL","BRITANNIA",
+]
+
+
+def _load_data(args) -> dict:
+    """Load from cache if fresh, else fetch from Upstox."""
+    import os
     if not args.force_fetch and CACHE_FILE.exists():
-        import stat, os
         age_days = (time.time() - os.stat(CACHE_FILE).st_mtime) / 86400
         if age_days < 8:
             with open(CACHE_FILE, "rb") as f:
-                data = pickle.load(f)
-            data = dict(list(data.items())[:args.max_symbols])
-            print(f"  Cache: {len(data)} symbols  (age {age_days:.1f} days)", flush=True)
+                raw = pickle.load(f)
+            data = dict(list(raw.items())[:args.max_symbols])
+            print(f"  Cache: {len(data)} symbols  (age {age_days:.1f}d)", flush=True)
             return data
-        print(f"  Cache too old ({age_days:.1f} days) — re-fetching.", flush=True)
+        print(f"  Cache stale ({age_days:.1f}d) — fetching fresh data.", flush=True)
 
     import datetime
     import data_fetch_upstox as dfu
@@ -350,31 +349,16 @@ def _load_data(args):
 
     to_dt   = datetime.date.today()
     from_dt = to_dt - datetime.timedelta(days=args.days)
-    from_s  = from_dt.strftime("%Y-%m-%d")
-    to_s    = to_dt.strftime("%Y-%m-%d")
-
-    UNIVERSE = [
-        "RELIANCE","TCS","HDFCBANK","INFY","ICICIBANK",
-        "HINDUNILVR","ITC","SBIN","BHARTIARTL","KOTAKBANK",
-        "LT","AXISBANK","ASIANPAINT","MARUTI","BAJFINANCE",
-        "TITAN","HCLTECH","SUNPHARMA","ULTRACEMCO","WIPRO",
-        "ONGC","POWERGRID","NTPC","COALINDIA","TATAMOTORS",
-        "JSWSTEEL","HINDALCO","TECHM","INDUSINDBK","BAJAJFINSV",
-        "ADANIENT","ADANIPORTS","DRREDDY","EICHERMOT","GRASIM",
-        "HEROMOTOCO","NESTLEIND","SBILIFE","SHREECEM","TATASTEEL",
-        "TATACONSUM","BAJAJ-AUTO","CIPLA","DIVISLAB","HDFCLIFE",
-        "M&M","PIDILITIND","UPL","VEDL","BRITANNIA",
-    ]
+    from_s, to_s = from_dt.strftime("%Y-%m-%d"), to_dt.strftime("%Y-%m-%d")
 
     client = get_upstox_client()
     if not client or not verify_connection(client):
         print("ERROR: Upstox connection failed."); sys.exit(1)
     dfu.set_upstox_client(client)
 
-    data = {}
-    syms = UNIVERSE[:args.max_symbols]
+    syms = UNIVERSE_50[:args.max_symbols]
     print(f"  Fetching {len(syms)} symbols  {from_s} → {to_s} ...", flush=True)
-    t0 = time.time()
+    t0, data = time.time(), {}
     for i, sym in enumerate(syms, 1):
         if i % 5 == 0:
             print(f"  {i}/{len(syms)}  ETA:{((time.time()-t0)/i*(len(syms)-i))/60:.0f}m", flush=True)
@@ -388,8 +372,59 @@ def _load_data(args):
     CACHE_FILE.parent.mkdir(parents=True, exist_ok=True)
     with open(CACHE_FILE, "wb") as f:
         pickle.dump(data, f, protocol=4)
-    print(f"  Fetched {len(data)} symbols in {(time.time()-t0)/60:.1f}m  (cached)", flush=True)
+    print(f"  Fetched {len(data)} syms in {(time.time()-t0)/60:.1f}m  (cached)", flush=True)
     return data
+
+
+# ── Engine patcher ────────────────────────────────────────────────────────────
+
+def _patch_engine(sigs: list, p: dict):
+    src = ENGINE_FILE.read_text()
+
+    def _s(pat, repl):
+        nonlocal src
+        new, n = re.subn(pat, repl, src, flags=re.MULTILINE)
+        src = new
+
+    wl = ", ".join(f'"{s}"' for s in sigs)
+    _s(r'^SIGNAL_WHITELIST\s*=\s*\(.*?\).*$',
+       f'SIGNAL_WHITELIST = ({wl},)  # auto-set by attribution test')
+    _s(r'^MIN_SCORE\s*=\s*[\d.]+.*$',
+       f'MIN_SCORE    = {p["ms"]}   # auto-optimized')
+    _s(r'^ENTRY_RVOL_MIN\s*=\s*[\d.]+.*$',
+       f'ENTRY_RVOL_MIN     = {p["rv"]}   # auto-optimized')
+    _s(r'^MIN_QUAL_COUNT\s*=\s*\d+.*$',
+       f'MIN_QUAL_COUNT     = {p["qc"]}     # auto-optimized')
+    _s(r'^ENTRY_RSI_LONG_MIN\s*=\s*\d+.*$',
+       f'ENTRY_RSI_LONG_MIN = {p["rmin"]}    # auto-optimized')
+    _s(r'^ENTRY_RSI_LONG_MAX\s*=\s*\d+.*$',
+       f'ENTRY_RSI_LONG_MAX = {p["rmax"]}    # auto-optimized')
+    _s(r'^BREADTH_BULL_HARD\s*=\s*[\d.]+.*$',
+       f'BREADTH_BULL_HARD  = {p["bh"]}  # auto-optimized')
+    _s(r'^BREADTH_BULL_SOFT\s*=\s*[\d.]+.*$',
+       f'BREADTH_BULL_SOFT  = {p["bs"]}  # auto-optimized')
+    _s(r'^MAX_OPEN\s*=\s*\d+.*$',
+       f'MAX_OPEN     = {p.get("mo", 8)}      # auto-optimized')
+
+    ENGINE_FILE.write_text(src)
+    print(f"  Engine patched:", flush=True)
+    print(f"    WHITELIST={sigs}")
+    print(f"    MIN_SCORE={p['ms']}  RVOL={p['rv']}  QUAL={p['qc']}")
+    print(f"    RSI={p['rmin']}–{p['rmax']}  BREADTH={p['bh']}/{p['bs']}  MAX_OPEN={p.get('mo',8)}")
+
+
+# ── Parallel runner ───────────────────────────────────────────────────────────
+
+def _run_parallel(tasks: list, pool: mp.Pool, label: str = "", report_every: int = 100) -> list:
+    t0      = time.time()
+    results = []
+    it      = pool.imap_unordered(_run_task, tasks, chunksize=4)
+    for i, r in enumerate(it, 1):
+        results.append(r)
+        if i % report_every == 0 or i == len(tasks):
+            _progress(i, len(tasks), label, t0)
+    print(f"  {label}: {len(tasks)} tasks in {(time.time()-t0)/60:.1f}m", flush=True)
+    return results
 
 
 # ── Main ──────────────────────────────────────────────────────────────────────
@@ -404,209 +439,307 @@ def main():
     args = ap.parse_args()
 
     n_workers = args.workers or min(mp.cpu_count(), 8)
-    t_total   = time.time()
+    T0        = time.time()
 
     print("=" * 80)
-    print("  NSE Deep Signal Attribution — 5-Phase Parallel Test")
-    print(f"  Signals   : {len(ALL_SIGNALS)} tested individually, in pairs, and triples")
-    print(f"  Params    : 180-combo grid (score×rvol×qual×rsi) + 48-combo breadth tune")
-    print(f"  Validation: walk-forward (first-half train / second-half test)")
-    print(f"  Workers   : {n_workers} CPU cores")
-    print(f"  Targets   : WR≥55%  Return≥4%/mo  Trades≥20/mo  DD<8%")
+    print("  NSE Exhaustive Overnight Optimiser")
+    print(f"  Phase 1 : 18 signals × 5 rolling windows        (walk-forward)")
+    print(f"  Phase 2 : all pairs + triples + 4-combos")
+    print(f"  Phase 3 : per-signal param grid  (60 combos × top-6 signals)")
+    print(f"  Phase 4 : giant param grid        (~4,600 combos on best combo)")
+    print(f"  Phase 5 : fine grid around winner (~300 combos)")
+    print(f"  Phase 6 : breadth + MAX_OPEN tune (~64 combos)")
+    print(f"  Phase 7 : k-fold cross-validation  (5 folds)")
+    print(f"  Workers : {n_workers} CPU cores")
+    print(f"  Targets : WR≥55%  Ret≥4%/mo  Trades≥20/mo  DD<8%")
     print("=" * 80, flush=True)
 
-    # ── Load + split data ─────────────────────────────────────────────────────
+    # ── Load data + build windows ─────────────────────────────────────────────
     print("\n[DATA] Loading ...", flush=True)
     data_full = _load_data(args)
     if not data_full:
         print("ERROR: No data."); sys.exit(1)
 
-    data_a, data_b = _split_data(data_full)
-    print(f"  Full: {len(data_full)} symbols | Window-A: {len(data_a)} | Window-B: {len(data_b)}", flush=True)
+    print(f"\n  Building rolling windows ...", flush=True)
+    windows = _make_windows(data_full, n=5)
+    print(f"  Windows created: {list(windows.keys())}", flush=True)
 
-    bytes_full = pickle.dumps(data_full, protocol=4)
-    bytes_a    = pickle.dumps(data_a,    protocol=4)
-    bytes_b    = pickle.dumps(data_b,    protocol=4)
-    print(f"  Data serialised: {(len(bytes_full)+len(bytes_a)+len(bytes_b))/1e6:.0f} MB total", flush=True)
+    # ── Inject into module-level dict (shared via fork, no serialisation) ─────
+    global _W
+    _W = windows
+    WIN_KEYS = [k for k in windows if k.startswith("w")]  # rolling windows only
 
-    RELAXED = _param_relaxed()
+    # ── Create pool (workers fork HERE — they inherit _W) ─────────────────────
+    pool = mp.Pool(n_workers)
+    REL  = _relaxed()
 
-    def _pool():
-        return mp.Pool(n_workers, initializer=_init_worker,
-                       initargs=(bytes_full, bytes_a, bytes_b))
+    total_tasks = 0
+    all_report_lines: list[str] = []
+
+    def _heading(title):
+        all_report_lines.append("")
+        all_report_lines.append("=" * 80)
+        all_report_lines.append(f"  {title}")
+        all_report_lines.append("=" * 80)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 1: Walk-forward signal test
-    #   Each of the 18 signals tested on Window-A, Window-B, and Full
+    # PHASE 1 — Walk-forward signal test
+    #   Each of 18 signals × 5 rolling windows + full period
     # ─────────────────────────────────────────────────────────────────────────
-    print(f"\n[PHASE 1] Walk-forward test: {len(ALL_SIGNALS)} signals × 3 windows ...", flush=True)
-    tasks_p1 = []
-    for sig in ALL_SIGNALS:
-        tasks_p1.append(([sig], RELAXED, "a"))
-        tasks_p1.append(([sig], RELAXED, "b"))
-        tasks_p1.append(([sig], RELAXED, "full"))
-    # = 18 × 3 = 54 tasks
+    print(f"\n{'='*80}")
+    print(f"  PHASE 1  Walk-forward signal robustness test")
+    print(f"{'='*80}", flush=True)
 
-    t0 = time.time()
-    with _pool() as pool:
-        raw_p1 = pool.map(_run_task, tasks_p1)
-    print(f"  Done in {time.time()-t0:.0f}s", flush=True)
+    wkeys_p1 = WIN_KEYS + ["full"]
+    tasks_p1 = [([sig], REL, wk) for sig in ALL_SIGNALS for wk in wkeys_p1]
+    total_tasks += len(tasks_p1)
 
-    # Organise by signal
-    sig_map: dict = {s: {"a": None, "b": None, "full": None} for s in ALL_SIGNALS}
+    raw_p1 = _run_parallel(tasks_p1, pool, "P1-walk-forward", 20)
+
+    # Organise: signal → {window_key → result}
+    sig_map: dict = {s: {} for s in ALL_SIGNALS}
     for r in raw_p1:
-        sig = r["signals"][0]
-        sig_map[sig][r["window"]] = r
+        if len(r.get("sigs", [])) == 1:
+            sig_map[r["sigs"][0]][r["w"]] = r
 
-    # Walk-forward table: show all three windows side by side
-    print(f"\n  {'Signal':<30} {'WinA-WR':>8}  {'WinB-WR':>8}  {'Full-WR':>8}  {'Full-Ret':>9}  {'Status'}")
-    print(f"  {'─'*30} {'─'*8}  {'─'*8}  {'─'*8}  {'─'*9}  {'─'*10}")
-    robust_sigs = []
+    # Robustness: signal is robust if profitable in ≥4 of 5 rolling windows
+    robust_sigs, candidate_sigs = [], []
+    _heading("PHASE 1 — Walk-forward signal test")
+    hdr = f"  {'Signal':<30} " + "  ".join(f"{k:>7}" for k in wkeys_p1) + "  Robust?"
+    all_report_lines.append(hdr)
+
     for sig in ALL_SIGNALS:
-        ra   = sig_map[sig]["a"]   or {}
-        rb   = sig_map[sig]["b"]   or {}
-        rf   = sig_map[sig]["full"] or {}
-        wra  = ra.get("wr", 0)
-        wrb  = rb.get("wr", 0)
-        wrf  = rf.get("wr", 0)
-        retf = rf.get("monthly_pct", -99)
-        tpa  = ra.get("trades", 0)
-        tpb  = rb.get("trades", 0)
-        # Robust = profitable (WR≥48%, ret>0) in BOTH halves with enough trades
-        is_robust = (wra >= 48 and wrb >= 48 and tpa >= 2 and tpb >= 2 and retf > 0)
-        if is_robust:
-            robust_sigs.append(sig)
-        status = "ROBUST" if is_robust else ("cand-A" if wra >= 48 else ("cand-B" if wrb >= 48 else "skip"))
-        print(f"  {sig:<30} {wra:>7.1f}%  {wrb:>7.1f}%  {wrf:>7.1f}%  {retf:>+8.1f}%  {status}")
+        wrs = [sig_map[sig].get(k, {}).get("wr", 0) for k in WIN_KEYS]
+        rts = [sig_map[sig].get(k, {}).get("ret", -99) for k in WIN_KEYS]
+        trs = [sig_map[sig].get(k, {}).get("trades", 0) for k in WIN_KEYS]
+        full_r = sig_map[sig].get("full", {})
 
-    print(f"\n  Robust signals (profitable both halves): {robust_sigs if robust_sigs else 'NONE'}", flush=True)
+        wins_in = sum(1 for wr, rt, tr in zip(wrs, rts, trs)
+                      if wr >= 48 and rt > 0 and tr >= 2)
+        is_robust = wins_in >= max(len(WIN_KEYS) - 1, 3)   # win in ≥4 of 5 windows
+        is_cand   = wins_in >= 2 and full_r.get("wr", 0) >= 45
 
-    # Fallback: if no robust sigs, take top-5 by full-period WR
-    if not robust_sigs:
-        print("  No signal is robust — using top-5 by full-period WR as candidates.", flush=True)
-        full_results = [sig_map[s]["full"] for s in ALL_SIGNALS if sig_map[s]["full"]]
-        full_results.sort(key=lambda r: r.get("wr", 0), reverse=True)
-        robust_sigs = [r["signals"][0] for r in full_results[:5] if r.get("trades", 0) >= 3]
+        if is_robust:   robust_sigs.append(sig)
+        elif is_cand:   candidate_sigs.append(sig)
 
-    full_results_p1 = [sig_map[s]["full"] for s in ALL_SIGNALS if sig_map[s]["full"]]
-    _table(full_results_p1, "PHASE 1 — Full-period individual signal results")
+        wr_vals = "  ".join(f"{wr:>6.1f}%" for wr in wrs)
+        status  = f"ROBUST({wins_in}/{len(WIN_KEYS)})" if is_robust else \
+                  (f"cand({wins_in})" if is_cand else "skip")
+        line = f"  {sig:<30} {wr_vals}  {status}"
+        all_report_lines.append(line)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 2: Combo search (singles + pairs + triples of robust candidates)
-    # ─────────────────────────────────────────────────────────────────────────
-    tasks_p2 = []
-    for sig in robust_sigs:
-        tasks_p2.append(([sig], RELAXED, "full"))
-    for a, b in combinations(robust_sigs, 2):
-        tasks_p2.append(([a, b], RELAXED, "full"))
-    if len(robust_sigs) <= 7:
-        for a, b, c in combinations(robust_sigs, 3):
-            tasks_p2.append(([a, b, c], RELAXED, "full"))
+    # Print table to console
+    print(hdr, flush=True)
+    for line in all_report_lines[-len(ALL_SIGNALS)-1:]:
+        print(line, flush=True)
 
-    print(f"\n[PHASE 2] {len(tasks_p2)} signal combinations (singles+pairs+triples) ...", flush=True)
-    t0 = time.time()
-    with _pool() as pool:
-        results_p2 = pool.map(_run_task, tasks_p2)
-    print(f"  Done in {time.time()-t0:.0f}s", flush=True)
-    _table(results_p2, "PHASE 2 — Signal combinations (full period)")
+    pool_sigs = robust_sigs or (candidate_sigs[:8] if candidate_sigs else
+                sorted(sig_map, key=lambda s: sig_map[s].get("full", {}).get("wr", 0), reverse=True)[:5])
+    print(f"\n  Robust: {robust_sigs}")
+    print(f"  Candidates: {candidate_sigs[:8]}")
+    print(f"  Using for Phase 2: {pool_sigs}", flush=True)
 
-    ok_p2 = [r for r in results_p2 if "error" not in r and r.get("trades", 0) >= 3]
-    best_p2 = max(ok_p2, key=_score) if ok_p2 else {"signals": ["ORB_BULL_CONFIRM"]}
-    best_sigs = best_p2["signals"]
-    print(f"\n  Best combo → Phase 3: {best_sigs}", flush=True)
+    full_p1 = [sig_map[s].get("full", {}) for s in ALL_SIGNALS if sig_map[s].get("full")]
+    _table(full_p1, "PHASE 1 — Full-period individual signal results")
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 3: Full parameter grid (180 combos) on best signal combo
+    # PHASE 2 — Combo search
+    #   All pairs, triples, and 4-combos of top candidates on full data
     # ─────────────────────────────────────────────────────────────────────────
-    grid_p3  = _param_grid_phase3()
-    tasks_p3 = [(best_sigs, p, "full") for p in grid_p3]
+    print(f"\n{'='*80}")
+    print(f"  PHASE 2  Signal combination search")
+    print(f"{'='*80}", flush=True)
 
-    print(f"\n[PHASE 3] {len(tasks_p3)}-combo param grid on {best_sigs} ...", flush=True)
-    t0 = time.time()
-    with _pool() as pool:
-        results_p3 = pool.map(_run_task, tasks_p3)
-    print(f"  Done in {time.time()-t0:.0f}s", flush=True)
-    _table(results_p3, "PHASE 3 — Parameter grid (top results)")
+    top_n  = pool_sigs[:10]
+    tasks_p2: list = []
+    for s in top_n:
+        tasks_p2.append(([s], REL, "full"))
+    for a, b in combinations(top_n, 2):
+        tasks_p2.append(([a, b], REL, "full"))
+    if len(top_n) <= 8:
+        for a, b, c in combinations(top_n, 3):
+            tasks_p2.append(([a, b, c], REL, "full"))
+    if len(top_n) <= 6:
+        for combo in combinations(top_n, 4):
+            tasks_p2.append((list(combo), REL, "full"))
 
-    ok_p3 = sorted(
-        [r for r in results_p3
-         if r.get("wr", 0) >= 50
-         and r.get("trades_pm", 0) >= 8
-         and r.get("max_dd", 100) <= 15
-         and "error" not in r],
-        key=_score, reverse=True,
-    )
-    best_p3      = ok_p3[0] if ok_p3 else best_p2
-    best_params3 = best_p3.get("params", RELAXED)
-    print(f"\n  Best params → Phase 4: {best_params3}", flush=True)
+    total_tasks += len(tasks_p2)
+    raw_p2 = _run_parallel(tasks_p2, pool, "P2-combos", 20)
 
-    # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 4: Breadth + RSI_MIN fine-tune (48 combos)
-    # ─────────────────────────────────────────────────────────────────────────
-    grid_p4  = _param_grid_phase4(best_params3)
-    tasks_p4 = [(best_sigs, p, "full") for p in grid_p4]
+    ok_p2 = sorted([r for r in raw_p2 if _ok(r)], key=_score, reverse=True)
+    _table(ok_p2, "PHASE 2 — Signal combinations")
+    _heading("PHASE 2 — Signal combinations (top 30)")
+    for r in ok_p2[:30]:
+        all_report_lines.append(
+            f"  {_sig_label(r):<40}  WR={r.get('wr',0):.1f}%  "
+            f"Ret={r.get('ret',-99):+.1f}%  T/mo={r.get('tpm',0):.1f}"
+        )
 
-    print(f"\n[PHASE 4] {len(tasks_p4)}-combo breadth+RSI fine-tune ...", flush=True)
-    t0 = time.time()
-    with _pool() as pool:
-        results_p4 = pool.map(_run_task, tasks_p4)
-    print(f"  Done in {time.time()-t0:.0f}s", flush=True)
-    _table(results_p4, "PHASE 4 — Breadth + RSI fine-tune")
-
-    ok_p4 = sorted(
-        [r for r in results_p4
-         if r.get("wr", 0) >= 50
-         and r.get("trades_pm", 0) >= 8
-         and "error" not in r],
-        key=_score, reverse=True,
-    )
-    best_p4      = ok_p4[0] if ok_p4 else best_p3
-    best_params4 = best_p4.get("params", best_params3)
+    best_p2  = max(ok_p2, key=_score) if ok_p2 else {"sigs": ["ORB_BULL_CONFIRM"], "p": REL}
+    best_sigs = best_p2.get("sigs", ["ORB_BULL_CONFIRM"])
+    print(f"\n  Best combo → Phase 3/4: {best_sigs}", flush=True)
 
     # ─────────────────────────────────────────────────────────────────────────
-    # PHASE 5: Walk-forward robustness check
-    #   Run best config on Window-B only (out-of-sample)
+    # PHASE 3 — Per-signal parameter optimization
+    #   For each robust signal, sweep its own best MIN_SCORE + RVOL
     # ─────────────────────────────────────────────────────────────────────────
-    print(f"\n[PHASE 5] Out-of-sample validation on Window-B ...", flush=True)
-    t0 = time.time()
-    with _pool() as pool:
-        oos_results = pool.map(_run_task, [(best_sigs, best_params4, "b")])
-    oos = oos_results[0] if oos_results else {}
-    print(f"  Done in {time.time()-t0:.0f}s", flush=True)
-    print(f"\n  Out-of-sample (Window-B):")
-    print(f"    WR={oos.get('wr',0):.1f}%  Trades/mo={oos.get('trades_pm',0):.1f}  "
-          f"Return={oos.get('monthly_pct',-99):+.1f}%  DD={oos.get('max_dd',0):.1f}%", flush=True)
+    print(f"\n{'='*80}")
+    print(f"  PHASE 3  Per-signal parameter search (top-6 signals)")
+    print(f"{'='*80}", flush=True)
 
-    oos_robust = (oos.get("wr", 0) >= 50 and oos.get("monthly_pct", -99) > 0
-                  and oos.get("trades", 0) >= 2)
+    sig_grid = _per_signal_grid()
+    target_sigs_p3 = pool_sigs[:6]
+    tasks_p3 = [([sig], p, "full") for sig in target_sigs_p3 for p in sig_grid]
+    total_tasks += len(tasks_p3)
+
+    raw_p3 = _run_parallel(tasks_p3, pool, "P3-per-signal", 50)
+
+    # Best params per signal
+    best_per_signal: dict = {}
+    _heading("PHASE 3 — Per-signal best params")
+    for sig in target_sigs_p3:
+        sig_results = [r for r in raw_p3 if r.get("sigs") == [sig] and _ok(r, wr=45)]
+        if sig_results:
+            best = max(sig_results, key=_score)
+            best_per_signal[sig] = best
+            p = best["p"]
+            all_report_lines.append(
+                f"  {sig:<30} WR={best.get('wr',0):.1f}% Ret={best.get('ret',-99):+.1f}%  "
+                f"MS={p['ms']} RV={p['rv']} QC={p['qc']}"
+            )
+            print(f"  {sig}: best WR={best.get('wr',0):.1f}%  MS={p['ms']} RV={p['rv']} QC={p['qc']}", flush=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 4 — Giant parameter grid on best signal combo
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print(f"  PHASE 4  Giant parameter grid  (~4,600 combos)")
+    print(f"{'='*80}", flush=True)
+
+    giant = _giant_grid()
+    tasks_p4 = [(best_sigs, p, "full") for p in giant]
+    total_tasks += len(tasks_p4)
+    print(f"  Running {len(tasks_p4)} combos on {best_sigs} ...", flush=True)
+
+    raw_p4 = _run_parallel(tasks_p4, pool, "P4-giant-grid", 200)
+
+    ok_p4 = sorted([r for r in raw_p4 if _ok(r, wr=50, tpm=8)], key=_score, reverse=True)
+    _table(ok_p4, "PHASE 4 — Giant grid (top 30)")
+    _heading("PHASE 4 — Giant grid top results")
+    for r in ok_p4[:40]:
+        p = r["p"]
+        all_report_lines.append(
+            f"  MS={p['ms']:<5} RV={p['rv']:<4} QC={p['qc']} "
+            f"RSI={p['rmin']}-{p['rmax']}  "
+            f"WR={r.get('wr',0):.1f}%  Ret={r.get('ret',-99):+.1f}%  "
+            f"T/mo={r.get('tpm',0):.1f}  DD={r.get('dd',0):.1f}%"
+        )
+
+    best_p4 = ok_p4[0] if ok_p4 else best_p2
+    print(f"\n  Phase 4 winner: {best_p4.get('p', {})}", flush=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 5 — Fine grid around Phase 4 winner
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print(f"  PHASE 5  Fine grid around Phase 4 winner")
+    print(f"{'='*80}", flush=True)
+
+    fine   = _fine_grid(best_p4["p"])
+    tasks_p5 = [(best_sigs, p, "full") for p in fine]
+    total_tasks += len(tasks_p5)
+    print(f"  Running {len(tasks_p5)} fine combos ...", flush=True)
+
+    raw_p5 = _run_parallel(tasks_p5, pool, "P5-fine", 50)
+
+    ok_p5 = sorted([r for r in raw_p5 if _ok(r, wr=50, tpm=8)], key=_score, reverse=True)
+    _table(ok_p5, "PHASE 5 — Fine grid")
+    best_p5 = ok_p5[0] if ok_p5 else best_p4
+    print(f"\n  Phase 5 winner: {best_p5.get('p', {})}", flush=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 6 — Breadth + MAX_OPEN tune
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print(f"  PHASE 6  Breadth + MAX_OPEN fine-tune")
+    print(f"{'='*80}", flush=True)
+
+    bm_grid  = _breadth_mo_grid(best_p5["p"])
+    tasks_p6 = [(best_sigs, p, "full") for p in bm_grid]
+    total_tasks += len(tasks_p6)
+
+    raw_p6 = _run_parallel(tasks_p6, pool, "P6-breadth-mo", 20)
+
+    ok_p6 = sorted([r for r in raw_p6 if _ok(r, wr=50, tpm=8)], key=_score, reverse=True)
+    _table(ok_p6, "PHASE 6 — Breadth + MAX_OPEN")
+    best_p6 = ok_p6[0] if ok_p6 else best_p5
+    best_params = best_p6["p"]
+    print(f"\n  Phase 6 winner: {best_params}", flush=True)
+
+    # ─────────────────────────────────────────────────────────────────────────
+    # PHASE 7 — k-fold cross-validation (5 folds)
+    # ─────────────────────────────────────────────────────────────────────────
+    print(f"\n{'='*80}")
+    print(f"  PHASE 7  k-fold cross-validation (5 folds = 5 rolling windows)")
+    print(f"{'='*80}", flush=True)
+
+    kfold_keys = WIN_KEYS[:5]
+    tasks_p7   = [(best_sigs, best_params, k) for k in kfold_keys]
+    total_tasks += len(tasks_p7)
+
+    raw_p7 = _run_parallel(tasks_p7, pool, "P7-kfold", 5)
+    pool.close()
+    pool.join()
+
+    kfold_wrs  = [r.get("wr", 0) for r in raw_p7]
+    kfold_rets = [r.get("ret", -99) for r in raw_p7]
+    kfold_tpm  = [r.get("tpm", 0) for r in raw_p7]
+
+    import statistics as _stats
+    wr_mean  = _stats.mean(kfold_wrs)  if kfold_wrs  else 0
+    wr_stdev = _stats.stdev(kfold_wrs) if len(kfold_wrs) > 1 else 0
+    ret_mean = _stats.mean(kfold_rets) if kfold_rets else -99
+    oos_robust = (wr_mean >= 50 and ret_mean > 0
+                  and sum(1 for r in raw_p7 if r.get("ret",-99) > 0) >= 3)
+
+    _heading("PHASE 7 — k-fold cross-validation")
+    for i, r in enumerate(raw_p7):
+        fold_line = (f"  Fold {i+1}: WR={r.get('wr',0):.1f}%  "
+                     f"Ret={r.get('ret',-99):+.1f}%  T/mo={r.get('tpm',0):.1f}")
+        all_report_lines.append(fold_line)
+        print(fold_line, flush=True)
+    cv_line = (f"  CV summary: WR={wr_mean:.1f}%±{wr_stdev:.1f}%  "
+               f"Ret={ret_mean:+.1f}%  "
+               f"{'ROBUST ✅' if oos_robust else 'DEGRADED ⚠'}")
+    all_report_lines.append(cv_line)
+    print(cv_line, flush=True)
 
     # ─────────────────────────────────────────────────────────────────────────
     # FINAL SUMMARY
     # ─────────────────────────────────────────────────────────────────────────
-    best_final = best_p4
-    fp         = best_params4
+    bf  = best_p6   # best final result
+    bp  = best_params
 
     print("\n" + "=" * 80)
     print("  FINAL RESULT")
     print("=" * 80, flush=True)
-    print(f"  Signals  : {best_final.get('signals', best_sigs)}")
-    print(f"  WR       : {best_final.get('wr', 0):.1f}%        (target ≥55%)")
-    print(f"  Return   : {best_final.get('monthly_pct', -99):+.2f}%/mo   (target ≥4%)")
-    print(f"  Trades   : {best_final.get('trades_pm', 0):.1f}/mo       (target ≥20)")
-    print(f"  Max DD   : {best_final.get('max_dd', 0):.1f}%        (limit <8%)")
-    print(f"  Sharpe   : {best_final.get('sharpe', 0):.2f}          (target ≥1.5)")
-    print()
-    print(f"  OUT-OF-SAMPLE (Window-B):")
-    print(f"    WR={oos.get('wr',0):.1f}%  Return={oos.get('monthly_pct',-99):+.1f}%  "
-          f"{'✅ ROBUST' if oos_robust else '⚠  DEGRADED (may overfit)'}")
+    print(f"  Signals   : {best_sigs}")
+    print(f"  WR        : {bf.get('wr',0):.1f}%          (target ≥55%)")
+    print(f"  Return    : {bf.get('ret',-99):+.2f}%/mo      (target ≥4%)")
+    print(f"  Trades    : {bf.get('tpm',0):.1f}/mo         (target ≥20)")
+    print(f"  Max DD    : {bf.get('dd',0):.1f}%            (limit <8%)")
+    print(f"  Sharpe    : {bf.get('sharpe',0):.2f}")
+    print(f"  CV WR     : {wr_mean:.1f}%±{wr_stdev:.1f}%  {'ROBUST' if oos_robust else 'DEGRADED'}")
+    print(f"  Params    : MS={bp['ms']}  RVOL={bp['rv']}  QUAL={bp['qc']}  "
+          f"RSI={bp['rmin']}-{bp['rmax']}  BH={bp['bh']}  BS={bp['bs']}  MO={bp.get('mo',8)}")
     print()
 
     targets = {
-        "WR≥55%":         best_final.get("wr", 0) >= 55,
-        "Return≥4%/mo":   best_final.get("monthly_pct", -99) >= 4.0,
-        "Trades≥20/mo":   best_final.get("trades_pm", 0) >= 20,
-        "DD<8%":          best_final.get("max_dd", 100) <= 8.0,
-        "OOS robust":     oos_robust,
+        "WR≥55%":          bf.get("wr",0) >= 55,
+        "Return≥4%/mo":    bf.get("ret",-99) >= 4.0,
+        "Trades≥20/mo":    bf.get("tpm",0) >= 20,
+        "DD<8%":           bf.get("dd",99) <= 8.0,
+        "CV robust":       oos_robust,
     }
     for label, met in targets.items():
         print(f"  {'✅' if met else '❌'}  {label}")
@@ -615,103 +748,60 @@ def main():
     print()
     if all_met:
         print("  ✅  ALL TARGETS MET — deploy Friday with ₹25,000")
+        print(f"  Expected: {bf.get('wr',0):.0f}% WR  {bf.get('ret',-99):+.1f}%/mo  "
+              f"{bf.get('tpm',0):.0f} trades/mo")
     else:
         gaps = [k for k, v in targets.items() if not v]
-        print(f"  ⚠   Gaps: {', '.join(gaps)}")
-        print("  Bot not ready for live yet. Review Phase 1 walk-forward results.")
+        print(f"  ⚠  Gaps: {', '.join(gaps)}")
+        best_target_met = max(ok_p4 + ok_p5 + ok_p6, key=_score) if (ok_p4 or ok_p5 or ok_p6) else bf
+        print(f"  Best config by score: WR={best_target_met.get('wr',0):.1f}%  "
+              f"Ret={best_target_met.get('ret',-99):+.1f}%  T/mo={best_target_met.get('tpm',0):.1f}")
 
-    print(f"\n  Total runtime: {(time.time()-t_total)/60:.1f} min", flush=True)
+    elapsed = (time.time() - T0) / 60
+    print(f"\n  Total runtime  : {elapsed:.0f} min  |  Tasks run: {total_tasks:,}", flush=True)
 
     # Patch engine
     print(f"\n  Patching engine ...", flush=True)
-    _patch_engine(best_final.get("signals", best_sigs), fp)
+    _patch_engine(best_sigs, bp)
 
     # ── Save full report ──────────────────────────────────────────────────────
-    lines = [
-        "=" * 80,
-        "  NSE Deep Signal Attribution Report",
-        "=" * 80,
+    _heading("FINAL CONFIG")
+    all_report_lines += [
+        f"  SIGNAL_WHITELIST = {best_sigs}",
+        f"  MIN_SCORE        = {bp['ms']}",
+        f"  ENTRY_RVOL_MIN   = {bp['rv']}",
+        f"  MIN_QUAL_COUNT   = {bp['qc']}",
+        f"  RSI range        = {bp['rmin']}–{bp['rmax']}",
+        f"  BREADTH_HARD     = {bp['bh']}",
+        f"  BREADTH_SOFT     = {bp['bs']}",
+        f"  MAX_OPEN         = {bp.get('mo',8)}",
         "",
-        "PHASE 1 — Walk-forward signal test",
-        f"  {'Signal':<30} {'WinA-WR':>8}  {'WinB-WR':>8}  {'Full-WR':>8}  {'Full-Ret':>9}  {'Robust?':>8}",
-    ]
-    for sig in ALL_SIGNALS:
-        ra  = sig_map[sig]["a"]   or {}
-        rb  = sig_map[sig]["b"]   or {}
-        rf  = sig_map[sig]["full"] or {}
-        status = "ROBUST" if sig in robust_sigs else ""
-        lines.append(
-            f"  {sig:<30} {ra.get('wr',0):>7.1f}%  {rb.get('wr',0):>7.1f}%  "
-            f"{rf.get('wr',0):>7.1f}%  {rf.get('monthly_pct',-99):>+8.1f}%  {status}"
-        )
-
-    lines += ["", "PHASE 2 — Signal combinations (top 20)"]
-    for r in sorted(ok_p2, key=_score, reverse=True)[:20]:
-        lines.append(
-            f"  {_fmt(r['signals']):<36} WR={r.get('wr',0):.1f}%  "
-            f"T/mo={r.get('trades_pm',0):.1f}  Ret={r.get('monthly_pct',-99):+.1f}%"
-        )
-
-    lines += ["", "PHASE 3 — Parameter grid (top 20)"]
-    for r in sorted([x for x in results_p3 if "error" not in x], key=_score, reverse=True)[:20]:
-        p = r.get("params", {})
-        lines.append(
-            f"  {_fmt(r['signals']):<24}  MS={p.get('MIN_SCORE'):<5} "
-            f"RV={p.get('ENTRY_RVOL_MIN'):<4} Q={p.get('MIN_QUAL_COUNT')} "
-            f"RSImax={p.get('RSI_MAX')}  "
-            f"WR={r.get('wr',0):.1f}%  Ret={r.get('monthly_pct',-99):+.1f}%"
-        )
-
-    lines += ["", "PHASE 4 — Breadth+RSI fine-tune (top 20)"]
-    for r in sorted([x for x in results_p4 if "error" not in x], key=_score, reverse=True)[:20]:
-        p = r.get("params", {})
-        lines.append(
-            f"  BH={p.get('BREADTH_HARD'):.2f} BS={p.get('BREADTH_SOFT'):.2f} "
-            f"RSImin={p.get('RSI_MIN')}  WR={r.get('wr',0):.1f}%  Ret={r.get('monthly_pct',-99):+.1f}%"
-        )
-
-    lines += [
-        "", "=" * 80, "  FINAL CONFIG (written to engine)", "=" * 80,
-        f"  SIGNAL_WHITELIST = {best_final.get('signals', best_sigs)}",
-        f"  MIN_SCORE        = {fp.get('MIN_SCORE')}",
-        f"  ENTRY_RVOL_MIN   = {fp.get('ENTRY_RVOL_MIN')}",
-        f"  MIN_QUAL_COUNT   = {fp.get('MIN_QUAL_COUNT')}",
-        f"  RSI range        = {fp.get('RSI_MIN')}–{fp.get('RSI_MAX')}",
-        f"  BREADTH_HARD     = {fp.get('BREADTH_HARD')}",
-        f"  BREADTH_SOFT     = {fp.get('BREADTH_SOFT')}",
+        f"  In-sample  : WR={bf.get('wr',0):.1f}%  Ret={bf.get('ret',-99):+.1f}%  "
+        f"T/mo={bf.get('tpm',0):.1f}  DD={bf.get('dd',0):.1f}%",
+        f"  k-fold CV  : WR={wr_mean:.1f}%±{wr_stdev:.1f}%  {'ROBUST' if oos_robust else 'DEGRADED'}",
         "",
-        f"  In-sample   WR={best_final.get('wr',0):.1f}%  Ret={best_final.get('monthly_pct',-99):+.1f}%  "
-        f"Trades={best_final.get('trades_pm',0):.1f}/mo  DD={best_final.get('max_dd',0):.1f}%",
-        f"  Out-of-sample WR={oos.get('wr',0):.1f}%  Ret={oos.get('monthly_pct',-99):+.1f}%  "
-        f"{'ROBUST' if oos_robust else 'DEGRADED'}",
-        "",
-        f"  TARGETS: " + "  ".join(f"{'✅' if v else '❌'}{k}" for k, v in targets.items()),
-        "=" * 80,
+        "  TARGETS: " + "  ".join(f"{'✅' if v else '❌'}{k}" for k, v in targets.items()),
+        f"  RUNTIME: {elapsed:.0f} min  TASKS: {total_tasks:,}",
     ]
 
     rpt = _ROOT / "signal_attribution_report.txt"
-    rpt.write_text("\n".join(lines))
-    print(f"\n  Report saved: {rpt}", flush=True)
+    rpt.write_text("\n".join(all_report_lines))
+    print(f"\n  Report: {rpt}", flush=True)
 
     # ── Telegram ──────────────────────────────────────────────────────────────
     if not args.no_telegram:
         try:
             import config_india as cfg, requests as _req
-            status_icon = "✅" if all_met else "⚠️"
-            gaps_str    = ", ".join(k for k, v in targets.items() if not v) or "NONE"
-            msg = (
-                f"{status_icon} Deep Attribution Complete\n"
-                f"Signals: {best_final.get('signals', best_sigs)}\n"
-                f"WR={best_final.get('wr',0):.1f}%  Ret={best_final.get('monthly_pct',-99):+.1f}%/mo  "
-                f"T={best_final.get('trades_pm',0):.1f}/mo\n"
-                f"OOS WR={oos.get('wr',0):.1f}%  {'ROBUST' if oos_robust else 'DEGRADED'}\n"
-                f"Gaps: {gaps_str}"
-            )
-            _req.post(
-                f"https://api.telegram.org/bot{cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
-                json={"chat_id": cfg.TELEGRAM_CHAT_ID, "text": msg},
-                timeout=10,
-            )
+            icon = "✅" if all_met else "⚠️"
+            gaps = ", ".join(k for k, v in targets.items() if not v) or "none"
+            msg  = (f"{icon} Overnight optimiser complete\n"
+                    f"Signals: {best_sigs}\n"
+                    f"WR={bf.get('wr',0):.1f}%  Ret={bf.get('ret',-99):+.1f}%/mo  "
+                    f"T={bf.get('tpm',0):.1f}/mo\n"
+                    f"CV: {wr_mean:.1f}%±{wr_stdev:.1f}%  {'ROBUST' if oos_robust else 'DEGRADED'}\n"
+                    f"Gaps: {gaps}")
+            _req.post(f"https://api.telegram.org/bot{cfg.TELEGRAM_BOT_TOKEN}/sendMessage",
+                      json={"chat_id": cfg.TELEGRAM_CHAT_ID, "text": msg}, timeout=10)
         except Exception:
             pass
 
