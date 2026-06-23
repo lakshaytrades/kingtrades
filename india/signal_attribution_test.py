@@ -1,26 +1,25 @@
 """
 signal_attribution_test.py — Exhaustive overnight optimiser (parallel)
 
-7 phases designed to fill a full night (6-10 hrs on 2-4 core VPS) and
-produce a configuration that meets all targets.
+7 phases designed to fill a full night and produce a configuration that
+meets all targets: WR ≥ 55% | Return ≥ 4%/mo | Trades ≥ 20/mo | DD < 8%
 
-Targets  : WR ≥ 55%  |  Return ≥ 4%/mo  |  Trades ≥ 20/mo  |  DD < 8%
-
-Phase 1  : Walk-forward signal test (18 signals × 5 rolling windows)
-             Robust = profitable in ≥4/5 windows
-Phase 2  : Combo search (all pairs + triples + 4-combos of top candidates)
-Phase 3  : Per-signal parameter search (top-6 robust signals × medium grid)
+Phase 1  : Walk-forward signal test (18 signals × rolling windows)
+Phase 2  : Combo search (pairs + triples + 4-combos of top candidates)
+Phase 3  : Per-signal parameter search (top-6 signals × medium grid)
 Phase 4  : Giant parameter grid on best combo
-             MIN_SCORE[8] × RVOL[8] × QUAL[3] × RSI_MAX[5] × RSI_MIN[5] = 4,800 combos
-Phase 5  : Fine grid around Phase 4 winner (±1 step each dimension)
-Phase 6  : Breadth + MAX_OPEN tune on best from Phase 5
-Phase 7  : k-fold cross-validation (5 folds) — robustness check
+Phase 5  : Fine grid around Phase 4 winner
+Phase 6  : Breadth + MAX_OPEN tune
+Phase 7  : k-fold cross-validation (5 folds)
 
-Typical task counts : ~5,500 backtests
-Typical runtimes    : 2-core VPS ≈ 10-12 hr  |  4-core ≈ 5-6 hr  |  8-core ≈ 3 hr
+Typical runtimes:
+  --quick  : ~700 tasks — 1-core VPS ≈ 6-8 hr   (USE THIS FOR SINGLE-CORE VPS)
+  default  : ~5,500 tasks — 4-core ≈ 6 hr | 2-core ≈ 12 hr
+  8-core   : default ≈ 3 hr
 
 Usage:
-  python3 india/signal_attribution_test.py --no-telegram
+  python3 india/signal_attribution_test.py --no-telegram --quick   ← 1-core VPS
+  python3 india/signal_attribution_test.py --no-telegram            ← multi-core
   python3 india/signal_attribution_test.py --force-fetch --days 90 --max-symbols 50
 """
 
@@ -192,50 +191,66 @@ def _relaxed() -> dict:
     return dict(ms=6.0, qc=1, rv=1.0, rmin=25, rmax=85, bh=0.35, bs=0.45, mo=8)
 
 
-def _per_signal_grid() -> list[dict]:
-    """Medium grid for per-signal optimization (Phase 3).  72 combos per signal."""
+def _per_signal_grid(quick: bool = False) -> list[dict]:
+    """Per-signal param grid.  quick=60 combos, full=60 combos per signal."""
+    ms_vals = [6.0, 10.0, 14.0] if quick else [6.0, 8.0, 10.0, 12.0, 14.0, 16.0]
+    rv_vals = [1.0, 1.5, 2.0]   if quick else [1.0, 1.3, 1.5, 1.8, 2.0]
     g = []
-    for ms in [6.0, 8.0, 10.0, 12.0, 14.0, 16.0]:   # 6
-        for rv in [1.0, 1.3, 1.5, 1.8, 2.0]:          # 5 → × = 30
-            for qc in [1, 2]:                           # 2 → × = 60 — but not all qual-rich
+    for ms in ms_vals:
+        for rv in rv_vals:
+            for qc in [1, 2]:
                 g.append(dict(ms=ms, qc=qc, rv=rv, rmin=30, rmax=80,
                               bh=0.40, bs=0.55, mo=8))
-    return g   # 60 combos per signal
+    return g   # quick=18 combos | full=60 combos per signal
 
 
-def _giant_grid() -> list[dict]:
+def _giant_grid(quick: bool = False) -> list[dict]:
     """
-    Phase 4 giant grid.
-    8 × 8 × 3 × 5 × 5 = 4,800 combos.
+    Phase 4 parameter grid.
+    quick : 5×5×2×3×3 ≈ 400 valid combos  (1-core overnight)
+    full  : 8×8×3×5×5 ≈ 4,600 valid combos (multi-core overnight)
     """
+    if quick:
+        ms_vals   = [8.0, 10.0, 12.0, 14.0, 16.0]      # 5
+        rv_vals   = [1.0, 1.3, 1.5, 1.8, 2.0]           # 5
+        qc_vals   = [1, 2]                                # 2
+        rmax_vals = [72, 78, 84]                          # 3
+        rmin_vals = [28, 35, 42]                          # 3
+    else:
+        ms_vals   = [6.0, 8.0, 10.0, 12.0, 14.0, 16.0, 18.0, 20.0]  # 8
+        rv_vals   = [1.0, 1.2, 1.3, 1.5, 1.6, 1.8, 2.0, 2.5]        # 8
+        qc_vals   = [1, 2, 3]                                          # 3
+        rmax_vals = [68, 72, 76, 80, 84]                               # 5
+        rmin_vals = [25, 30, 35, 40, 45]                               # 5
+
     g = []
-    for ms   in [6.0,8.0,10.0,12.0,14.0,16.0,18.0,20.0]:          # 8
-        for rv   in [1.0,1.2,1.3,1.5,1.6,1.8,2.0,2.5]:             # 8
-            for qc   in [1, 2, 3]:                                   # 3
-                for rmax in [68, 72, 76, 80, 84]:                    # 5
-                    for rmin in [25, 30, 35, 40, 45]:                # 5
+    for ms in ms_vals:
+        for rv in rv_vals:
+            for qc in qc_vals:
+                for rmax in rmax_vals:
+                    for rmin in rmin_vals:
                         if rmin >= rmax - 20:
-                            continue   # nonsensical RSI window
+                            continue
                         g.append(dict(ms=ms, rv=rv, qc=qc,
                                       rmin=rmin, rmax=rmax,
                                       bh=0.45, bs=0.55, mo=8))
-    return g   # ≈4,600 valid combos
+    return g
 
 
-def _fine_grid(best_p: dict) -> list[dict]:
-    """Phase 5: ±1 step around Phase 4 winner.  ~300 combos."""
-    ms_steps   = [0.0, -2.0, +2.0, -4.0, +4.0]
-    rv_steps   = [0.0, -0.1, +0.1, -0.2, +0.2]
+def _fine_grid(best_p: dict, quick: bool = False) -> list[dict]:
+    """Phase 5: ±steps around Phase 4 winner."""
+    ms_steps   = [0.0, -2.0, +2.0]          if quick else [0.0, -2.0, +2.0, -4.0, +4.0]
+    rv_steps   = [0.0, -0.1, +0.1]          if quick else [0.0, -0.1, +0.1, -0.2, +0.2]
     rmax_steps = [0, -4, +4]
     rmin_steps = [0, -5, +5]
-    qc_vals    = [1, 2, 3]
+    qc_vals    = [1, 2]                      if quick else [1, 2, 3]
 
     g = []
-    for dms   in ms_steps:
-        for drv   in rv_steps:
+    for dms in ms_steps:
+        for drv in rv_steps:
             for drmax in rmax_steps:
                 for drmin in rmin_steps:
-                    for qc   in qc_vals:
+                    for qc in qc_vals:
                         ms   = round(best_p["ms"]   + dms,  1)
                         rv   = round(best_p["rv"]   + drv,  2)
                         rmax = int(best_p["rmax"] + drmax)
@@ -246,21 +261,25 @@ def _fine_grid(best_p: dict) -> list[dict]:
                                       rmin=rmin, rmax=rmax,
                                       bh=best_p["bh"], bs=best_p["bs"],
                                       mo=best_p.get("mo", 8)))
-    return g   # ~300 combos
+    return g   # quick≈54 | full≈300
 
 
-def _breadth_mo_grid(base: dict) -> list[dict]:
-    """Phase 6: breadth × MAX_OPEN sweep.  ~80 combos."""
+def _breadth_mo_grid(base: dict, quick: bool = False) -> list[dict]:
+    """Phase 6: breadth × MAX_OPEN sweep."""
+    bh_vals = [0.40, 0.50]          if quick else [0.35, 0.40, 0.45, 0.50, 0.55]
+    bs_vals = [0.55, 0.65]          if quick else [0.50, 0.55, 0.60, 0.65]
+    mo_vals = [6, 8]                if quick else [5, 6, 8, 10]
+
     g = []
-    for bh in [0.35, 0.40, 0.45, 0.50, 0.55]:    # 5
-        for bs in [0.50, 0.55, 0.60, 0.65]:        # 4
-            for mo in [5, 6, 8, 10]:               # 4
+    for bh in bh_vals:
+        for bs in bs_vals:
+            for mo in mo_vals:
                 if bs <= bh:
                     continue
                 p = dict(base)
                 p.update(bh=bh, bs=bs, mo=mo)
                 g.append(p)
-    return g   # ~64 valid combos
+    return g   # quick≈8 | full≈64
 
 
 # ── Window creation ───────────────────────────────────────────────────────────
@@ -436,14 +455,17 @@ def main():
     ap.add_argument("--max-symbols",  type=int, default=30)
     ap.add_argument("--days",         type=int, default=60)
     ap.add_argument("--workers",      type=int, default=0)
+    ap.add_argument("--quick",        action="store_true",
+                    help="Reduced grids for single-core VPS (~700 tasks, 6-8 hr overnight)")
     args = ap.parse_args()
 
+    QUICK     = args.quick or (mp.cpu_count() == 1)
     n_workers = args.workers or min(mp.cpu_count(), 8)
     T0        = time.time()
 
     print("=" * 80)
-    print("  NSE Exhaustive Overnight Optimiser")
-    print(f"  Phase 1 : 18 signals × 5 rolling windows        (walk-forward)")
+    print("  NSE Exhaustive Overnight Optimiser" + ("  [QUICK/1-CORE MODE]" if QUICK else ""))
+    print(f"  Phase 1 : 18 signals × {'3' if QUICK else '5'} rolling windows        (walk-forward)")
     print(f"  Phase 2 : all pairs + triples + 4-combos")
     print(f"  Phase 3 : per-signal param grid  (60 combos × top-6 signals)")
     print(f"  Phase 4 : giant param grid        (~4,600 combos on best combo)")
@@ -461,7 +483,7 @@ def main():
         print("ERROR: No data."); sys.exit(1)
 
     print(f"\n  Building rolling windows ...", flush=True)
-    windows = _make_windows(data_full, n=5)
+    windows = _make_windows(data_full, n=3 if QUICK else 5)
     print(f"  Windows created: {list(windows.keys())}", flush=True)
 
     # ── Inject into module-level dict (shared via fork, no serialisation) ─────
@@ -550,18 +572,19 @@ def main():
     print(f"  PHASE 2  Signal combination search")
     print(f"{'='*80}", flush=True)
 
-    top_n  = pool_sigs[:10]
+    top_n  = pool_sigs[:6 if QUICK else 10]
     tasks_p2: list = []
     for s in top_n:
         tasks_p2.append(([s], REL, "full"))
     for a, b in combinations(top_n, 2):
         tasks_p2.append(([a, b], REL, "full"))
-    if len(top_n) <= 8:
-        for a, b, c in combinations(top_n, 3):
-            tasks_p2.append(([a, b, c], REL, "full"))
-    if len(top_n) <= 6:
-        for combo in combinations(top_n, 4):
-            tasks_p2.append((list(combo), REL, "full"))
+    if not QUICK:
+        if len(top_n) <= 8:
+            for a, b, c in combinations(top_n, 3):
+                tasks_p2.append(([a, b, c], REL, "full"))
+        if len(top_n) <= 6:
+            for combo in combinations(top_n, 4):
+                tasks_p2.append((list(combo), REL, "full"))
 
     total_tasks += len(tasks_p2)
     raw_p2 = _run_parallel(tasks_p2, pool, "P2-combos", 20)
@@ -587,8 +610,8 @@ def main():
     print(f"  PHASE 3  Per-signal parameter search (top-6 signals)")
     print(f"{'='*80}", flush=True)
 
-    sig_grid = _per_signal_grid()
-    target_sigs_p3 = pool_sigs[:6]
+    sig_grid = _per_signal_grid(quick=QUICK)
+    target_sigs_p3 = pool_sigs[:4 if QUICK else 6]
     tasks_p3 = [([sig], p, "full") for sig in target_sigs_p3 for p in sig_grid]
     total_tasks += len(tasks_p3)
 
@@ -616,7 +639,7 @@ def main():
     print(f"  PHASE 4  Giant parameter grid  (~4,600 combos)")
     print(f"{'='*80}", flush=True)
 
-    giant = _giant_grid()
+    giant = _giant_grid(quick=QUICK)
     tasks_p4 = [(best_sigs, p, "full") for p in giant]
     total_tasks += len(tasks_p4)
     print(f"  Running {len(tasks_p4)} combos on {best_sigs} ...", flush=True)
@@ -645,7 +668,7 @@ def main():
     print(f"  PHASE 5  Fine grid around Phase 4 winner")
     print(f"{'='*80}", flush=True)
 
-    fine   = _fine_grid(best_p4["p"])
+    fine   = _fine_grid(best_p4["p"], quick=QUICK)
     tasks_p5 = [(best_sigs, p, "full") for p in fine]
     total_tasks += len(tasks_p5)
     print(f"  Running {len(tasks_p5)} fine combos ...", flush=True)
@@ -664,7 +687,7 @@ def main():
     print(f"  PHASE 6  Breadth + MAX_OPEN fine-tune")
     print(f"{'='*80}", flush=True)
 
-    bm_grid  = _breadth_mo_grid(best_p5["p"])
+    bm_grid  = _breadth_mo_grid(best_p5["p"], quick=QUICK)
     tasks_p6 = [(best_sigs, p, "full") for p in bm_grid]
     total_tasks += len(tasks_p6)
 
