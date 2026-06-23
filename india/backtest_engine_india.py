@@ -1196,6 +1196,11 @@ def _opt_record_trade(t) -> None:
 
 
 MIN_SCORE    = 12.0   # ORB-only mode: rvol≥1.5 ORB = +12, self-sufficient entry
+
+# ── Signal whitelist (module-level so optimizer/tester can override) ──────────
+# Only signals in this tuple can trigger a trade entry.
+# Set to None to disable whitelist (allow all signals).
+SIGNAL_WHITELIST = ("ORB_BULL_CONFIRM",)
 MAX_OPEN     = 8      # 8 concurrent positions — wider universe (380 stocks) needs more slots
 MAX_POS_PCT  = 0.15   # 15% per position — 8×15%=120% max deployed (realistic intraday usage)
 
@@ -2467,11 +2472,9 @@ def run_backtest(symbols: List[str], from_date: str, to_date: str,
             if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
                 continue
 
-            # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
-            # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
-            # SESSION_BULL removed: fires frequently but still 30% WR in backtest.
-            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM",)
-            if not any(s in reason for s in _PRIMARY_WHITELIST):
+            # SIGNAL WHITELIST: reads module-level SIGNAL_WHITELIST so the attribution
+            # tester and optimizer can override it without modifying source.
+            if SIGNAL_WHITELIST and not any(s in reason for s in SIGNAL_WHITELIST):
                 continue
 
             # ── Entry quality gate: RSI momentum window ──────────────────────
@@ -4082,11 +4085,9 @@ def run_backtest_from_data(data: Dict[str, pd.DataFrame], capital: float = 500_0
             if "ORB_BULL_CLEAN" in reason and "ORB_BULL_CONFIRM" not in reason:
                 continue
 
-            # SIGNAL WHITELIST: only trade when a proven-winning primary signal is present.
-            # ORB_BULL_CONFIRM: 100% WR on 7 real trades (the ONLY proven live edge).
-            # SESSION_BULL removed: fires frequently but still 30% WR in backtest.
-            _PRIMARY_WHITELIST = ("ORB_BULL_CONFIRM",)
-            if not any(s in reason for s in _PRIMARY_WHITELIST):
+            # SIGNAL WHITELIST: reads module-level SIGNAL_WHITELIST so the attribution
+            # tester and optimizer can override it without modifying source.
+            if SIGNAL_WHITELIST and not any(s in reason for s in SIGNAL_WHITELIST):
                 continue
 
             # ── Entry quality gate: RSI momentum window ──────────────────────
