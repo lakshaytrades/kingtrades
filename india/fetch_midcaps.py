@@ -99,7 +99,11 @@ def main():
     if not data:
         print("ERROR: no symbols fetched (instrument map / token issue)."); sys.exit(1)
 
+    # resolve relative --out under india/ so it matches how orb_fast/strategy_lab
+    # resolve --cache (both use _HERE) — avoids a save-here/look-there mismatch
     out = Path(args.out)
+    if not out.is_absolute():
+        out = _HERE / out
     with open(out, "wb") as f:
         pickle.dump(data, f, protocol=4)
 
