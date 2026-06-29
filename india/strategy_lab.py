@@ -198,10 +198,10 @@ STRATS = {
 
 # ── Run one strategy+params over a prepped data dict ──────────────────────────
 
-def run_strat(prepped, gen, params, cost=of.COST_RT_PCT):
+def run_strat(prepped, gen, params, cost=None):
     trades = []
     saved = of.COST_RT_PCT
-    of.COST_RT_PCT = cost                            # let _resolve_exit/_close use this cost
+    of.COST_RT_PCT = saved if cost is None else cost  # let _resolve_exit/_close use this cost
     try:
         for sym, d in prepped.items():
             for cand in gen(d, params):
@@ -218,9 +218,13 @@ def main():
     ap.add_argument("--max-symbols", type=int, default=50)
     ap.add_argument("--cache", type=str, default=None,
                     help="alternate cache pickle (e.g. midcap_cache.pkl)")
+    ap.add_argument("--cost", type=float, default=None,
+                    help="override round-trip cost (e.g. 0.0018 from cost_model.py)")
     args = ap.parse_args()
     if args.cache:
         of.CACHE_FILE = Path(args.cache) if Path(args.cache).is_absolute() else _HERE / args.cache
+    if args.cost is not None:
+        of.COST_RT_PCT = args.cost   # research override only; engine constant unchanged
 
     if not of.CACHE_FILE.exists():
         print(f"ERROR: {of.CACHE_FILE} not found. Populate the cache first."); sys.exit(1)
