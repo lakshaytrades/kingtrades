@@ -216,7 +216,11 @@ def run_strat(prepped, gen, params, cost=of.COST_RT_PCT):
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--max-symbols", type=int, default=50)
+    ap.add_argument("--cache", type=str, default=None,
+                    help="alternate cache pickle (e.g. midcap_cache.pkl)")
     args = ap.parse_args()
+    if args.cache:
+        of.CACHE_FILE = Path(args.cache) if Path(args.cache).is_absolute() else _HERE / args.cache
 
     if not of.CACHE_FILE.exists():
         print(f"ERROR: {of.CACHE_FILE} not found. Populate the cache first."); sys.exit(1)

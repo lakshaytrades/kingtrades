@@ -340,7 +340,12 @@ def main():
     ap.add_argument("--sl", type=float, default=1.5, help="ATR SL multiplier")
     ap.add_argument("--rr", type=float, default=None, help="single reward:risk")
     ap.add_argument("--grid", action="store_true", help="full grid + walk-forward (default)")
+    ap.add_argument("--cache", type=str, default=None,
+                    help="alternate cache pickle (e.g. midcap_cache.pkl)")
     args = ap.parse_args()
+    if args.cache:
+        global CACHE_FILE
+        CACHE_FILE = Path(args.cache) if Path(args.cache).is_absolute() else _HERE / args.cache
 
     print("=" * 78)
     print("  ORB_BULL_CONFIRM — clean fast honest backtest")
