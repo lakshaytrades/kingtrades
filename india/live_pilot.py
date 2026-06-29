@@ -52,6 +52,20 @@ from fetch_midcaps import HIGH_VOL_UNIVERSE
 
 IST = ZoneInfo("Asia/Kolkata")
 
+# Most-liquid subset — tightest spreads => lowest slippage on breakout entries.
+# Trading only these gives the pilot the cleanest possible slippage measurement.
+TOP_LIQUID = [
+    "TATASTEEL", "TATAMOTORS", "SAIL", "PNB", "BANKBARODA", "IDFCFIRSTB",
+    "ADANIPORTS", "ADANIENT", "TATAPOWER", "GAIL", "IOC", "BPCL",
+    "HINDALCO", "VEDL", "ZOMATO", "IRFC", "NMDC", "CANBK",
+]
+
+# 1-year RANGE_BREAK_HOLD return-vs-cost curve (from target_feasibility on real data).
+# Used at end-of-day to translate MEASURED slippage -> expected %/mo at real scale.
+_RET_COSTS = [0.0000, 0.0005, 0.0010, 0.0014, 0.0018, 0.0022, 0.0030, 0.0045]
+_RET_VALS  = [29.6,   17.5,   9.3,    4.6,    1.2,    -1.4,   -4.6,   -7.3]
+TARGET_MO  = 4.0
+
 # ── Hard safety limits ────────────────────────────────────────────────────────
 MAX_PILOT_CAPITAL = 5000.0      # absolute cap on total exposure (NO leverage)
 MAX_OPEN          = 2           # max concurrent positions
@@ -140,7 +154,7 @@ def detect_signal(d, now: datetime):
 # ── Pilot ─────────────────────────────────────────────────────────────────────
 
 class Pilot:
-    def __init__(self):
+    def __init__(self, universe=None):
         from auth_upstox import get_upstox_client, verify_connection
         import data_fetch_upstox as dfu
         from execution_upstox import get_executor
@@ -153,9 +167,12 @@ class Pilot:
         dfu.set_upstox_client(self.client)
         self.dfu = dfu
         self.exec = get_executor(self.client, live_enabled=self.live)
-        self.universe = HIGH_VOL_UNIVERSE
+        self.universe = universe or HIGH_VOL_UNIVERSE
         self.positions: dict = {}      # sym -> {qty, entry, sl, target, strat, sec_id, t_in, trigger}
         self.done_today: set = set()   # one trade per symbol per day
+        # slippage / fill-quality measurement — the whole point of the pilot
+        self.stats = {"signals": 0, "filled": 0, "chased_skip": 0,
+                      "too_pricey": 0, "slips_bps": [], "net_pcts": []}
         mode = "LIVE (REAL ₹)" if self.live else "PAPER (no orders)"
         log.warning(f"=== LIVE PILOT START — {mode} | cap ₹{MAX_PILOT_CAPITAL:.0f} | "
                     f"max {MAX_OPEN} pos | {len(self.universe)} symbols ===")
@@ -183,6 +200,7 @@ class Pilot:
                 sig = detect_signal(d, now)
                 if not sig:
                     continue
+                self.stats["signals"] += 1
                 strat, trigger, sl_dist, atr = sig
                 self._enter(sym, strat, trigger, sl_dist, atr)
             except Exception as e:
@@ -195,11 +213,13 @@ class Pilot:
         ltp = self.dfu.get_ltp(sym) or trigger
         # never chase: skip if price already ran > 0.3% past the trigger
         if ltp > trigger * 1.003:
+            self.stats["chased_skip"] += 1
             log.info(f"{sym} {strat}: price {ltp:.2f} already > trigger {trigger:.2f}+0.3% — skip")
             return
         budget = min(PER_POS_CAP, MAX_PILOT_CAPITAL - self.deployed())
         qty = int(budget // ltp)                       # NO leverage: notional <= budget
         if qty < 1:
+            self.stats["too_pricey"] += 1
             log.info(f"{sym} {strat}: too pricey for ₹{budget:.0f} (ltp {ltp:.2f}) — skip")
             return
         sl = round(ltp - sl_dist, 2)
@@ -210,6 +230,8 @@ class Pilot:
             log.warning(f"{sym} {strat}: entry failed — {res.message}"); return
         fill = res.fill_price or ltp
         slip_bps = (fill - trigger) / trigger * 1e4
+        self.stats["filled"] += 1
+        self.stats["slips_bps"].append(slip_bps)
         self.positions[sym] = {"qty": res.quantity or qty, "entry": fill, "sl": sl,
                                "target": target, "strat": strat, "sec_id": sec_id,
                                "t_in": now_ist(), "trigger": trigger}
@@ -238,6 +260,7 @@ class Pilot:
         res = self.exec.place_entry_order(sym, "SHORT", p["qty"], ltp, p["sec_id"])
         px = res.fill_price or ltp
         pnl_pct = (px - p["entry"]) / p["entry"] * 100 - of.COST_RT_PCT * 100
+        self.stats["net_pcts"].append(pnl_pct)
         log.warning(f"EXIT {reason} {p['strat']} {sym} @ {px:.2f} "
                     f"(entry {p['entry']:.2f}) grossΔ={ (px-p['entry'])/p['entry']*100:+.2f}% "
                     f"net~{pnl_pct:+.2f}% qty={p['qty']}")
@@ -258,37 +281,87 @@ class Pilot:
             except Exception as e:
                 log.error(f"broker square_off_all: {e}")
 
+    def report(self):
+        """End-of-day: translate MEASURED slippage into expected %/mo at real scale.
+
+        This is the deliverable — it answers 'does my real execution let intraday
+        hit the +4%/mo target if I scale to ₹1L-₹2L positions?'
+        """
+        import cost_model as cm
+        s = self.stats
+        slips = s["slips_bps"]
+        avg_slip_side = (sum(slips) / len(slips) / 2 / 100) if slips else None  # %/side
+        fill_rate = (s["filled"] / s["signals"] * 100) if s["signals"] else 0.0
+        net = s["net_pcts"]
+        log.warning("=" * 64)
+        log.warning("  PILOT END-OF-DAY REPORT")
+        log.warning("=" * 64)
+        log.warning(f"  signals={s['signals']} filled={s['filled']} "
+                    f"chased-skip={s['chased_skip']} too-pricey={s['too_pricey']}")
+        log.warning(f"  fill rate: {fill_rate:.0f}%  (missed fills hurt live returns "
+                    f"vs backtest — watch this)")
+        if net:
+            log.warning(f"  closed trades: {len(net)}  avg net/trade: "
+                        f"{sum(net)/len(net):+.2f}%  total: {sum(net):+.2f}%")
+        if avg_slip_side is None:
+            log.warning("  No fills yet — need live trades to measure slippage.")
+            log.warning("=" * 64); return
+        log.warning(f"  MEASURED slippage: {avg_slip_side:.3f}% per side")
+        # translate to expected %/mo at scale, for a few position sizes
+        log.warning("  -> expected %/mo at real scale (RANGE_BREAK_HOLD 1-yr curve):")
+        for size in (50_000, 100_000, 200_000):
+            cost_pct = cm.round_trip_cost(size, avg_slip_side)["total_pct"] / 100.0
+            exp = float(__import__("numpy").interp(cost_pct, _RET_COSTS, _RET_VALS))
+            verdict = "HITS TARGET" if exp >= TARGET_MO else "below target"
+            log.warning(f"     ₹{size:>7,} pos -> cost {cost_pct*100:.3f}%  "
+                        f"-> {exp:+.1f}%/mo  [{verdict}]")
+        log.warning("  Decision: if ≥₹1L positions show 'HITS TARGET' AND fill-rate is")
+        log.warning("  healthy (>60%), the edge is real at scale — then build to ₹2-4L")
+        log.warning("  risk capital. If 'below target' everywhere, intraday won't hit +4%.")
+        log.warning("=" * 64)
+
     def run(self):
-        while True:
-            if KILL_FILE.exists():
-                log.warning("KILL file detected — squaring off and stopping.")
-                self.squareoff_all("KILL"); break
-            now = now_ist()
-            phase = market_phase(now.time())
-            if phase == "closed":
-                log.info("Market closed. Pilot done for the day."); break
-            if phase in ("pre", "opening"):
-                log.info(f"{phase} ({now:%H:%M}) — waiting for 9:30 trading window.")
-                _time.sleep(LOOP_SECONDS); continue
-            if phase == "squareoff":
-                self.squareoff_all("15:25 squareoff")
-                log.info("Squared off. Stopping for the day."); break
-            # trading phase
-            self.manage(now)
-            self.scan(now)
-            log.info(f"{now:%H:%M:%S} | open={len(self.positions)} "
-                     f"deployed=₹{self.deployed():.0f}/{MAX_PILOT_CAPITAL:.0f} "
-                     f"| {', '.join(self.positions) or 'flat'}")
-            _time.sleep(LOOP_SECONDS)
+        try:
+            while True:
+                if KILL_FILE.exists():
+                    log.warning("KILL file detected — squaring off and stopping.")
+                    self.squareoff_all("KILL"); break
+                now = now_ist()
+                phase = market_phase(now.time())
+                if phase == "closed":
+                    log.info("Market closed. Pilot done for the day."); break
+                if phase in ("pre", "opening"):
+                    log.info(f"{phase} ({now:%H:%M}) — waiting for 9:30 trading window.")
+                    _time.sleep(LOOP_SECONDS); continue
+                if phase == "squareoff":
+                    self.squareoff_all("15:25 squareoff")
+                    log.info("Squared off. Stopping for the day."); break
+                # trading phase
+                self.manage(now)
+                self.scan(now)
+                log.info(f"{now:%H:%M:%S} | open={len(self.positions)} "
+                         f"deployed=₹{self.deployed():.0f}/{MAX_PILOT_CAPITAL:.0f} "
+                         f"| {', '.join(self.positions) or 'flat'}")
+                _time.sleep(LOOP_SECONDS)
+        finally:
+            self.report()
 
 
 def main():
+    import argparse
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--full-universe", action="store_true",
+                    help="trade all high-vol names (default: ~18 most-liquid only)")
+    args = ap.parse_args()
     try:
         from dotenv import load_dotenv
         load_dotenv(_ROOT / ".env")
     except Exception:
         pass
-    Pilot().run()
+    universe = HIGH_VOL_UNIVERSE if args.full_universe else TOP_LIQUID
+    log.warning(f"Universe: {'FULL' if args.full_universe else 'TOP-LIQUID'} "
+                f"({len(universe)} names) — liquid names = lower slippage = cleaner read")
+    Pilot(universe=universe).run()
 
 
 if __name__ == "__main__":
