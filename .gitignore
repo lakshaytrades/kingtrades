@@ -109,3 +109,8 @@ orb_fast_report.txt
 strategy_lab_report.txt
 orb_performance_report.txt
 midcap_cache.pkl
+
+# Generated reports, data caches, kill switch (all regenerated locally)
+*_report.txt
+*.pkl
+KILL
