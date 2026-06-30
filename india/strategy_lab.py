@@ -193,6 +193,12 @@ STRATS = {
                                           {"rv": 2.0, "sl": 1.5, "rr": 6.0}]),
     "RANGE_BREAK_HOLD": (s_range_hold,   [{"rv": 1.5, "sl": 1.5},
                                           {"rv": 2.0, "sl": 2.0}]),
+    # ── SAFER variants: breakeven-stop (be=R-mult) + nearer, realistic targets ──
+    # Goal: raise win rate / cut drawdown without killing the edge. Validate before use.
+    "RANGE_HOLD_SAFE":  (s_range_hold,   [{"rv": 2.0, "sl": 2.0, "be": 1.0},
+                                          {"rv": 2.0, "sl": 2.0, "be": 0.5}]),
+    "MOM_SAFE_3R_BE":   (s_wide_mom,     [{"rv": 2.0, "sl": 1.5, "rr": 3.0, "be": 1.0},
+                                          {"rv": 2.0, "sl": 1.5, "rr": 2.0, "be": 1.0}]),
 }
 
 
@@ -206,6 +212,7 @@ def run_strat(prepped, gen, params, cost=None):
         for sym, d in prepped.items():
             for cand in gen(d, params):
                 cand["sym"] = sym
+                cand["be"] = params.get("be")     # optional breakeven-stop R-multiple
                 trades.append(of._resolve_exit(d, cand))
         m = of._simulate(trades)
     finally:

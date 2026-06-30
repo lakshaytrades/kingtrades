@@ -165,7 +165,12 @@ def _candidates(d: pd.DataFrame, rv_thresh: float, sl_mult: float, rr: float) ->
 
 
 def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
-    """Walk forward within the same day: SL (pessimistic tie) -> TP -> square-off."""
+    """Walk forward within the same day: SL (pessimistic tie) -> TP -> square-off.
+
+    Optional safety: cand["be"] = R-multiple at which to move the stop to breakeven
+    (entry). e.g. be=1.0 -> once price gains 1x the initial risk, the stop becomes the
+    entry price, so a winner can't turn back into a loser. Armed for FUTURE bars only
+    (no same-bar lookahead)."""
     i = cand["i"]
     idx = d.index
     h = d["high"].to_numpy()
@@ -173,6 +178,10 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     c = d["close"].to_numpy()
     day = cand["day"]
     sl, tp = cand["sl"], cand["tp"]
+    entry, risk = cand["entry"], cand["sl_dist"]
+    be_r = cand.get("be")
+    be_trigger = entry + be_r * risk if be_r else None
+    be_armed = False
 
     j = i + 1
     n = len(d)
@@ -181,9 +190,12 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
         if idx[j].time() >= SQUAREOFF:
             exit_px = float(c[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
         if lo[j] <= sl:                              # SL wins same-bar ties (pessimistic)
-            return _close(cand, idx[j], sl, "SL")
+            return _close(cand, idx[j], sl, "BE" if be_armed else "SL")
         if h[j] >= tp:
             return _close(cand, idx[j], tp, "TP")
+        # arm breakeven for the NEXT bar once this bar reaches the trigger (no lookahead)
+        if be_trigger is not None and not be_armed and h[j] >= be_trigger:
+            sl = max(sl, entry); be_armed = True
         j += 1
     # ran out of same-day bars -> exit at last available close of the day
     last = j - 1 if j - 1 >= 0 else i
