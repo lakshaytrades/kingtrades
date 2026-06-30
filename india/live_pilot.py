@@ -70,6 +70,8 @@ TARGET_MO  = 4.0
 MAX_PILOT_CAPITAL = 5000.0      # absolute cap on total exposure (NO leverage)
 MAX_OPEN          = 2           # max concurrent positions
 PER_POS_CAP       = MAX_PILOT_CAPITAL / MAX_OPEN
+MAX_DAILY_LOSS    = 300.0       # ₹: stop ALL new entries for the day if realized loss hits this
+STALE_FEED_CYCLES = 4           # force-flatten an open position if its price is unavailable this many loops
 ENTRY_START       = dtime(9, 30)
 ENTRY_CUTOFF      = dtime(13, 0)   # WIDE_MOMENTUM window
 RANGE_CUTOFF      = dtime(11, 0)   # RANGE_BREAK_HOLD only takes early breaks
@@ -170,6 +172,10 @@ class Pilot:
         self.universe = universe or HIGH_VOL_UNIVERSE
         self.positions: dict = {}      # sym -> {qty, entry, sl, target, strat, sec_id, t_in, trigger}
         self.done_today: set = set()   # one trade per symbol per day
+        # ── safety state ──
+        self.realized_pnl = 0.0        # ₹ realized today; drives the daily-loss circuit breaker
+        self.halted = False            # True once MAX_DAILY_LOSS hit -> no new entries
+        self.ltp_fail: dict = {}       # sym -> consecutive price-fetch failures (stale-feed guard)
         # slippage / fill-quality measurement — the whole point of the pilot
         self.stats = {"signals": 0, "filled": 0, "chased_skip": 0,
                       "too_pricey": 0, "slips_bps": [], "net_pcts": []}
@@ -203,6 +209,14 @@ class Pilot:
         return self.dfu.get_ltp(sym)
 
     def scan(self, now: datetime):
+        # Daily-loss circuit breaker: once realized loss hits the limit, take NO new
+        # entries for the rest of the day (existing positions keep their own stops).
+        if not self.halted and self.realized_pnl <= -MAX_DAILY_LOSS:
+            self.halted = True
+            log.warning(f"DAILY LOSS LIMIT hit: realized ₹{self.realized_pnl:.0f} "
+                        f"(limit −₹{MAX_DAILY_LOSS:.0f}) — NO new entries today.")
+        if self.halted:
+            return
         if len(self.positions) >= MAX_OPEN:
             return
         for sym in self.universe:
@@ -279,8 +293,18 @@ class Pilot:
                     continue
                 ltp = self._fresh_ltp(sym)             # fresh price for stop checks
                 if ltp is None:
-                    log.warning(f"{sym}: LTP unavailable — stop NOT checked this cycle")
+                    # Stale-feed guard: never sit BLIND on an open position. After a few
+                    # failed price reads we can't enforce the stop, so flatten it.
+                    self.ltp_fail[sym] = self.ltp_fail.get(sym, 0) + 1
+                    if self.ltp_fail[sym] >= STALE_FEED_CYCLES:
+                        log.error(f"{sym}: price unavailable {self.ltp_fail[sym]}x — "
+                                  f"FORCE-FLATTEN (cannot manage blind)")
+                        self._exit(sym, p["entry"], "STALE_FEED")   # market sell; px is log-only
+                    else:
+                        log.warning(f"{sym}: LTP unavailable ({self.ltp_fail[sym]}/"
+                                    f"{STALE_FEED_CYCLES}) — stop not checked this cycle")
                     continue
+                self.ltp_fail[sym] = 0                 # feed recovered
                 reason = None
                 if ltp <= p["sl"]:
                     reason = "SL"
@@ -293,14 +317,18 @@ class Pilot:
 
     def _exit(self, sym, ltp, reason):
         p = self.positions.pop(sym)
+        self.ltp_fail.pop(sym, None)
         # close a long = SELL MARKET (reuses tested executor path)
         res = self.exec.place_entry_order(sym, "SHORT", p["qty"], ltp, p["sec_id"])
         px = res.fill_price or ltp
         pnl_pct = (px - p["entry"]) / p["entry"] * 100 - of.COST_RT_PCT * 100
+        # realized ₹ P&L (net of round-trip cost) — feeds the daily-loss breaker
+        pnl_r = (px - p["entry"]) * p["qty"] - (p["entry"] + px) * p["qty"] * of.COST_RT_PCT / 2
+        self.realized_pnl += pnl_r
         self.stats["net_pcts"].append(pnl_pct)
         log.warning(f"EXIT {reason} {p['strat']} {sym} @ {px:.2f} "
-                    f"(entry {p['entry']:.2f}) grossΔ={ (px-p['entry'])/p['entry']*100:+.2f}% "
-                    f"net~{pnl_pct:+.2f}% qty={p['qty']}")
+                    f"(entry {p['entry']:.2f}) net~{pnl_pct:+.2f}% (₹{pnl_r:+.0f}) "
+                    f"qty={p['qty']} | day P&L ₹{self.realized_pnl:+.0f}")
 
     def squareoff_all(self, why: str):
         if not self.positions:
