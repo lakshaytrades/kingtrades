@@ -6,13 +6,13 @@ WHAT THIS IS
 The honest research chain (orb_fast -> strategy_lab -> cost_model) found that on
 liquid high-volatility NSE names, at your REAL Groww cost (~0.18% round-trip),
 two long-only edges are profitable and walk-forward robust:
-    Both entries = fresh ORB break + rvol>=2. PROFESSIONAL exit rules: fixed stop
-    (risk = 1), target capped at 3x risk (MAX_RR), hard 15:25 square-off backstop.
-      MOM_EARLY  (9:30-11:00): stop 2.0xATR, target 3R
-      MOM_LATE   (11:00-13:00): stop 1.5xATR, target 3R
-    NOTE: this 3:1 config differs from the 6:1 / hold-to-squareoff version that was
-    backtested — re-validate with rr_sweep.py on the 1-year data before trusting the
-    return numbers (the entry edge is unchanged; only the exit cap changed).
+    VALIDATED config (profit_optimizer on 1-year data): fresh ORB break + rvol>=4.0,
+    fixed stop 1.5xATR (risk = 1), target capped at 3R (MAX_RR), hard 15:25 square-off.
+    Result: +3.9%/mo, walk-forward +3.4%, positive in EVERY window, WR 44%, DD 14%.
+    High rvol = fewer/stronger trades = less cost drag = robust net profit at ~0.18% cost
+    (i.e. at ₹1L+ position size). At ₹5k pilot size the cost is higher, so the pilot
+    measures slippage rather than profits.
+      MOM_EARLY  (9:30-11:00) and MOM_LATE (11:00-13:00): both 1.5xATR stop, 3R target.
 The existing main_india.py runs the OLD buggy engine, so it would NOT trade this
 edge. This module reproduces the backtest signal EXACTLY on live data and trades
 it, with hard pilot-grade safety.
@@ -65,10 +65,13 @@ TOP_LIQUID = [
     "HINDALCO", "VEDL", "ZOMATO", "IRFC", "NMDC", "CANBK",
 ]
 
-# 1-year RANGE_BREAK_HOLD return-vs-cost curve (from target_feasibility on real data).
-# Used at end-of-day to translate MEASURED slippage -> expected %/mo at real scale.
-_RET_COSTS = [0.0000, 0.0005, 0.0010, 0.0014, 0.0018, 0.0022, 0.0030, 0.0045]
-_RET_VALS  = [29.6,   17.5,   9.3,    4.6,    1.2,    -1.4,   -4.6,   -7.3]
+# Return-vs-cost curve for the VALIDATED config (rvol>=4, SL 1.5xATR, 3:1), used at
+# end-of-day to translate MEASURED slippage -> expected %/mo at real scale. Anchored on
+# profit_optimizer: +3.9%/mo at 0.18% cost. Fewer trades (~39/mo) => flatter curve than
+# the old high-frequency config. ESTIMATE — refine with: profit_optimizer.py at several
+# --cost values for an exact curve.
+_RET_COSTS = [0.0000, 0.0010, 0.0018, 0.0025, 0.0035, 0.0045]
+_RET_VALS  = [12.0,   7.0,    3.9,    0.5,    -4.0,   -8.0]
 TARGET_MO  = 4.0
 
 # ── Hard safety limits ────────────────────────────────────────────────────────
@@ -88,9 +91,12 @@ KILL_FILE         = _ROOT / "KILL"
 # ── Professional, disciplined exit rules ──────────────────────────────────────
 # Every trade has: a fixed stop (the "1" of risk), a capped target at MAX_RR x risk,
 # and a hard 15:25 square-off backstop. No open-ended holds, no 6:1 moonshots.
-RV_MIN     = 2.0
-WIDE_SL    = 1.5     # ATR mult — momentum (late-morning) stop
-HOLD_SL    = 2.0     # ATR mult — early-break stop
+# Validated by profit_optimizer.py on 1-year data: rvol>=4.0 + SL 1.5xATR + 3:1 was
+# the best ROBUST config (+3.9%/mo, walk-forward +3.4%, positive in EVERY window,
+# WR 44%, DD 14%, PF 1.16). High rvol = fewer/stronger trades = less cost drag.
+RV_MIN     = 4.0     # selectivity: only strong volume breakouts (validated sweet spot)
+WIDE_SL    = 1.5     # ATR mult — stop
+HOLD_SL    = 1.5     # ATR mult — stop (unified to the validated 1.5xATR)
 MAX_RR     = 3.0     # reward capped at 3x risk for EVERY trade (risk 1 : reward <= 3)
 TRIGGER_BUF = of.TRIGGER_BUF
 
