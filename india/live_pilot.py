@@ -182,6 +182,26 @@ class Pilot:
     def deployed(self) -> float:
         return sum(p["qty"] * p["entry"] for p in self.positions.values())
 
+    # ── Fresh-data helpers ───────────────────────────────────────────────────
+    # data_fetch_upstox caches OHLCV ~290s and LTP ~30s — far too long for a
+    # 5-min-bar strategy on a 45s loop. We clear the per-symbol cache entry before
+    # each read so the pilot always acts on fresh bars/prices. (We don't change the
+    # global TTLs — other modules rely on them.)
+    def _fresh_ohlcv(self, sym):
+        try:
+            self.dfu._ohlcv_cache.pop(f"{sym}_5m", None)
+        except Exception:
+            pass
+        return self.dfu.get_ohlcv(sym, "5m", "5d")
+
+    def _fresh_ltp(self, sym):
+        try:
+            self.dfu._quote_cache.pop(sym, None)
+            self.dfu._quote_cache_ts.pop(sym, None)
+        except Exception:
+            pass
+        return self.dfu.get_ltp(sym)
+
     def scan(self, now: datetime):
         if len(self.positions) >= MAX_OPEN:
             return
@@ -190,8 +210,10 @@ class Pilot:
                 continue
             if len(self.positions) >= MAX_OPEN:
                 break
+            if KILL_FILE.exists():          # stop entering the instant KILL appears
+                return
             try:
-                raw = self.dfu.get_ohlcv(sym, "5m", "5d")
+                raw = self._fresh_ohlcv(sym)       # fix: bypass 290s OHLCV cache
                 if raw is None or len(raw) < 60:
                     continue
                 d = of._prep_symbol(raw)
@@ -210,7 +232,7 @@ class Pilot:
         sec_id = self.dfu.get_security_id(sym)
         if not sec_id:
             log.info(f"{sym}: no instrument_key — skip"); return
-        ltp = self.dfu.get_ltp(sym) or trigger
+        ltp = self._fresh_ltp(sym) or trigger          # fresh price for sizing/SL
         # never chase: skip if price already ran > 0.3% past the trigger
         if ltp > trigger * 1.003:
             self.stats["chased_skip"] += 1
@@ -224,35 +246,50 @@ class Pilot:
             return
         sl = round(ltp - sl_dist, 2)
         target = round(ltp + WIDE_RR * sl_dist, 2) if strat == "WIDE_MOMENTUM" else 0.0
+        # mark done_today BEFORE the (blocking) order call so a retry can't double-fire
+        self.done_today.add(sym)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
                                                 limit_offset_pct=0.001)
-        if not res.success:
-            log.warning(f"{sym} {strat}: entry failed — {res.message}"); return
-        fill = res.fill_price or ltp
+        # CRITICAL: only record a position for the qty that ACTUALLY filled. A
+        # rejected/timed-out order (filled=0) must NOT create a phantom position —
+        # otherwise the exit would SELL shares we don't own and open a short.
+        filled = int(res.quantity or 0)
+        if not res.success or filled < 1 or not res.fill_price:
+            log.warning(f"{sym} {strat}: entry not filled (ok={res.success} "
+                        f"qty={filled} px={res.fill_price}) — no position recorded")
+            return
+        fill = res.fill_price
         slip_bps = (fill - trigger) / trigger * 1e4
         self.stats["filled"] += 1
         self.stats["slips_bps"].append(slip_bps)
-        self.positions[sym] = {"qty": res.quantity or qty, "entry": fill, "sl": sl,
+        self.positions[sym] = {"qty": filled, "entry": fill, "sl": sl,
                                "target": target, "strat": strat, "sec_id": sec_id,
                                "t_in": now_ist(), "trigger": trigger}
-        self.done_today.add(sym)
-        log.warning(f"ENTER {strat} {sym} qty={res.quantity or qty} trig={trigger:.2f} "
+        log.warning(f"ENTER {strat} {sym} qty={filled} trig={trigger:.2f} "
                     f"fill={fill:.2f} slip={slip_bps:+.1f}bps SL={sl:.2f} "
-                    f"tgt={target or 'hold'} notional=₹{(res.quantity or qty)*fill:.0f}")
+                    f"tgt={target or 'hold'} notional=₹{filled*fill:.0f}")
 
     def manage(self, now: datetime):
+        # Per-position try/except: an API error on ONE symbol must never crash the
+        # loop or prevent the OTHER positions' stops from being checked.
         for sym in list(self.positions.keys()):
-            p = self.positions[sym]
-            ltp = self.dfu.get_ltp(sym)
-            if ltp is None:
-                continue
-            reason = None
-            if ltp <= p["sl"]:
-                reason = "SL"
-            elif p["target"] and ltp >= p["target"]:
-                reason = "TARGET"
-            if reason:
-                self._exit(sym, ltp, reason)
+            try:
+                p = self.positions.get(sym)
+                if p is None:
+                    continue
+                ltp = self._fresh_ltp(sym)             # fresh price for stop checks
+                if ltp is None:
+                    log.warning(f"{sym}: LTP unavailable — stop NOT checked this cycle")
+                    continue
+                reason = None
+                if ltp <= p["sl"]:
+                    reason = "SL"
+                elif p["target"] and ltp >= p["target"]:
+                    reason = "TARGET"
+                if reason:
+                    self._exit(sym, ltp, reason)
+            except Exception as e:
+                log.error(f"{sym}: manage() error: {e} — position still OPEN, retry next cycle")
 
     def _exit(self, sym, ltp, reason):
         p = self.positions.pop(sym)
@@ -267,16 +304,27 @@ class Pilot:
 
     def squareoff_all(self, why: str):
         if not self.positions:
-            return
-        log.warning(f"SQUARE-OFF ALL ({why}) — {len(self.positions)} open")
-        for sym in list(self.positions.keys()):
-            ltp = self.dfu.get_ltp(sym) or self.positions[sym]["entry"]
-            self._exit(sym, ltp, why)
-        # belt-and-suspenders: ask broker to flat any stragglers (live only)
+            # still run the broker straggler check below in case our dict drifted
+            closed_syms = set()
+        else:
+            log.warning(f"SQUARE-OFF ALL ({why}) — {len(self.positions)} open")
+            closed_syms = set()
+            for sym in list(self.positions.keys()):
+                try:
+                    ltp = self._fresh_ltp(sym) or self.positions[sym]["entry"]
+                    self._exit(sym, ltp, why)
+                    closed_syms.add(sym)
+                except Exception as e:
+                    log.error(f"{sym}: squareoff exit error: {e} — broker check will catch it")
+        # belt-and-suspenders (live only): flatten any broker positions we did NOT
+        # just close ourselves. CRITICAL: exclude closed_syms so we never SELL the
+        # same symbol twice (which would open an unwanted short).
         if self.live:
             try:
-                pos = self.exec.get_open_positions()
+                pos = [p for p in self.exec.get_open_positions()
+                       if p.get("symbol") not in closed_syms]
                 if pos:
+                    log.warning(f"broker straggler flatten: {[p.get('symbol') for p in pos]}")
                     self.exec.square_off_all(pos)
             except Exception as e:
                 log.error(f"broker square_off_all: {e}")
