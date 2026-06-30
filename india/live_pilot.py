@@ -6,8 +6,13 @@ WHAT THIS IS
 The honest research chain (orb_fast -> strategy_lab -> cost_model) found that on
 liquid high-volatility NSE names, at your REAL Groww cost (~0.18% round-trip),
 two long-only edges are profitable and walk-forward robust:
-    WIDE_MOMENTUM     (fresh ORB break, rvol>=2, runner target 6R)   +15%/mo
-    RANGE_BREAK_HOLD  (fresh ORB break, rvol>=2, hold to squareoff)  +6.5%/mo
+    Both entries = fresh ORB break + rvol>=2. PROFESSIONAL exit rules: fixed stop
+    (risk = 1), target capped at 3x risk (MAX_RR), hard 15:25 square-off backstop.
+      MOM_EARLY  (9:30-11:00): stop 2.0xATR, target 3R
+      MOM_LATE   (11:00-13:00): stop 1.5xATR, target 3R
+    NOTE: this 3:1 config differs from the 6:1 / hold-to-squareoff version that was
+    backtested — re-validate with rr_sweep.py on the 1-year data before trusting the
+    return numbers (the entry edge is unchanged; only the exit cap changed).
 The existing main_india.py runs the OLD buggy engine, so it would NOT trade this
 edge. This module reproduces the backtest signal EXACTLY on live data and trades
 it, with hard pilot-grade safety.
@@ -80,11 +85,13 @@ MARKET_OPEN       = dtime(9, 15)
 LOOP_SECONDS      = 45
 KILL_FILE         = _ROOT / "KILL"
 
-# strategy params (exactly as validated in strategy_lab on mid-caps)
+# ── Professional, disciplined exit rules ──────────────────────────────────────
+# Every trade has: a fixed stop (the "1" of risk), a capped target at MAX_RR x risk,
+# and a hard 15:25 square-off backstop. No open-ended holds, no 6:1 moonshots.
 RV_MIN     = 2.0
-WIDE_SL    = 1.5     # ATR mult
-WIDE_RR    = 6.0     # runner target = WIDE_RR * SL_dist
-HOLD_SL    = 2.0     # ATR mult for RANGE_BREAK_HOLD
+WIDE_SL    = 1.5     # ATR mult — momentum (late-morning) stop
+HOLD_SL    = 2.0     # ATR mult — early-break stop
+MAX_RR     = 3.0     # reward capped at 3x risk for EVERY trade (risk 1 : reward <= 3)
 TRIGGER_BUF = of.TRIGGER_BUF
 
 # ── Logging ───────────────────────────────────────────────────────────────────
@@ -144,12 +151,11 @@ def detect_signal(d, now: datetime):
     fresh = (c > trig) and (pc <= trig)            # first close above the ORB high
     if not (fresh and rvol >= RV_MIN):
         return None
-    # both strategies share the entry; differ by SL + exit + time window
+    # same entry; differ only by stop width + entry time window (both target 3R)
     if ENTRY_START <= t < RANGE_CUTOFF:
-        # early break -> prefer RANGE_BREAK_HOLD (lower DD, fewer trades, safer)
-        return ("RANGE_BREAK_HOLD", trig, HOLD_SL * atr, atr)
+        return ("MOM_EARLY", trig, HOLD_SL * atr, atr)     # wider 2.0xATR stop
     if RANGE_CUTOFF <= t < ENTRY_CUTOFF:
-        return ("WIDE_MOMENTUM", trig, WIDE_SL * atr, atr)
+        return ("MOM_LATE", trig, WIDE_SL * atr, atr)      # tighter 1.5xATR stop
     return None
 
 
@@ -259,7 +265,7 @@ class Pilot:
             log.info(f"{sym} {strat}: too pricey for ₹{budget:.0f} (ltp {ltp:.2f}) — skip")
             return
         sl = round(ltp - sl_dist, 2)
-        target = round(ltp + WIDE_RR * sl_dist, 2) if strat == "WIDE_MOMENTUM" else 0.0
+        target = round(ltp + MAX_RR * sl_dist, 2)   # capped 3:1 target on EVERY trade
         # mark done_today BEFORE the (blocking) order call so a retry can't double-fire
         self.done_today.add(sym)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
