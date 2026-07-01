@@ -47,7 +47,8 @@ def _fetch(days: int) -> dict:
 def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--cache", default=None, help="use a cached pickle instead of fetching")
-    ap.add_argument("--days", type=int, default=5, help="days to fetch (for ATR warmup)")
+    ap.add_argument("--days", type=int, default=10, help="calendar days to fetch")
+    ap.add_argument("--last", type=int, default=5, help="how many trading days to show (5 ~= 1 week)")
     ap.add_argument("--cost", type=float, default=0.0018, help="round-trip cost for net P&L")
     args = ap.parse_args()
 
@@ -69,50 +70,63 @@ def main():
             prepped[s] = pp
 
     all_days = sorted({d for p in prepped.values() for d in p.index.normalize().unique()})
-    day = all_days[-1]                       # the latest day = "today"
+    show_days = set(all_days[-args.last:])   # last N trading days (~1 week)
     params = {"rv": RV_MIN, "sl": WIDE_SL, "rr": MAX_RR}
 
     of.COST_RT_PCT = args.cost
     trades = []
     for symbol, d in prepped.items():
         for cand in sl.s_wide_mom(d, params):
-            if cand["t_entry"].normalize() != day:
+            if cand["t_entry"].normalize() not in show_days:
                 continue
             cand["sym"] = symbol
             trades.append(of._resolve_exit(d, cand))
     trades.sort(key=lambda t: t["t_entry"])
+    span = sorted(show_days)
 
     print("=" * 84)
-    print(f"  TODAY'S BACKTEST — validated config (rvol>={RV_MIN}, {WIDE_SL}xATR stop, "
-          f"{MAX_RR:.0f}:1) on {day.date()}")
-    print(f"  {len(prepped)} liquid symbols | cost {args.cost*100:.2f}%")
+    print(f"  LAST-WEEK BACKTEST — validated config (rvol>={RV_MIN}, {WIDE_SL}xATR stop, "
+          f"{MAX_RR:.0f}:1)")
+    print(f"  {len(prepped)} liquid symbols | {span[0].date()} -> {span[-1].date()} "
+          f"({len(span)} trading days) | cost {args.cost*100:.2f}%")
     print("=" * 84)
-    if not trades:
-        print("  NO TRADES today — no fresh ORB breakout hit rvol>=4 in the 9:30-14:00 window.")
-        print("  (This is normal and expected on many days — the filter is selective.)")
-        print("=" * 84); return
 
-    print(f"  {'time':>6}  {'symbol':<12} {'entry':>8} {'stop':>8} {'target':>8}  "
-          f"{'exit':>8} {'why':<9} {'net%':>7}")
-    print("  " + "-" * 78)
-    wins = 0; total = 0.0
-    for t in trades:
-        risk = t["entry"] - t["sl"]
-        net = t["net_ret"] * 100
-        total += net
-        if net > 0:
-            wins += 1
-        print(f"  {t['t_entry'].strftime('%H:%M'):>6}  {t['sym']:<12} "
-              f"{t['entry']:>8.2f} {t['sl']:>8.2f} {t['tp']:>8.2f}  "
-              f"{t['exit']:>8.2f} {t['why']:<9} {net:>+6.2f}%")
+    # ── full trade log ──
+    if trades:
+        print(f"  {'date':>10} {'time':>6}  {'symbol':<11} {'entry':>8} {'stop':>8} "
+              f"{'target':>8} {'exit':>8} {'why':<8} {'net%':>7}")
+        print("  " + "-" * 82)
+        for t in trades:
+            print(f"  {t['t_entry'].strftime('%Y-%m-%d'):>10} {t['t_entry'].strftime('%H:%M'):>6}  "
+                  f"{t['sym']:<11} {t['entry']:>8.2f} {t['sl']:>8.2f} {t['tp']:>8.2f} "
+                  f"{t['exit']:>8.2f} {t['why']:<8} {t['net_ret']*100:>+6.2f}%")
+
+    # ── per-day summary ──
+    print("\n  PER-DAY SUMMARY")
+    print("  " + "-" * 50)
+    print(f"  {'date':>10} {'trades':>7} {'wins':>6} {'net%':>8}")
+    for day in span:
+        dtr = [t for t in trades if t["t_entry"].normalize() == day]
+        if not dtr:
+            print(f"  {day.date()!s:>10} {0:>7} {'-':>6} {'  0.00%':>8}  (no breakout hit rvol>=4)")
+            continue
+        w = sum(1 for t in dtr if t["net_ret"] > 0)
+        net = sum(t["net_ret"] for t in dtr) * 100
+        print(f"  {day.date()!s:>10} {len(dtr):>7} {w:>6} {net:>+7.2f}%")
+
+    # ── grand total ──
     n = len(trades)
-    print("  " + "-" * 78)
-    print(f"  Trades: {n}   Wins: {wins} ({wins/n*100:.0f}%)   "
-          f"Sum of net returns: {total:+.2f}%")
-    print(f"  On ₹2,500/trade that's roughly ₹{total/100*2500:+.0f} gross across the day")
+    print("  " + "-" * 50)
+    if n:
+        wins = sum(1 for t in trades if t["net_ret"] > 0)
+        total = sum(t["net_ret"] for t in trades) * 100
+        print(f"  WEEK TOTAL: {n} trades | {wins} wins ({wins/n*100:.0f}%) | "
+              f"net {total:+.2f}% | ~₹{total/100*2500:+.0f} on ₹2,500/trade")
+    else:
+        print("  WEEK TOTAL: 0 trades — no qualifying breakouts this week (very selective).")
     print("=" * 84)
-    print("  NOTE: this is the validated config on ONE day — a single day is noisy (the")
-    print("  edge shows over ~39 trades/month). It's a realistic preview of the mechanics.")
+    print("  NOTE: even a week is a small sample. The +3.9%/mo edge shows over ~39 trades")
+    print("  (a full month). Judge the MECHANICS here — clean entries, exact 3:1, tight stops.")
 
 
 if __name__ == "__main__":
