@@ -83,6 +83,32 @@ SEL_PINGO  = ["#pinContinueBtn", "button:has-text('Continue')", "button:has-text
               "button[type='submit']"]
 
 
+def _dump_page(page):
+    """Print the real input/button fields + save HTML so selectors can be fixed."""
+    try:
+        print(f"  page url: {page.url}")
+        inputs = page.eval_on_selector_all(
+            "input",
+            "els => els.map(e => ({type:e.type,id:e.id,name:e.name,"
+            "placeholder:e.placeholder,cls:(e.className||'').slice(0,40)}))")
+        btns = page.eval_on_selector_all(
+            "button",
+            "els => els.map(e => ({id:e.id,txt:(e.innerText||'').trim().slice(0,25),"
+            "cls:(e.className||'').slice(0,40)}))")
+        print("  --- INPUTS ON PAGE ---")
+        for i in inputs:
+            print("   IN:", i)
+        print("  --- BUTTONS ON PAGE ---")
+        for b in btns:
+            print("   BT:", b)
+        print(f"  (frames on page: {len(page.frames)})")
+        (_ROOT / "logs" / "login_dump.txt").write_text(
+            f"URL: {page.url}\nINPUTS:\n{inputs}\n\nBUTTONS:\n{btns}")
+        (_ROOT / "logs" / "login_page.html").write_text(page.content())
+    except Exception as e:
+        print("  (page dump failed:", e, ")")
+
+
 def _fill_first(page, selectors, value, debugname, shots):
     for s in selectors:
         try:
@@ -162,11 +188,22 @@ def main():
 
         print("  opening Upstox login ...")
         page.goto(auth_url, wait_until="domcontentloaded", timeout=45000)
+        for st in ("networkidle", "load"):
+            try:
+                page.wait_for_load_state(st, timeout=15000)
+            except Exception:
+                pass
+        try:
+            page.wait_for_selector("input", timeout=15000)   # wait for the SPA to render
+        except Exception:
+            pass
         time.sleep(2)
 
         if not _fill_first(page, SEL_MOBILE, mobile, "mobile", True):
-            print("ERROR: couldn't find the mobile field (Upstox layout changed?). "
-                  "See logs/login_fail_mobile.png. Use get_upstox_token.py for now.")
+            _dump_page(page)
+            print("ERROR: couldn't find the mobile field. The INPUTS/BUTTONS list above "
+                  "shows the REAL fields on Upstox's page — screenshot that and send it to "
+                  "me, and I'll set the exact selector. (Manual login still works meanwhile.)")
             browser.close(); sys.exit(2)
         _click_first(page, SEL_GETOTP, "getotp", True); time.sleep(3)
 
