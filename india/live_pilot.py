@@ -446,15 +446,17 @@ class Pilot:
 def main():
     import argparse
     ap = argparse.ArgumentParser()
-    ap.add_argument("--full-universe", action="store_true",
-                    help="trade all high-vol names (default: ~18 most-liquid only)")
+    ap.add_argument("--liquid-only", action="store_true",
+                    help="trade only the ~18 most-liquid names (far fewer trades, lower slippage)")
     args = ap.parse_args()
     try:
         from dotenv import load_dotenv
         load_dotenv(_ROOT / ".env")
     except Exception:
         pass
-    universe = HIGH_VOL_UNIVERSE if args.full_universe else TOP_LIQUID
+    # DEFAULT = the FULL validated universe (matches the +3.9%/mo, ~39 trades/mo backtest).
+    # --liquid-only trades the narrow subset (fewer trades, cleaner slippage) if wanted.
+    universe = TOP_LIQUID if args.liquid_only else HIGH_VOL_UNIVERSE
     log.warning(f"Universe: {'FULL' if args.full_universe else 'TOP-LIQUID'} "
                 f"({len(universe)} names) — liquid names = lower slippage = cleaner read")
     Pilot(universe=universe).run()

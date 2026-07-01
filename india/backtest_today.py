@@ -19,9 +19,10 @@ sys.path.insert(0, str(_HERE)); sys.path.insert(0, str(_HERE.parent))
 import orb_fast as of
 import strategy_lab as sl
 from live_pilot import TOP_LIQUID, RV_MIN, WIDE_SL, MAX_RR
+from fetch_midcaps import HIGH_VOL_UNIVERSE
 
 
-def _fetch(days: int) -> dict:
+def _fetch(days: int, universe: list) -> dict:
     import data_fetch_upstox as dfu
     from auth_upstox import get_upstox_client, verify_connection
     import backtest_engine_india as bk
@@ -32,9 +33,9 @@ def _fetch(days: int) -> dict:
     dfu.set_upstox_client(client)
     to = datetime.date.today()
     frm = to - datetime.timedelta(days=days)
-    print(f"  Fetching {len(TOP_LIQUID)} symbols, last {days} days ...")
+    print(f"  Fetching {len(universe)} symbols, last {days} days ...")
     data = {}
-    for s in TOP_LIQUID:
+    for s in universe:
         try:
             df = bk._fetch(client, s, frm.strftime("%Y-%m-%d"), to.strftime("%Y-%m-%d"))
             if df is not None and len(df) > 20:
@@ -50,16 +51,19 @@ def main():
     ap.add_argument("--days", type=int, default=10, help="calendar days to fetch")
     ap.add_argument("--last", type=int, default=5, help="how many trading days to show (5 ~= 1 week)")
     ap.add_argument("--cost", type=float, default=0.0018, help="round-trip cost for net P&L")
+    ap.add_argument("--full", action="store_true",
+                    help="full validated universe (~39 trades/mo) instead of the 18 liquid names")
     args = ap.parse_args()
 
+    universe = HIGH_VOL_UNIVERSE if args.full else TOP_LIQUID
     if args.cache:
         p = Path(args.cache)
         if not p.is_absolute():
             p = _HERE / p
         raw = pickle.load(open(p, "rb"))
-        raw = {k: raw[k] for k in TOP_LIQUID if k in raw}
+        raw = {k: raw[k] for k in universe if k in raw}
     else:
-        raw = _fetch(args.days)
+        raw = _fetch(args.days, universe)
     if not raw:
         print("ERROR: no data."); sys.exit(1)
 
