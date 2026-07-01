@@ -185,6 +185,13 @@ def main():
             if "code=" in (page.url or ""):
                 q = urllib.parse.urlparse(page.url).query
                 code_box["code"] = urllib.parse.parse_qs(q).get("code", [None])[0]
+        if not code_box["code"]:
+            # save the final page so we can see where it got stuck (headless debugging)
+            try:
+                page.screenshot(path=str(_ROOT / "logs" / "login_final_state.png"))
+                (_ROOT / "logs" / "login_final_url.txt").write_text(page.url or "")
+            except Exception:
+                pass
         browser.close()
 
     code = code_box["code"]
