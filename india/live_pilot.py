@@ -12,7 +12,7 @@ two long-only edges are profitable and walk-forward robust:
     High rvol = fewer/stronger trades = less cost drag = robust net profit at ~0.18% cost
     (i.e. at ₹1L+ position size). At ₹5k pilot size the cost is higher, so the pilot
     measures slippage rather than profits.
-      MOM_EARLY  (9:30-11:00) and MOM_LATE (11:00-13:00): both 1.5xATR stop, 3R target.
+      MOM_EARLY (9:30-11:00) and MOM_LATE (11:00-14:00): both 1.5xATR stop, 3R target.
 The existing main_india.py runs the OLD buggy engine, so it would NOT trade this
 edge. This module reproduces the backtest signal EXACTLY on live data and trades
 it, with hard pilot-grade safety.
@@ -81,8 +81,8 @@ PER_POS_CAP       = MAX_PILOT_CAPITAL / MAX_OPEN
 MAX_DAILY_LOSS    = 300.0       # ₹: stop ALL new entries for the day if realized loss hits this
 STALE_FEED_CYCLES = 4           # force-flatten an open position if its price is unavailable this many loops
 ENTRY_START       = dtime(9, 30)
-ENTRY_CUTOFF      = dtime(13, 0)   # WIDE_MOMENTUM window
-RANGE_CUTOFF      = dtime(11, 0)   # RANGE_BREAK_HOLD only takes early breaks
+ENTRY_CUTOFF      = dtime(14, 0)   # matches the validated backtest window (9:30-14:00)
+RANGE_CUTOFF      = dtime(11, 0)   # split point between the two entry-time labels
 SQUAREOFF         = dtime(15, 25)
 MARKET_OPEN       = dtime(9, 15)
 LOOP_SECONDS      = 45
@@ -157,11 +157,11 @@ def detect_signal(d, now: datetime):
     fresh = (c > trig) and (pc <= trig)            # first close above the ORB high
     if not (fresh and rvol >= RV_MIN):
         return None
-    # same entry; differ only by stop width + entry time window (both target 3R)
+    # same entry + same 1.5xATR stop + same 3R target; only the time-label differs
     if ENTRY_START <= t < RANGE_CUTOFF:
-        return ("MOM_EARLY", trig, HOLD_SL * atr, atr)     # wider 2.0xATR stop
+        return ("MOM_EARLY", trig, HOLD_SL * atr, atr)     # 1.5xATR stop
     if RANGE_CUTOFF <= t < ENTRY_CUTOFF:
-        return ("MOM_LATE", trig, WIDE_SL * atr, atr)      # tighter 1.5xATR stop
+        return ("MOM_LATE", trig, WIDE_SL * atr, atr)      # 1.5xATR stop
     return None
 
 
@@ -270,8 +270,12 @@ class Pilot:
             self.stats["too_pricey"] += 1
             log.info(f"{sym} {strat}: too pricey for ₹{budget:.0f} (ltp {ltp:.2f}) — skip")
             return
-        sl = round(ltp - sl_dist, 2)
-        target = round(ltp + MAX_RR * sl_dist, 2)   # capped 3:1 target on EVERY trade
+        # skip if the 3:1 target can't clear the round-trip cost (matches the backtest's
+        # _mk filter) — avoids taking a trade that can't profit even if it hits target.
+        if (MAX_RR * sl_dist) / ltp < of.COST_RT_PCT:
+            self.stats["too_pricey"] += 1
+            log.info(f"{sym} {strat}: 3R target too small to clear costs — skip")
+            return
         # mark done_today BEFORE the (blocking) order call so a retry can't double-fire
         self.done_today.add(sym)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
@@ -285,6 +289,10 @@ class Pilot:
                         f"qty={filled} px={res.fill_price}) — no position recorded")
             return
         fill = res.fill_price
+        # SL and 3:1 target anchored to the ACTUAL fill so real risk:reward is exactly
+        # 1:MAX_RR. (Previously computed from pre-entry ltp, so slippage skewed the ratio.)
+        sl = round(fill - sl_dist, 2)
+        target = round(fill + MAX_RR * sl_dist, 2)
         slip_bps = (fill - trigger) / trigger * 1e4
         self.stats["filled"] += 1
         self.stats["slips_bps"].append(slip_bps)
