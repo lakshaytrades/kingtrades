@@ -33,26 +33,39 @@ sys.path.insert(0, str(_HERE.parent))
 
 OUT_FILE = _HERE / "midcap_cache.pkl"
 
-# Liquid, high-beta / high-range NSE names. These move 2-4%+ intraday — a far
-# better move-to-cost ratio than Nifty-50 large-caps. All cash-segment equity
-# (MIS intraday eligible). Curated for liquidity so fills are realistic.
+# ~130 liquid F&O / high-turnover NSE names (high-beta cyclicals, PSU banks, Adani,
+# power/infra, new-age, autos, IT, energy, plus large-cap liquids for breadth).
+# All cash-segment equity, MIS intraday eligible. Names not in the Upstox instrument
+# map are skipped at fetch time, netting ~100-120 tradeable symbols.
 HIGH_VOL_UNIVERSE = [
     # metals / PSU / high-beta cyclicals
     "TATASTEEL", "TATAMOTORS", "HINDALCO", "VEDL", "JSWSTEEL", "SAIL", "NMDC",
-    "NATIONALUM", "JINDALSTEL", "HINDCOPPER",
+    "NATIONALUM", "JINDALSTEL", "HINDCOPPER", "APLAPOLLO", "JSL",
     # PSU banks / NBFC (very volatile intraday)
     "PNB", "BANKBARODA", "CANBK", "UNIONBANK", "IDFCFIRSTB", "BANDHANBNK",
-    "AUBANK", "YESBANK", "RBLBANK", "FEDERALBNK",
+    "AUBANK", "YESBANK", "RBLBANK", "FEDERALBNK", "INDUSINDBK", "BANKINDIA",
+    "CHOLAFIN", "MUTHOOTFIN", "MANAPPURAM", "PFC", "RECLTD", "SBICARD", "BAJFINANCE",
     # Adani / power / infra
-    "ADANIENT", "ADANIPORTS", "ADANIPOWER", "TATAPOWER", "NHPC", "SJVN",
-    "RVNL", "IRFC", "IRCTC", "BHEL", "BEL", "HAL",
+    "ADANIENT", "ADANIPORTS", "ADANIPOWER", "ADANIGREEN", "ADANIENSOL", "TATAPOWER",
+    "NHPC", "SJVN", "RVNL", "IRFC", "IRCTC", "BHEL", "BEL", "HAL", "NTPC", "POWERGRID",
+    "GMRAIRPORT", "IREDA", "COCHINSHIP", "MAZDOCK", "NBCC", "RAILTEL",
     # new-age / high-beta
-    "ZOMATO", "PAYTM", "POLICYBZR", "NYKAA", "DELHIVERY", "JIOFIN", "IDEA",
+    "ZOMATO", "PAYTM", "POLICYBZR", "NYKAA", "DELHIVERY", "JIOFIN", "IDEA", "IEX",
     # autos / auto-ancillary
-    "ASHOKLEY", "MOTHERSON", "BALKRISIND", "TVSMOTOR", "BHARATFORG",
-    # IT mid / others with range
-    "PERSISTENT", "COFORGE", "LTIM", "DIXON", "DLF", "GODREJPROP", "INDHOTEL",
-    "LICHSGFIN", "GAIL", "BPCL", "IOC", "OFSS", "POLYCAB",
+    "ASHOKLEY", "MOTHERSON", "BALKRISIND", "TVSMOTOR", "BHARATFORG", "M&M",
+    "MARUTI", "EICHERMOT", "HEROMOTOCO", "EXIDEIND", "BOSCHLTD",
+    # IT / others with range
+    "PERSISTENT", "COFORGE", "LTIM", "DIXON", "OFSS", "TECHM", "WIPRO", "HCLTECH",
+    "KPITTECH", "TATATECH", "TATAELXSI",
+    # energy / cement / infra / realty
+    "GAIL", "BPCL", "IOC", "ONGC", "OIL", "PETRONET", "IGL", "GUJGASLTD",
+    "DLF", "GODREJPROP", "LODHA", "OBEROIRLTY", "PRESTIGE", "POLYCAB", "AMBUJACEM",
+    "ACC", "SHREECEM", "LT", "SIEMENS", "ABB", "CUMMINSIND", "BHARATELE",
+    # large-cap liquids for breadth
+    "RELIANCE", "SBIN", "AXISBANK", "ICICIBANK", "HDFCBANK", "BHARTIARTL",
+    "ITC", "TITAN", "TRENT", "INDHOTEL", "LICHSGFIN", "SRF", "PIDILITIND",
+    "TATACONSUM", "TATACOMM", "TATACHEM", "ESCORTS", "ABFRL", "INDUSTOWER",
+    "SUNPHARMA", "CIPLA", "DRREDDY", "AUROPHARMA", "LUPIN", "DIVISLAB",
 ]
 
 
