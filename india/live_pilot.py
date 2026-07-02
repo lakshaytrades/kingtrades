@@ -457,8 +457,8 @@ def main():
     # DEFAULT = the FULL validated universe (matches the +3.9%/mo, ~39 trades/mo backtest).
     # --liquid-only trades the narrow subset (fewer trades, cleaner slippage) if wanted.
     universe = TOP_LIQUID if args.liquid_only else HIGH_VOL_UNIVERSE
-    log.warning(f"Universe: {'FULL' if args.full_universe else 'TOP-LIQUID'} "
-                f"({len(universe)} names) — liquid names = lower slippage = cleaner read")
+    log.warning(f"Universe: {'TOP-LIQUID' if args.liquid_only else 'FULL'} "
+                f"({len(universe)} names)")
     Pilot(universe=universe).run()
 
 
