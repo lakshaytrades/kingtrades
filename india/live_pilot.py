@@ -188,6 +188,7 @@ class Pilot:
         self.realized_pnl = 0.0        # ₹ realized today; drives the daily-loss circuit breaker
         self.halted = False            # True once MAX_DAILY_LOSS hit -> no new entries
         self.ltp_fail: dict = {}       # sym -> consecutive price-fetch failures (stale-feed guard)
+        self.scan_diag = "starting…"   # last scan summary, shown in the heartbeat
         # slippage / fill-quality measurement — the whole point of the pilot
         self.stats = {"signals": 0, "filled": 0, "chased_skip": 0,
                       "too_pricey": 0, "slips_bps": [], "net_pcts": []}
@@ -228,9 +229,14 @@ class Pilot:
             log.warning(f"DAILY LOSS LIMIT hit: realized ₹{self.realized_pnl:.0f} "
                         f"(limit −₹{MAX_DAILY_LOSS:.0f}) — NO new entries today.")
         if self.halted:
+            self.scan_diag = "halted (daily-loss limit hit)"
             return
         if len(self.positions) >= MAX_OPEN:
+            self.scan_diag = f"{MAX_OPEN} positions open (max)"
             return
+        scanned = 0
+        best_rv = 0.0
+        best_sym = ""
         for sym in self.universe:
             if sym in self.positions or sym in self.done_today:
                 continue
@@ -245,6 +251,14 @@ class Pilot:
                 d = of._prep_symbol(raw)
                 if d is None:
                     continue
+                scanned += 1
+                # diagnostic: track the strongest volume surge seen (proves it's scanning
+                # and shows how close anything came to the rvol>=RV_MIN trigger)
+                _i = _last_closed_idx(d, now)
+                if _i is not None:
+                    _rv = float(d.iloc[_i].get("rvol", 0) or 0)
+                    if _rv > best_rv:
+                        best_rv, best_sym = _rv, sym
                 sig = detect_signal(d, now)
                 if not sig:
                     continue
@@ -253,6 +267,8 @@ class Pilot:
                 self._enter(sym, strat, trigger, sl_dist, atr)
             except Exception as e:
                 log.debug(f"scan {sym}: {e}")
+        self.scan_diag = (f"scanned {scanned}/{len(self.universe)} | "
+                          f"strongest rvol {best_rv:.1f} ({best_sym or '-'}) [need ≥{RV_MIN}]")
 
     def _enter(self, sym, strat, trigger, sl_dist, atr):
         sec_id = self.dfu.get_security_id(sym)
@@ -437,7 +453,7 @@ class Pilot:
                 self.scan(now)
                 log.info(f"{now:%H:%M:%S} | open={len(self.positions)} "
                          f"deployed=₹{self.deployed():.0f}/{MAX_PILOT_CAPITAL:.0f} "
-                         f"| {', '.join(self.positions) or 'flat'}")
+                         f"| {', '.join(self.positions) or 'flat'} | {self.scan_diag}")
                 _time.sleep(LOOP_SECONDS)
         finally:
             self.report()
