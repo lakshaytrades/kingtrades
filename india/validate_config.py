@@ -39,6 +39,10 @@ def main():
     ap.add_argument("--sl", type=float, default=2.0)
     ap.add_argument("--rr", type=float, default=1.5)
     ap.add_argument("--be", type=float, default=None)
+    ap.add_argument("--trail-arm", type=float, default=None,
+                    help="R-multiple at which the trailing stop arms (live default 2.0)")
+    ap.add_argument("--trail-atr", type=float, default=None,
+                    help="trail width in ATR once armed (live default 1.5)")
     ap.add_argument("--cost", type=float, default=0.0018, help="your expected real cost")
     ap.add_argument("--max-symbols", type=int, default=150)
     args = ap.parse_args()
@@ -53,11 +57,14 @@ def main():
         if pp is not None:
             prepped[s] = pp
     n_days = len({d for pp in prepped.values() for d in pp.index.normalize().unique()})
-    params = {"rv": args.rv, "sl": args.sl, "rr": args.rr, "be": args.be}
+    params = {"rv": args.rv, "sl": args.sl, "rr": args.rr, "be": args.be,
+              "trail_arm": args.trail_arm, "trail_atr": args.trail_atr}
 
+    lock = ""
+    if args.be:        lock += f", breakeven={args.be}R"
+    if args.trail_arm: lock += f", trail@{args.trail_arm}R/{args.trail_atr}xATR"
     print("=" * 78)
-    print(f"  VALIDATE CONFIG: rv={args.rv}, SL={args.sl}xATR, RR={args.rr}"
-          + (f", breakeven={args.be}" if args.be else ""))
+    print(f"  VALIDATE CONFIG: rv={args.rv}, SL={args.sl}xATR, RR={args.rr}{lock}")
     print(f"  {len(prepped)} symbols, {n_days} trading days")
     print("=" * 78)
 
