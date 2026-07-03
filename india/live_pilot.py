@@ -432,7 +432,25 @@ class Pilot:
         log.warning("  risk capital. If 'below target' everywhere, intraday won't hit +4%.")
         log.warning("=" * 64)
 
+    def _reconcile_on_start(self):
+        """Clean slate on startup: flatten any pre-existing intraday positions so a
+        restart can't orphan positions (unmanaged, no stop) or stack past MAX_OPEN /
+        the ₹cap. Runs only in live mode."""
+        if not self.live:
+            return
+        try:
+            pos = self.exec.get_open_positions()
+            if pos:
+                syms = [p.get("symbol") for p in pos]
+                log.warning(f"STARTUP RECONCILE — found {len(pos)} pre-existing intraday "
+                            f"position(s) {syms} from a prior run. Flattening for a clean "
+                            f"slate so caps are respected.")
+                self.exec.square_off_all(pos)
+        except Exception as e:
+            log.error(f"startup reconcile failed: {e} — check the broker app manually")
+
     def run(self):
+        self._reconcile_on_start()
         try:
             while True:
                 if KILL_FILE.exists():
