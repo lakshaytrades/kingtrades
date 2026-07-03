@@ -100,6 +100,22 @@ HOLD_SL    = 1.5     # ATR mult — stop (unified to the validated 1.5xATR)
 MAX_RR     = 3.0     # reward capped at 3x risk for EVERY trade (risk 1 : reward <= 3)
 TRIGGER_BUF = of.TRIGGER_BUF
 
+# ── LATE profit-lock (trailing stop + breakeven move) ─────────────────────────
+# The manage() loop polls every LOOP_SECONDS (well under the "check every ~30 min"
+# ask) and ratchets each winner's stop UP so profit gets locked in — while never
+# touching a trade that hasn't clearly won yet.
+#   * At +LP_ARM_BE_R risk in profit -> move the stop to the entry (breakeven): the
+#     trade can no longer become a loss.
+#   * At +LP_ARM_TRAIL_R -> switch on a trailing stop that follows LP_TRAIL_ATR x ATR
+#     under the highest price seen; it only ever tightens, never loosens.
+#   * The +MAX_RR (3:1) hard target still stands — a fast spike to 3R still books there.
+# Armed LATE on purpose: an early breakeven (+1R) was tested and REDUCED returns because
+# it killed mid-trades that would have run to 3R. Sub-1.5R trades here are untouched, so
+# the runner edge is preserved; only clearly-winning trades get their profit protected.
+LP_ARM_BE_R    = 1.5   # move SL -> entry once profit reaches this many R
+LP_ARM_TRAIL_R = 2.0   # arm the trailing stop once profit reaches this many R
+LP_TRAIL_ATR   = 1.5   # trail this many ATR under the high-water mark once armed
+
 # ── Logging ───────────────────────────────────────────────────────────────────
 (_ROOT / "logs").mkdir(exist_ok=True)
 _logfile = _ROOT / "logs" / f"live_pilot_{datetime.now(IST):%Y-%m-%d}.log"
@@ -314,7 +330,10 @@ class Pilot:
         self.stats["slips_bps"].append(slip_bps)
         self.positions[sym] = {"qty": filled, "entry": fill, "sl": sl,
                                "target": target, "strat": strat, "sec_id": sec_id,
-                               "t_in": now_ist(), "trigger": trigger}
+                               "t_in": now_ist(), "trigger": trigger,
+                               # profit-lock state (see LP_ARM_* constants)
+                               "sl_dist": sl_dist, "atr": atr, "hi": fill,
+                               "be_armed": False, "trail_armed": False}
         log.warning(f"ENTER {strat} {sym} qty={filled} trig={trigger:.2f} "
                     f"fill={fill:.2f} slip={slip_bps:+.1f}bps SL={sl:.2f} "
                     f"tgt={target or 'hold'} notional=₹{filled*fill:.0f}")
@@ -341,15 +360,52 @@ class Pilot:
                                     f"{STALE_FEED_CYCLES}) — stop not checked this cycle")
                     continue
                 self.ltp_fail[sym] = 0                 # feed recovered
+                self._ratchet_stop(sym, p, ltp)        # lock profit: move SL up as it wins
                 reason = None
                 if ltp <= p["sl"]:
-                    reason = "SL"
+                    # label the exit by which mechanism set the stop, for the EOD log
+                    reason = ("TRAIL" if p.get("trail_armed")
+                              else "BE" if p.get("be_armed") else "SL")
                 elif p["target"] and ltp >= p["target"]:
                     reason = "TARGET"
                 if reason:
                     self._exit(sym, ltp, reason)
             except Exception as e:
                 log.error(f"{sym}: manage() error: {e} — position still OPEN, retry next cycle")
+
+    def _ratchet_stop(self, sym, p, ltp):
+        """Move the stop UP (never down) as an in-profit trade runs, to lock gains.
+
+        No-op for positions lacking sl_dist/atr (e.g. legacy/reconciled). Two stages,
+        both armed LATE so sub-1.5R trades are untouched and the runner edge is kept:
+          +LP_ARM_BE_R    -> stop to entry (breakeven)
+          +LP_ARM_TRAIL_R -> trailing stop LP_TRAIL_ATR x ATR under the high-water mark
+        """
+        sl_dist = p.get("sl_dist")
+        atr = p.get("atr")
+        if not sl_dist or sl_dist <= 0:
+            return
+        entry = p["entry"]
+        p["hi"] = max(p.get("hi", entry), ltp)         # running high-water mark
+        gain_r = (ltp - entry) / sl_dist               # profit in units of initial risk
+        old_sl = p["sl"]
+        new_sl = old_sl
+        # stage 1: breakeven
+        if not p.get("be_armed") and gain_r >= LP_ARM_BE_R:
+            new_sl = max(new_sl, entry)
+            p["be_armed"] = True
+        # stage 2: trailing stop (needs a valid ATR for the trail width)
+        if atr and atr > 0:
+            if not p.get("trail_armed") and gain_r >= LP_ARM_TRAIL_R:
+                p["trail_armed"] = True
+            if p.get("trail_armed"):
+                new_sl = max(new_sl, p["hi"] - LP_TRAIL_ATR * atr)
+        if new_sl > old_sl + 1e-9:                     # only ever tighten
+            p["sl"] = round(new_sl, 2)
+            tag = "TRAIL" if p.get("trail_armed") else "BE"
+            log.warning(f"{sym} {tag}: stop {old_sl:.2f} -> {p['sl']:.2f} "
+                        f"(ltp {ltp:.2f}, +{gain_r:.1f}R, locks "
+                        f"₹{(p['sl'] - entry) * p['qty']:+.0f})")
 
     def _exit(self, sym, ltp, reason):
         p = self.positions.pop(sym)

@@ -95,7 +95,7 @@ def _prep(df: pd.DataFrame):
 # ── Strategy candidate generators (all long-only) ─────────────────────────────
 # Each returns a list of dicts: {i, t_entry, day, entry, sl, tp, sl_dist}
 
-def _mk(idx, i, entry, sl, tp):
+def _mk(idx, i, entry, sl, tp, atr=None):
     sl_dist = entry - sl
     if sl_dist <= 0 or tp <= entry:
         return None
@@ -103,7 +103,8 @@ def _mk(idx, i, entry, sl, tp):
         return None
     return {"i": int(i), "t_entry": idx[i], "day": idx[i].normalize(),
             "entry": float(entry), "sl": float(sl), "tp": float(tp),
-            "sl_dist": float(sl_dist)}
+            "sl_dist": float(sl_dist),
+            "atr": float(atr) if atr is not None else None}  # for optional trailing stop
 
 
 def s_orb(d, p):
@@ -117,7 +118,8 @@ def s_orb(d, p):
     out = []
     for i in np.flatnonzero(sig):
         entry = max(min(trig[i] * (1 + SLIP), float(h[i])), float(o[i]))
-        m = _mk(idx, i, entry, entry - p["sl"] * atr[i], entry + p["rr"] * p["sl"] * atr[i])
+        m = _mk(idx, i, entry, entry - p["sl"] * atr[i], entry + p["rr"] * p["sl"] * atr[i],
+                atr=atr[i])
         if m: out.append(m)
     return out
 
@@ -178,7 +180,7 @@ def s_range_hold(d, p):
         entry = max(min(trig[i] * (1 + SLIP), float(h[i])), float(o[i]))
         sl = entry - p["sl"] * atr[i]
         tp = entry + 20.0 * atr[i]                  # effectively "never" -> exits at squareoff
-        m = _mk(idx, i, entry, sl, tp)
+        m = _mk(idx, i, entry, sl, tp, atr=atr[i])
         if m: out.append(m)
     return out
 
@@ -199,6 +201,12 @@ STRATS = {
                                           {"rv": 2.0, "sl": 2.0, "be": 0.5}]),
     "MOM_SAFE_3R_BE":   (s_wide_mom,     [{"rv": 2.0, "sl": 1.5, "rr": 3.0, "be": 1.0},
                                           {"rv": 2.0, "sl": 1.5, "rr": 2.0, "be": 1.0}]),
+    # ── LATE profit-lock: keep the 3R target AND the runners, but once a trade is
+    # clearly winning, protect it. be arms at +1.5R (SL->entry); trail arms at +2R and
+    # follows 1.5xATR under the high. Sub-1.5R trades are UNTOUCHED (unlike be=1.0).
+    # This is the variant deployed live (LP_ARM_BE_R / LP_ARM_TRAIL_R / LP_TRAIL_ATR).
+    "MOM_3R_LATELOCK":  (s_wide_mom,     [{"rv": 4.0, "sl": 1.5, "rr": 3.0,
+                                           "be": 1.5, "trail_arm": 2.0, "trail_atr": 1.5}]),
 }
 
 
@@ -212,7 +220,9 @@ def run_strat(prepped, gen, params, cost=None):
         for sym, d in prepped.items():
             for cand in gen(d, params):
                 cand["sym"] = sym
-                cand["be"] = params.get("be")     # optional breakeven-stop R-multiple
+                cand["be"] = params.get("be")             # optional breakeven-stop R-mult
+                cand["trail_arm"] = params.get("trail_arm")  # R-mult to arm trailing stop
+                cand["trail_atr"] = params.get("trail_atr")  # trail width in ATR
                 trades.append(of._resolve_exit(d, cand))
         m = of._simulate(trades)
     finally:

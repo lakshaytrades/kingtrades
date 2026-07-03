@@ -160,6 +160,7 @@ def _candidates(d: pd.DataFrame, rv_thresh: float, sl_mult: float, rr: float) ->
         out.append({
             "sym": None, "i": int(i), "t_entry": idx[i], "day": idx[i].normalize(),
             "entry": entry, "sl": sl, "tp": tp, "sl_dist": sl_dist,
+            "atr": float(atr[i]),      # ATR at entry (used for the optional trailing stop)
         })
     return out
 
@@ -167,10 +168,18 @@ def _candidates(d: pd.DataFrame, rv_thresh: float, sl_mult: float, rr: float) ->
 def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     """Walk forward within the same day: SL (pessimistic tie) -> TP -> square-off.
 
-    Optional safety: cand["be"] = R-multiple at which to move the stop to breakeven
-    (entry). e.g. be=1.0 -> once price gains 1x the initial risk, the stop becomes the
-    entry price, so a winner can't turn back into a loser. Armed for FUTURE bars only
-    (no same-bar lookahead)."""
+    Optional profit-protection (all armed for FUTURE bars only — no same-bar lookahead):
+      * cand["be"]        = R-multiple at which to move the stop to breakeven (entry).
+                            e.g. be=1.0 -> once price gains 1x the initial risk the stop
+                            becomes the entry, so the winner can't turn back into a loser.
+      * cand["trail_arm"] = R-multiple profit at which a TRAILING stop switches on.
+      * cand["trail_atr"] = trail distance (in ATR) below the running high-water mark
+                            once armed. The stop only ever ratchets UP, never down.
+
+    Design note: this strategy's edge comes from runners reaching the ~3R target, so an
+    early breakeven (be=1.0) HURTS it (kills mid-trades that would have run). Arm any
+    protection LATE (be≈1.5R, trail≈2R) so sub-1.5R trades behave exactly as before and
+    only clearly-winning trades get their profit locked."""
     i = cand["i"]
     idx = d.index
     h = d["high"].to_numpy()
@@ -179,9 +188,16 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     day = cand["day"]
     sl, tp = cand["sl"], cand["tp"]
     entry, risk = cand["entry"], cand["sl_dist"]
+    atr = cand.get("atr")                            # ATR at entry (for the trail width)
     be_r = cand.get("be")
     be_trigger = entry + be_r * risk if be_r else None
     be_armed = False
+    trail_arm_r = cand.get("trail_arm")
+    trail_atr = cand.get("trail_atr")
+    trail_trigger = (entry + trail_arm_r * risk
+                     if (trail_arm_r and trail_atr and atr) else None)
+    trail_armed = False
+    hi_water = entry                                 # running high-water mark
 
     j = i + 1
     n = len(d)
@@ -190,12 +206,21 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
         if idx[j].time() >= SQUAREOFF:
             exit_px = float(c[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
         if lo[j] <= sl:                              # SL wins same-bar ties (pessimistic)
-            return _close(cand, idx[j], sl, "BE" if be_armed else "SL")
+            why = "TRAIL" if trail_armed else ("BE" if be_armed else "SL")
+            return _close(cand, idx[j], sl, why)
         if h[j] >= tp:
             return _close(cand, idx[j], tp, "TP")
         # arm breakeven for the NEXT bar once this bar reaches the trigger (no lookahead)
         if be_trigger is not None and not be_armed and h[j] >= be_trigger:
             sl = max(sl, entry); be_armed = True
+        # arm the trailing stop once this bar reaches the trail trigger, then ratchet it
+        # up as the high-water mark rises (only tightens — never loosens the stop)
+        if trail_trigger is not None:
+            hi_water = max(hi_water, float(h[j]))
+            if not trail_armed and h[j] >= trail_trigger:
+                trail_armed = True
+            if trail_armed:
+                sl = max(sl, hi_water - trail_atr * atr)
         j += 1
     # ran out of same-day bars -> exit at last available close of the day
     last = j - 1 if j - 1 >= 0 else i
