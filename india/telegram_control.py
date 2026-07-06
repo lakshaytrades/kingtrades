@@ -59,6 +59,15 @@ def _now() -> str:
     return datetime.now(IST).strftime("%H:%M:%S IST")
 
 
+def _pilot_pids() -> list[int]:
+    try:
+        out = subprocess.run(["pgrep", "-f", "live_pilot.py"], capture_output=True,
+                             text=True, timeout=10).stdout.split()
+        return [int(p) for p in out if p.isdigit()]
+    except Exception:
+        return []
+
+
 class Bot:
     def __init__(self, token: str, chat_id: str):
         self.api = f"https://api.telegram.org/bot{token}"
@@ -99,10 +108,11 @@ class Bot:
         arg = parts[1].strip() if len(parts) > 1 else ""
 
         if cmd in ("/help", "/start"):
-            return ("Token commands:\n"
+            return ("Commands:\n"
                     "/token — auto-refresh the Upstox token\n"
                     "/settoken <url|token> — manual fallback (paste the redirect "
-                    "URL from a phone-browser login, or a raw access token)")
+                    "URL from a phone-browser login, or a raw access token)\n"
+                    "/run — fresh token + start LIVE trading (one step)")
 
         if cmd == "/token":
             self.send("refreshing token (takes ~15s) ...")
@@ -122,7 +132,20 @@ class Bot:
                         "/settoken <access-token>")
             return self._settoken(arg)
 
-        return "this bot only handles the token — /help"
+        if cmd == "/run":
+            # run_pilot.sh refreshes the token itself first, then starts the pilot —
+            # so this one command = "start trading with a fresh token".
+            if _pilot_pids():
+                return "pilot already RUNNING — nothing to do"
+            if (_ROOT / "KILL").exists():
+                (_ROOT / "KILL").unlink()           # explicit /run overrides a stale kill
+            subprocess.Popen(["nohup", "bash", str(_HERE / "run_pilot.sh"), "live"],
+                             cwd=_ROOT, stdout=subprocess.DEVNULL,
+                             stderr=subprocess.DEVNULL, start_new_session=True)
+            return ("starting: token refresh + LIVE pilot (₹5k cap). Give it ~60s. "
+                    "It trades 9:30-14:00 IST and squares off 15:25 on its own.")
+
+        return "unknown command — /help"
 
     def _settoken(self, arg: str) -> str:
         sys.path.insert(0, str(_HERE))
