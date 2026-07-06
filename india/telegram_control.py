@@ -128,8 +128,23 @@ class Bot:
 
         if cmd == "/settoken":
             if not arg:
-                return ("usage: /settoken <redirect-url-with-?code=...>  OR  "
-                        "/settoken <access-token>")
+                # no argument -> send the user THEIR login link + exact steps
+                from urllib.parse import quote
+                key = os.getenv("UPSTOX_API_KEY", "").strip()
+                redir = os.getenv("UPSTOX_REDIRECT_URI", "").strip()
+                if not key or not redir:
+                    return "UPSTOX_API_KEY / UPSTOX_REDIRECT_URI missing in .env"
+                url = ("https://api.upstox.com/v2/login/authorization/dialog"
+                       f"?response_type=code&client_id={quote(key, safe='')}"
+                       f"&redirect_uri={quote(redir, safe='')}")
+                return ("Manual token — 3 steps:\n\n"
+                        f"1. Tap this link and log in to Upstox:\n{url}\n\n"
+                        "2. After login the browser lands on a page whose ADDRESS "
+                        "contains ?code=... — copy that whole address (it may show "
+                        "an error page; that's fine, only the address matters).\n\n"
+                        "3. Send it back to me like:\n"
+                        "/settoken https://...code=XXXX\n"
+                        "(one space after /settoken)")
             return self._settoken(arg)
 
         if cmd == "/run":
