@@ -24,10 +24,14 @@ MODE="${1:-paper}"
   echo "================================================================"
   echo "=== pilot launch $(date -u '+%Y-%m-%d %H:%M:%S') UTC | mode=$MODE ==="
   echo "================================================================"
-  # Optional Upstox token auto-renew (no-op if TOTP creds are absent).
-  # Hands-off daily token via headless-browser TOTP login (if creds are in .env).
-  # Falls through silently if Playwright/creds aren't set — then you do the 60s manual login.
-  python3 india/auto_login_upstox.py || echo "auto-login unavailable — use get_upstox_token.py"
+  # Daily token auto-renew, two attempts:
+  #  1) auto_login_totp.py — NO browser: direct API flow with Chrome TLS impersonation
+  #     (works where headless Playwright was bot-blocked). Needs curl_cffi + pyotp.
+  #  2) auto_login_upstox.py — old headless-browser fallback.
+  # If both fail you still have the 60s manual flow (get_upstox_token.py).
+  python3 india/auto_login_totp.py \
+    || python3 india/auto_login_upstox.py \
+    || echo "AUTO-LOGIN FAILED — run: python3 india/get_upstox_token.py"
 } >> "$LOG" 2>&1
 
 if [ "$MODE" = "live" ]; then
