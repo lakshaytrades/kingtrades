@@ -29,9 +29,12 @@ MODE="${1:-paper}"
   #     (works where headless Playwright was bot-blocked). Needs curl_cffi + pyotp.
   #  2) auto_login_upstox.py — old headless-browser fallback.
   # If both fail you still have the 60s manual flow (get_upstox_token.py).
-  python3 india/auto_login_totp.py \
-    || python3 india/auto_login_upstox.py \
-    || echo "AUTO-LOGIN FAILED — run: python3 india/get_upstox_token.py"
+  if python3 india/auto_login_totp.py || python3 india/auto_login_upstox.py; then
+    python3 india/telegram_control.py --notify "✅ Upstox token refreshed — pilot starting ($MODE)" || true
+  else
+    echo "AUTO-LOGIN FAILED — run: python3 india/get_upstox_token.py"
+    python3 india/telegram_control.py --notify "❌ Upstox auto-login FAILED — send /token to retry, or /settoken <url> after logging in on your phone" || true
+  fi
 } >> "$LOG" 2>&1
 
 if [ "$MODE" = "live" ]; then
