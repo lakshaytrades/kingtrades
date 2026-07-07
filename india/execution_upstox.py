@@ -105,8 +105,19 @@ class UpstoxExecutor:
                 oid = self._place(security_id, txn, qty, "MARKET")
                 if oid:
                     fp, fq = self._wait_for_fill(oid)
-                    return OrderResult(True, order_id=oid, fill_price=fp,
-                                       quantity=fq, message="Filled")
+                    if fq >= 1 and fp > 0:
+                        return OrderResult(True, order_id=oid, fill_price=fp,
+                                           quantity=fq, message="Filled")
+                    # placement succeeded but fill NOT confirmed. One last status
+                    # check, then report failure HONESTLY — success used to mean
+                    # "placed", which let callers book exits that never executed.
+                    status, fp2, fq2 = self._order_status(oid)
+                    if status in ("complete", "filled") and fq2 >= 1:
+                        return OrderResult(True, order_id=oid, fill_price=fp2 or fp,
+                                           quantity=fq2, message="Filled (late confirm)")
+                    return OrderResult(False, order_id=oid,
+                                       message=f"placed but not filled "
+                                               f"(status={status or 'unknown'})")
                 return OrderResult(False, message="No order_id returned")
             except Exception as e:
                 logger.warning(f"Entry order attempt {attempt+1} failed ({symbol}): {e}")
@@ -271,31 +282,60 @@ class UpstoxExecutor:
 
     # ── Positions ────────────────────────────────────────────────────────────
 
-    def get_open_positions(self) -> List[dict]:
+    def get_open_positions_strict(self) -> List[dict]:
+        """Open intraday positions; RAISES on API failure so callers can tell
+        'API down' from 'genuinely flat'. Use for square-off / reconcile paths
+        where treating an error as flat would strand a live position."""
         if not self._live or self._client is None:
             return []
+        resp = self._client.portfolio.get_positions(api_version="2.0")
+        data = _resp_data(resp) or []
+        out = []
+        for p in data:
+            def _g(name, default=0):
+                return (getattr(p, name, None)
+                        or (p.get(name) if isinstance(p, dict) else None) or default)
+            qty = int(_g("quantity", 0))
+            product = str(_g("product", "")).upper()
+            if qty != 0 and product in ("I", "INTRADAY", "MIS"):
+                out.append({
+                    "symbol": str(_g("trading_symbol", "") or _g("tradingsymbol", "")),
+                    "netQty": qty,
+                    "direction": "LONG" if qty > 0 else "SHORT",
+                    "security_id": str(_g("instrument_token", "")),
+                    "avgPrice": float(_g("average_price", 0) or _g("buy_price", 0) or 0),
+                    "positionType": "INTRADAY",
+                })
+        return out
+
+    def get_open_positions(self) -> List[dict]:
         try:
-            resp = self._client.portfolio.get_positions(api_version="2.0")
-            data = _resp_data(resp) or []
-            out = []
-            for p in data:
-                def _g(name, default=0):
-                    return (getattr(p, name, None)
-                            or (p.get(name) if isinstance(p, dict) else None) or default)
-                qty = int(_g("quantity", 0))
-                product = str(_g("product", "")).upper()
-                if qty != 0 and product in ("I", "INTRADAY", "MIS"):
-                    out.append({
-                        "symbol": str(_g("trading_symbol", "") or _g("tradingsymbol", "")),
-                        "netQty": qty,
-                        "direction": "LONG" if qty > 0 else "SHORT",
-                        "security_id": str(_g("instrument_token", "")),
-                        "positionType": "INTRADAY",
-                    })
-            return out
+            return self.get_open_positions_strict()
         except Exception as e:
             logger.error(f"get_positions failed: {e}")
         return []
+
+    def pending_order_symbols(self) -> set:
+        """Symbols (uppercase) with an open/pending order in today's order book.
+        Used before RE-selling a position whose earlier exit is unconfirmed —
+        if the first sell is still pending, selling again would open a short.
+        Raises on API failure."""
+        if not self._live or self._client is None:
+            return set()
+        resp = self._client.order.get_order_book(api_version="2.0")
+        data = _resp_data(resp) or []
+        out = set()
+        for o in data:
+            def _g(name, default=""):
+                return (getattr(o, name, None)
+                        or (o.get(name) if isinstance(o, dict) else None) or default)
+            status = str(_g("status")).lower()
+            if status in ("open", "pending", "trigger pending", "open pending",
+                          "modify pending", "after market order req received"):
+                sym = str(_g("trading_symbol") or _g("tradingsymbol") or "")
+                if sym:
+                    out.add(sym.upper())
+        return out
 
     # ── Cancel ───────────────────────────────────────────────────────────────
 

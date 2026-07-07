@@ -51,7 +51,11 @@ REPORT_FILE = _HERE.parent / "orb_fast_report.txt"
 
 # ── Fixed, audited constants (match production where it matters) ───────────────
 COST_RT_PCT   = 0.0045          # round-trip costs (DO NOT CHANGE — per CLAUDE.md)
-SQUAREOFF     = dtime(15, 25)   # hard intraday square-off
+SQUAREOFF     = dtime(15, 0)    # hard intraday square-off — MIRRORS live_pilot's
+                                # 15:00 (Upstox rejects orders ~15:12, RMS squares
+                                # ~15:15 with a charge; the old 15:25 caused real
+                                # penalty charges). Backtest must measure the same
+                                # exit the live bot actually takes.
 ORB_START     = dtime(9, 15)
 ORB_END       = dtime(9, 30)
 ENTRY_START   = dtime(9, 30)    # no entries until ORB window closes
@@ -169,6 +173,9 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     """Walk forward within the same day: SL (pessimistic tie) -> TP -> square-off.
 
     Optional profit-protection (all armed for FUTURE bars only — no same-bar lookahead):
+      * cand["lock_trigger"] / cand["lock_at"] = EARLY lock: once price gains
+                            lock_trigger x risk, the stop moves to entry + lock_at x risk
+                            (a decent winner exits with at least a small profit).
       * cand["be"]        = R-multiple at which to move the stop to breakeven (entry).
                             e.g. be=1.0 -> once price gains 1x the initial risk the stop
                             becomes the entry, so the winner can't turn back into a loser.
@@ -192,6 +199,10 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     be_r = cand.get("be")
     be_trigger = entry + be_r * risk if be_r else None
     be_armed = False
+    lock_trigger_r = cand.get("lock_trigger")
+    lock_at_r = cand.get("lock_at") or 0.0
+    lock_px = entry + lock_trigger_r * risk if lock_trigger_r else None
+    lock_armed = False
     trail_arm_r = cand.get("trail_arm")
     trail_atr = cand.get("trail_atr")
     trail_trigger = (entry + trail_arm_r * risk
@@ -206,10 +217,14 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
         if idx[j].time() >= SQUAREOFF:
             exit_px = float(c[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
         if lo[j] <= sl:                              # SL wins same-bar ties (pessimistic)
-            why = "TRAIL" if trail_armed else ("BE" if be_armed else "SL")
+            why = ("TRAIL" if trail_armed else "BE" if be_armed
+                   else "LOCK" if lock_armed else "SL")
             return _close(cand, idx[j], sl, why)
         if h[j] >= tp:
             return _close(cand, idx[j], tp, "TP")
+        # arm the early profit-lock for the NEXT bar (no lookahead)
+        if lock_px is not None and not lock_armed and h[j] >= lock_px:
+            sl = max(sl, entry + lock_at_r * risk); lock_armed = True
         # arm breakeven for the NEXT bar once this bar reaches the trigger (no lookahead)
         if be_trigger is not None and not be_armed and h[j] >= be_trigger:
             sl = max(sl, entry); be_armed = True

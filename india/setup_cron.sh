@@ -21,6 +21,9 @@ mkdir -p logs
 
 PILOT_LINE="35 3 * * 1-5 cd $ROOT && bash india/run_pilot.sh live >> logs/cron_pilot.log 2>&1"
 TG_LINE="@reboot cd $ROOT && nohup python3 india/telegram_control.py >> logs/telegram_control.log 2>&1 &"
+# 15:03 IST safety net: flatten anything the pilot failed to square at 15:00,
+# BEFORE Upstox's ~15:12 order cutoff / ~15:15 RMS auto-square (which CHARGES).
+WD_LINE="33 9 * * 1-5 cd $ROOT && python3 india/squareoff_watchdog.py >> logs/cron_watchdog.log 2>&1"
 
 CURRENT="$(crontab -l 2>/dev/null || true)"
 NEW="$CURRENT"
@@ -31,6 +34,14 @@ $PILOT_LINE"
   echo "  + added: weekday 09:05 IST -> token refresh + LIVE pilot"
 else
   echo "  = already present: morning pilot launch"
+fi
+
+if ! printf '%s\n' "$CURRENT" | grep -Fq "squareoff_watchdog.py"; then
+  NEW="$NEW
+$WD_LINE"
+  echo "  + added: weekday 15:03 IST -> square-off watchdog (anti-charge safety net)"
+else
+  echo "  = already present: square-off watchdog"
 fi
 
 if ! printf '%s\n' "$CURRENT" | grep -Fq "telegram_control.py"; then

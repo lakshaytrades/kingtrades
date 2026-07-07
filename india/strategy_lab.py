@@ -207,6 +207,13 @@ STRATS = {
     # This is the variant deployed live (LP_ARM_BE_R / LP_ARM_TRAIL_R / LP_TRAIL_ATR).
     "MOM_3R_LATELOCK":  (s_wide_mom,     [{"rv": 4.0, "sl": 1.5, "rr": 3.0,
                                            "be": 1.5, "trail_arm": 2.0, "trail_atr": 1.5}]),
+    # ── THE DEPLOYED LIVE CONFIG (user-mandated early lock on top of late-lock):
+    # at +0.75R the stop moves to entry+0.15R (small profit guaranteed), then the
+    # late stages (BE@1.5R, trail@2R/1.5xATR, 3R target). Validate this against
+    # MOM_3R_LATELOCK to PRICE what the early lock costs in monthly return.
+    "MOM_3R_USERLOCK":  (s_wide_mom,     [{"rv": 4.0, "sl": 1.5, "rr": 3.0,
+                                           "lock_trigger": 0.75, "lock_at": 0.15,
+                                           "be": 1.5, "trail_arm": 2.0, "trail_atr": 1.5}]),
 }
 
 
@@ -223,6 +230,8 @@ def run_strat(prepped, gen, params, cost=None):
                 cand["be"] = params.get("be")             # optional breakeven-stop R-mult
                 cand["trail_arm"] = params.get("trail_arm")  # R-mult to arm trailing stop
                 cand["trail_atr"] = params.get("trail_atr")  # trail width in ATR
+                cand["lock_trigger"] = params.get("lock_trigger")  # early-lock arm (R)
+                cand["lock_at"] = params.get("lock_at")            # early-lock level (R)
                 trades.append(of._resolve_exit(d, cand))
         m = of._simulate(trades)
     finally:

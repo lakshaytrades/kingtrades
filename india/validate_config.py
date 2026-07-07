@@ -43,6 +43,10 @@ def main():
                     help="R-multiple at which the trailing stop arms (live default 2.0)")
     ap.add_argument("--trail-atr", type=float, default=None,
                     help="trail width in ATR once armed (live default 1.5)")
+    ap.add_argument("--lock-trigger", type=float, default=None,
+                    help="early lock: arm at this many R in profit (live default 0.75)")
+    ap.add_argument("--lock-at", type=float, default=None,
+                    help="early lock: move stop to entry + this many R (live default 0.15)")
     ap.add_argument("--cost", type=float, default=0.0018, help="your expected real cost")
     ap.add_argument("--max-symbols", type=int, default=150)
     args = ap.parse_args()
@@ -58,9 +62,11 @@ def main():
             prepped[s] = pp
     n_days = len({d for pp in prepped.values() for d in pp.index.normalize().unique()})
     params = {"rv": args.rv, "sl": args.sl, "rr": args.rr, "be": args.be,
-              "trail_arm": args.trail_arm, "trail_atr": args.trail_atr}
+              "trail_arm": args.trail_arm, "trail_atr": args.trail_atr,
+              "lock_trigger": args.lock_trigger, "lock_at": args.lock_at}
 
     lock = ""
+    if args.lock_trigger: lock += f", lock@{args.lock_trigger}R->{args.lock_at}R"
     if args.be:        lock += f", breakeven={args.be}R"
     if args.trail_arm: lock += f", trail@{args.trail_arm}R/{args.trail_atr}xATR"
     print("=" * 78)
