@@ -997,6 +997,20 @@ class Pilot:
 
 
 def main():
+    # ══════════════════════════════════════════════════════════════════════
+    # RETIRED (2026-07-08): the intraday ORB strategy FAILED honest-fill
+    # validation in every variant (entry latency eats the edge; see
+    # next_gen_lab/entry_sweep reports). The live system is now swing_pilot.py
+    # (validated rev:buy-5%-day). This module stays for research imports and
+    # paper experiments ONLY. Live trading here requires an explicit override
+    # so it can never be re-enabled by accident.
+    # ══════════════════════════════════════════════════════════════════════
+    if (os.getenv("INDIA_LIVE_TRADING_ENABLED", "").strip().lower() == "true"
+            and os.getenv("INDIA_ALLOW_RETIRED_INTRADAY", "").lower() != "true"):
+        log.critical("live_pilot is RETIRED — the intraday strategy failed honest "
+                     "validation and MUST NOT trade real money. Use swing_pilot.py. "
+                     "(Research override: INDIA_ALLOW_RETIRED_INTRADAY=true)")
+        return
     import argparse
     ap = argparse.ArgumentParser()
     ap.add_argument("--liquid-only", action="store_true",

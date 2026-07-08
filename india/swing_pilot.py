@@ -58,7 +58,9 @@ from fetch_midcaps import HIGH_VOL_UNIVERSE
 IST = ZoneInfo("Asia/Kolkata")
 KILL_FILE = _ROOT / "KILL"
 STATE_FILE = _ROOT / "swing_state.json"
-UNIVERSE = HIGH_VOL_UNIVERSE[:50]        # the liquid tier
+# AUDIT FIX: the passing validation (new_edge_lab 2026-07-08) ran on the FULL
+# 127-symbol universe — the deployed scan must match it exactly.
+UNIVERSE = HIGH_VOL_UNIVERSE
 
 # ── strategy configs (params to be set from a new_edge_lab PASSER) ────────────
 STRATS = {
@@ -74,7 +76,9 @@ STRATS = {
                  "target": 0.06, "stop": -0.04, "max_hold": 3},
 }
 
-MAX_POS   = 3            # concurrent swing positions
+# AUDIT FIX: the validated sim (orb_fast._simulate live_sizing) used 2 slots at
+# 50% of capital each — 3 slots was an unvalidated deviation.
+MAX_POS   = 2            # concurrent swing positions (MUST match the validation)
 FALLBACK_CAPITAL = 5000.0
 
 (_ROOT / "logs").mkdir(exist_ok=True)
@@ -136,15 +140,25 @@ class SwingPilot:
 
     # ── state persistence (once-a-day bot must remember across runs) ──────────
     def _load_state(self) -> dict:
-        try:
-            if STATE_FILE.exists():
-                return json.loads(STATE_FILE.read_text())
-        except Exception as e:
-            log.error(f"state load failed: {e} — starting empty")
+        """Positions held across days live here. Falls back to the .bak copy if
+        the primary is corrupt — a lost state file with REAL delivery holdings
+        at the broker would orphan them (unmanaged, no exits)."""
+        for f in (STATE_FILE, STATE_FILE.with_suffix(".bak")):
+            try:
+                if f.exists():
+                    return json.loads(f.read_text())
+            except Exception as e:
+                log.error(f"state load failed from {f.name}: {e}")
+        if STATE_FILE.exists() or STATE_FILE.with_suffix(".bak").exists():
+            log.critical("STATE UNREADABLE — if the broker app shows swing "
+                         "holdings, they are UNMANAGED until state is restored. "
+                         "CHECK THE APP.")
         return {}
 
     def _save_state(self):
         try:
+            if STATE_FILE.exists():                       # keep last good copy
+                STATE_FILE.replace(STATE_FILE.with_suffix(".bak"))
             tmp = STATE_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.positions, indent=2, default=str))
             tmp.replace(STATE_FILE)

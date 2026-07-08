@@ -22,8 +22,11 @@ SWING_LINE="40 9 * * 1-5 cd $ROOT && bash india/run_swing.sh $MODE >> logs/cron_
 TG_LINE="@reboot cd $ROOT && nohup python3 india/telegram_control.py >> logs/telegram_control.log 2>&1 &"
 
 CUR="$(crontab -l 2>/dev/null || true)"
-# drop any prior swing line (so mode changes cleanly), keep everything else
-NEW="$(printf '%s\n' "$CUR" | grep -v 'run_swing.sh' || true)"
+# drop any prior swing line (so mode changes cleanly) AND ALL RETIRED INTRADAY
+# schedules (run_pilot.sh morning launch + 15:03 squareoff watchdog) — the
+# intraday strategy failed validation and must never auto-start again.
+NEW="$(printf '%s\n' "$CUR" | grep -v 'run_swing.sh' \
+       | grep -v 'run_pilot.sh' | grep -v 'squareoff_watchdog.py' || true)"
 NEW="$NEW
 $SWING_LINE"
 if ! printf '%s\n' "$CUR" | grep -Fq 'telegram_control.py'; then

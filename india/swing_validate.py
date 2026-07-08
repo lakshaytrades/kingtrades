@@ -89,7 +89,7 @@ def main():
 
 
 def nl_maxpos():
-    return 3
+    return 2      # matches the validated sim (2 slots) and swing_pilot.MAX_POS
 
 
 if __name__ == "__main__":
