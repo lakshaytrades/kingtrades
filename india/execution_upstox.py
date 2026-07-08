@@ -171,7 +171,7 @@ class UpstoxExecutor:
         logger.info(f"Limit not filled in 30s for {symbol} — MARKET fallback")
         result = self.place_entry_order(symbol, direction, qty, price, security_id)
         result.order_type = "MARKET"
-        result.message    = "Market fallback (limit timeout)"
+        result.message    = f"Market fallback (limit timeout): {result.message}"
         return result
 
     # ── Target order ─────────────────────────────────────────────────────────
@@ -315,10 +315,16 @@ class UpstoxExecutor:
             logger.error(f"get_positions failed: {e}")
         return []
 
+    # order states that are DONE — anything else counts as in-flight. An allowlist
+    # of pending states missed Upstox's transient ones ("validation pending",
+    # "put order req received"), letting a just-placed sell be re-sold -> short.
+    _TERMINAL_STATUSES = ("complete", "filled", "rejected", "cancelled", "lapsed",
+                          "expired")
+
     def pending_order_symbols(self) -> set:
-        """Symbols (uppercase) with an open/pending order in today's order book.
+        """Symbols (uppercase) with an IN-FLIGHT order in today's order book.
         Used before RE-selling a position whose earlier exit is unconfirmed —
-        if the first sell is still pending, selling again would open a short.
+        if the first sell is still in flight, selling again would open a short.
         Raises on API failure."""
         if not self._live or self._client is None:
             return set()
@@ -330,8 +336,7 @@ class UpstoxExecutor:
                 return (getattr(o, name, None)
                         or (o.get(name) if isinstance(o, dict) else None) or default)
             status = str(_g("status")).lower()
-            if status in ("open", "pending", "trigger pending", "open pending",
-                          "modify pending", "after market order req received"):
+            if status and status not in self._TERMINAL_STATUSES:
                 sym = str(_g("trading_symbol") or _g("tradingsymbol") or "")
                 if sym:
                     out.add(sym.upper())

@@ -43,7 +43,7 @@ import logging
 import os
 import sys
 import time as _time
-from datetime import datetime, time as dtime
+from datetime import datetime, time as dtime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
@@ -88,7 +88,10 @@ RANGE_CUTOFF      = dtime(11, 0)   # split point between the two entry-time labe
 # sells were rejected and the broker charged the auto-squareoff penalty). 15:00
 # leaves ~12 min of retry margin before the rejection wall.
 SQUAREOFF         = dtime(15, 0)
-SQUAREOFF_RETRY_UNTIL = dtime(15, 10)  # keep retrying failed exits until here
+# The pilot owns 15:00-15:08; the independent watchdog defers to a LIVE pilot
+# until 15:08, then takes over (still ahead of the ~15:12 rejection wall). This
+# handoff prevents both processes selling the same position -> unwanted short.
+SQUAREOFF_RETRY_UNTIL = dtime(15, 8)   # keep retrying failed exits until here
 NEAR_CLOSE        = dtime(14, 45)  # from here: tighter loop so 15:00 can't be missed
 MARKET_OPEN       = dtime(9, 15)
 LOOP_SECONDS      = 45
@@ -325,6 +328,9 @@ class Pilot:
             return
         # mark done_today BEFORE the (blocking) order call so a retry can't double-fire
         self.done_today.add(sym)
+        # a fresh position supersedes any earlier verified close of this symbol
+        # (e.g. a startup-reconcile flatten) — EOD squareoff must not skip it
+        self.closed_syms.discard(sym.upper())
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
                                                 limit_offset_pct=0.001)
         # CRITICAL: only record a position for the qty that ACTUALLY filled. A
@@ -338,20 +344,26 @@ class Pilot:
             # order — that would leave a REAL long untracked (no stop, caps blind).
             # Ask the broker; if it holds the position, ADOPT it instead.
             if self.live:
-                try:
-                    for bp in self.exec.get_open_positions_strict():
-                        if bp["symbol"].upper() == sym.upper() and bp["netQty"] >= 1:
-                            fill = float(bp.get("avgPrice") or 0) or ltp
-                            filled = int(bp["netQty"])
-                            log.error(f"{sym}: broker DOES hold {filled} (fill-detect "
-                                      f"missed it) — ADOPTING position @ {fill:.2f}")
-                            break
-                    else:
-                        return
-                except Exception as e:
-                    log.critical(f"{sym}: entry unconfirmed AND broker check failed "
-                                 f"({e}) — CHECK THE BROKER APP; squareoff/watchdog "
-                                 f"will flatten any orphan at EOD")
+                brk = None
+                for att in range(3):        # positions API often 500s right after
+                    try:                    # an order burst — retry before giving up
+                        brk = self.exec.get_open_positions_strict()
+                        break
+                    except Exception as e:
+                        if att == 2:
+                            log.critical(f"{sym}: entry unconfirmed AND broker check "
+                                         f"failed 3x ({e}) — CHECK THE BROKER APP; "
+                                         f"squareoff/watchdog will flatten any orphan")
+                            return
+                        _time.sleep(2 ** (att + 1))
+                for bp in brk:
+                    if bp["symbol"].upper() == sym.upper() and bp["netQty"] >= 1:
+                        fill = float(bp.get("avgPrice") or 0) or ltp
+                        filled = int(bp["netQty"])
+                        log.error(f"{sym}: broker DOES hold {filled} (fill-detect "
+                                  f"missed it) — ADOPTING position @ {fill:.2f}")
+                        break
+                else:
                     return
             else:
                 return
@@ -402,10 +414,11 @@ class Pilot:
                 # ratchet — and ratchet errors can never skip the stop check.
                 reason = None
                 if ltp <= p["sl"]:
-                    # label the exit by which mechanism set the stop, for the EOD log
+                    # label the exit by which mechanism OWNS the current stop level:
+                    # trail > lock (entry+0.15R, always >= the BE level) > BE > SL
                     reason = ("TRAIL" if p.get("trail_armed")
-                              else "BE" if p.get("be_armed")
-                              else "LOCK" if p.get("lock_armed") else "SL")
+                              else "LOCK" if p.get("lock_armed")
+                              else "BE" if p.get("be_armed") else "SL")
                 elif p["target"] and ltp >= p["target"]:
                     reason = "TARGET"
                 if reason:
@@ -421,10 +434,10 @@ class Pilot:
     def _ratchet_stop(self, sym, p, ltp):
         """Move the stop UP (never down) as an in-profit trade runs, to lock gains.
 
-        No-op for positions lacking sl_dist/atr (e.g. legacy/reconciled). Two stages,
-        both armed LATE so sub-1.5R trades are untouched and the runner edge is kept:
-          +LP_ARM_BE_R    -> stop to entry (breakeven)
-          +LP_ARM_TRAIL_R -> trailing stop LP_TRAIL_ATR x ATR under the high-water mark
+        No-op for positions lacking sl_dist/atr (e.g. legacy/reconciled). Three stages:
+          +LP_LOCK_TRIGGER_R -> stop to entry + LP_LOCK_AT_R x risk (small profit locked)
+          +LP_ARM_BE_R       -> breakeven floor (superseded when the lock is active)
+          +LP_ARM_TRAIL_R    -> trailing stop LP_TRAIL_ATR x ATR under the high-water mark
         """
         sl_dist = p.get("sl_dist")
         atr = p.get("atr")
@@ -452,36 +465,60 @@ class Pilot:
         if new_sl > old_sl + 1e-9:                     # only ever tighten
             p["sl"] = round(new_sl, 2)
             tag = ("TRAIL" if p.get("trail_armed") else
-                   "BE" if p.get("be_armed") else "LOCK")
+                   "LOCK" if p.get("lock_armed") else "BE")
             log.warning(f"{sym} {tag}: stop {old_sl:.2f} -> {p['sl']:.2f} "
                         f"(ltp {ltp:.2f}, +{gain_r:.1f}R, locks "
                         f"₹{(p['sl'] - entry) * p['qty']:+.0f})")
 
-    def _exit(self, sym, ltp, reason) -> bool:
+    def _exit(self, sym, ltp, reason, pending=None, brk_open=None) -> bool:
         """Close a long with a VERIFIED market sell. Returns True only when the
-        fill is confirmed (or the broker proves we're already flat).
+        full fill is confirmed (or the broker proves we're already flat).
 
         THE incident fix: the old version popped the position from tracking
         BEFORE the sell and never checked the result — a rejected sell (e.g. past
         Upstox's ~15:12 order cutoff) was silently booked as a normal exit while
         the REAL position stayed open at the broker, which then force-squared it
-        WITH A CHARGE. Now a failed sell keeps the position tracked and retries."""
+        WITH A CHARGE. Now a failed sell keeps the position tracked and retries.
+
+        pending/brk_open: optional pre-fetched broker state (squareoff fetches
+        once per attempt instead of per symbol — API budget matters at 15:00)."""
         p = self.positions.get(sym)
         if p is None:
+            return True
+        if sym.upper() in self.closed_syms:
+            # verifiably closed by another path (broker-truth pass) — never re-sell
+            self.positions.pop(sym, None)
+            self.ltp_fail.pop(sym, None)
             return True
         # A prior attempt may have actually filled (fill-detect timeout). Selling
         # AGAIN would open a real short — so before any RETRY, ask the broker.
         if p.get("exit_fails") and self.live:
             try:
-                if sym.upper() in self.exec.pending_order_symbols():
-                    log.warning(f"{sym}: previous exit order still PENDING — "
+                pend = (pending if pending is not None
+                        else self.exec.pending_order_symbols())
+                if sym.upper() in pend:
+                    log.warning(f"{sym}: previous exit order still IN FLIGHT — "
                                 f"waiting, not re-selling")
                     return False
-                brk = {b["symbol"].upper() for b in
-                       self.exec.get_open_positions_strict() if b["netQty"] > 0}
-                if sym.upper() not in brk:
-                    log.warning(f"{sym}: broker is flat — prior exit DID fill; booking")
-                    self._book_exit(sym, p, ltp, reason + "*")
+                opens = (set(brk_open) if brk_open is not None
+                         else {b["symbol"].upper() for b in
+                               self.exec.get_open_positions_strict()
+                               if b["netQty"] > 0})
+                if sym.upper() not in opens:
+                    # prior sell DID fill — book at its actual fill price if we
+                    # can still get it, else at the current ltp (approximation)
+                    px = ltp
+                    oid = p.get("last_exit_oid")
+                    if oid:
+                        try:
+                            _st, fp, _fq = self.exec._order_status(oid)
+                            if fp > 0:
+                                px = fp
+                        except Exception:
+                            pass
+                    log.warning(f"{sym}: broker is flat — prior exit DID fill; "
+                                f"booking @ {px:.2f}")
+                    self._book_exit(sym, p, px, reason + "*")
                     return True
             except Exception as e:
                 log.critical(f"{sym}: cannot verify broker state ({e}) — NOT "
@@ -490,9 +527,23 @@ class Pilot:
         res = self.exec.place_entry_order(sym, "SHORT", p["qty"], ltp, p["sec_id"])
         filled = int(res.quantity or 0)
         if res.success and filled >= 1 and res.fill_price:
-            self._book_exit(sym, p, float(res.fill_price), reason)
-            return True
+            if filled >= p["qty"]:
+                self._book_exit(sym, p, float(res.fill_price), reason)
+                return True
+            # PARTIAL fill: realize the filled slice, keep the remainder tracked
+            # (do NOT mark closed — the rest is still live at the broker).
+            px = float(res.fill_price)
+            pnl_r = (px - p["entry"]) * filled \
+                - (p["entry"] + px) * filled * of.COST_RT_PCT / 2
+            self.realized_pnl += pnl_r
+            p["qty"] -= filled
+            p["exit_fails"] = p.get("exit_fails", 0) + 1   # careful path for the rest
+            p["last_exit_oid"] = res.order_id or p.get("last_exit_oid")
+            log.critical(f"PARTIAL EXIT {sym}: {filled} filled @ {px:.2f} "
+                         f"(₹{pnl_r:+.0f}), {p['qty']} REMAIN OPEN — retrying")
+            return False
         p["exit_fails"] = p.get("exit_fails", 0) + 1
+        p["last_exit_oid"] = res.order_id or p.get("last_exit_oid")
         log.critical(f"EXIT FAILED {sym} ({reason}): {res.message} — position "
                      f"STILL OPEN at broker (attempt {p['exit_fails']}); will retry")
         return False
@@ -512,46 +563,63 @@ class Pilot:
                     f"qty={p['qty']} | day P&L ₹{self.realized_pnl:+.0f}")
 
     def squareoff_all(self, why: str):
-        """Flatten EVERYTHING and VERIFY flat at the broker, retrying until
-        SQUAREOFF_RETRY_UNTIL. The broker's position book is the source of truth:
-        we keep selling whatever it still shows (excluding symbols we verifiably
-        closed and symbols with a sell already pending) until it shows nothing."""
+        """Flatten EVERYTHING and VERIFY flat at the broker, retrying (with
+        exponential backoff) until the retry deadline. The broker's position book
+        is the source of truth: we keep selling whatever it still shows (excluding
+        symbols we verifiably closed and symbols with an order in flight) until it
+        shows nothing. Broker state is fetched ONCE per attempt, not per symbol —
+        the API budget in the 15:00-15:08 window is what saves us from the charge."""
         if self.positions:
             log.warning(f"SQUARE-OFF ALL ({why}) — {len(self.positions)} open")
-        for attempt in range(1, 7):
-            # pass 1: verified exits for everything we track
+        start = now_ist()
+        # EOD squareoff gets the full window to 15:08; off-hours calls (KILL,
+        # startup reconcile, crash shutdown) retry for up to ~3 minutes.
+        deadline_t = (SQUAREOFF_RETRY_UNTIL if start.time() >= dtime(14, 50)
+                      else (start + timedelta(minutes=3)).time())
+        pending = None          # broker state carried between attempts
+        brk_open = None         # dict UPPER-sym -> broker position
+        attempt = 0
+        while True:
+            attempt += 1
+            # pass 1: verified exits for everything we track (reuses last fetch)
             for sym in list(self.positions.keys()):
                 try:
-                    ltp = self._fresh_ltp(sym) or self.positions[sym]["entry"]
-                    self._exit(sym, ltp, why)
+                    # live sells are MARKET and book from the broker fill — only
+                    # paper needs a quote for its synthetic fill price
+                    ltp = ((None if self.live else self._fresh_ltp(sym))
+                           or self.positions[sym]["entry"])
+                    self._exit(sym, ltp, why, pending=pending, brk_open=brk_open)
                 except Exception as e:
                     log.error(f"{sym}: squareoff exit error: {e}")
             if not self.live:
                 return                      # paper: no broker state to verify
-            # pass 2: broker truth — anything still open that we did NOT verifiably
-            # close and that has no sell already pending gets sold at market.
+            # pass 2: fetch broker truth ONCE; sell anything still open that we
+            # did NOT verifiably close and that has no order in flight.
             try:
-                pending = set()
                 try:
                     pending = self.exec.pending_order_symbols()
                 except Exception as e:
                     log.error(f"squareoff: order-book check failed: {e}")
-                brk = [b for b in self.exec.get_open_positions_strict()
-                       if b["netQty"] > 0
-                       and b["symbol"].upper() not in self.closed_syms
-                       and b["symbol"].upper() not in pending]
+                    pending = set()
+                brk_open = {b["symbol"].upper(): b for b in
+                            self.exec.get_open_positions_strict()
+                            if b["netQty"] > 0}
             except Exception as e:
-                # API error must NOT read as "flat" — retry
+                # API error must NOT read as "flat" — retry with backoff
                 log.critical(f"squareoff: positions API failed ({e}) — retrying")
-                if now_ist().time() >= SQUAREOFF_RETRY_UNTIL:
+                pending, brk_open = None, None
+                if now_ist().time() >= deadline_t or attempt >= 40:
                     break
-                _time.sleep(5)
+                _time.sleep(min(2 ** min(attempt, 4), 15))
                 continue
-            if not brk and not self.positions:
+            sellable = [b for k, b in brk_open.items()
+                        if k not in self.closed_syms and k not in pending]
+            if not sellable and not self.positions:
                 if attempt > 1:
                     log.warning(f"squareoff: verified FLAT at broker (attempt {attempt})")
                 return
-            for b in brk:
+            for b in sellable:
+                k = b["symbol"].upper()
                 try:
                     log.critical(f"squareoff: broker still holds {b['symbol']} "
                                  f"x{b['netQty']} — selling at market")
@@ -561,12 +629,20 @@ class Pilot:
                     if r.success and int(r.quantity or 0) >= 1:
                         # verified fill -> never sell this symbol again, even if
                         # the positions API lags a few seconds behind the fill
-                        self.closed_syms.add(b["symbol"].upper())
+                        self.closed_syms.add(k)
+                        # if we were tracking it, book the P&L and stop tracking
+                        tsym = next((s for s in self.positions
+                                     if s.upper() == k), None)
+                        if tsym:
+                            self._book_exit(tsym, self.positions[tsym],
+                                            float(r.fill_price) or
+                                            self.positions[tsym]["entry"],
+                                            why + "_BRK")
                 except Exception as e:
                     log.error(f"squareoff broker sell {b['symbol']}: {e}")
-            if now_ist().time() >= SQUAREOFF_RETRY_UNTIL:
+            if now_ist().time() >= deadline_t or attempt >= 40:
                 break
-            _time.sleep(5)
+            _time.sleep(min(2 ** min(attempt, 4), 15))
         if self.live:
             log.critical("SQUAREOFF INCOMPLETE — positions may remain at the broker! "
                          "The 15:03 watchdog is the backstop; CHECK THE BROKER APP NOW.")

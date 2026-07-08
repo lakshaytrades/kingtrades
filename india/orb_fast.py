@@ -217,8 +217,10 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
         if idx[j].time() >= SQUAREOFF:
             exit_px = float(c[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
         if lo[j] <= sl:                              # SL wins same-bar ties (pessimistic)
-            why = ("TRAIL" if trail_armed else "BE" if be_armed
-                   else "LOCK" if lock_armed else "SL")
+            # label by which mechanism OWNS the stop level: trail > lock > BE
+            # (the lock level entry+lock_at*risk >= the BE level entry when lock_at>=0)
+            why = ("TRAIL" if trail_armed else "LOCK" if lock_armed
+                   else "BE" if be_armed else "SL")
             return _close(cand, idx[j], sl, why)
         if h[j] >= tp:
             return _close(cand, idx[j], tp, "TP")

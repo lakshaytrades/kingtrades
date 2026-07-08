@@ -15,8 +15,10 @@ SAFETY
 * Runs only when INDIA_LIVE_TRADING_ENABLED=true (a paper pilot has no broker
   positions; also prevents flattening manual positions during paper testing).
 * Time-guarded: acts only between 14:50 and 15:20 IST even if cron mis-fires.
-* Skips any symbol that already has a pending order in the order book (a pilot
-  exit may be mid-flight — selling again would open a short).
+* DEFERS to a live pilot process until 15:08 (the pilot owns the squareoff and
+  retries until then) — prevents both processes selling the same position.
+* Skips any symbol that already has an order in flight in the order book (a
+  pilot exit may be mid-flight — selling again would open a short).
 * Sells exactly the broker-reported net quantity. Verifies flat afterwards.
 
 Cron (installed by setup_cron.sh):  33 9 * * 1-5  (= 15:03 IST on the UTC VPS)
@@ -25,6 +27,7 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
 import time as _time
 from datetime import datetime, time as dtime
@@ -39,6 +42,10 @@ sys.path.insert(0, str(_ROOT))
 IST = ZoneInfo("Asia/Kolkata")
 WINDOW_START = dtime(14, 50)
 WINDOW_END   = dtime(15, 20)
+# Hand-off: the pilot owns the squareoff until 15:08 (SQUAREOFF_RETRY_UNTIL).
+# While a live pilot process exists, the watchdog WAITS until then — two
+# processes selling the same position would open an unwanted short.
+PILOT_OWNS_UNTIL = dtime(15, 8)
 
 (_ROOT / "logs").mkdir(exist_ok=True)
 logging.basicConfig(
@@ -50,6 +57,15 @@ logging.basicConfig(
 )
 logging.Formatter.converter = lambda *a: datetime.now(IST).timetuple()
 log = logging.getLogger("watchdog")
+
+
+def _pilot_alive() -> bool:
+    try:
+        out = subprocess.run(["pgrep", "-f", "live_pilot.py"], capture_output=True,
+                             text=True, timeout=10).stdout.strip()
+        return bool(out)
+    except Exception:
+        return False
 
 
 def main():
@@ -66,6 +82,13 @@ def main():
         log.warning(f"outside the {WINDOW_START}-{WINDOW_END} IST window ({now}) — "
                     f"refusing to act (cron mis-schedule guard)")
         return
+    # defer to a LIVE pilot until 15:08 — it is mid-squareoff; acting in parallel
+    # risks both processes selling the same position (short). A DEAD pilot means
+    # we act immediately.
+    while _pilot_alive() and datetime.now(IST).time() < PILOT_OWNS_UNTIL:
+        log.info(f"pilot process is alive and owns the squareoff until "
+                 f"{PILOT_OWNS_UNTIL} — waiting")
+        _time.sleep(15)
 
     from auth_upstox import get_upstox_client, verify_connection
     from execution_upstox import get_executor
@@ -81,7 +104,7 @@ def main():
             pos = [p for p in ex.get_open_positions_strict() if p["netQty"] > 0]
         except Exception as e:
             log.critical(f"positions API failed ({e}) — retry {attempt}/4")
-            _time.sleep(5)
+            _time.sleep(2 ** attempt)      # 2,4,8,16 (repo backoff convention)
             continue
         if not pos:
             log.info("broker is FLAT — pilot did its job, nothing to do.")
@@ -109,7 +132,7 @@ def main():
                     log.critical(f"{sym}: watchdog sell NOT confirmed ({r.message})")
             except Exception as e:
                 log.critical(f"{sym}: watchdog sell failed: {e}")
-        _time.sleep(6 if (acted or pending) else 3)
+        _time.sleep(2 ** attempt if (acted or pending) else 2)
     # final verdict
     try:
         left = [p for p in ex.get_open_positions_strict() if p["netQty"] > 0]
