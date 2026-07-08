@@ -41,6 +41,8 @@ def main():
                          "(replace with the pilot's MEASURED number)")
     ap.add_argument("--plan", choices=["plus", "basic"], default="plus",
                     help="Upstox plan (brokerage cap ₹30 plus / ₹20 basic)")
+    ap.add_argument("--capital", type=float, default=200_000,
+                    help="equity for the leverage table (default ₹2L)")
     args = ap.parse_args()
     brk_cap = cm.BROKERAGE_CAP if args.plan == "plus" else cm.BROKERAGE_CAP_BASIC
 
@@ -150,6 +152,31 @@ def main():
              f"{cost_pct*100:>7.2f}% {ret:>+7.1f}% ₹{capital*ret/100:>+10,.0f}{warn}")
     emit("     bar share = your order as % of the median breakout bar's traded value;")
     emit("     above ~10% your own market order moves the price against you.")
+
+    # 4) LEVERAGE VIEW — intraday MIS margin (NOT MTF: that's a delivery product
+    # with ~16-20%/yr interest that breaks the flat-by-close rule). Return AND
+    # drawdown both scale ~1:1 with leverage; costs apply to the leveraged
+    # notional, so the cost benefit of bigger positions is included.
+    base_dd = m["dd"]
+    emit(f"\n  4) LEVERAGE (intraday MIS margin) — on ₹{args.capital:,.0f} equity")
+    emit(f"     {'lev':>5} {'buying pwr':>11} {'pos size':>10} {'all-in':>8} "
+         f"{'Ret/mo':>8} {'₹/month':>10} {'est DD':>7}  verdict")
+    for L in (1.0, 1.5, 2.0, 3.0):
+        bp = args.capital * L
+        pos = bp / MAX_OPEN
+        part = pos / med_to if med_to else 0.0
+        slip = args.slippage + 0.30 * part
+        cost_pct = cm.round_trip_cost(pos, slip,
+                                      brokerage_cap=brk_cap)["total_pct"] / 100.0
+        ret_eq = float(np.interp(cost_pct, COSTS, ret_curve)) * L
+        dd_eq = base_dd * L
+        verdict = ("OK" if dd_eq < 20 else
+                   "BREACHES 20% KILL-RULE — normal DD would stop you out"
+                   if dd_eq < 30 else "ACCOUNT-THREATENING — never")
+        emit(f"     {L:>4.1f}x ₹{bp:>10,.0f} ₹{pos:>9,.0f} {cost_pct*100:>7.2f}% "
+             f"{ret_eq:>+7.1f}% ₹{args.capital*ret_eq/100:>+9,.0f} {dd_eq:>6.1f}%  {verdict}")
+    emit("     Leverage multiplies the DRAWDOWN exactly as much as the return —")
+    emit("     above ~1.4x the backtest's own normal 14% DD trips the 20% kill-rule.")
 
     emit("\n" + "=" * 78)
     emit("  VERDICT")

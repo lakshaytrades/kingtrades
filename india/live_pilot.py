@@ -276,24 +276,44 @@ class Pilot:
         by env INDIA_MAX_CAPITAL if set. Falls back to ₹{MAX_PILOT_CAPITAL} until
         the funds API answers. Daily-loss limit scales: max(2% of capital, ₹300)."""
         env_cap = float(os.getenv("INDIA_MAX_CAPITAL", 0) or 0)
+        # OPTIONAL intraday leverage (MIS margin — NOT MTF, which is a delivery
+        # product with interest and would break the flat-by-close rule).
+        # HARD-CLAMPED to 2.0x: leverage multiplies drawdowns 1:1, and above
+        # ~1.4x the backtest's NORMAL 14% DD already breaches the 20% kill-rule.
+        # Default 1.0 (no leverage). The daily-loss breaker stays on REAL equity.
+        lev = float(os.getenv("INDIA_LEVERAGE", 1.0) or 1.0)
+        self.leverage = min(max(lev, 1.0), 2.0)
+        if lev > 2.0:
+            log.warning(f"INDIA_LEVERAGE={lev} clamped to 2.0x (safety ceiling)")
+        equity = None
         if not self.live:
-            self.capital = env_cap or MAX_PILOT_CAPITAL
+            equity = env_cap or MAX_PILOT_CAPITAL
+            self.capital = equity * self.leverage
         else:
             avail = self._fetch_available_funds()
             if avail is None:
                 self._capital_pending = True        # retry each loop until it answers
                 if not self.capital:
-                    self.capital = env_cap or MAX_PILOT_CAPITAL
+                    equity = env_cap or MAX_PILOT_CAPITAL
+                    self.capital = equity * self.leverage
                     log.warning(f"funds unknown yet — starting with fallback "
                                 f"₹{self.capital:,.0f}")
             else:
                 self._capital_pending = False
-                self.capital = min(avail, env_cap) if env_cap else avail
-                log.warning(f"CAPITAL ₹{self.capital:,.0f} (available ₹{avail:,.0f}"
-                            + (f", capped by INDIA_MAX_CAPITAL ₹{env_cap:,.0f}"
-                               if env_cap else "") + ") — no leverage")
+                equity = min(avail, env_cap) if env_cap else avail
+                self.capital = equity * self.leverage
+                log.warning(f"CAPITAL ₹{self.capital:,.0f} = equity ₹{equity:,.0f}"
+                            + (f" x {self.leverage:.1f}x LEVERAGE"
+                               if self.leverage > 1 else " (no leverage)")
+                            + (f" [INDIA_MAX_CAPITAL ₹{env_cap:,.0f}]" if env_cap else ""))
+                if self.leverage > 1:
+                    log.warning("LEVERAGE ON: losses and drawdowns scale %.1fx — "
+                                "the 20%% kill-rule now applies to REAL equity",
+                                self.leverage)
         self.per_pos_cap = self.capital / MAX_OPEN
-        self.max_daily_loss = max(0.02 * self.capital, MAX_DAILY_LOSS)
+        # risk limits are anchored to REAL equity, never to leveraged buying power
+        eq = equity if equity is not None else self.capital / self.leverage
+        self.max_daily_loss = max(0.02 * eq, MAX_DAILY_LOSS)
 
     # ── Fresh-data helpers ───────────────────────────────────────────────────
     # data_fetch_upstox caches OHLCV ~290s and LTP ~30s — far too long for a
