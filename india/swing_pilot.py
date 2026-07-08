@@ -62,10 +62,14 @@ UNIVERSE = HIGH_VOL_UNIVERSE[:50]        # the liquid tier
 
 # ── strategy configs (params to be set from a new_edge_lab PASSER) ────────────
 STRATS = {
-    # buy a hard down-day's close, exit on +target or -stop, else max_hold days
-    "mean_rev": {"kind": "revert", "day_ret_max": -0.04, "target": 0.02,
+    # VALIDATED (new_edge_lab 2026-07-08, 127 names, 1yr, delivery costs):
+    # buy a -5% down-day's close, exit +2% bounce / -5% stop / Friday deadline.
+    # +1.49%/mo, 60% WR, 4.9% DD, PF 1.53, PASSED strict walk-forward
+    # (+0.3/+3.9/+3.1% across the three thirds). The -4% variant only broke even
+    # (+0.05%/mo) — the -5% selectivity is what makes it real.
+    "mean_rev": {"kind": "revert", "day_ret_max": -0.05, "target": 0.02,
                  "stop": -0.05, "max_hold": 4},
-    # buy a big up-day on volume, hold a few days
+    # NOT validated (drift went -2.8%/mo) — kept for research only, do not deploy.
     "drift":    {"kind": "drift", "day_ret_min": 0.05, "vol_mult": 2.0,
                  "target": 0.06, "stop": -0.04, "max_hold": 3},
 }
