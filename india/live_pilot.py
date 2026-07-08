@@ -21,8 +21,8 @@ SAFETY (read before running)
 ----------------------------
 * PAPER BY DEFAULT. Real orders are placed ONLY if env INDIA_LIVE_TRADING_ENABLED
   is exactly 'true'. Otherwise every order is logged, nothing is sent.
-* HARD ₹5,000 CAP, NO LEVERAGE. Total exposure across all positions can never
-  exceed MAX_PILOT_CAPITAL; each position is capped at MAX_PILOT_CAPITAL/MAX_OPEN.
+* CAPITAL = your AVAILABLE BALANCE (cap with env INDIA_MAX_CAPITAL). NO LEVERAGE:
+  total exposure never exceeds it; each position is capped at capital/MAX_OPEN.
 * Long-only, MIS intraday, hard square-off at 15:00 IST (before Upstox RMS).
 * Kill switch: create a file named KILL in the repo root -> flat + stop.
 * Slippage is the real unknown the backtest can't model. The pilot's PURPOSE is to
@@ -75,10 +75,15 @@ _RET_VALS  = [12.0,   7.0,    3.9,    0.5,    -4.0,   -8.0]
 TARGET_MO  = 4.0
 
 # ── Hard safety limits ────────────────────────────────────────────────────────
-MAX_PILOT_CAPITAL = 5000.0      # absolute cap on total exposure (NO leverage)
+# CAPITAL = the broker's AVAILABLE BALANCE at startup (user-mandated), optionally
+# capped by env INDIA_MAX_CAPITAL. These module constants are the FALLBACK used
+# in paper mode or when the funds API is unreachable (it opens ~9:30 IST — the
+# pilot retries each loop until it answers). Still NO leverage: total notional
+# never exceeds the available balance.
+MAX_PILOT_CAPITAL = 5000.0      # fallback capital when funds API is unavailable
 MAX_OPEN          = 2           # max concurrent positions
 PER_POS_CAP       = MAX_PILOT_CAPITAL / MAX_OPEN
-MAX_DAILY_LOSS    = 300.0       # ₹: stop ALL new entries for the day if realized loss hits this
+MAX_DAILY_LOSS    = 300.0       # ₹ floor; live limit = max(2% of capital, this)
 STALE_FEED_CYCLES = 4           # force-flatten an open position if its price is unavailable this many loops
 ENTRY_START       = dtime(9, 30)
 ENTRY_CUTOFF      = dtime(14, 0)   # matches the validated backtest window (9:30-14:00)
@@ -226,14 +231,61 @@ class Pilot:
         # slippage / fill-quality measurement — the whole point of the pilot
         self.stats = {"signals": 0, "filled": 0, "chased_skip": 0,
                       "too_pricey": 0, "slips_bps": [], "net_pcts": []}
+        # trade on the broker's AVAILABLE BALANCE (retried until the funds API opens)
+        self.capital = 0.0
+        self._capital_pending = False
+        self._refresh_capital()
         mode = "LIVE (REAL ₹)" if self.live else "PAPER (no orders)"
-        log.warning(f"=== LIVE PILOT START — {mode} | cap ₹{MAX_PILOT_CAPITAL:.0f} | "
+        log.warning(f"=== LIVE PILOT START — {mode} | cap ₹{self.capital:,.0f} | "
                     f"max {MAX_OPEN} pos | {len(self.universe)} symbols ===")
         if self.live:
-            log.warning("REAL ORDERS ENABLED. Hard ₹%.0f cap, no leverage.", MAX_PILOT_CAPITAL)
+            log.warning("REAL ORDERS ENABLED. Capital ₹%.0f (available balance), "
+                        "no leverage.", self.capital)
 
     def deployed(self) -> float:
         return sum(p["qty"] * p["entry"] for p in self.positions.values())
+
+    # ── Capital = available balance ──────────────────────────────────────────
+    def _fetch_available_funds(self):
+        """Available equity margin from the broker, or None if unavailable
+        (Upstox's funds service opens ~9:30 IST; before that it errors)."""
+        try:
+            resp = self.client.user.get_user_fund_margin(api_version="2.0")
+            data = (getattr(resp, "data", None)
+                    or (resp.get("data") if isinstance(resp, dict) else None))
+            eq = (data.get("equity") if isinstance(data, dict)
+                  else getattr(data, "equity", None)) if data else None
+            avail = (eq.get("available_margin") if isinstance(eq, dict)
+                     else getattr(eq, "available_margin", 0)) if eq else 0
+            avail = float(avail or 0)
+            return avail if avail > 0 else None
+        except Exception as e:
+            log.warning(f"funds API unavailable ({e}) — will retry during trading")
+            return None
+
+    def _refresh_capital(self):
+        """Set the capital base to the AVAILABLE BALANCE (user-mandated), capped
+        by env INDIA_MAX_CAPITAL if set. Falls back to ₹{MAX_PILOT_CAPITAL} until
+        the funds API answers. Daily-loss limit scales: max(2% of capital, ₹300)."""
+        env_cap = float(os.getenv("INDIA_MAX_CAPITAL", 0) or 0)
+        if not self.live:
+            self.capital = env_cap or MAX_PILOT_CAPITAL
+        else:
+            avail = self._fetch_available_funds()
+            if avail is None:
+                self._capital_pending = True        # retry each loop until it answers
+                if not self.capital:
+                    self.capital = env_cap or MAX_PILOT_CAPITAL
+                    log.warning(f"funds unknown yet — starting with fallback "
+                                f"₹{self.capital:,.0f}")
+            else:
+                self._capital_pending = False
+                self.capital = min(avail, env_cap) if env_cap else avail
+                log.warning(f"CAPITAL ₹{self.capital:,.0f} (available ₹{avail:,.0f}"
+                            + (f", capped by INDIA_MAX_CAPITAL ₹{env_cap:,.0f}"
+                               if env_cap else "") + ") — no leverage")
+        self.per_pos_cap = self.capital / MAX_OPEN
+        self.max_daily_loss = max(0.02 * self.capital, MAX_DAILY_LOSS)
 
     # ── Fresh-data helpers ───────────────────────────────────────────────────
     # data_fetch_upstox caches OHLCV ~290s and LTP ~30s — far too long for a
@@ -258,10 +310,10 @@ class Pilot:
     def scan(self, now: datetime):
         # Daily-loss circuit breaker: once realized loss hits the limit, take NO new
         # entries for the rest of the day (existing positions keep their own stops).
-        if not self.halted and self.realized_pnl <= -MAX_DAILY_LOSS:
+        if not self.halted and self.realized_pnl <= -self.max_daily_loss:
             self.halted = True
             log.warning(f"DAILY LOSS LIMIT hit: realized ₹{self.realized_pnl:.0f} "
-                        f"(limit −₹{MAX_DAILY_LOSS:.0f}) — NO new entries today.")
+                        f"(limit −₹{self.max_daily_loss:.0f}) — NO new entries today.")
         if self.halted:
             self.scan_diag = "halted (daily-loss limit hit)"
             return
@@ -314,7 +366,7 @@ class Pilot:
             self.stats["chased_skip"] += 1
             log.info(f"{sym} {strat}: price {ltp:.2f} already > trigger {trigger:.2f}+0.3% — skip")
             return
-        budget = min(PER_POS_CAP, MAX_PILOT_CAPITAL - self.deployed())
+        budget = min(self.per_pos_cap, self.capital - self.deployed())
         qty = int(budget // ltp)                       # NO leverage: notional <= budget
         if qty < 1:
             self.stats["too_pricey"] += 1
@@ -726,6 +778,8 @@ class Pilot:
                     self.squareoff_all(f"{SQUAREOFF:%H:%M} squareoff")
                     log.info("Squared off. Stopping for the day."); break
                 # trading phase
+                if self._capital_pending:      # funds API opens ~9:30 — keep asking
+                    self._refresh_capital()
                 self.manage(now)
                 if t < ENTRY_CUTOFF:
                     self.scan(now)
@@ -734,7 +788,7 @@ class Pilot:
                     # can delay the 15:00 squareoff
                     self.scan_diag = "entries closed (>=14:00) — managing exits only"
                 log.info(f"{now:%H:%M:%S} | open={len(self.positions)} "
-                         f"deployed=₹{self.deployed():.0f}/{MAX_PILOT_CAPITAL:.0f} "
+                         f"deployed=₹{self.deployed():.0f}/{self.capital:,.0f} "
                          f"| {', '.join(self.positions) or 'flat'} | {self.scan_diag}")
                 # NEVER sleep past the squareoff deadline; tighter cadence near close
                 base = LOOP_SECONDS if t < NEAR_CLOSE else LOOP_SECONDS_FAST
