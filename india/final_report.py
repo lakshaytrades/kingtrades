@@ -65,6 +65,12 @@ def main():
               "lock_trigger": LP_LOCK_TRIGGER_R, "lock_at": LP_LOCK_AT_R,
               "be": LP_ARM_BE_R, "trail_arm": LP_ARM_TRAIL_R,
               "trail_atr": LP_TRAIL_ATR}
+    # LIVE-FIDELITY variant: same signals, but modeled the way the LIVE bot can
+    # actually trade them — fills near the bar CLOSE (not the optimistic trigger
+    # price), the 0.3% chase-guard skips runaway bars, targets need the close to
+    # reach them (45s sampling can't catch intrabar spikes), and sizing is the
+    # live equal-split/2-slot/no-leverage, not the sim's risk-sized 5-slot 5x.
+    params_live = dict(params, live_fill=True)
 
     lines = []
     def emit(s=""):
@@ -78,13 +84,22 @@ def main():
     emit(f"  {len(prepped)} symbols (liquid tier) | {n_days} trading days of data")
     emit("=" * 78)
 
-    # run at each cost level (0.18% first for the headline)
-    res = {c: sl.run_strat(prepped, sl.s_wide_mom, params, cost=c) for c in COSTS}
+    # run at each cost level — LIVE-FIDELITY is the number that matters
+    res = {c: sl.run_strat(prepped, sl.s_wide_mom, params_live, cost=c,
+                           live_sizing=True) for c in COSTS}
     m = res[0.0018]
-    emit("\n  HEADLINE (at 0.18% cost = ~₹1L+ positions, tight fills):")
-    emit(f"    Return {m['ret']:+.1f}%/month | {m['trades']} trades "
-         f"({m['tpm']:.0f}/mo) | win rate {m['wr']:.0f}% | "
-         f"max drawdown {m['dd']:.1f}% | profit factor {m['pf']:.2f}")
+    m_opt = sl.run_strat(prepped, sl.s_wide_mom, params, cost=0.0018)
+    emit("\n  HEADLINE at 0.18% cost — TWO models:")
+    emit(f"    OPTIMISTIC SIM (risk-sized, 5 slots, up to 5x leverage — the old "
+         f"headline):")
+    emit(f"      {m_opt['ret']:+.1f}%/mo | {m_opt['trades']} trades | WR "
+         f"{m_opt['wr']:.0f}% | DD {m_opt['dd']:.1f}% | PF {m_opt['pf']:.2f}")
+    emit(f"    LIVE-FIDELITY (what the deployed bot can actually capture — "
+         f"TRUST THIS ONE):")
+    emit(f"      {m['ret']:+.1f}%/mo | {m['trades']} trades ({m['tpm']:.0f}/mo) | "
+         f"WR {m['wr']:.0f}% | DD {m['dd']:.1f}% | PF {m['pf']:.2f}")
+    emit("    The gap between them is the cost of real execution: close-price")
+    emit("    fills, chase-guard skips, sampled exits, 2-slot no-leverage sizing.")
 
     emit("\n  1) COST SENSITIVITY — the edge lives or dies on cost")
     emit(f"     {'cost':>7} {'Ret/mo':>9} {'PF':>6}   what this cost means")
@@ -98,12 +113,12 @@ def main():
         emit(f"     {c*100:>6.2f}% {r['ret']:>+8.1f}% {r['pf']:>5.2f}   {notes[c]}")
     survives = res[0.0025]["ret"] > 0
 
-    emit("\n  2) WALK-FORWARD — does it work in EVERY period, or just on average?")
+    emit("\n  2) WALK-FORWARD (live-fidelity) — does it work in EVERY period?")
     wf_rets = []
     for k, w in of.make_windows(prepped).items():
         if k == "full":
             continue
-        r = sl.run_strat(w, sl.s_wide_mom, params, cost=0.0018)
+        r = sl.run_strat(w, sl.s_wide_mom, params_live, cost=0.0018, live_sizing=True)
         wf_rets.append(r["ret"])
         emit(f"     {k}: {r['ret']:+.1f}%/mo  (WR {r['wr']:.0f}%, PF {r['pf']:.2f})")
     robust = bool(wf_rets) and all(r > 0 for r in wf_rets)

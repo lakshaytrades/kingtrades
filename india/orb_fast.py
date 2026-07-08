@@ -192,6 +192,11 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     h = d["high"].to_numpy()
     lo = d["low"].to_numpy()
     c = d["close"].to_numpy()
+    o = d["open"].to_numpy()
+    # live-fidelity mode: the live bot samples LTP every 45s, so it cannot book
+    # an intrabar SPIKE to target the way bar-highs can — require the CLOSE to
+    # reach levels (conservative bound). Stops stay on bar lows (pessimistic).
+    up = c if cand.get("live_fill") else h
     day = cand["day"]
     sl, tp = cand["sl"], cand["tp"]
     entry, risk = cand["entry"], cand["sl_dist"]
@@ -213,28 +218,29 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     j = i + 1
     n = len(d)
     while j < n and idx[j].normalize() == day:
-        # hard square-off
+        # hard square-off — at the bar's OPEN (~15:00 price), matching the live
+        # bot's 15:00:00 market sell (the old close was the ~15:05 price)
         if idx[j].time() >= SQUAREOFF:
-            exit_px = float(c[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
+            exit_px = float(o[j]); return _close(cand, idx[j], exit_px, "SQUAREOFF")
         if lo[j] <= sl:                              # SL wins same-bar ties (pessimistic)
             # label by which mechanism OWNS the stop level: trail > lock > BE
             # (the lock level entry+lock_at*risk >= the BE level entry when lock_at>=0)
             why = ("TRAIL" if trail_armed else "LOCK" if lock_armed
                    else "BE" if be_armed else "SL")
             return _close(cand, idx[j], sl, why)
-        if h[j] >= tp:
+        if up[j] >= tp:
             return _close(cand, idx[j], tp, "TP")
         # arm the early profit-lock for the NEXT bar (no lookahead)
-        if lock_px is not None and not lock_armed and h[j] >= lock_px:
+        if lock_px is not None and not lock_armed and up[j] >= lock_px:
             sl = max(sl, entry + lock_at_r * risk); lock_armed = True
         # arm breakeven for the NEXT bar once this bar reaches the trigger (no lookahead)
-        if be_trigger is not None and not be_armed and h[j] >= be_trigger:
+        if be_trigger is not None and not be_armed and up[j] >= be_trigger:
             sl = max(sl, entry); be_armed = True
         # arm the trailing stop once this bar reaches the trail trigger, then ratchet it
         # up as the high-water mark rises (only tightens — never loosens the stop)
         if trail_trigger is not None:
-            hi_water = max(hi_water, float(h[j]))
-            if not trail_armed and h[j] >= trail_trigger:
+            hi_water = max(hi_water, float(up[j]))
+            if not trail_armed and up[j] >= trail_trigger:
                 trail_armed = True
             if trail_armed:
                 sl = max(sl, hi_water - trail_atr * atr)
@@ -253,8 +259,15 @@ def _close(cand: dict, t_exit, exit_px: float, why: str) -> dict:
 
 # ── Portfolio simulation (chronological, concurrency-capped) ───────────────────
 
-def _simulate(all_trades: list[dict]) -> dict:
-    """Compound equity through time with MAX_OPEN concurrency and per-symbol locks."""
+def _simulate(all_trades: list[dict], live_sizing: bool = False) -> dict:
+    """Compound equity through time with MAX_OPEN concurrency and per-symbol locks.
+
+    live_sizing=True reproduces what live_pilot ACTUALLY does — equal-split
+    capital across MAX_OPEN_LIVE=2 slots, NO leverage — instead of the default
+    research sizing (0.7% equity-risk per trade, 5 slots, up to 5x leverage).
+    The default flatters returns ~2-4x vs what the live bot can capture; use
+    live_sizing for any number you intend to trade on."""
+    max_open = 2 if live_sizing else MAX_OPEN
     trades = sorted(all_trades, key=lambda x: x["t_entry"])
     equity = START_CAPITAL
     peak = equity
@@ -279,13 +292,17 @@ def _simulate(all_trades: list[dict]) -> dict:
         open_pos = still_open
 
         # capacity / per-symbol lock
-        if len(open_pos) >= MAX_OPEN:
+        if len(open_pos) >= max_open:
             continue
         if any(p["sym"] == tr["sym"] for p in open_pos):
             continue
 
-        qty = int((equity * RISK_PER_TRADE) / tr["sl_dist"])
-        qty = min(qty, int(equity * 5.0 / max(tr["entry"], 1)))   # 5x leverage cap
+        if live_sizing:
+            # live_pilot._enter: budget = capital/MAX_OPEN, qty = budget // price
+            qty = int((equity / max_open) // max(tr["entry"], 1))
+        else:
+            qty = int((equity * RISK_PER_TRADE) / tr["sl_dist"])
+            qty = min(qty, int(equity * 5.0 / max(tr["entry"], 1)))   # 5x leverage cap
         if qty < 1:
             continue
         pnl = tr["net_ret"] * tr["entry"] * qty

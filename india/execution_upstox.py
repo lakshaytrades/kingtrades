@@ -129,6 +129,17 @@ class UpstoxExecutor:
     def place_entry_order_limit(self, symbol: str, direction: str, qty: int,
                                 price: float, security_id: str,
                                 limit_offset_pct: float = 0.001) -> OrderResult:
+        """MARKETABLE limit: one aggressive limit at price*(1±offset) that fills
+        immediately like a market order but with a hard price CEILING.
+
+        The old flow (passive limit at +0.1%, wait 30s, cancel, market fallback)
+        was adverse selection with a delay tax: on running breakouts the limit
+        couldn't fill, so we paid market anyway 30s LATER at a worse price, while
+        failing breakouts happily filled the limit right as they reversed. The
+        cancel-then-market fallback could also DOUBLE the position when the limit
+        filled during the cancel. Now: place once at the cap, wait ~8s; if not
+        fully filled, verify cancel BEFORE any fallback, and only send the
+        UNFILLED REMAINDER at market."""
         if qty <= 0:
             return OrderResult(False, message=f"qty={qty} invalid")
         txn = "BUY" if direction == "LONG" else "SELL"
@@ -156,22 +167,47 @@ class UpstoxExecutor:
         if not limit_order_id:
             return OrderResult(False, message="Limit order placement failed")
 
-        for _ in range(30):
+        # marketable limit should fill in ~1s; 8s covers slow books
+        filled_px, filled_qty = 0.0, 0
+        for _ in range(8):
             _time.sleep(1)
             status, fp, fq = self._order_status(limit_order_id)
-            if status in ("complete", "filled"):
+            filled_px, filled_qty = (fp or filled_px), max(filled_qty, fq)
+            if status in ("complete", "filled") and fq >= qty:
                 logger.info(f"Limit filled: {symbol} @ ₹{fp:.2f} qty={fq}")
                 return OrderResult(True, order_id=limit_order_id, fill_price=fp,
                                    quantity=fq, order_type="LIMIT", message="Limit filled")
             if status in ("rejected", "cancelled"):
-                logger.warning(f"Limit {limit_order_id} {status} — MARKET fallback")
                 break
 
+        # Not (fully) filled: cancel, then RE-VERIFY before any fallback — if the
+        # limit filled during the cancel, sending a fallback too would DOUBLE the
+        # position. Fallback covers only the unfilled remainder.
         self.cancel_order(limit_order_id)
-        logger.info(f"Limit not filled in 30s for {symbol} — MARKET fallback")
-        result = self.place_entry_order(symbol, direction, qty, price, security_id)
+        status, fp, fq = self._order_status(limit_order_id)
+        filled_px, filled_qty = (fp or filled_px), max(filled_qty, fq)
+        if status in ("complete", "filled") and filled_qty >= qty:
+            logger.info(f"Limit filled during cancel: {symbol} @ ₹{filled_px:.2f}")
+            return OrderResult(True, order_id=limit_order_id, fill_price=filled_px,
+                               quantity=filled_qty, order_type="LIMIT",
+                               message="Limit filled (race with cancel)")
+        remainder = qty - filled_qty
+        if remainder <= 0:
+            return OrderResult(True, order_id=limit_order_id, fill_price=filled_px,
+                               quantity=filled_qty, order_type="LIMIT",
+                               message="Limit partial treated as final")
+        logger.info(f"Limit unfilled for {symbol} (got {filled_qty}/{qty}) — "
+                    f"MARKET for remainder {remainder}")
+        result = self.place_entry_order(symbol, direction, remainder, price, security_id)
+        if filled_qty > 0 and result.success and result.quantity:
+            # blend the partial limit fill with the market remainder
+            tot = filled_qty + result.quantity
+            blended = (filled_px * filled_qty + result.fill_price * result.quantity) / tot
+            return OrderResult(True, order_id=result.order_id, fill_price=blended,
+                               quantity=tot, order_type="MIXED",
+                               message="Limit partial + market remainder")
         result.order_type = "MARKET"
-        result.message    = f"Market fallback (limit timeout): {result.message}"
+        result.message = f"Market fallback: {result.message}"
         return result
 
     # ── Target order ─────────────────────────────────────────────────────────

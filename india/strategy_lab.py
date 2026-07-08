@@ -115,9 +115,20 @@ def s_orb(d, p):
     trig = orb_h * of.TRIGGER_BUF
     sig = ((t >= ENTRY_START) & (t < ENTRY_CUTOFF) & (c > trig) & (prev_c <= trig)
            & np.isfinite(orb_h) & np.isfinite(atr) & (atr > 0) & (rvol >= p["rv"]))
+    live_fill = bool(p.get("live_fill"))
     out = []
     for i in np.flatnonzero(sig):
-        entry = max(min(trig[i] * (1 + SLIP), float(h[i])), float(o[i]))
+        if live_fill:
+            # LIVE FIDELITY: the bot only sees the bar AFTER it closes, buys near
+            # the close, and its chase-guard skips anything >0.3% past trigger.
+            # The optimistic model below fills at trig+5bps even when the bar
+            # closed 0.8% higher — those cheap fills (the best breakouts!) are
+            # exactly what live cannot get.
+            if c[i] > trig[i] * 1.003:
+                continue                          # live chase-guard skips it
+            entry = float(c[i]) * (1 + SLIP)      # fills near the close, not trigger
+        else:
+            entry = max(min(trig[i] * (1 + SLIP), float(h[i])), float(o[i]))
         m = _mk(idx, i, entry, entry - p["sl"] * atr[i], entry + p["rr"] * p["sl"] * atr[i],
                 atr=atr[i])
         if m: out.append(m)
@@ -219,7 +230,7 @@ STRATS = {
 
 # ── Run one strategy+params over a prepped data dict ──────────────────────────
 
-def run_strat(prepped, gen, params, cost=None):
+def run_strat(prepped, gen, params, cost=None, live_sizing=False):
     trades = []
     saved = of.COST_RT_PCT
     of.COST_RT_PCT = saved if cost is None else cost  # let _resolve_exit/_close use this cost
@@ -232,8 +243,9 @@ def run_strat(prepped, gen, params, cost=None):
                 cand["trail_atr"] = params.get("trail_atr")  # trail width in ATR
                 cand["lock_trigger"] = params.get("lock_trigger")  # early-lock arm (R)
                 cand["lock_at"] = params.get("lock_at")            # early-lock level (R)
+                cand["live_fill"] = params.get("live_fill")  # close-sampled exits too
                 trades.append(of._resolve_exit(d, cand))
-        m = of._simulate(trades)
+        m = of._simulate(trades, live_sizing=live_sizing)
     finally:
         of.COST_RT_PCT = saved
     return m

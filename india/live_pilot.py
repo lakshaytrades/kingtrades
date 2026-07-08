@@ -238,7 +238,8 @@ class Pilot:
         self.scan_diag = "starting…"   # last scan summary, shown in the heartbeat
         # slippage / fill-quality measurement — the whole point of the pilot
         self.stats = {"signals": 0, "filled": 0, "chased_skip": 0,
-                      "too_pricey": 0, "slips_bps": [], "net_pcts": []}
+                      "too_pricey": 0, "slips_bps": [], "drift_bps": [],
+                      "exit_slips_bps": [], "net_pcts": []}
         # trade on the broker's AVAILABLE BALANCE (retried until the funds API opens)
         self.capital = 0.0
         self._capital_pending = False
@@ -351,11 +352,10 @@ class Pilot:
         scanned = 0
         best_rv = 0.0
         best_sym = ""
+        candidates = []                     # collect ALL signals, then take STRONGEST
         for sym in self.universe:
             if sym in self.positions or sym in self.done_today:
                 continue
-            if len(self.positions) >= MAX_OPEN:
-                break
             if KILL_FILE.exists():          # stop entering the instant KILL appears
                 return
             try:
@@ -369,6 +369,7 @@ class Pilot:
                 # diagnostic: track the strongest volume surge seen (proves it's scanning
                 # and shows how close anything came to the rvol>=RV_MIN trigger)
                 _i = _last_closed_idx(d, now)
+                _rv = 0.0
                 if _i is not None:
                     _rv = float(d.iloc[_i].get("rvol", 0) or 0)
                     if _rv > best_rv:
@@ -377,10 +378,19 @@ class Pilot:
                 if not sig:
                     continue
                 self.stats["signals"] += 1
-                strat, trigger, sl_dist, atr = sig
-                self._enter(sym, strat, trigger, sl_dist, atr)
+                candidates.append((_rv, sym, sig))
             except Exception as e:
                 log.debug(f"scan {sym}: {e}")
+        # STRONGEST volume surge first. The old universe-list-order admission took
+        # whichever names happened to come first when several broke out in the
+        # same cycle; the backtest weights by strength — this narrows that gap.
+        candidates.sort(key=lambda x: -x[0])
+        for _rv, sym, (strat, trigger, sl_dist, atr) in candidates:
+            if len(self.positions) >= MAX_OPEN:
+                break
+            if KILL_FILE.exists():
+                return
+            self._enter(sym, strat, trigger, sl_dist, atr)
         self.scan_diag = (f"scanned {scanned}/{len(self.universe)} | "
                           f"strongest rvol {best_rv:.1f} ({best_sym or '-'}) [need ≥{RV_MIN}]")
 
@@ -411,8 +421,12 @@ class Pilot:
         # a fresh position supersedes any earlier verified close of this symbol
         # (e.g. a startup-reconcile flatten) — EOD squareoff must not skip it
         self.closed_syms.discard(sym.upper())
+        # MARKETABLE limit at the chase cap (trigger+0.3%): fills immediately like
+        # a market order but with a hard price ceiling. (The old passive +0.1%
+        # limit waited 30s and then paid market anyway — a delay tax that filled
+        # the losers and chased the winners.)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
-                                                limit_offset_pct=0.001)
+                                                limit_offset_pct=0.003)
         # CRITICAL: only record a position for the qty that ACTUALLY filled. A
         # rejected/timed-out order (filled=0) must NOT create a phantom position —
         # otherwise the exit would SELL shares we don't own and open a short.
@@ -420,6 +434,11 @@ class Pilot:
         if not res.success or filled < 1 or not res.fill_price:
             log.warning(f"{sym} {strat}: entry not filled (ok={res.success} "
                         f"qty={filled} px={res.fill_price}) — no position recorded")
+            # a CLEANLY rejected/cancelled order didn't trade — give the symbol
+            # back to today's universe instead of burning its one slot
+            msg = (res.message or "").lower()
+            if (not res.order_id) or "rejected" in msg or "cancelled" in msg:
+                self.done_today.discard(sym)
             # Fill-detection can time out AFTER the exchange actually filled the
             # order — that would leave a REAL long untracked (no stop, caps blind).
             # Ask the broker; if it holds the position, ADOPT it instead.
@@ -454,9 +473,15 @@ class Pilot:
         # 1:MAX_RR. (Previously computed from pre-entry ltp, so slippage skewed the ratio.)
         sl = round(fill - sl_dist, 2)
         target = round(fill + MAX_RR * sl_dist, 2)
-        slip_bps = (fill - trigger) / trigger * 1e4
+        # HONEST slippage = fill vs the price the instant we sent the order (ltp).
+        # The old (fill - trigger) mixed in a full bar of momentum DRIFT — it
+        # overstated execution cost and could wrongly kill the scale decision.
+        # Drift is recorded separately as its own diagnostic.
+        slip_bps = (fill - ltp) / ltp * 1e4
+        drift_bps = (fill - trigger) / trigger * 1e4
         self.stats["filled"] += 1
         self.stats["slips_bps"].append(slip_bps)
+        self.stats["drift_bps"].append(drift_bps)
         self.positions[sym] = {"qty": filled, "entry": fill, "sl": sl,
                                "target": target, "strat": strat, "sec_id": sec_id,
                                "t_in": now_ist(), "trigger": trigger,
@@ -465,8 +490,23 @@ class Pilot:
                                "lock_armed": False, "be_armed": False,
                                "trail_armed": False, "exit_fails": 0}
         log.warning(f"ENTER {strat} {sym} qty={filled} trig={trigger:.2f} "
-                    f"fill={fill:.2f} slip={slip_bps:+.1f}bps SL={sl:.2f} "
-                    f"tgt={target or 'hold'} notional=₹{filled*fill:.0f}")
+                    f"fill={fill:.2f} slip={slip_bps:+.1f}bps drift={drift_bps:+.1f}bps "
+                    f"SL={sl:.2f} tgt={target or 'hold'} notional=₹{filled*fill:.0f}")
+        # RESTING BROKER STOP (SL-M): the stop triggers AT THE BROKER even if this
+        # process dies or the loop is blocked — closes the 45s poll-gap leak that
+        # costs ~0.2% per stop-hit. Software stop remains as backup.
+        if self.live:
+            try:
+                rs = self.exec.place_stop_order(sym, "LONG", filled, sl, sec_id)
+                if rs.success and rs.order_id:
+                    p = self.positions[sym]
+                    p["stop_oid"], p["stop_px"] = rs.order_id, sl
+                    log.info(f"{sym}: SL-M resting at {sl:.2f} ({rs.order_id})")
+                else:
+                    log.warning(f"{sym}: SL-M placement failed ({rs.message}) — "
+                                f"software stop only")
+            except Exception as e:
+                log.warning(f"{sym}: SL-M placement error: {e} — software stop only")
 
     def manage(self, now: datetime):
         # Per-position try/except: an API error on ONE symbol must never crash the
@@ -490,6 +530,17 @@ class Pilot:
                                     f"{STALE_FEED_CYCLES}) — stop not checked this cycle")
                     continue
                 self.ltp_fail[sym] = 0                 # feed recovered
+                # If a resting broker SL-M exists and price is near/below the stop,
+                # it may have ALREADY fired — book that fill, never sell again.
+                if self.live and p.get("stop_oid") and ltp <= p["sl"] * 1.01:
+                    try:
+                        st, fp, fq = self.exec._order_status(p["stop_oid"])
+                        if st in ("complete", "filled") and fq >= 1:
+                            log.warning(f"{sym}: broker SL-M FIRED @ {fp:.2f}")
+                            self._book_exit(sym, p, fp or p["sl"], "SLM")
+                            continue
+                    except Exception:
+                        pass
                 # Stop/target check FIRST (matches the backtest's bar order), then
                 # ratchet — and ratchet errors can never skip the stop check.
                 reason = None
@@ -549,6 +600,34 @@ class Pilot:
             log.warning(f"{sym} {tag}: stop {old_sl:.2f} -> {p['sl']:.2f} "
                         f"(ltp {ltp:.2f}, +{gain_r:.1f}R, locks "
                         f"₹{(p['sl'] - entry) * p['qty']:+.0f})")
+            # re-price the resting broker SL-M, throttled to meaningful moves
+            # (every trail tick would churn cancel+place API calls)
+            if (getattr(self, "live", False) and p.get("stop_oid") and atr
+                    and p["sl"] - p.get("stop_px", 0.0) >= 0.1 * atr):
+                self._move_broker_stop(sym, p)
+
+    def _move_broker_stop(self, sym, p):
+        """Cancel + replace the resting SL-M at the ratcheted level. If the stop
+        FIRED while we were moving it, book that exit instead (no re-sell)."""
+        old = p.get("stop_oid")
+        try:
+            self.exec.cancel_order(old)
+            st, fp, fq = self.exec._order_status(old)
+            if st in ("complete", "filled") and fq >= 1:
+                log.warning(f"{sym}: SL-M fired during re-price @ {fp:.2f} — booking")
+                self._book_exit(sym, p, fp or p.get("stop_px") or p["sl"], "SLM")
+                return
+            rs = self.exec.place_stop_order(sym, "LONG", p["qty"], p["sl"], p["sec_id"])
+            if rs.success and rs.order_id:
+                p["stop_oid"], p["stop_px"] = rs.order_id, p["sl"]
+                log.info(f"{sym}: SL-M moved up to {p['sl']:.2f}")
+            else:
+                p["stop_oid"] = None
+                log.warning(f"{sym}: SL-M re-place failed ({rs.message}) — "
+                            f"software stop only now")
+        except Exception as e:
+            p["stop_oid"] = None
+            log.warning(f"{sym}: SL-M move error: {e} — software stop only now")
 
     def _exit(self, sym, ltp, reason, pending=None, brk_open=None) -> bool:
         """Close a long with a VERIFIED market sell. Returns True only when the
@@ -604,10 +683,35 @@ class Pilot:
                 log.critical(f"{sym}: cannot verify broker state ({e}) — NOT "
                              f"re-selling blind; retrying next cycle")
                 return False
+        # a resting broker SL-M must be cancelled BEFORE we sell — otherwise the
+        # stop can fire later against a position we no longer hold -> short.
+        oid = p.get("stop_oid")
+        if oid and self.live:
+            try:
+                self.exec.cancel_order(oid)
+                st, fp, fq = self.exec._order_status(oid)
+                if st in ("complete", "filled") and fq >= 1:
+                    log.warning(f"{sym}: resting SL-M already fired @ {fp:.2f} — "
+                                f"booking, NOT re-selling")
+                    self._book_exit(sym, p, fp or ltp, reason + "~SLM")
+                    return True
+                p["stop_oid"] = None
+            except Exception as e:
+                log.error(f"{sym}: stop-cancel unverified ({e}) — NOT selling until "
+                          f"resolved (double-sell risk); retrying next cycle")
+                p["exit_fails"] = p.get("exit_fails", 0) + 1
+                return False
         res = self.exec.place_entry_order(sym, "SHORT", p["qty"], ltp, p["sec_id"])
         filled = int(res.quantity or 0)
         if res.success and filled >= 1 and res.fill_price:
             if filled >= p["qty"]:
+                # exit-side slippage vs the intended level (stop/target), the
+                # missing half of the pilot's cost measurement
+                if reason in ("SL", "TRAIL", "LOCK", "BE", "TARGET"):
+                    intended = p["target"] if reason == "TARGET" else p["sl"]
+                    if intended:
+                        self.stats["exit_slips_bps"].append(
+                            (intended - float(res.fill_price)) / intended * 1e4)
                 self._book_exit(sym, p, float(res.fill_price), reason)
                 return True
             # PARTIAL fill: realize the filled slice, keep the remainder tracked
@@ -735,8 +839,16 @@ class Pilot:
         """
         import cost_model as cm
         s = self.stats
-        slips = s["slips_bps"]
-        avg_slip_side = (sum(slips) / len(slips) / 2 / 100) if slips else None  # %/side
+        # per-side slippage = mean(entry slip vs order-send LTP, exit slip vs
+        # intended level). The old formula halved (fill - trigger), which mixed a
+        # bar of momentum DRIFT into the execution number and could wrongly kill
+        # (or bless) the scale decision.
+        sides = []
+        if s["slips_bps"]:
+            sides.append(abs(sum(s["slips_bps"]) / len(s["slips_bps"])))
+        if s["exit_slips_bps"]:
+            sides.append(abs(sum(s["exit_slips_bps"]) / len(s["exit_slips_bps"])))
+        avg_slip_side = (sum(sides) / len(sides) / 100) if sides else None  # %/side
         fill_rate = (s["filled"] / s["signals"] * 100) if s["signals"] else 0.0
         net = s["net_pcts"]
         log.warning("=" * 64)
@@ -752,7 +864,11 @@ class Pilot:
         if avg_slip_side is None:
             log.warning("  No fills yet — need live trades to measure slippage.")
             log.warning("=" * 64); return
-        log.warning(f"  MEASURED slippage: {avg_slip_side:.3f}% per side")
+        log.warning(f"  MEASURED slippage: {avg_slip_side:.3f}% per side "
+                    f"(entry n={len(s['slips_bps'])}, exit n={len(s['exit_slips_bps'])})")
+        if s["drift_bps"]:
+            log.warning(f"  entry DRIFT vs trigger (timing, not execution): "
+                        f"{sum(s['drift_bps'])/len(s['drift_bps']):+.1f} bps avg")
         # translate to expected %/mo at scale, for a few position sizes
         log.warning("  -> expected %/mo at real scale (RANGE_BREAK_HOLD 1-yr curve):")
         for size in (50_000, 100_000, 200_000):
