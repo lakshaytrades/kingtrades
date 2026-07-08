@@ -145,6 +145,12 @@ LP_TRAIL_ATR   = 1.5   # trail this many ATR under the high-water mark once arme
 # mirrored in the backtest (MOM_3R_USERLOCK) so the trade-off can be measured.
 LP_LOCK_TRIGGER_R = 0.75  # arm the early lock at +0.75R ("if it gets up .7 or .8")
 LP_LOCK_AT_R      = 0.15  # lock the stop at entry + 0.15R ("lock .1 or .2")
+# Entry chase cap: how far past the trigger we'll still buy. The honest entry
+# sweep (entry_sweep.py) prices each style on real fills — deploy its winner
+# via env INDIA_CHASE_CAP: "0.3" / "0.6" / "1.0" (percent) or "none" (buy the
+# runaway at market, with a 1% sanity ceiling).
+_cc = os.getenv("INDIA_CHASE_CAP", "0.3").strip().lower()
+CHASE_CAP = None if _cc in ("none", "off") else float(_cc) / 100.0
 
 # ── Logging ───────────────────────────────────────────────────────────────────
 (_ROOT / "logs").mkdir(exist_ok=True)
@@ -399,10 +405,12 @@ class Pilot:
         if not sec_id:
             log.info(f"{sym}: no instrument_key — skip"); return
         ltp = self._fresh_ltp(sym) or trigger          # fresh price for sizing/SL
-        # never chase: skip if price already ran > 0.3% past the trigger
-        if ltp > trigger * 1.003:
+        # chase guard (tunable, see CHASE_CAP): skip if price ran past the cap
+        cap = CHASE_CAP if CHASE_CAP is not None else 0.01   # 1% sanity ceiling
+        if CHASE_CAP is not None and ltp > trigger * (1 + CHASE_CAP):
             self.stats["chased_skip"] += 1
-            log.info(f"{sym} {strat}: price {ltp:.2f} already > trigger {trigger:.2f}+0.3% — skip")
+            log.info(f"{sym} {strat}: price {ltp:.2f} already > trigger "
+                     f"{trigger:.2f}+{CHASE_CAP*100:.1f}% — skip")
             return
         budget = min(self.per_pos_cap, self.capital - self.deployed())
         qty = int(budget // ltp)                       # NO leverage: notional <= budget
@@ -426,7 +434,7 @@ class Pilot:
         # limit waited 30s and then paid market anyway — a delay tax that filled
         # the losers and chased the winners.)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
-                                                limit_offset_pct=0.003,
+                                                limit_offset_pct=cap,
                                                 market_fallback=False)
         # CRITICAL: only record a position for the qty that ACTUALLY filled. A
         # rejected/timed-out order (filled=0) must NOT create a phantom position —

@@ -131,13 +131,17 @@ def s_orb(d, p):
             j = i + 1
             if j >= len(c) or day[j] != day[i]:
                 continue                           # signal on the day's last bar
-            cap = trig[i] * 1.003
-            if float(o[j]) <= cap:
-                entry = float(o[j]) * (1 + SLIP)
-            elif float(l[j]) <= cap:
-                entry = cap * (1 + SLIP)
+            cap_pct = p.get("entry_cap", 0.003)    # None = market at next open (no cap)
+            if cap_pct is None:
+                entry = float(o[j]) * (1 + SLIP)   # pay the REAL runaway price
             else:
-                continue                           # price never came back — skip
+                cap = trig[i] * (1 + cap_pct)
+                if float(o[j]) <= cap:
+                    entry = float(o[j]) * (1 + SLIP)
+                elif float(l[j]) <= cap:
+                    entry = cap * (1 + SLIP)
+                else:
+                    continue                       # price never came back — skip
             m = _mk(idx, j, entry, entry - p["sl"] * atr[i],
                     entry + p["rr"] * p["sl"] * atr[i], atr=atr[i])
         else:
