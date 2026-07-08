@@ -65,11 +65,11 @@ def main():
               "lock_trigger": LP_LOCK_TRIGGER_R, "lock_at": LP_LOCK_AT_R,
               "be": LP_ARM_BE_R, "trail_arm": LP_ARM_TRAIL_R,
               "trail_atr": LP_TRAIL_ATR}
-    # LIVE-FIDELITY variant: same signals, but modeled the way the LIVE bot can
-    # actually trade them — fills near the bar CLOSE (not the optimistic trigger
-    # price), the 0.3% chase-guard skips runaway bars, targets need the close to
-    # reach them (45s sampling can't catch intrabar spikes), and sizing is the
-    # live equal-split/2-slot/no-leverage, not the sim's risk-sized 5-slot 5x.
+    # LIVE-FIDELITY variant: same signals, modeled the way the LIVE bot actually
+    # trades them — ENTRIES near the bar close (not the optimistic trigger fill)
+    # with the 0.3% chase-guard skipping runaway bars, and live equal-split /
+    # 2-slot / no-leverage sizing. EXITS are bar-extreme (tick-level) because the
+    # bot rests both the SL-M stop AND the target limit at the broker.
     params_live = dict(params, live_fill=True)
 
     lines = []
@@ -98,8 +98,8 @@ def main():
          f"TRUST THIS ONE):")
     emit(f"      {m['ret']:+.1f}%/mo | {m['trades']} trades ({m['tpm']:.0f}/mo) | "
          f"WR {m['wr']:.0f}% | DD {m['dd']:.1f}% | PF {m['pf']:.2f}")
-    emit("    The gap between them is the cost of real execution: close-price")
-    emit("    fills, chase-guard skips, sampled exits, 2-slot no-leverage sizing.")
+    emit("    Gap = real entries (close-price fills, chase-guard skips) + live")
+    emit("    2-slot no-leverage sizing. Exits are broker-resting (tick-level).")
 
     emit("\n  1) COST SENSITIVITY — the edge lives or dies on cost")
     emit(f"     {'cost':>7} {'Ret/mo':>9} {'PF':>6}   what this cost means")

@@ -193,10 +193,11 @@ def _resolve_exit(d: pd.DataFrame, cand: dict) -> dict:
     lo = d["low"].to_numpy()
     c = d["close"].to_numpy()
     o = d["open"].to_numpy()
-    # live-fidelity mode: the live bot samples LTP every 45s, so it cannot book
-    # an intrabar SPIKE to target the way bar-highs can — require the CLOSE to
-    # reach levels (conservative bound). Stops stay on bar lows (pessimistic).
-    up = c if cand.get("live_fill") else h
+    # exits are BROKER-RESTING in the live bot (SL-M stop + limit target), so
+    # they trigger tick-level exactly like bar extremes — bar-high/low exit
+    # modeling is faithful. (An earlier close-sampled exit model here was the
+    # worst-case bound for software-polled exits; resting orders removed it.)
+    up = h
     day = cand["day"]
     sl, tp = cand["sl"], cand["tp"]
     entry, risk = cand["entry"], cand["sl_dist"]

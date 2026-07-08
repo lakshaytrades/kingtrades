@@ -507,6 +507,20 @@ class Pilot:
                                 f"software stop only")
             except Exception as e:
                 log.warning(f"{sym}: SL-M placement error: {e} — software stop only")
+            # RESTING TARGET (limit sell at 3R): intrabar touches fill TICK-LEVEL
+            # at the broker — the 45s polling loop physically cannot catch a spike
+            # to target; this order can. OCO with the stop is enforced in manage()
+            # and _exit() (whichever fills first, the other gets cancelled).
+            try:
+                rt = self.exec.place_target_order(sym, "LONG", filled, target, sec_id)
+                if rt.success and rt.order_id:
+                    self.positions[sym]["tgt_oid"] = rt.order_id
+                    log.info(f"{sym}: TARGET limit resting at {target:.2f} ({rt.order_id})")
+                else:
+                    log.warning(f"{sym}: target placement failed ({rt.message}) — "
+                                f"software target only")
+            except Exception as e:
+                log.warning(f"{sym}: target placement error: {e} — software target only")
 
     def manage(self, now: datetime):
         # Per-position try/except: an API error on ONE symbol must never crash the
@@ -530,17 +544,27 @@ class Pilot:
                                     f"{STALE_FEED_CYCLES}) — stop not checked this cycle")
                     continue
                 self.ltp_fail[sym] = 0                 # feed recovered
-                # If a resting broker SL-M exists and price is near/below the stop,
-                # it may have ALREADY fired — book that fill, never sell again.
-                if self.live and p.get("stop_oid") and ltp <= p["sl"] * 1.01:
-                    try:
-                        st, fp, fq = self.exec._order_status(p["stop_oid"])
-                        if st in ("complete", "filled") and fq >= 1:
-                            log.warning(f"{sym}: broker SL-M FIRED @ {fp:.2f}")
-                            self._book_exit(sym, p, fp or p["sl"], "SLM")
-                            continue
-                    except Exception:
-                        pass
+                # If a resting broker order (SL-M / target limit) is near its
+                # level, it may have ALREADY filled — book it, never sell again.
+                booked = False
+                for key, lvl_ok, why in (
+                        ("stop_oid", ltp <= p["sl"] * 1.01, "SLM"),
+                        ("tgt_oid", p["target"] and ltp >= p["target"] * 0.99,
+                         "TARGET")):
+                    if self.live and p.get(key) and lvl_ok:
+                        try:
+                            st, fp, fq = self.exec._order_status(p[key])
+                            if st in ("complete", "filled") and fq >= 1:
+                                log.warning(f"{sym}: resting {why} FILLED @ {fp:.2f}")
+                                self._book_exit(sym, p, fp or
+                                                (p["sl"] if why == "SLM"
+                                                 else p["target"]), why)
+                                booked = True
+                                break
+                        except Exception:
+                            pass
+                if booked:
+                    continue
                 # Stop/target check FIRST (matches the backtest's bar order), then
                 # ratchet — and ratchet errors can never skip the stop check.
                 reason = None
@@ -683,24 +707,28 @@ class Pilot:
                 log.critical(f"{sym}: cannot verify broker state ({e}) — NOT "
                              f"re-selling blind; retrying next cycle")
                 return False
-        # a resting broker SL-M must be cancelled BEFORE we sell — otherwise the
-        # stop can fire later against a position we no longer hold -> short.
-        oid = p.get("stop_oid")
-        if oid and self.live:
-            try:
-                self.exec.cancel_order(oid)
-                st, fp, fq = self.exec._order_status(oid)
-                if st in ("complete", "filled") and fq >= 1:
-                    log.warning(f"{sym}: resting SL-M already fired @ {fp:.2f} — "
-                                f"booking, NOT re-selling")
-                    self._book_exit(sym, p, fp or ltp, reason + "~SLM")
-                    return True
-                p["stop_oid"] = None
-            except Exception as e:
-                log.error(f"{sym}: stop-cancel unverified ({e}) — NOT selling until "
-                          f"resolved (double-sell risk); retrying next cycle")
-                p["exit_fails"] = p.get("exit_fails", 0) + 1
-                return False
+        # ALL resting broker orders (SL-M stop, target limit) must be cancelled
+        # BEFORE we sell — otherwise one can fire later against a position we no
+        # longer hold -> short. If one already FILLED, book it instead.
+        if self.live:
+            for key, tag in (("stop_oid", "SLM"), ("tgt_oid", "TGT")):
+                oid = p.get(key)
+                if not oid:
+                    continue
+                try:
+                    self.exec.cancel_order(oid)
+                    st, fp, fq = self.exec._order_status(oid)
+                    if st in ("complete", "filled") and fq >= 1:
+                        log.warning(f"{sym}: resting {tag} already filled @ "
+                                    f"{fp:.2f} — booking, NOT re-selling")
+                        self._book_exit(sym, p, fp or ltp, reason + "~" + tag)
+                        return True
+                    p[key] = None
+                except Exception as e:
+                    log.error(f"{sym}: {tag}-cancel unverified ({e}) — NOT selling "
+                              f"until resolved (double-sell risk); retrying")
+                    p["exit_fails"] = p.get("exit_fails", 0) + 1
+                    return False
         res = self.exec.place_entry_order(sym, "SHORT", p["qty"], ltp, p["sec_id"])
         filled = int(res.quantity or 0)
         if res.success and filled >= 1 and res.fill_price:
@@ -733,7 +761,17 @@ class Pilot:
         return False
 
     def _book_exit(self, sym, p, px, reason):
-        """Record a CONFIRMED close: remove from tracking + realize P&L."""
+        """Record a CONFIRMED close: remove from tracking + realize P&L.
+        Best-effort OCO: cancel any remaining resting order (a fired stop's
+        partner target, or vice versa) so it can't execute against a flat book."""
+        if getattr(self, "live", False):
+            for key in ("stop_oid", "tgt_oid"):
+                oid = p.get(key)
+                if oid:
+                    try:
+                        self.exec.cancel_order(oid)
+                    except Exception:
+                        pass
         self.positions.pop(sym, None)
         self.ltp_fail.pop(sym, None)
         self.closed_syms.add(sym.upper())
