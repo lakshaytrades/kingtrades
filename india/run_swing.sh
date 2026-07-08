@@ -9,8 +9,8 @@
 # which manages held positions (exit on target/stop/Friday) and scans for a new
 # -5% down-day entry. Delivery orders, flat by Friday, no weekend holds.
 #
-# Cron (installed by setup_swing_cron.sh): 40 9 * * 1-5 UTC = 15:10 IST — late
-# enough that the day's move is known, early enough to place delivery orders.
+# Cron (installed by setup_swing_cron.sh): 10 15 * * 1-5 in INDIAN time (the
+# installer sets the server clock to Asia/Kolkata) = 15:10 IST daily.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 cd "$(cd "$(dirname "$0")/.." && pwd)" || exit 1

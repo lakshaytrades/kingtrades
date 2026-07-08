@@ -54,7 +54,7 @@ month is NORMAL. **No weekly income guarantee exists.**
 echo 'INDIA_SWING_VALIDATED=true' >> .env
 SWING_MODE=live bash india/setup_swing_cron.sh   # also strips ALL intraday cron
 
-# daily: NOTHING — cron runs 15:10 IST Mon–Fri (token refresh + one swing run)
+# daily: NOTHING — cron runs 15:10 IST Mon–Fri (server clock IS Indian time)
 # monitor:   tail -20 logs/swing_$(date +%F).log      (or Upstox app)
 # stop all:  touch ~/kingtrades/KILL
 # token from phone: Telegram /token  (fallback /settoken)
