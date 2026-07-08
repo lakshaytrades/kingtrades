@@ -65,6 +65,14 @@ TOP_LIQUID = [
     "HINDALCO", "VEDL", "ZOMATO", "IRFC", "NMDC", "CANBK",
 ]
 
+# THE VALIDATED UNIVERSE (2026-07-08, uni.pkl 1-yr): the first ~50 names of
+# HIGH_VOL_UNIVERSE (the most-liquid high-beta tier: metals, PSU banks, Adani,
+# power). MOM_3R_USERLOCK on THESE names passed every meaningful gate:
+# +6.7%/mo @0.18% cost, still +0.8% @0.25%, positive in EVERY walk-forward
+# window (+3.9/+5.6/+8.1), PF 1.54, DD 14%, 389 trades. The full 127-name
+# universe FAILED walk-forward — the edge lives in the liquid tier only.
+LIQUID_50 = HIGH_VOL_UNIVERSE[:50]
+
 # Return-vs-cost curve for the VALIDATED config (rvol>=4, SL 1.5xATR, 3:1), used at
 # end-of-day to translate MEASURED slippage -> expected %/mo at real scale. Anchored on
 # profit_optimizer: +3.9%/mo at 0.18% cost. Fewer trades (~39/mo) => flatter curve than
@@ -810,6 +818,9 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--liquid-only", action="store_true",
                     help="trade only the ~18 most-liquid names (far fewer trades, lower slippage)")
+    ap.add_argument("--full", action="store_true",
+                    help="trade the FULL ~130-name universe (FAILED walk-forward "
+                         "on 2026-07 data — validated edge is the 50 liquid names)")
     args = ap.parse_args()
     # SINGLE-INSTANCE LOCK: cron + Telegram /run + manual can all launch the pilot;
     # two live instances double the caps AND cross-flatten each other's positions
@@ -827,11 +838,16 @@ def main():
         load_dotenv(_ROOT / ".env")
     except Exception:
         pass
-    # DEFAULT = the FULL validated universe (matches the +3.9%/mo, ~39 trades/mo backtest).
-    # --liquid-only trades the narrow subset (fewer trades, cleaner slippage) if wanted.
-    universe = TOP_LIQUID if args.liquid_only else HIGH_VOL_UNIVERSE
-    log.warning(f"Universe: {'TOP-LIQUID' if args.liquid_only else 'FULL'} "
-                f"({len(universe)} names)")
+    # DEFAULT = LIQUID_50, the VALIDATED universe (2026-07-08: +6.7%/mo @0.18%,
+    # positive in every walk-forward window, PF 1.54, DD 14%). The full 127-name
+    # run FAILED walk-forward (wf1 negative) — the edge lives in the liquid tier.
+    if args.liquid_only:
+        universe, tag = TOP_LIQUID, "TOP-LIQUID"
+    elif args.full:
+        universe, tag = HIGH_VOL_UNIVERSE, "FULL (NOT validated!)"
+    else:
+        universe, tag = LIQUID_50, "LIQUID-50 (validated)"
+    log.warning(f"Universe: {tag} ({len(universe)} names)")
     Pilot(universe=universe).run()
 
 

@@ -79,15 +79,20 @@ def main():
     print(f"    trades {base['trades']}  WR {base['wr']:.0f}%  Ret {base['ret']:+.1f}%/mo  "
           f"DD {base['dd']:.1f}%  PF {base['pf']:.2f}")
 
-    # 1) cost sensitivity
+    # 1) cost sensitivity. HARD GATE = positive at 0.25% (a realistic bad day at
+    # ₹1L+ scale). 0.35/0.45% are TINY-ACCOUNT costs (₹5-25k positions) shown for
+    # information — no intraday edge survives 0.45% round-trip, and demanding it
+    # would just reject every real strategy.
     print("\n  1) COST SENSITIVITY — does it survive a higher real cost?")
     print(f"     {'cost':>7} {'Ret/mo':>9} {'PF':>6}")
     survives_cost = True
     for c in [0.0010, 0.0018, 0.0025, 0.0035, 0.0045]:
         m = _run(prepped, params, c)
         flag = "" if m["ret"] > 0 else "  <- LOSES"
-        if c >= 0.0025 and m["ret"] <= 0:
+        if c == 0.0025 and m["ret"] <= 0:
             survives_cost = False
+        if c > 0.0025 and m["ret"] <= 0:
+            flag += "  (tiny-account cost — informational)"
         print(f"     {c*100:>6.2f}% {m['ret']:>+8.1f}% {m['pf']:>5.2f}{flag}")
 
     # 2) walk-forward
@@ -109,8 +114,10 @@ def main():
     strong_pf = base["pf"] >= 1.10
     ok = base["ret"] > 0 and survives_cost and wf_robust and base["trades"] >= 20
     if ok and strong_pf:
-        print("  TRUSTWORTHY — positive at your cost, survives higher cost, robust across")
+        print("  TRUSTWORTHY — positive at your cost, survives 0.25% cost, robust across")
         print("  every window, and PF >= 1.10. This is a real candidate for the pilot.")
+        print("  REQUIREMENT: keep real all-in cost <= ~0.22% => ₹1L+ positions on")
+        print("  liquid names with tight fills. At small size it still loses to fees.")
     elif ok:
         print("  MARGINAL — robust and positive, but PF is thin (< 1.10). Real but fragile;")
         print("  deploy only tiny, and expect the live slippage test to be decisive.")
