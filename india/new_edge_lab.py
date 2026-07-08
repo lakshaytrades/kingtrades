@@ -56,11 +56,20 @@ def _trade(sym, t_in, t_out, entry, exit_px, cost):
             "net_ret": gross - cost, "exit": float(exit_px), "why": "X"}
 
 
+def _crosses_weekend(t_in, t_out):
+    """True if the hold spans a Saturday/Sunday (a weekend gap we won't carry)."""
+    return (t_out.normalize() - t_in.normalize()).days > 0 and (
+        t_in.weekday() > t_out.weekday() or (t_out - t_in).days >= 5
+        or any((t_in.normalize() + pd.Timedelta(days=k)).weekday() >= 5
+               for k in range(1, (t_out.normalize() - t_in.normalize()).days + 1)))
+
+
 # ── 1) overnight gap variants ─────────────────────────────────────────────────
 
 def gen_overnight(daily, cost):
-    """Three conditions for holding one night: strong close, hard down day,
-    high-volume up day."""
+    """Three conditions for holding ONE night: strong close, hard down day,
+    high-volume up day. NO WEEKEND HOLDS: a Friday entry (exit Monday) is
+    skipped — enter Mon-Thu only, exit next trading morning."""
     out = {"gap: strong close": [], "gap: -3% down day": [], "gap: vol-up day": []}
     for sym, d in daily.items():
         o = d["open"].to_numpy(); h = d["high"].to_numpy(); l = d["low"].to_numpy()
@@ -68,10 +77,12 @@ def gen_overnight(daily, cost):
         vavg = pd.Series(v).rolling(20).mean().to_numpy()
         idx = d.index
         for i in range(20, len(d) - 1):
-            rng = max(h[i] - l[i], 1e-9)
-            day_ret = c[i] / o[i] - 1.0
             t_in = idx[i] + pd.Timedelta(hours=15, minutes=25)
             t_out = idx[i + 1] + pd.Timedelta(hours=9, minutes=15)
+            if _crosses_weekend(t_in, t_out):
+                continue                          # no weekend gap risk
+            rng = max(h[i] - l[i], 1e-9)
+            day_ret = c[i] / o[i] - 1.0
             tr = _trade(sym, t_in, t_out, c[i], o[i + 1], cost)
             if (c[i] - l[i]) / rng >= 0.8 and day_ret > 0.01:
                 out["gap: strong close"].append(tr)
@@ -85,8 +96,8 @@ def gen_overnight(daily, cost):
 # ── 3) mean reversion / 4) big-move drift (daily, close entries) ─────────────
 
 def gen_daily_swing(daily, cost):
-    out = {"rev: buy -4% day, +2%/5d": [], "rev: buy -5% day, +2%/5d": [],
-           "drift: +5% 2xVol, hold 3d": []}
+    out = {"rev: buy -4% day, +2%/wk": [], "rev: buy -5% day, +2%/wk": [],
+           "drift: +5% 2xVol, hold<=3d": []}
     for sym, d in daily.items():
         o = d["open"].to_numpy(); c = d["close"].to_numpy(); v = d["volume"].to_numpy()
         vavg = pd.Series(v).rolling(20).mean().to_numpy()
@@ -95,24 +106,33 @@ def gen_daily_swing(daily, cost):
         for i in range(20, n - 6):
             day_ret = c[i] / c[i - 1] - 1.0
             t_in = idx[i] + pd.Timedelta(hours=15, minutes=25)
-            # mean reversion: exit first close >= +2%, stop at close <= -5%, else day 5
-            for lbl, thr in (("rev: buy -4% day, +2%/5d", -0.04),
-                             ("rev: buy -5% day, +2%/5d", -0.05)):
+            # NO WEEKEND HOLDS: force flat by the last trading day of entry's week.
+            # max_hold = trading days left until (and including) that Friday.
+            days_to_fri = 4 - idx[i].weekday()          # Mon=0 .. Fri=4
+            max_hold = max(days_to_fri, 0)
+            if max_hold == 0:
+                continue                                # entered Friday -> no room
+            # mean reversion: exit first close >= +2%, stop at close <= -5%,
+            # else the weekly deadline (capped so the hold never crosses a weekend)
+            for lbl, thr in (("rev: buy -4% day, +2%/wk", -0.04),
+                             ("rev: buy -5% day, +2%/wk", -0.05)):
                 if day_ret <= thr:
                     entry = c[i]
-                    j_exit, px = i + 5, c[i + 5]
-                    for j in range(i + 1, i + 6):
+                    hold = min(5, max_hold)
+                    j_exit, px = i + hold, c[i + hold]
+                    for j in range(i + 1, i + hold + 1):
                         if c[j] >= entry * 1.02 or c[j] <= entry * 0.95:
                             j_exit, px = j, c[j]
                             break
                     out[lbl].append(_trade(sym, t_in,
                                            idx[j_exit] + pd.Timedelta(hours=15, minutes=25),
                                            entry, px, cost))
-            # drift: big up day on volume -> hold 3 days
+            # drift: big up day on volume -> hold up to 3 days, flat by Friday
             if day_ret >= 0.05 and vavg[i] > 0 and v[i] >= 2 * vavg[i]:
-                out["drift: +5% 2xVol, hold 3d"].append(
-                    _trade(sym, t_in, idx[i + 3] + pd.Timedelta(hours=15, minutes=25),
-                           c[i], c[i + 3], cost))
+                hold = min(3, max_hold)
+                out["drift: +5% 2xVol, hold<=3d"].append(
+                    _trade(sym, t_in, idx[i + hold] + pd.Timedelta(hours=15, minutes=25),
+                           c[i], c[i + hold], cost))
     return out
 
 
@@ -183,7 +203,7 @@ def main():
         print(x); lines.append(x)
 
     emit("=" * 78)
-    emit("  NEW-EDGE LAB — four families, delivery costs, live sizing, no leverage")
+    emit("  NEW-EDGE LAB — 2-4 day swing families, NO WEEKEND HOLDS (flat by Fri)")
     emit(f"  {len(daily)} symbols | ~{len(next(iter(daily.values())))} trading days "
          f"| cost {args.cost*100:.2f}% RT (delivery incl. 0.2% STT)")
     emit("=" * 78)
@@ -204,10 +224,11 @@ def main():
         results.append((name, m, trades))
 
     rot = run_rotation(daily, cost=args.cost)
-    flag = ("  <-- POSITIVE" if rot["ret"] > 0 and rot["pf"] > 1.05
-            and rot["trades"] >= 20 else "")
+    # weekly rotation inherently holds across weekends -> EXCLUDED by the
+    # no-weekend-holds rule. Shown for reference only, never flagged deployable.
     emit(f"  {'weekly momentum top-3':<28} {rot['trades']:>7} {rot['wr']:>4.0f}% "
-         f"{rot['ret']:>+7.2f}% {rot['dd']:>5.1f}% {rot['pf']:>4.2f}{flag}")
+         f"{rot['ret']:>+7.2f}% {rot['dd']:>5.1f}% {rot['pf']:>4.2f}"
+         f"  (holds weekends — excluded)")
 
     # walk-forward on every positive trade-list family
     emit("\n  STRICT WALK-FORWARD (each third of the year must be positive):")
@@ -221,20 +242,7 @@ def main():
         emit(f"    {name:<28} " +
              " ".join(f"{r:+.1f}%" for r in parts) +
              ("   PASSES" if ok else "   fails"))
-    if rot["ret"] > 0 and rot["pf"] > 1.05:
-        r3 = [rot["rets"][i::1] for i in [0]]  # thirds of weekly rets
-        n = len(rot["rets"])
-        parts = []
-        for a, b in ((0, n // 3), (n // 3, 2 * n // 3), (2 * n // 3, n)):
-            seg = rot["rets"][a:b]
-            months = max(len(seg) * 5 / 21.0, 0.1)
-            eqs = float(np.prod([1 + r for r in seg]))
-            parts.append(((eqs ** (1 / months)) - 1) * 100 if eqs > 0 else -99)
-        ok = all(r > 0 for r in parts)
-        any_pass |= ok
-        emit(f"    {'weekly momentum top-3':<28} " +
-             " ".join(f"{r:+.1f}%" for r in parts) +
-             ("   PASSES" if ok else "   fails"))
+    # weekly rotation is excluded by the no-weekend rule -> never a passer.
 
     emit("\n" + "=" * 78)
     if any_pass:
