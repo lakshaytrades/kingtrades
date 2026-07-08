@@ -128,7 +128,8 @@ class UpstoxExecutor:
 
     def place_entry_order_limit(self, symbol: str, direction: str, qty: int,
                                 price: float, security_id: str,
-                                limit_offset_pct: float = 0.001) -> OrderResult:
+                                limit_offset_pct: float = 0.001,
+                                market_fallback: bool = True) -> OrderResult:
         """MARKETABLE limit: one aggressive limit at price*(1±offset) that fills
         immediately like a market order but with a hard price CEILING.
 
@@ -196,6 +197,12 @@ class UpstoxExecutor:
             return OrderResult(True, order_id=limit_order_id, fill_price=filled_px,
                                quantity=filled_qty, order_type="LIMIT",
                                message="Limit partial treated as final")
+        if not market_fallback and filled_qty == 0:
+            # momentum ENTRY: an unfilled marketable limit means price ran past
+            # the cap — chasing it at market would silently violate the chase
+            # guard the cap exists to enforce. Skip instead.
+            return OrderResult(False, order_id=limit_order_id,
+                               message="cancelled (price ran past limit cap — no chase)")
         logger.info(f"Limit unfilled for {symbol} (got {filled_qty}/{qty}) — "
                     f"MARKET for remainder {remainder}")
         result = self.place_entry_order(symbol, direction, remainder, price, security_id)

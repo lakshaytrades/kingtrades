@@ -116,21 +116,34 @@ def s_orb(d, p):
     sig = ((t >= ENTRY_START) & (t < ENTRY_CUTOFF) & (c > trig) & (prev_c <= trig)
            & np.isfinite(orb_h) & np.isfinite(atr) & (atr > 0) & (rvol >= p["rv"]))
     live_fill = bool(p.get("live_fill"))
+    l = d["low"].to_numpy()
+    day = d["day"].to_numpy() if "day" in d.columns else idx.normalize()
     out = []
     for i in np.flatnonzero(sig):
         if live_fill:
-            # LIVE FIDELITY: the bot only sees the bar AFTER it closes, buys near
-            # the close, and its chase-guard skips anything >0.3% past trigger.
-            # The optimistic model below fills at trig+5bps even when the bar
-            # closed 0.8% higher — those cheap fills (the best breakouts!) are
-            # exactly what live cannot get.
-            if c[i] > trig[i] * 1.003:
-                continue                          # live chase-guard skips it
-            entry = float(c[i]) * (1 + SLIP)      # fills near the close, not trigger
+            # LIVE FIDELITY: the bot sees the signal only after bar i CLOSES,
+            # then rests a MARKETABLE LIMIT capped at trigger+0.3% during bar
+            # i+1 (no market chase past the cap — matches the executor). It
+            # fills iff bar i+1 trades at/below the cap:
+            #   * opens under the cap -> fills ~at the open
+            #   * opens above but pulls back (breakout retest) -> fills AT the cap
+            #   * never touches the cap -> skipped (chased_skip)
+            j = i + 1
+            if j >= len(c) or day[j] != day[i]:
+                continue                           # signal on the day's last bar
+            cap = trig[i] * 1.003
+            if float(o[j]) <= cap:
+                entry = float(o[j]) * (1 + SLIP)
+            elif float(l[j]) <= cap:
+                entry = cap * (1 + SLIP)
+            else:
+                continue                           # price never came back — skip
+            m = _mk(idx, j, entry, entry - p["sl"] * atr[i],
+                    entry + p["rr"] * p["sl"] * atr[i], atr=atr[i])
         else:
             entry = max(min(trig[i] * (1 + SLIP), float(h[i])), float(o[i]))
-        m = _mk(idx, i, entry, entry - p["sl"] * atr[i], entry + p["rr"] * p["sl"] * atr[i],
-                atr=atr[i])
+            m = _mk(idx, i, entry, entry - p["sl"] * atr[i],
+                    entry + p["rr"] * p["sl"] * atr[i], atr=atr[i])
         if m: out.append(m)
     return out
 

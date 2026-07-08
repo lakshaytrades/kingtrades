@@ -426,7 +426,8 @@ class Pilot:
         # limit waited 30s and then paid market anyway — a delay tax that filled
         # the losers and chased the winners.)
         res = self.exec.place_entry_order_limit(sym, "LONG", qty, trigger, sec_id,
-                                                limit_offset_pct=0.003)
+                                                limit_offset_pct=0.003,
+                                                market_fallback=False)
         # CRITICAL: only record a position for the qty that ACTUALLY filled. A
         # rejected/timed-out order (filled=0) must NOT create a phantom position —
         # otherwise the exit would SELL shares we don't own and open a short.
