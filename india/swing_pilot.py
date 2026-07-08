@@ -277,6 +277,22 @@ class SwingPilot:
                     f"maxhold {self.cfg['max_hold']}d notional ₹{filled*fill:.0f}")
 
     def run(self):
+        # ── IST GUARD: the bot trusts ITS OWN CLOCK (Asia/Kolkata), never the
+        # server's. Cron fires at 09:40 UTC assuming a UTC server; if the VPS
+        # timezone ever changes, this guard makes the mistake harmless — it
+        # refuses to act outside the 14:45–15:25 IST decision window or on a
+        # weekend. Override for research: INDIA_SWING_FORCE=true.
+        now = now_ist()
+        forced = os.getenv("INDIA_SWING_FORCE", "").lower() == "true"
+        if not forced:
+            if now.weekday() >= 5:
+                log.warning(f"IST guard: {now:%A} is a weekend — not running.")
+                return
+            if not (dtime(14, 45) <= now.time() <= dtime(15, 25)):
+                log.warning(f"IST guard: {now:%H:%M} IST is outside the "
+                            f"14:45-15:25 decision window — not running. "
+                            f"(Check the server clock / cron if unexpected.)")
+                return
         if KILL_FILE.exists():
             log.warning("KILL present — exiting all held positions.")
             for sym in list(self.positions.keys()):
