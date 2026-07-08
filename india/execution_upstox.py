@@ -65,12 +65,15 @@ class UpstoxExecutor:
     # ── Helpers ──────────────────────────────────────────────────────────────
 
     def _place(self, instrument_key: str, txn: str, qty: int, order_type: str,
-               price: float = 0.0, trigger: float = 0.0) -> Optional[str]:
-        """Build + submit an Upstox PlaceOrderRequest. Returns order_id or None."""
+               price: float = 0.0, trigger: float = 0.0,
+               product: str = "I") -> Optional[str]:
+        """Build + submit an Upstox PlaceOrderRequest. Returns order_id or None.
+        product 'I' = Intraday/MIS (auto-squared same day); 'D' = Delivery/CNC
+        (held overnight — required for multi-day SWING trades)."""
         import upstox_client
         body = upstox_client.PlaceOrderRequest(
             quantity=qty,
-            product="I",                # Intraday (MIS)
+            product=product,
             validity="DAY",
             price=round(price, 2),
             tag="satavector",
@@ -83,6 +86,39 @@ class UpstoxExecutor:
         )
         resp = self._client.order.place_order(body=body, api_version="2.0")
         return _order_id_of(resp)
+
+    def place_delivery_order(self, symbol: str, direction: str, qty: int,
+                             price: float, security_id: str) -> OrderResult:
+        """DELIVERY (CNC) MARKET order — for SWING positions held overnight.
+        Verifies the fill exactly like the intraday path (placement != fill)."""
+        if qty <= 0:
+            return OrderResult(False, message=f"qty={qty} invalid")
+        txn = "BUY" if direction == "LONG" else "SELL"
+        if not self._live:
+            logger.info(f"[PAPER] DELIVERY {txn} {qty} {symbol} @ ₹{price:.2f}")
+            return OrderResult(True, order_id=f"PAPER-D-{symbol}-{int(_time.time())}",
+                               fill_price=price, quantity=qty, message="Paper delivery")
+        if self._client is None:
+            return OrderResult(False, message="Upstox client not initialised")
+        for attempt in range(4):
+            try:
+                oid = self._place(security_id, txn, qty, "MARKET", product="D")
+                if oid:
+                    fp, fq = self._wait_for_fill(oid)
+                    if fq >= 1 and fp > 0:
+                        return OrderResult(True, order_id=oid, fill_price=fp,
+                                           quantity=fq, message="Delivery filled")
+                    status, fp2, fq2 = self._order_status(oid)
+                    if status in ("complete", "filled") and fq2 >= 1:
+                        return OrderResult(True, order_id=oid, fill_price=fp2 or fp,
+                                           quantity=fq2, message="Delivery filled (late)")
+                    return OrderResult(False, order_id=oid,
+                                       message=f"placed but not filled ({status or '?'})")
+                return OrderResult(False, message="No order_id returned")
+            except Exception as e:
+                logger.warning(f"Delivery attempt {attempt+1} failed ({symbol}): {e}")
+                _time.sleep(2 ** attempt)
+        return OrderResult(False, message="All retries exhausted")
 
     # ── Entry order ──────────────────────────────────────────────────────────
 
