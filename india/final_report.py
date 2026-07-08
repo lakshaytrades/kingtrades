@@ -103,18 +103,48 @@ def main():
         emit(f"     {k}: {r['ret']:+.1f}%/mo  (WR {r['wr']:.0f}%, PF {r['pf']:.2f})")
     robust = bool(wf_rets) and all(r > 0 for r in wf_rets)
 
-    # ₹-by-size table: all-in cost per position size -> interpolate return
-    emit(f"\n  3) WHAT ₹ TO EXPECT PER MONTH (assumed slippage "
-         f"{args.slippage:.2f}%/side — replace with the pilot's measured number)")
-    emit(f"     {'account':>10} {'pos size':>9} {'all-in cost':>12} {'Ret/mo':>8} "
-         f"{'₹/month':>10}")
-    ret_curve = [res[c]["ret"] for c in COSTS]
-    for capital in (5_000, 50_000, 100_000, 200_000):
+    # ₹-by-size table: all-in cost per position size -> interpolate return.
+    # For BIG sizes the dominant cost is MARKET IMPACT: a market order that is a
+    # large fraction of the breakout bar's traded value moves the price against
+    # itself. We estimate participation from the cached data's OWN signal bars
+    # (rvol>=RV_MIN, entry window) and add impact ~ 0.3% x participation on top
+    # of the base slippage. ESTIMATE — clearly labeled, err on the honest side.
+    from datetime import time as dtime
+    sig_turnover = []          # median ₹ traded per signal bar, per symbol
+    for sym, d in prepped.items():
+        t = d.index.time
+        mask = ((d["rvol"] >= RV_MIN) & (t >= dtime(9, 30)) & (t < dtime(14, 0)))
+        to = (d["close"] * d["volume"])[mask]
+        if len(to) >= 3:
+            sig_turnover.append(float(to.median()))
+    sig_turnover.sort()
+    med_to = sig_turnover[len(sig_turnover) // 2] if sig_turnover else 0.0
+    p25_to = sig_turnover[len(sig_turnover) // 4] if sig_turnover else 0.0
+
+    def _size_row(capital):
         pos = capital / MAX_OPEN
-        cost_pct = cm.round_trip_cost(pos, args.slippage)["total_pct"] / 100.0
+        part_med = pos / med_to if med_to else 0.0        # fraction of signal bar
+        part_p25 = pos / p25_to if p25_to else 0.0        # worst-quartile name
+        impact = 0.30 * part_med                          # %/side, ~bar-range model
+        slip = args.slippage + impact
+        cost_pct = cm.round_trip_cost(pos, slip)["total_pct"] / 100.0
         ret = float(np.interp(cost_pct, COSTS, ret_curve))
-        emit(f"     ₹{capital:>8,} ₹{pos:>8,.0f} {cost_pct*100:>11.2f}% "
-             f"{ret:>+7.1f}% ₹{capital*ret/100:>+9,.0f}")
+        return pos, part_med, part_p25, slip, cost_pct, ret
+
+    emit(f"\n  3) WHAT ₹ TO EXPECT PER MONTH — capacity-aware "
+         f"(base slippage {args.slippage:.2f}%/side + market-impact estimate)")
+    emit(f"     median signal-bar turnover of the universe: ₹{med_to:,.0f} / 5-min bar")
+    emit(f"     {'account':>11} {'pos size':>10} {'bar share':>10} {'slip est':>9} "
+         f"{'all-in':>8} {'Ret/mo':>8} {'₹/month':>11}")
+    ret_curve = [res[c]["ret"] for c in COSTS]
+    for capital in (100_000, 200_000, 500_000, 1_000_000):
+        pos, part, part25, slip, cost_pct, ret = _size_row(capital)
+        warn = ("  <- IMPACT DEGRADES EDGE" if part > 0.10
+                else "  <- caution on thinner names" if part25 > 0.10 else "")
+        emit(f"     ₹{capital:>9,} ₹{pos:>9,.0f} {part*100:>9.1f}% {slip:>8.2f}% "
+             f"{cost_pct*100:>7.2f}% {ret:>+7.1f}% ₹{capital*ret/100:>+10,.0f}{warn}")
+    emit("     bar share = your order as % of the median breakout bar's traded value;")
+    emit("     above ~10% your own market order moves the price against you.")
 
     emit("\n" + "=" * 78)
     emit("  VERDICT")
