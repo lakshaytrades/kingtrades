@@ -26,9 +26,16 @@ Usage:
 from __future__ import annotations
 import argparse
 
-# Groww intraday equity fee schedule (NSE), as published 2024-25.
+# UPSTOX intraday equity fee schedule (NSE) — from the user's own plan page
+# (2026-07): intraday brokerage = 0.10% or the per-order cap, whichever lower.
+#   PLUS plan (user's ACTIVE plan): cap ₹30/order   | auto-squareoff penalty ₹50
+#   BASIC plan:                     cap ₹20/order   | auto-squareoff penalty ₹75
+# NOTE for the bot: once positions are big enough that the cap binds (≥ ₹30k),
+# Basic is ₹20/round-trip CHEAPER — Plus's value is features (5 websockets,
+# conditional trigger orders), not brokerage.
 BROKERAGE_PCT   = 0.001       # 0.1% per order ...
-BROKERAGE_CAP   = 20.0        # ... capped at Rs.20 per executed order
+BROKERAGE_CAP   = 30.0        # ... capped per order — PLUS plan (user's active)
+BROKERAGE_CAP_BASIC = 20.0    # Basic-plan cap, for comparison
 STT_SELL        = 0.00025     # 0.025% on SELL side only (intraday)
 EXCH_TXN        = 0.0000297   # NSE transaction charge, each side
 SEBI            = 0.000001    # Rs.10 per crore = 0.0001%, each side
@@ -36,9 +43,10 @@ STAMP_BUY       = 0.00003     # 0.003% on BUY side only
 GST             = 0.18        # 18% on (brokerage + exchange txn + SEBI)
 
 
-def round_trip_cost(value: float, slippage_pct_per_side: float) -> dict:
+def round_trip_cost(value: float, slippage_pct_per_side: float,
+                    brokerage_cap: float = BROKERAGE_CAP) -> dict:
     """Return rupee + percentage breakdown of a round-trip intraday trade."""
-    brokerage = 2 * min(BROKERAGE_PCT * value, BROKERAGE_CAP)   # buy + sell
+    brokerage = 2 * min(BROKERAGE_PCT * value, brokerage_cap)   # buy + sell
     stt       = STT_SELL * value
     exch      = EXCH_TXN * value * 2
     sebi      = SEBI * value * 2

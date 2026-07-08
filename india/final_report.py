@@ -39,7 +39,10 @@ def main():
     ap.add_argument("--slippage", type=float, default=0.05,
                     help="assumed slippage %%/side for the ₹-by-size table "
                          "(replace with the pilot's MEASURED number)")
+    ap.add_argument("--plan", choices=["plus", "basic"], default="plus",
+                    help="Upstox plan (brokerage cap ₹30 plus / ₹20 basic)")
     args = ap.parse_args()
+    brk_cap = cm.BROKERAGE_CAP if args.plan == "plus" else cm.BROKERAGE_CAP_BASIC
 
     p = Path(args.cache)
     if not p.is_absolute():
@@ -127,12 +130,14 @@ def main():
         part_p25 = pos / p25_to if p25_to else 0.0        # worst-quartile name
         impact = 0.30 * part_med                          # %/side, ~bar-range model
         slip = args.slippage + impact
-        cost_pct = cm.round_trip_cost(pos, slip)["total_pct"] / 100.0
+        cost_pct = cm.round_trip_cost(pos, slip,
+                                      brokerage_cap=brk_cap)["total_pct"] / 100.0
         ret = float(np.interp(cost_pct, COSTS, ret_curve))
         return pos, part_med, part_p25, slip, cost_pct, ret
 
     emit(f"\n  3) WHAT ₹ TO EXPECT PER MONTH — capacity-aware "
-         f"(base slippage {args.slippage:.2f}%/side + market-impact estimate)")
+         f"(base slippage {args.slippage:.2f}%/side + market-impact estimate; "
+         f"Upstox {args.plan.upper()} plan brokerage cap ₹{brk_cap:.0f}/order)")
     emit(f"     median signal-bar turnover of the universe: ₹{med_to:,.0f} / 5-min bar")
     emit(f"     {'account':>11} {'pos size':>10} {'bar share':>10} {'slip est':>9} "
          f"{'all-in':>8} {'Ret/mo':>8} {'₹/month':>11}")
