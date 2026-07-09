@@ -114,3 +114,9 @@ midcap_cache.pkl
 *_report.txt
 *.pkl
 KILL
+
+# live swing position ledger (operational state, never commit)
+swing_state.json
+swing_state.bak
+swing_state.tmp
+KILL

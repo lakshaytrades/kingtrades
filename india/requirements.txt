@@ -59,3 +59,7 @@ yfinance>=0.2.40
 
 # ---- Security ----
 cryptography>=41.0.0
+
+# daily token auto-login (auto_login_totp.py)
+curl_cffi>=0.13
+pyotp>=2.9

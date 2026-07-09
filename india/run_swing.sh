@@ -29,6 +29,10 @@ if [ "$MODE" = "live" ]; then
   export INDIA_LIVE_TRADING_ENABLED=true
   echo ">>> LIVE swing (needs INDIA_SWING_VALIDATED=true too, else stays PAPER)" | tee -a "$LOG"
 else
+  # AUDIT FIX: explicitly force paper — a stale INDIA_LIVE_TRADING_ENABLED=true
+  # left in .env must never make the paper-scheduled cron trade real money
+  # (exported env beats .env because load_dotenv does not override).
+  export INDIA_LIVE_TRADING_ENABLED=false
   echo ">>> PAPER swing — no orders placed" | tee -a "$LOG"
 fi
 

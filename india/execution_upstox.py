@@ -87,10 +87,34 @@ class UpstoxExecutor:
         resp = self._client.order.place_order(body=body, api_version="2.0")
         return _order_id_of(resp)
 
+    def _find_todays_order(self, symbol: str, txn: str, product: str):
+        """Newest order-book entry matching symbol+side+product+our tag — used
+        to RECOVER an order whose placement response was lost (network blip),
+        instead of blindly re-placing and doubling the position."""
+        try:
+            resp = self._client.order.get_order_book(api_version="2.0")
+            data = _resp_data(resp) or []
+        except Exception:
+            return None
+        best = None
+        for o in data:
+            def _g(name, default=""):
+                return (getattr(o, name, None)
+                        or (o.get(name) if isinstance(o, dict) else None) or default)
+            if (str(_g("trading_symbol") or _g("tradingsymbol")).upper() != symbol.upper()
+                    or str(_g("transaction_type")).upper() != txn
+                    or str(_g("product")).upper() != product
+                    or str(_g("tag")) != "satavector"):
+                continue
+            best = str(_g("order_id"))            # book is chronological; keep last
+        return best
+
     def place_delivery_order(self, symbol: str, direction: str, qty: int,
                              price: float, security_id: str) -> OrderResult:
         """DELIVERY (CNC) MARKET order — for SWING positions held overnight.
-        Verifies the fill exactly like the intraday path (placement != fill)."""
+        Fill-verified; IDEMPOTENT: a lost placement response is recovered from
+        the order book rather than re-placed (re-placing doubles the position);
+        an unfilled working order is cancelled before reporting failure."""
         if qty <= 0:
             return OrderResult(False, message=f"qty={qty} invalid")
         txn = "BUY" if direction == "LONG" else "SELL"
@@ -100,25 +124,59 @@ class UpstoxExecutor:
                                fill_price=price, quantity=qty, message="Paper delivery")
         if self._client is None:
             return OrderResult(False, message="Upstox client not initialised")
-        for attempt in range(4):
-            try:
-                oid = self._place(security_id, txn, qty, "MARKET", product="D")
-                if oid:
-                    fp, fq = self._wait_for_fill(oid)
-                    if fq >= 1 and fp > 0:
-                        return OrderResult(True, order_id=oid, fill_price=fp,
-                                           quantity=fq, message="Delivery filled")
-                    status, fp2, fq2 = self._order_status(oid)
-                    if status in ("complete", "filled") and fq2 >= 1:
-                        return OrderResult(True, order_id=oid, fill_price=fp2 or fp,
-                                           quantity=fq2, message="Delivery filled (late)")
-                    return OrderResult(False, order_id=oid,
-                                       message=f"placed but not filled ({status or '?'})")
-                return OrderResult(False, message="No order_id returned")
-            except Exception as e:
-                logger.warning(f"Delivery attempt {attempt+1} failed ({symbol}): {e}")
-                _time.sleep(2 ** attempt)
-        return OrderResult(False, message="All retries exhausted")
+        oid = None
+        try:
+            oid = self._place(security_id, txn, qty, "MARKET", product="D")
+        except Exception as e:
+            # the order may have REACHED the exchange even though the response
+            # died — recover it from the book; never blind-retry a market order
+            logger.warning(f"Delivery placement response lost ({symbol}): {e} — "
+                           f"checking order book before any retry")
+            _time.sleep(2)
+            oid = self._find_todays_order(symbol, txn, "D")
+            if not oid:
+                try:
+                    oid = self._place(security_id, txn, qty, "MARKET", product="D")
+                except Exception as e2:
+                    return OrderResult(False, message=f"placement failed twice: {e2}")
+        if not oid:
+            return OrderResult(False, message="No order_id returned")
+        fp, fq = self._wait_for_fill(oid)
+        if fq >= 1 and fp > 0:
+            return OrderResult(True, order_id=oid, fill_price=fp,
+                               quantity=fq, message="Delivery filled")
+        # not confirmed: CANCEL the working order so it can't fill later untracked,
+        # then re-verify (it may have filled during the cancel)
+        self.cancel_order(oid)
+        status, fp2, fq2 = self._order_status(oid)
+        if status in ("complete", "filled") and fq2 >= 1:
+            return OrderResult(True, order_id=oid, fill_price=fp2 or fp or price,
+                               quantity=fq2, message="Delivery filled (during cancel)")
+        if fq2 >= 1 or fq >= 1:                    # PARTIAL: report exactly what filled
+            q = max(fq2, fq)
+            return OrderResult(True, order_id=oid, fill_price=fp2 or fp or price,
+                               quantity=q, message=f"Delivery PARTIAL {q}/{qty}")
+        return OrderResult(False, order_id=oid,
+                           message=f"cancelled unfilled ({status or '?'})")
+
+    def get_delivery_holdings(self) -> dict:
+        """UPPER symbol -> qty from the HOLDINGS book (T+1 settled delivery).
+        Positions API only covers intraday product — swing reconcile needs this.
+        Raises on API failure; paper mode returns {}."""
+        if not self._live or self._client is None:
+            return {}
+        resp = self._client.portfolio.get_holdings(api_version="2.0")
+        data = _resp_data(resp) or []
+        out = {}
+        for h in data:
+            def _g(name, default=0):
+                return (getattr(h, name, None)
+                        or (h.get(name) if isinstance(h, dict) else None) or default)
+            sym = str(_g("trading_symbol", "") or _g("tradingsymbol", "")).upper()
+            qty = int(_g("quantity", 0) or 0)
+            if sym and qty > 0:
+                out[sym] = qty
+        return out
 
     # ── Entry order ──────────────────────────────────────────────────────────
 

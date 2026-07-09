@@ -46,6 +46,7 @@ from datetime import datetime, time as dtime
 from pathlib import Path
 from zoneinfo import ZoneInfo
 
+import numpy as np
 import pandas as pd
 
 _HERE = Path(__file__).parent
@@ -58,8 +59,9 @@ from fetch_midcaps import HIGH_VOL_UNIVERSE
 IST = ZoneInfo("Asia/Kolkata")
 KILL_FILE = _ROOT / "KILL"
 STATE_FILE = _ROOT / "swing_state.json"
-# AUDIT FIX: the passing validation (new_edge_lab 2026-07-08) ran on the FULL
-# 127-symbol universe — the deployed scan must match it exactly.
+# The passing validation (new_edge_lab 2026-07-08) ran on the 127 symbols of
+# HIGH_VOL_UNIVERSE that resolve in the Upstox instrument map (the list has 130
+# entries; 3 never fetch and are skipped identically live and in the backtest).
 UNIVERSE = HIGH_VOL_UNIVERSE
 
 # ── strategy configs (params to be set from a new_edge_lab PASSER) ────────────
@@ -98,15 +100,46 @@ def now_ist():
 
 
 def _daily_bars(dfu, sym):
-    """Last ~40 sessions of daily OHLCV, aggregated from the 5-min feed."""
-    raw = dfu.get_ohlcv(sym, "5m", "40d")
-    if raw is None or len(raw) < 60:
+    """Daily OHLCV history + TODAY's live bar (built from intraday 1-min).
+
+    AUDIT FIX: the old path used get_ohlcv('5m','40d') — whose period argument
+    is IGNORED (hardcoded ~7 days) — so the >=25-session requirement failed for
+    EVERY symbol: no entries ever, and (fatal) no exits for held positions.
+    Now: full daily candles via the '1d' interval, with today's partial bar
+    aggregated from the intraday feed. If there is NO intraday data for today
+    (exchange holiday), the last bar is a PRIOR session — callers use that to
+    detect 'market closed today' and refuse to trade stale data."""
+    hist = dfu.get_ohlcv(sym, "1d")
+    if hist is None or len(hist) < 25:
         return None
-    g = raw.groupby(raw.index.normalize())
-    d = pd.DataFrame({"open": g["open"].first(), "high": g["high"].max(),
-                     "low": g["low"].min(), "close": g["close"].last(),
-                     "volume": g["volume"].sum()}).dropna()
+    d = hist.copy()
+    today = now_ist().date()
+    # drop any (possibly stale/partial) today row from history, then rebuild it
+    d = d[d.index.date < today]
+    try:
+        intra = dfu.get_ohlcv(sym, "5m")           # last few days 1-min, resampled
+        if intra is not None and len(intra):
+            t = intra[intra.index.date == today]
+            if len(t):
+                row = pd.DataFrame({"open": [float(t["open"].iloc[0])],
+                                    "high": [float(t["high"].max())],
+                                    "low": [float(t["low"].min())],
+                                    "close": [float(t["close"].iloc[-1])],
+                                    "volume": [float(t["volume"].sum())]},
+                                   index=pd.DatetimeIndex(
+                                       [pd.Timestamp(today, tz=IST)]))
+                d = pd.concat([d, row])
+    except Exception:
+        pass                                        # history alone still usable
     return d if len(d) >= 25 else None
+
+
+def _bar_is_today(d) -> bool:
+    """True when the frame's last bar is TODAY (market traded today)."""
+    try:
+        return d is not None and d.index[-1].date() == now_ist().date()
+    except Exception:
+        return False
 
 
 class SwingPilot:
@@ -137,6 +170,30 @@ class SwingPilot:
         mode = "LIVE (REAL ₹)" if self.live else "PAPER (no orders)"
         log.warning(f"=== SWING PILOT — {mode} | strat={self.strat_name} | "
                     f"cap ₹{self.capital:,.0f} | {len(self.positions)} held ===")
+        self._reconcile_holdings()
+
+    def _reconcile_holdings(self):
+        """Warn LOUDLY when the state ledger and the broker's HOLDINGS book
+        disagree (delivery positions are invisible to the intraday positions
+        API — the holdings book is the only broker truth for swing)."""
+        if not self.live:
+            return
+        try:
+            held = self.exec.get_delivery_holdings()
+        except Exception as e:
+            log.warning(f"holdings reconcile unavailable ({e})")
+            return
+        uni = {s.upper() for s in UNIVERSE}
+        broker_syms = {s for s in held if s in uni}
+        state_syms = {s.upper() for s in self.positions}
+        for s in broker_syms - state_syms:
+            log.critical(f"RECONCILE: broker holds {held[s]} x {s} but state does "
+                         f"NOT — an UNMANAGED holding. Sell it manually in the app "
+                         f"or add it to swing_state.json.")
+        for s in state_syms - broker_syms:
+            log.critical(f"RECONCILE: state tracks {s} but the broker holdings "
+                         f"book doesn't show it (T+1 lag is normal on day 1; if "
+                         f"older, the state is stale — verify in the app).")
 
     # ── state persistence (once-a-day bot must remember across runs) ──────────
     def _load_state(self) -> dict:
@@ -156,11 +213,15 @@ class SwingPilot:
         return {}
 
     def _save_state(self):
+        """Write order: tmp first, THEN back up the primary, THEN swap. The old
+        order moved the primary to .bak before the new write — a write failure
+        in between left only the stale .bak (this run's real trades lost)."""
         try:
-            if STATE_FILE.exists():                       # keep last good copy
-                STATE_FILE.replace(STATE_FILE.with_suffix(".bak"))
+            import shutil
             tmp = STATE_FILE.with_suffix(".tmp")
             tmp.write_text(json.dumps(self.positions, indent=2, default=str))
+            if STATE_FILE.exists():                       # keep last good copy
+                shutil.copy2(STATE_FILE, STATE_FILE.with_suffix(".bak"))
             tmp.replace(STATE_FILE)
         except Exception as e:
             log.error(f"state save failed: {e}")
@@ -192,15 +253,29 @@ class SwingPilot:
             p = self.positions[sym]
             d = _daily_bars(self.dfu, sym)
             if d is None:
-                log.warning(f"{sym}: no data to evaluate — HOLDING")
+                log.critical(f"{sym}: NO DATA to evaluate — holding blind; if this "
+                             f"repeats, check the feed / sell manually in the app")
+                continue
+            if not _bar_is_today(d):
+                # exchange holiday: market is CLOSED — an exit order would just
+                # be rejected. Evaluate again next session.
+                log.warning(f"{sym}: no trading today (holiday?) — cannot exit; "
+                            f"will act next session")
                 continue
             close = float(d["close"].iloc[-1])
             ret = close / p["entry"] - 1.0
-            held = int((now_ist().date()
-                        - datetime.fromisoformat(p["entry_date"]).date()).days)
+            entry_d = datetime.fromisoformat(p["entry_date"]).date()
+            today_d = now_ist().date()
+            held = int(np.busday_count(entry_d, today_d))      # trading days
+            carried_weekend = (today_d.isocalendar()[:2]
+                               != entry_d.isocalendar()[:2])   # different ISO week
             reason = None
             if is_friday:
                 reason = "FRIDAY_FLAT"        # hard no-weekend rule
+            elif carried_weekend:
+                # a Friday-holiday (or missed run) let this cross a weekend —
+                # clean it up on the FIRST session of the new week
+                reason = "WEEKEND_CARRIED"
             elif ret >= self.cfg["target"]:
                 reason = "TARGET"
             elif ret <= self.cfg["stop"]:
@@ -212,15 +287,44 @@ class SwingPilot:
 
     def _exit(self, sym, px, reason):
         p = self.positions[sym]
+        # idempotency: if a PREVIOUS exit attempt's order actually filled after
+        # we gave up on it, selling again would over-sell. Check it first.
+        old_oid = p.get("last_exit_oid")
+        if old_oid and self.live:
+            try:
+                st, fp, fq = self.exec._order_status(old_oid)
+                if st in ("complete", "filled") and fq >= int(p["qty"]):
+                    log.warning(f"{sym}: earlier exit DID fill @ {fp:.2f} — booking")
+                    self.positions.pop(sym, None)
+                    return
+                if st in ("complete", "filled") and 0 < fq < int(p["qty"]):
+                    p["qty"] = int(p["qty"]) - fq       # earlier partial
+                    p["last_exit_oid"] = None
+            except Exception as e:
+                log.critical(f"{sym}: cannot verify earlier exit ({e}) — NOT "
+                             f"re-selling blind; retrying next run")
+                return
         res = self.exec.place_delivery_order(sym, "SHORT", p["qty"], px, p["sec_id"])
-        if not (res.success and int(res.quantity or 0) >= 1 and res.fill_price):
+        filled = int(res.quantity or 0)
+        if not (res.success and filled >= 1 and res.fill_price):
+            p["last_exit_oid"] = res.order_id or p.get("last_exit_oid")
             log.critical(f"SWING EXIT FAILED {sym} ({reason}): {res.message} — "
-                         f"STILL HELD; will retry next run")
+                         f"STILL HELD; will retry next run. If this repeats, "
+                         f"check DDPI authorization / sell manually in the app")
             return
         fill = float(res.fill_price)
-        pnl = (fill - p["entry"]) * p["qty"]
+        if filled < int(p["qty"]):
+            # PARTIAL fill (e.g. circuit-bound crash): keep the remainder
+            # tracked — popping it would orphan REAL shares at the broker.
+            pnl = (fill - p["entry"]) * filled
+            p["qty"] = int(p["qty"]) - filled
+            p["last_exit_oid"] = None
+            log.critical(f"SWING PARTIAL EXIT {reason} {sym}: {filled} @ {fill:.2f} "
+                         f"(₹{pnl:+.0f}), {p['qty']} REMAIN HELD — retrying next run")
+            return
+        pnl = (fill - p["entry"]) * filled
         log.warning(f"SWING EXIT {reason} {sym} @ {fill:.2f} (entry {p['entry']:.2f}) "
-                    f"{(fill/p['entry']-1)*100:+.2f}% (₹{pnl:+.0f}) held")
+                    f"{(fill/p['entry']-1)*100:+.2f}% (₹{pnl:+.0f})")
         self.positions.pop(sym, None)
 
     # ── scan for new entries ──────────────────────────────────────────────────
@@ -244,9 +348,15 @@ class SwingPilot:
                 break
             if sym in self.positions or KILL_FILE.exists():
                 continue
+            # deadline: never let a slow scan push orders past the NSE close
+            if now_ist().time() >= dtime(15, 22):
+                log.warning("scan deadline 15:22 IST reached — stopping entries")
+                break
             try:
                 d = _daily_bars(self.dfu, sym)
-                if d is None or not self._signal(d):
+                # entries require TODAY's live bar — never trade a stale
+                # (holiday / feed-gap) close
+                if d is None or not _bar_is_today(d) or not self._signal(d):
                     continue
                 self._enter(sym, float(d["close"].iloc[-1]))
             except Exception as e:
@@ -256,7 +366,12 @@ class SwingPilot:
         sec_id = self.dfu.get_security_id(sym)
         if not sec_id:
             return
-        budget = min(self.capital / MAX_POS, self.capital - self.deployed())
+        # AUDIT FIX: capital (available_margin) is cash NET of paid-for
+        # holdings; subtracting deployed() again double-counted them and
+        # starved the 2nd slot forever. Per-slot budget comes from TOTAL
+        # equity (cash + holdings cost); actual spend is capped by cash.
+        equity_total = self.capital + self.deployed()
+        budget = min(equity_total / MAX_POS, self.capital)
         qty = int(budget // close)
         if qty < 1:
             return
@@ -297,9 +412,17 @@ class SwingPilot:
             log.warning("KILL present — exiting all held positions.")
             for sym in list(self.positions.keys()):
                 d = _daily_bars(self.dfu, sym)
-                self._exit(sym, float(d["close"].iloc[-1]) if d is not None
-                           else self.positions[sym]["entry"], "KILL")
+                if d is None or not _bar_is_today(d):
+                    log.critical(f"{sym}: KILL requested but market is CLOSED "
+                                 f"(holiday/off-hours) — sell will happen next "
+                                 f"session; KILL stays armed")
+                    continue
+                self._exit(sym, float(d["close"].iloc[-1]), "KILL")
             self._save_state()
+            if self.positions:
+                log.critical(f"KILL incomplete — {len(self.positions)} still held "
+                             f"(market closed or sells failed). File stays; will "
+                             f"retry next session.")
             return
         is_friday = now_ist().weekday() == 4
         self.manage(is_friday)          # exits first (free up slots + cash)

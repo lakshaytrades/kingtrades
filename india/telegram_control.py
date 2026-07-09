@@ -61,7 +61,7 @@ def _now() -> str:
 
 def _pilot_pids() -> list[int]:
     try:
-        out = subprocess.run(["pgrep", "-f", "live_pilot.py"], capture_output=True,
+        out = subprocess.run(["pgrep", "-f", "swing_pilot.py"], capture_output=True,
                              text=True, timeout=10).stdout.split()
         return [int(p) for p in out if p.isdigit()]
     except Exception:
@@ -148,17 +148,19 @@ class Bot:
             return self._settoken(arg)
 
         if cmd == "/run":
-            # run_pilot.sh refreshes the token itself first, then starts the pilot —
-            # so this one command = "start trading with a fresh token".
+            # AUDIT FIX: this used to launch the RETIRED intraday launcher.
+            # It now runs ONE SWING cycle (token refresh + manage exits + scan)
+            # — same thing the daily 15:10 cron does.
             if _pilot_pids():
-                return "pilot already RUNNING — nothing to do"
+                return "swing run already in progress — nothing to do"
             if (_ROOT / "KILL").exists():
                 (_ROOT / "KILL").unlink()           # explicit /run overrides a stale kill
-            subprocess.Popen(["nohup", "bash", str(_HERE / "run_pilot.sh"), "live"],
+            subprocess.Popen(["nohup", "bash", str(_HERE / "run_swing.sh"), "live"],
                              cwd=_ROOT, stdout=subprocess.DEVNULL,
                              stderr=subprocess.DEVNULL, start_new_session=True)
-            return ("starting: token refresh + LIVE pilot (₹5k cap). Give it ~60s. "
-                    "It trades 9:30-14:00 IST and squares off 15:25 on its own.")
+            return ("running one LIVE swing cycle (token refresh + exits + scan). "
+                    "Note: it only acts 14:45-15:25 IST and only trades live if "
+                    "INDIA_SWING_VALIDATED=true is set. Check logs/swing_*.log.")
 
         return "unknown command — /help"
 
