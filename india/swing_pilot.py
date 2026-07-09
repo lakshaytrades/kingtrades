@@ -81,6 +81,13 @@ STRATS = {
 # AUDIT FIX: the validated sim (orb_fast._simulate live_sizing) used 2 slots at
 # 50% of capital each — 3 slots was an unvalidated deviation.
 MAX_POS   = 2            # concurrent swing positions (MUST match the validation)
+# LARGE-CAPITAL SAFEGUARD: a single position may never exceed this fraction of
+# the stock's ~20-day median daily traded value. At small capital this never
+# binds; at ₹5L+ per slot it caps (or skips) a name too thin to absorb the
+# order without a bad fill / price impact. 1% of ADV is very conservative for
+# a once-daily delivery buy.
+MAX_POS_PCT_OF_ADV = 0.01
+MIN_ADV_VALUE      = 5_00_00_000   # ₹5 cr/day floor — skip names thinner than this
 FALLBACK_CAPITAL = 5000.0
 
 (_ROOT / "logs").mkdir(exist_ok=True)
@@ -185,6 +192,13 @@ class SwingPilot:
         mode = "LIVE (REAL ₹)" if self.live else "PAPER (no orders)"
         log.warning(f"=== SWING PILOT — {mode} | strat={self.strat_name} | "
                     f"cap ₹{self.capital:,.0f} | {len(self.positions)} held ===")
+        if self.live and self.capital > 3_00_000:
+            # the strategy is validated to ~₹2L; larger is unproven-live. Warn
+            # loudly and set a mental drawdown number (10% is normal).
+            log.critical(f"LARGE CAPITAL ₹{self.capital:,.0f} — validated only to "
+                         f"~₹2L and NOT yet confirmed live. A normal 10% drawdown "
+                         f"= ₹{self.capital*0.10:,.0f}. Cap exposure with "
+                         f"INDIA_MAX_CAPITAL until live months prove the edge.")
         self._reconcile_holdings()
 
     def _reconcile_holdings(self):
@@ -382,11 +396,19 @@ class SwingPilot:
                 # (holiday / feed-gap) close
                 if d is None or not _bar_is_today(d) or not self._signal(d):
                     continue
-                self._enter(sym, float(d["close"].iloc[-1]))
+                self._enter(sym, float(d["close"].iloc[-1]), d)
             except Exception as e:
                 log.debug(f"scan {sym}: {e}")
 
-    def _enter(self, sym, close):
+    def _adv_value(self, d) -> float:
+        """~20-day median daily traded value (₹) — the liquidity of this name."""
+        try:
+            tv = (d["close"] * d["volume"]).iloc[-20:]
+            return float(tv.median()) if len(tv) else 0.0
+        except Exception:
+            return 0.0
+
+    def _enter(self, sym, close, d=None):
         sec_id = self.dfu.get_security_id(sym)
         if not sec_id:
             return
@@ -396,6 +418,19 @@ class SwingPilot:
         # equity (cash + holdings cost); actual spend is capped by cash.
         equity_total = self.capital + self.deployed()
         budget = min(equity_total / MAX_POS, self.capital)
+        # LARGE-CAPITAL liquidity guard: never let one order exceed 1% of the
+        # name's daily traded value, and skip names thinner than the ADV floor.
+        if d is not None:
+            adv = self._adv_value(d)
+            if adv < MIN_ADV_VALUE:
+                log.info(f"{sym}: too thin (ADV ₹{adv/1e7:.1f}cr < "
+                         f"₹{MIN_ADV_VALUE/1e7:.0f}cr) — skip")
+                return
+            liq_cap = MAX_POS_PCT_OF_ADV * adv
+            if budget > liq_cap:
+                log.warning(f"{sym}: sizing capped by liquidity — ₹{liq_cap:,.0f} "
+                            f"(1% of ₹{adv/1e7:.1f}cr ADV) vs ₹{budget:,.0f} budget")
+                budget = liq_cap
         qty = int(budget // close)
         if qty < 1:
             return

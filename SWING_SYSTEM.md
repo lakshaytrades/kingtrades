@@ -49,6 +49,18 @@ month is NORMAL. **No weekly income guarantee exists.**
 * 📋 **Daily digest** after each run: every holding with entry/target/stop/date + cash
 * Silent on quiet days (no holdings, no trades). Notify failures never block trading.
 
+
+## Large-capital safeguards (matter at ₹3L+; harmless below)
+* **Liquidity cap** — a single position never exceeds 1% of the stock's ~20-day
+  median daily traded value; names thinner than ₹5cr/day ADV are skipped. This
+  protects fills/price-impact at ₹5L+ per slot.
+* **Startup warning** — capital > ₹3L logs a CRITICAL notice: the strategy is
+  validated to ~₹2L and NOT yet confirmed live; a normal 10% drawdown at ₹10L
+  is ₹1,00,000. Cap with `INDIA_MAX_CAPITAL` until live months prove it.
+* **Recommended staging (do NOT deploy ₹10L on day one):** ₹1L month 1 (prove
+  live) → ₹3L month 2 → ₹5L → ₹10L, each step earned by a profitable month.
+  Use `INDIA_MAX_CAPITAL=100000` to let the bot see ₹10L but trade only ₹1L.
+
 ## Kill-rules (pre-agreed, executed without emotion)
 1. Two consecutive losing **months** → halt (`touch KILL`), re-validate on fresh data.
 2. Drawdown > **10%** of capital → same.
