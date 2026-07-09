@@ -99,6 +99,21 @@ def now_ist():
     return datetime.now(IST)
 
 
+def _tg_send(text: str):
+    """Best-effort Telegram notification (trade events + holdings digest).
+    Never raises — a notification failure must never block trading."""
+    try:
+        import requests
+        tok = os.getenv("TELEGRAM_BOT_TOKEN", "").strip()
+        chat = os.getenv("TELEGRAM_CHAT_ID", "").strip()
+        if not tok or not chat:
+            return
+        requests.post(f"https://api.telegram.org/bot{tok}/sendMessage",
+                      json={"chat_id": chat, "text": text[:3900]}, timeout=10)
+    except Exception as e:
+        log.debug(f"telegram notify failed: {e}")
+
+
 def _daily_bars(dfu, sym):
     """Daily OHLCV history + TODAY's live bar (built from intraday 1-min).
 
@@ -311,6 +326,9 @@ class SwingPilot:
             log.critical(f"SWING EXIT FAILED {sym} ({reason}): {res.message} — "
                          f"STILL HELD; will retry next run. If this repeats, "
                          f"check DDPI authorization / sell manually in the app")
+            _tg_send(f"⚠️ SELL FAILED {sym} ({reason}): {res.message}\n"
+                     f"Still holding {p['qty']} — will retry tomorrow. If this "
+                     f"repeats, check DDPI / sell manually in the Upstox app.")
             return
         fill = float(res.fill_price)
         if filled < int(p["qty"]):
@@ -321,10 +339,16 @@ class SwingPilot:
             p["last_exit_oid"] = None
             log.critical(f"SWING PARTIAL EXIT {reason} {sym}: {filled} @ {fill:.2f} "
                          f"(₹{pnl:+.0f}), {p['qty']} REMAIN HELD — retrying next run")
+            _tg_send(f"🟠 PARTIAL SELL {sym} ({reason}): {filled} @ ₹{fill:.2f} "
+                     f"(₹{pnl:+.0f}). {p['qty']} still held — retrying tomorrow.")
             return
         pnl = (fill - p["entry"]) * filled
+        pct = (fill / p["entry"] - 1) * 100
         log.warning(f"SWING EXIT {reason} {sym} @ {fill:.2f} (entry {p['entry']:.2f}) "
-                    f"{(fill/p['entry']-1)*100:+.2f}% (₹{pnl:+.0f})")
+                    f"{pct:+.2f}% (₹{pnl:+.0f})")
+        _tg_send(f"{'🟢' if pnl >= 0 else '🔴'} SOLD {sym} ({reason})\n"
+                 f"{filled} @ ₹{fill:.2f} (bought ₹{p['entry']:.2f})\n"
+                 f"P&L: ₹{pnl:+,.0f} ({pct:+.2f}%)")
         self.positions.pop(sym, None)
 
     # ── scan for new entries ──────────────────────────────────────────────────
@@ -390,6 +414,11 @@ class SwingPilot:
         log.warning(f"SWING ENTER {self.strat_name} {sym} qty={filled} @ {fill:.2f} "
                     f"tgt +{self.cfg['target']*100:.0f}% stop {self.cfg['stop']*100:.0f}% "
                     f"maxhold {self.cfg['max_hold']}d notional ₹{filled*fill:.0f}")
+        _tg_send(f"🛒 BOUGHT {sym} (panic {self.strat_name})\n"
+                 f"{filled} @ ₹{fill:.2f} = ₹{filled*fill:,.0f}\n"
+                 f"Target ₹{self.positions[sym]['target']:.2f} (+2%) | "
+                 f"Stop ₹{self.positions[sym]['stop']:.2f} (−5%) | "
+                 f"flat by Friday")
 
     def run(self):
         # ── IST GUARD: the bot trusts ITS OWN CLOCK (Asia/Kolkata), never the
@@ -425,12 +454,27 @@ class SwingPilot:
                              f"retry next session.")
             return
         is_friday = now_ist().weekday() == 4
+        held_before = set(self.positions)
         self.manage(is_friday)          # exits first (free up slots + cash)
         self.capital = self._capital()  # refresh after exits
         self.scan(is_friday)
         self._save_state()
         log.warning(f"=== run done | {len(self.positions)} held "
                     f"| deployed ₹{self.deployed():,.0f} ===")
+        # daily HOLDINGS DIGEST on Telegram — only when something is held or
+        # something changed this run (no noise on quiet no-trade days)
+        if self.positions or held_before != set(self.positions):
+            lines = [f"📋 Swing {now_ist():%a %d %b %H:%M} — "
+                     f"{len(self.positions)} holding(s)"]
+            for s, p in self.positions.items():
+                lines.append(f"• {s}: {p['qty']} @ ₹{p['entry']:.2f} "
+                             f"(tgt ₹{p['target']:.2f} / stop ₹{p['stop']:.2f}, "
+                             f"since {p['entry_date']})")
+            if not self.positions:
+                lines.append("• flat — no positions held")
+            lines.append(f"Deployed ₹{self.deployed():,.0f} | "
+                         f"cash ₹{self.capital:,.0f}")
+            _tg_send("\n".join(lines))
 
 
 def main():

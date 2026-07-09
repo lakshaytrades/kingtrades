@@ -42,6 +42,13 @@ size ₹25k+.
 ~15–18%/year, ~5% max drawdown in backtest (plan for ~10% live). A losing
 month is NORMAL. **No weekly income guarantee exists.**
 
+## Telegram notifications (automatic, needs TELEGRAM_BOT_TOKEN/CHAT_ID in .env)
+* 🛒 **BOUGHT** — symbol, qty, price, target/stop, "flat by Friday"
+* 🟢/🔴 **SOLD** — reason (TARGET/STOP/MAX_HOLD/FRIDAY_FLAT), fill price, **P&L in ₹ and %**
+* 🟠 **PARTIAL SELL / ⚠️ SELL FAILED** — remainder still held, retry notice
+* 📋 **Daily digest** after each run: every holding with entry/target/stop/date + cash
+* Silent on quiet days (no holdings, no trades). Notify failures never block trading.
+
 ## Kill-rules (pre-agreed, executed without emotion)
 1. Two consecutive losing **months** → halt (`touch KILL`), re-validate on fresh data.
 2. Drawdown > **10%** of capital → same.
