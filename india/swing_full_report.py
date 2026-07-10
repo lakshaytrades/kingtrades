@@ -89,6 +89,21 @@ def main():
         n = net_mo(2.0, rt, 0.7)
         print(f"     {rt*100:>7.0f}% {n*100:>+8.2f}% {(n-base1x)*100:>+9.2f}%")
 
+    # 4b) THE DEPLOYMENT GRID — ₹1/2/5/10L x (1x, 2x), everything in one place
+    print("\n  5) DEPLOYMENT GRID — ₹1L/2L/5L/10L at 1x and 2x MTF "
+          f"(WR 60%, live-70% edge, {R*100:.0f}% interest)")
+    grid_caps = [100000, 200000, 500000, 1000000]
+    print(f"     {'capital':>9} | {'1x ₹/mo':>9} {'1x DD':>9} {'1x /yr':>9} | "
+          f"{'2x ₹/mo':>9} {'2x DD':>10} {'2x /yr':>9}")
+    for c in grid_caps:
+        n1 = net_mo(1.0, R, 0.7); n2 = net_mo(2.0, R, 0.7)
+        dd1 = c * 1.0 * BASE_DD * 2.0; dd2 = c * 2.0 * BASE_DD * 2.0
+        y1 = c * ((1 + n1) ** 12 - 1); y2 = c * ((1 + n2) ** 12 - 1)
+        print(f"     ₹{c:>7,} | ₹{c*n1:>7,.0f} ₹{-dd1:>7,.0f} ₹{y1:>7,.0f} | "
+              f"₹{c*n2:>7,.0f} ₹{-dd2:>8,.0f} ₹{y2:>7,.0f}")
+    print("     DD = worst drawdown you must sit through (money, not %). 2x doubles")
+    print("     both the yearly gain AND the drawdown. WR is 60% at every size/lever.")
+
     # 5) VERDICT
     print("\n" + "=" * 78)
     print("  VERDICT — the whole surface in three lines")
