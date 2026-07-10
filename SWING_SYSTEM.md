@@ -50,6 +50,16 @@ month is NORMAL. **No weekly income guarantee exists.**
 * Silent on quiet days (no holdings, no trades). Notify failures never block trading.
 
 
+## MTF (leverage) — BUILT, gated OFF, use only after live proof
+* `INDIA_MTF_LEVERAGE` (1.0 = off, full-cash delivery). Requires
+  `INDIA_MTF_ACK=true` too, else ignored. Hard-clamped to 2.0x.
+* Multi-day swing suits MTF (interest only for days held): at 2x, backtest math
+  ~+2.4%/mo — but drawdown ~2x (≈20% live) and it amplifies a not-yet-live-proven
+  edge. Run `python3 india/mtf_analysis.py` for the honest numbers.
+* PROFESSIONAL: leave OFF until the base is live-profitable 1-2 months; then 2x max.
+* Before first MTF order, verify your Upstox MTF product code + interest with a
+  ₹1 test order — the bot uses product 'MTF'.
+
 ## Large-capital safeguards (matter at ₹3L+; harmless below)
 * **Liquidity cap** — a single position never exceeds 1% of the stock's ~20-day
   median daily traded value; names thinner than ₹5cr/day ADV are skipped. This

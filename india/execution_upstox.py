@@ -110,33 +110,36 @@ class UpstoxExecutor:
         return best
 
     def place_delivery_order(self, symbol: str, direction: str, qty: int,
-                             price: float, security_id: str) -> OrderResult:
-        """DELIVERY (CNC) MARKET order — for SWING positions held overnight.
-        Fill-verified; IDEMPOTENT: a lost placement response is recovered from
-        the order book rather than re-placed (re-placing doubles the position);
-        an unfilled working order is cancelled before reporting failure."""
+                             price: float, security_id: str,
+                             product: str = "D") -> OrderResult:
+        """DELIVERY MARKET order — for SWING positions held overnight.
+        product 'D' = CNC (full cash). 'MTF' = Margin Trading Facility (leverage;
+        interest accrues per day held). Fill-verified; IDEMPOTENT: a lost
+        placement response is recovered from the order book rather than
+        re-placed; an unfilled working order is cancelled before reporting
+        failure."""
         if qty <= 0:
             return OrderResult(False, message=f"qty={qty} invalid")
         txn = "BUY" if direction == "LONG" else "SELL"
         if not self._live:
-            logger.info(f"[PAPER] DELIVERY {txn} {qty} {symbol} @ ₹{price:.2f}")
-            return OrderResult(True, order_id=f"PAPER-D-{symbol}-{int(_time.time())}",
+            logger.info(f"[PAPER] {product} {txn} {qty} {symbol} @ ₹{price:.2f}")
+            return OrderResult(True, order_id=f"PAPER-{product}-{symbol}-{int(_time.time())}",
                                fill_price=price, quantity=qty, message="Paper delivery")
         if self._client is None:
             return OrderResult(False, message="Upstox client not initialised")
         oid = None
         try:
-            oid = self._place(security_id, txn, qty, "MARKET", product="D")
+            oid = self._place(security_id, txn, qty, "MARKET", product=product)
         except Exception as e:
             # the order may have REACHED the exchange even though the response
             # died — recover it from the book; never blind-retry a market order
             logger.warning(f"Delivery placement response lost ({symbol}): {e} — "
                            f"checking order book before any retry")
             _time.sleep(2)
-            oid = self._find_todays_order(symbol, txn, "D")
+            oid = self._find_todays_order(symbol, txn, product)
             if not oid:
                 try:
-                    oid = self._place(security_id, txn, qty, "MARKET", product="D")
+                    oid = self._place(security_id, txn, qty, "MARKET", product=product)
                 except Exception as e2:
                     return OrderResult(False, message=f"placement failed twice: {e2}")
         if not oid:

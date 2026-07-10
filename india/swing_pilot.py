@@ -180,6 +180,24 @@ class SwingPilot:
         if live_flag and not validated:
             log.warning("LIVE requested but INDIA_SWING_VALIDATED != true — staying "
                         "PAPER. No swing strategy has passed new_edge_lab yet.")
+        # ── OPTIONAL MTF LEVERAGE (default 1.0 = OFF, full-cash delivery) ──────
+        # Multi-day swing CAN use MTF (interest only for days held) — but it
+        # multiplies drawdown 1:1 and amplifies a not-yet-live-proven edge. See
+        # mtf_analysis.py. Hard-clamped to 2.0x; requires an EXPLICIT ack so it
+        # can never turn on by accident. Verify your account's MTF product code
+        # + interest terms with a ₹1 test order before trusting it.
+        lev = float(os.getenv("INDIA_MTF_LEVERAGE", 1.0) or 1.0)
+        ack = os.getenv("INDIA_MTF_ACK", "").lower() == "true"
+        if lev > 1.0 and not ack:
+            log.critical(f"INDIA_MTF_LEVERAGE={lev} ignored — set INDIA_MTF_ACK=true "
+                         f"to accept doubled drawdown + interest on an unproven edge.")
+            lev = 1.0
+        self.leverage = min(max(lev, 1.0), 2.0)
+        self.product = "MTF" if self.leverage > 1.0 else "D"
+        if self.leverage > 1.0:
+            log.critical(f"MTF LEVERAGE {self.leverage:.1f}x ACTIVE — drawdown scales "
+                         f"{self.leverage:.1f}x and interest accrues per day held. "
+                         f"Recommended only AFTER the base strategy is live-profitable.")
 
         self.client = get_upstox_client()
         if not self.client or not verify_connection(self.client):
@@ -333,7 +351,7 @@ class SwingPilot:
                 log.critical(f"{sym}: cannot verify earlier exit ({e}) — NOT "
                              f"re-selling blind; retrying next run")
                 return
-        res = self.exec.place_delivery_order(sym, "SHORT", p["qty"], px, p["sec_id"])
+        res = self.exec.place_delivery_order(sym, "SHORT", p["qty"], px, p["sec_id"], product=p.get("product", self.product))
         filled = int(res.quantity or 0)
         if not (res.success and filled >= 1 and res.fill_price):
             p["last_exit_oid"] = res.order_id or p.get("last_exit_oid")
@@ -416,8 +434,13 @@ class SwingPilot:
         # holdings; subtracting deployed() again double-counted them and
         # starved the 2nd slot forever. Per-slot budget comes from TOTAL
         # equity (cash + holdings cost); actual spend is capped by cash.
+        # buying power = equity x leverage (leverage 1.0 = plain full-cash).
+        # per-slot budget is a slice of buying power; actual cash cap only binds
+        # for full-cash delivery (MTF finances the rest).
         equity_total = self.capital + self.deployed()
-        budget = min(equity_total / MAX_POS, self.capital)
+        buying_power = equity_total * self.leverage
+        cash_cap = self.capital if self.leverage <= 1.0 else buying_power
+        budget = min(buying_power / MAX_POS, cash_cap)
         # LARGE-CAPITAL liquidity guard: never let one order exceed 1% of the
         # name's daily traded value, and skip names thinner than the ADV floor.
         if d is not None:
@@ -434,7 +457,7 @@ class SwingPilot:
         qty = int(budget // close)
         if qty < 1:
             return
-        res = self.exec.place_delivery_order(sym, "LONG", qty, close, sec_id)
+        res = self.exec.place_delivery_order(sym, "LONG", qty, close, sec_id, product=self.product)
         filled = int(res.quantity or 0)
         if not (res.success and filled >= 1 and res.fill_price):
             log.warning(f"{sym}: swing entry not filled ({res.message})")
@@ -445,6 +468,7 @@ class SwingPilot:
             "entry_date": now_ist().date().isoformat(),
             "target": round(fill * (1 + self.cfg["target"]), 2),
             "stop": round(fill * (1 + self.cfg["stop"]), 2),
+            "product": self.product,   # sell under the same product it was bought
         }
         log.warning(f"SWING ENTER {self.strat_name} {sym} qty={filled} @ {fill:.2f} "
                     f"tgt +{self.cfg['target']*100:.0f}% stop {self.cfg['stop']*100:.0f}% "
