@@ -13,6 +13,11 @@
 #
 # NOTE: the VPS clock is UTC. 9:15 IST = 03:45 UTC. For a cron schedule use UTC
 # (see the README line printed at the end).
+#
+# RETIRED (2026-07-08): live_pilot.py's intraday edge failed honest-fill
+# validation and now hard-refuses real orders (INDIA_ALLOW_RETIRED_INTRADAY
+# override required) — see its own docstring. The current live system is the
+# swing pilot: use run_swing.sh / setup_swing_cron.sh instead.
 # ─────────────────────────────────────────────────────────────────────────────
 set -uo pipefail
 cd "$(cd "$(dirname "$0")/.." && pwd)" || exit 1

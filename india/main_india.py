@@ -195,6 +195,25 @@ class SataVectorIndia:
     def initialize(self) -> bool:
         logger.info("=" * 60)
         logger.info(f"SataVector India Bot starting -- {datetime.now(IST).strftime('%Y-%m-%d %H:%M IST')}")
+
+        # RETIRED (2026-07-08): this file's intraday engine failed honest-fill
+        # validation (see live_pilot.py's own retirement note and
+        # next_gen_lab/entry_sweep) and is documented elsewhere in this repo as
+        # "the OLD buggy engine". It must not place real orders again without an
+        # explicit override -- the current live system is swing_pilot.py.
+        if config.LIVE_TRADING_ENABLED and os.getenv(
+            "INDIA_ALLOW_RETIRED_INTRADAY", ""
+        ).strip().lower() != "true":
+            logger.error(
+                "main_india.py live trading is RETIRED -- the intraday engine "
+                "failed honest validation and must not trade real money. Use "
+                "swing_pilot.py instead. Forcing PAPER mode. (Research override: "
+                "INDIA_ALLOW_RETIRED_INTRADAY=true)"
+            )
+            _tg("main_india.py live trading is RETIRED -- forcing PAPER mode. "
+                "Use swing_pilot.py for live trading.")
+            config.LIVE_TRADING_ENABLED = False
+
         logger.info(f"Live trading: {config.LIVE_TRADING_ENABLED}")
         logger.info(f"Capital: Rs.{config.MAX_DAILY_CAPITAL:,.0f} | Max positions: {config.MAX_POSITIONS}")
 
