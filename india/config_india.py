@@ -44,7 +44,10 @@ ATR_SL_MULTIPLIER      = float(os.getenv("INDIA_ATR_SL_MULTIPLIER",     "1.5"))
 ATR_TP_MULTIPLIER      = float(os.getenv("INDIA_ATR_TP_MULTIPLIER",     "1.5"))  # T1 at 1.5R: lock profit fast
 
 # -- Live trading gate --------------------------------------------------------
-LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False") == "True"
+# Case-insensitive on purpose: run_swing.sh / live_pilot.py / squareoff_watchdog.py
+# all export/check lowercase "true", so an exact "== 'True'" match here would
+# silently stay in paper mode while everything else believes it's live.
+LIVE_TRADING_ENABLED = os.getenv("INDIA_LIVE_TRADING_ENABLED", "False").strip().lower() == "true"
 
 # -- Manual signals mode: bot sends alerts, YOU place orders in Upstox app ---
 # True  = bot detects setups and messages you → you trade manually in Upstox

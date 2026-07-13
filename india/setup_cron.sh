@@ -19,6 +19,20 @@ ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 cd "$ROOT" || exit 1
 mkdir -p logs
 
+# RETIRED (2026-07-08): this schedules the intraday pilot (run_pilot.sh ->
+# live_pilot.py), which failed honest-fill validation and now refuses to trade
+# real money on its own (see live_pilot.py's retirement gate). The current live
+# system is the swing pilot -- use setup_swing_cron.sh instead, which also
+# strips any leftover run_pilot.sh/squareoff_watchdog.py cron lines this script
+# may have installed previously.
+if [ "${INDIA_ALLOW_RETIRED_INTRADAY:-}" != "true" ]; then
+  echo "setup_cron.sh is RETIRED -- it schedules the intraday pilot, which failed"
+  echo "honest validation and must not run unattended. Use setup_swing_cron.sh"
+  echo "instead (the current live system)."
+  echo "Research override: INDIA_ALLOW_RETIRED_INTRADAY=true bash india/setup_cron.sh"
+  exit 1
+fi
+
 PILOT_LINE="35 3 * * 1-5 cd $ROOT && bash india/run_pilot.sh live >> logs/cron_pilot.log 2>&1"
 TG_LINE="@reboot cd $ROOT && nohup python3 india/telegram_control.py >> logs/telegram_control.log 2>&1 &"
 # 15:03 IST safety net: flatten anything the pilot failed to square at 15:00,

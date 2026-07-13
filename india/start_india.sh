@@ -24,12 +24,19 @@ if screen -list 2>/dev/null | grep -q "$SESSION"; then
 fi
 
 # Safety check for live trading (skip in cron mode)
+# NOTE: main_india.py runs the RETIRED intraday engine (failed honest-fill
+# validation — see live_pilot.py's retirement note). Its own code-level gate
+# forces PAPER mode even if INDIA_LIVE_TRADING_ENABLED=true here. The current
+# live system is swing_pilot.py, launched via run_swing.sh / setup_swing_cron.sh.
 if [ "$CRON_MODE" -eq 0 ] && [ -f "$ROOT_DIR/.env" ]; then
     LIVE=$(grep "^INDIA_LIVE_TRADING_ENABLED" "$ROOT_DIR/.env" | cut -d= -f2 | tr -d '[:space:]')
-    if [ "$LIVE" = "True" ]; then
+    LIVE_LOWER=$(printf '%s' "$LIVE" | tr '[:upper:]' '[:lower:]')
+    if [ "$LIVE_LOWER" = "true" ]; then
         echo ""
-        echo "⚡⚡⚡ WARNING: INDIA LIVE TRADING = REAL MONEY (Dhan/NSE) ⚡⚡⚡"
-        echo "Type 'yes' to confirm:"
+        echo "⚡⚡⚡ WARNING: INDIA LIVE TRADING = REAL MONEY (Upstox/NSE) ⚡⚡⚡"
+        echo "main_india.py's intraday engine is RETIRED and will run in PAPER"
+        echo "mode regardless (see swing_pilot.py for the current live system)."
+        echo "Type 'yes' to confirm you still want to start it:"
         read -r CONFIRM
         if [ "$CONFIRM" != "yes" ]; then echo "Aborted."; exit 1; fi
     fi
@@ -38,7 +45,7 @@ fi
 # Clean stale PID so instance guard doesn't block
 rm -f "$ROOT_DIR/logs/india_bot.pid" 2>/dev/null
 
-[ "$CRON_MODE" -eq 0 ] && echo "Starting SataVector India Bot (Dhan / NSE)..."
+[ "$CRON_MODE" -eq 0 ] && echo "Starting SataVector India Bot (Upstox / NSE)..."
 
 # Runner script (handles crash loop with backoff)
 RUNNER="$ROOT_DIR/logs/.runner_india.sh"
