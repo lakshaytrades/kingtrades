@@ -1,14 +1,15 @@
 """
-rl_agent.py — Reinforcement Learning Brain for KingTrades
+rl_agent.py — Reinforcement Learning Brain for SataVector
 
 Architecture (as designed):
-  StateBuilder    → Eyes. Encodes market into a discrete state string like "12201102"
-  QTable          → Memory. Knows what action worked in each state. Saved to disk.
-  ReplayBuffer    → Notebook. Stores last 2,000 experiences for re-learning.
-  RewardCalculator→ Scorecard. Points for wins, deductions for bad habits.
-  TradeMemory     → Diary. Full log of every trade + outcome.
-  RLAgent         → Brain. Q-learning agent that improves after every trade.
-  LakshKingRL     → Remote control. 4 calls: signal, close, candle, reset.
+  StateBuilder         → Eyes. Encodes market into a discrete state string like "12201102"
+  QTable               → Memory. Knows what action worked in each state. Saved to disk.
+  NeuralQApproximator  → Deep memory. Replaces sparse Q-table with neural Q-function.
+  ReplayBuffer         → Notebook. Stores last 2,000 experiences for re-learning.
+  RewardCalculator     → Scorecard. Points for wins, deductions for bad habits.
+  TradeMemory          → Diary. Full log of every trade + outcome.
+  RLAgent              → Brain. Q-learning agent that improves after every trade.
+  LakshKingRL          → Remote control. 4 calls: signal, close, candle, reset.
 
 Institution-level additions:
   - Correlation filter (no two correlated stocks simultaneously)
@@ -17,9 +18,17 @@ Institution-level additions:
   - Portfolio heat limit (max 40% capital deployed at once)
   - Drawdown-based position reduction
 
+Neural DQN (v2.0):
+  - NeuralQApproximator replaces sparse dict Q-table as primary Q-function
+  - 12-dim state vector → MLPRegressor → Q-values for 3 actions
+  - Epsilon-greedy with adaptive epsilon (decays faster when losing)
+  - Falls back to legacy QTable if sklearn is unavailable
+  - Persisted to data/dqn_model.pkl
+
 Files created:
-  data/rl_qtable.json    — Brain. Grows smarter with every trade.
+  data/rl_qtable.json    — Fallback Q-table. Grows smarter with every trade.
   data/rl_memory.json    — Full diary of every trade + reward given.
+  data/dqn_model.pkl     — Neural Q-function approximator weights.
 """
 
 import json
@@ -117,7 +126,147 @@ class StateBuilder:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# Q-TABLE — Memory that never forgets
+# NEURAL Q-FUNCTION APPROXIMATOR — Deep memory (v2.0)
+# Replaces the sparse dict Q-table with a neural Q-function.
+# ─────────────────────────────────────────────────────────────────────────────
+
+class NeuralQApproximator:
+    """
+    Neural Q-function approximator. Replaces sparse Q-table.
+
+    Maps a 12-dim continuous state vector → Q-values for 3 actions
+    (0=SKIP, 1=LONG, 2=SHORT) via an MLP regressor.
+
+    Key design decisions:
+    - Uses sklearn MLPRegressor (no heavy PyTorch/TF dependency).
+    - warm_start=True so incremental fits don't discard previous weights.
+    - Experience buffer capped at 500 samples (prevents memory bloat).
+    - Retrains every 20 new samples (online learning cadence).
+    - Falls back gracefully if sklearn is unavailable.
+    - Persisted to data/dqn_model.pkl between sessions.
+    """
+
+    N_ACTIONS = 3   # 0=SKIP, 1=LONG, 2=SHORT
+    STATE_DIM = 12
+
+    def __init__(self):
+        self._model = None
+        self._buf_X: list = []
+        self._buf_y: list = []
+        self._model_path = Path("data/dqn_model.pkl")
+        self._load()
+
+    def _load(self):
+        try:
+            if self._model_path.exists():
+                import joblib
+                self._model = joblib.load(self._model_path)
+                logger.info(
+                    f"[DQN] Loaded neural Q-approximator from {self._model_path}"
+                )
+        except Exception as e:
+            logger.debug(f"[DQN] model load failed (will train from scratch): {e}")
+
+    def encode_state(self, state: dict) -> list:
+        """12-dim float vector from state dict. All keys use .get(key, default)."""
+        try:
+            now = get_current_ist_time()
+            time_of_day = now.hour + now.minute / 60.0
+        except Exception:
+            time_of_day = float(state.get("time_of_day", 13))
+        return [
+            float(state.get("rsi", 50)) / 100.0,
+            float(state.get("adx", 25)) / 100.0,
+            min(float(state.get("volume_ratio", 1.0)) / 5.0, 1.0),
+            float(state.get("signal_score", 70)) / 100.0,
+            float(bool(state.get("mtf_aligned", False))),
+            float(bool(state.get("regime_trending", False))),
+            float(bool(state.get("session_opening", False))),
+            min(float(state.get("portfolio_heat", 0)) / 100.0, 1.0),
+            float(state.get("recent_wr", 0.5)),
+            min(float(state.get("vix", 20)) / 40.0, 1.0),
+            min(float(state.get("consecutive_losses", 0)) / 5.0, 1.0),
+            time_of_day / 24.0,
+        ]
+
+    def predict_q(self, state: dict) -> list:
+        """
+        Predict Q-values for all actions. Returns list of N_ACTIONS floats.
+        Returns slight LONG bias by default when no model is trained yet.
+        """
+        if self._model is None or len(self._buf_X) < 15:
+            return [0.0, 0.05, -0.05]  # slight LONG bias by default
+        try:
+            result = self._model.predict([self.encode_state(state)])[0]
+            return list(result)
+        except Exception as e:
+            logger.debug(f"[DQN] predict_q failed: {e}")
+            return [0.0, 0.0, 0.0]
+
+    def best_action(self, state: dict, epsilon: float = 0.1) -> int:
+        """
+        Epsilon-greedy action selection.
+        Returns action index: 0=SKIP, 1=LONG, 2=SHORT.
+        """
+        if random.random() < epsilon:
+            return random.randint(0, self.N_ACTIONS - 1)
+        q = self.predict_q(state)
+        return int(max(range(self.N_ACTIONS), key=lambda i: q[i]))
+
+    def update(
+        self,
+        state: dict,
+        action: int,
+        reward: float,
+        next_state: dict,
+        gamma: float = 0.90,
+    ):
+        """
+        Bellman TD update: target = reward + γ * max Q(next_state).
+        Appends to experience buffer and retrains every 20 samples.
+        """
+        next_q = max(self.predict_q(next_state))
+        td_target = reward + gamma * next_q
+        current_q = list(self.predict_q(state))
+        current_q[action] = td_target
+        self._buf_X.append(self.encode_state(state))
+        self._buf_y.append(current_q)
+        if len(self._buf_X) >= 20 and len(self._buf_X) % 20 == 0:
+            self._retrain()
+
+    def _retrain(self):
+        """Fit MLPRegressor on buffered experience. warm_start=True preserves prior weights."""
+        try:
+            from sklearn.neural_network import MLPRegressor
+            import joblib
+            X = self._buf_X[-500:]
+            y = self._buf_y[-500:]
+            if self._model is None:
+                self._model = MLPRegressor(
+                    hidden_layer_sizes=(32, 16),
+                    activation="relu",
+                    max_iter=200,
+                    warm_start=True,
+                    random_state=42,
+                )
+            self._model.fit(X, y)
+            self._model_path.parent.mkdir(parents=True, exist_ok=True)
+            joblib.dump(self._model, self._model_path)
+            logger.debug(f"[DQN] retrained on {len(X)} samples → {self._model_path}")
+        except Exception as e:
+            logger.debug(f"[DQN] retrain failed: {e}")
+
+    def adaptive_epsilon(self, n_trades: int, recent_wr: float = 0.5) -> float:
+        """
+        Decaying epsilon with losing-streak boost.
+        When recent win-rate < 40%, explore more aggressively.
+        """
+        base = max(0.05, 0.30 * (0.997 ** n_trades))
+        return min(base * 2.0, 0.30) if recent_wr < 0.40 else base
+
+
+# ─────────────────────────────────────────────────────────────────────────────
+# Q-TABLE — Fallback memory (kept for backward-compat and cold start)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class QTable:
@@ -125,6 +274,7 @@ class QTable:
     Maps (state, action) → expected reward.
     Actions: 0=SKIP, 1=BUY(LONG), 2=SELL(SHORT)
     Persisted to disk so the bot never forgets across restarts.
+    Used as fallback if sklearn is unavailable for NeuralQApproximator.
     """
     ACTIONS = ["SKIP", "LONG", "SHORT"]
 
@@ -391,13 +541,18 @@ class PortfolioManager:
 
 
 # ─────────────────────────────────────────────────────────────────────────────
-# RL AGENT — The actual brain
+# RL AGENT — The actual brain (v2.0 with Neural DQN)
 # ─────────────────────────────────────────────────────────────────────────────
 
 class RLAgent:
     """
     Q-learning agent that improves after every trade.
+
+    v2.0: Integrates NeuralQApproximator (DQN) as the primary decision engine.
+    Falls back to legacy QTable if sklearn is unavailable.
+
     Uses epsilon-greedy: starts exploring (random), gradually exploits (learned).
+    The DQN's adaptive_epsilon() adjusts exploration rate based on recent win-rate.
     """
 
     def __init__(self):
@@ -408,26 +563,46 @@ class RLAgent:
         self.portfolio= PortfolioManager()
         self.state_builder = StateBuilder()
 
+        # Neural DQN — primary Q-function approximator
+        try:
+            self._dqn = NeuralQApproximator()
+            self._dqn_available = True
+        except Exception as _e:
+            logger.warning(f"[RL] NeuralQApproximator init failed — using QTable fallback: {_e}")
+            self._dqn = None
+            self._dqn_available = False
+
         # Epsilon: exploration rate (1.0=all random, 0.05=mostly learned)
         self.epsilon      = self._load_epsilon()
         self.epsilon_min  = 0.05
         self.epsilon_decay= 0.995   # Decays after each trade
 
+        # Trade counter (used by adaptive_epsilon)
+        self._n_trades: int = 0
+
         # Current episode tracking
-        self._current_state:  Optional[str] = None
-        self._current_action: Optional[int] = None
-        self._entry_time:     Optional[datetime] = None
-        self._current_symbol: Optional[str] = None
-        self._current_risk:   float = 0.0
+        self._current_state:     Optional[str] = None
+        self._current_action:    Optional[int] = None
+        self._current_raw_state: Optional[dict] = None   # raw dict for DQN update
+        self._entry_time:        Optional[datetime] = None
+        self._current_symbol:    Optional[str] = None
+        self._current_risk:      float = 0.0
 
         logger.info(
             f"[RL] Agent ready | States known: {len(self.qtable.table)} | "
-            f"ε={self.epsilon:.3f} | WR(50)={self.memory.win_rate()}%"
+            f"epsilon={self.epsilon:.3f} | WR(50)={self.memory.win_rate()}% | "
+            f"DQN={'enabled' if self._dqn_available else 'fallback-qtable'}"
         )
 
     def decide(self, symbol: str, direction_hint: str, market_data: dict, risk_amount: float) -> str:
         """
         Core decision: should we trade this signal?
+
+        Decision priority:
+          1. Portfolio-level gate (hard block on concentration/heat/drawdown)
+          2. NeuralQApproximator.best_action() if available
+          3. QTable fallback if DQN unavailable
+
         Returns: "LONG", "SHORT", or "SKIP"
         """
         # Portfolio-level check first
@@ -440,31 +615,63 @@ class RLAgent:
 
         state = self.state_builder.build(market_data)
 
-        # Epsilon-greedy: explore or exploit
-        if random.random() < self.epsilon:
-            # Exploration: use signal generator's suggestion (not pure random)
-            action_idx = {"LONG": 1, "SHORT": 2}.get(direction_hint, 0)
+        # Compute adaptive epsilon from DQN if available
+        recent_wr = self.memory.win_rate(50) / 100.0
+        if self._dqn_available and self._dqn is not None:
+            epsilon = self._dqn.adaptive_epsilon(self._n_trades, recent_wr)
+            self.epsilon = max(self.epsilon_min, epsilon)
         else:
-            # Exploitation: use what we've learned
-            action_idx = self.qtable.best_action(state)
+            epsilon = self.epsilon
+
+        # ── DQN decision (primary) ─────────────────────────────────────────
+        if self._dqn_available and self._dqn is not None:
+            try:
+                action_idx = self._dqn.best_action(market_data, epsilon)
+            except Exception as _e:
+                logger.debug(f"[RL] DQN best_action failed, falling back to QTable: {_e}")
+                action_idx = self._qtable_decide(state, direction_hint, epsilon)
+        else:
+            # ── QTable fallback ────────────────────────────────────────────
+            action_idx = self._qtable_decide(state, direction_hint, epsilon)
 
         action = QTable.ACTIONS[action_idx]
 
-        # Track episode
-        self._current_state  = state
-        self._current_action = action_idx
-        self._entry_time     = get_current_ist_time()
-        self._current_symbol = symbol
-        self._current_risk   = risk_amount
+        # Track episode (save both discrete state and raw dict for DQN update)
+        self._current_state      = state
+        self._current_action     = action_idx
+        self._current_raw_state  = dict(market_data)
+        self._entry_time         = get_current_ist_time()
+        self._current_symbol     = symbol
+        self._current_risk       = risk_amount
+
+        dqn_q_str = "n/a"
+        if self._dqn_available and self._dqn is not None:
+            try:
+                dqn_q_str = str([round(q, 2) for q in self._dqn.predict_q(market_data)])
+            except Exception:
+                pass
 
         logger.info(
-            f"[RL] {symbol} | State={state} | ε={self.epsilon:.3f} | "
-            f"Q={[round(x,2) for x in self.qtable.get(state)]} | Decision={action}"
+            f"[RL] {symbol} | State={state} | eps={epsilon:.3f} | "
+            f"Q={[round(x,2) for x in self.qtable.get(state)]} | "
+            f"DQN_Q={dqn_q_str} | Decision={action}"
         )
         return action
 
+    def _qtable_decide(self, state: str, direction_hint: str, epsilon: float) -> int:
+        """Epsilon-greedy decision using legacy QTable."""
+        if random.random() < epsilon:
+            # Exploration: use signal generator's suggestion (not pure random)
+            return {"LONG": 1, "SHORT": 2}.get(direction_hint, 0)
+        else:
+            # Exploitation: use what we've learned
+            return self.qtable.best_action(state)
+
     def on_trade_closed(self, symbol: str, pnl: float, exit_reason: str, next_market_data: dict):
-        """Call this when a position is closed. Updates Q-table."""
+        """
+        Call this when a position is closed. Updates both DQN and QTable.
+        DQN update uses raw market_data dicts; QTable uses discrete state strings.
+        """
         if self._current_state is None or self._current_action is None:
             return
 
@@ -482,14 +689,26 @@ class RLAgent:
 
         next_state = self.state_builder.build(next_market_data)
 
-        # Learn
+        # ── Update QTable (fallback / parallel learning) ───────────────────
         self.qtable.update(self._current_state, self._current_action, reward, next_state)
         self.replay.push(self._current_state, self._current_action, reward, next_state)
 
-        # Replay batch learning (re-study past experiences)
+        # Replay batch learning (re-study past experiences via QTable)
         if len(self.replay) >= 32:
             for s, a, r, ns in self.replay.sample(32):
                 self.qtable.update(s, a, r, ns)
+
+        # ── Update DQN (primary Q-function) ───────────────────────────────
+        if self._dqn_available and self._dqn is not None and self._current_raw_state is not None:
+            try:
+                self._dqn.update(
+                    state      = self._current_raw_state,
+                    action     = self._current_action,
+                    reward     = reward,
+                    next_state = next_market_data,
+                )
+            except Exception as _e:
+                logger.debug(f"[RL] DQN update suppressed: {_e}")
 
         # Log to diary
         self.memory.record(
@@ -509,15 +728,17 @@ class RLAgent:
         # Decay epsilon (get smarter over time)
         self.epsilon = max(self.epsilon_min, self.epsilon * self.epsilon_decay)
         self._save_epsilon()
+        self._n_trades += 1
 
         logger.info(
-            f"[RL] {symbol} closed | PnL=₹{pnl:+.0f} | Reward={reward:+.3f} | "
-            f"ε→{self.epsilon:.3f} | WR(50)={self.memory.win_rate()}%"
+            f"[RL] {symbol} closed | PnL=${pnl:+.0f} | Reward={reward:+.3f} | "
+            f"eps->{self.epsilon:.3f} | WR(50)={self.memory.win_rate()}%"
         )
 
         # Reset episode
-        self._current_state  = None
-        self._current_action = None
+        self._current_state      = None
+        self._current_action     = None
+        self._current_raw_state  = None
 
     def _load_epsilon(self) -> float:
         try:
@@ -537,12 +758,15 @@ class RLAgent:
     @property
     def status(self) -> dict:
         return {
-            "epsilon":      round(self.epsilon, 3),
-            "states_known": len(self.qtable.table),
-            "win_rate_50":  self.memory.win_rate(50),
-            "avg_reward_50": self.memory.avg_reward(50),
+            "epsilon":        round(self.epsilon, 3),
+            "states_known":   len(self.qtable.table),
+            "win_rate_50":    self.memory.win_rate(50),
+            "avg_reward_50":  self.memory.avg_reward(50),
             "open_positions": len(self.portfolio.open_positions),
-            "daily_pnl":    round(self.portfolio.daily_pnl, 2),
+            "daily_pnl":      round(self.portfolio.daily_pnl, 2),
+            "dqn_enabled":    self._dqn_available,
+            "dqn_buf_size":   len(self._dqn._buf_X) if self._dqn is not None else 0,
+            "n_trades":       self._n_trades,
         }
 
 
@@ -610,13 +834,18 @@ class LakshKingRL:
     def status_message() -> str:
         """Telegram-ready status summary."""
         s = get_rl_agent().status
+        dqn_str = (
+            f"DQN buffer: {s['dqn_buf_size']} samples"
+            if s.get("dqn_enabled") else "DQN: fallback Q-table"
+        )
         return (
             f"🧠 <b>RL Brain Status</b>\n"
             f"States learned: {s['states_known']}\n"
-            f"Exploration (ε): {s['epsilon']:.1%} → "
+            f"Exploration: {s['epsilon']:.1%} → "
             f"{'still learning' if s['epsilon'] > 0.15 else 'mostly exploiting learned patterns'}\n"
             f"Win rate (last 50): {s['win_rate_50']}%\n"
             f"Avg reward: {s['avg_reward_50']:+.3f}\n"
             f"Open positions: {s['open_positions']}\n"
-            f"Daily P&L: ₹{s['daily_pnl']:+.0f}"
+            f"Daily P&L: ${s['daily_pnl']:+.0f}\n"
+            f"{dqn_str}"
         )

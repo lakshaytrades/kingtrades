@@ -103,3 +103,20 @@ groww_tokens/
 auth_tokens/
 session_data/
 .claude/
+
+# Generated backtest report artifacts (regenerated locally each run)
+orb_fast_report.txt
+strategy_lab_report.txt
+orb_performance_report.txt
+midcap_cache.pkl
+
+# Generated reports, data caches, kill switch (all regenerated locally)
+*_report.txt
+*.pkl
+KILL
+
+# live swing position ledger (operational state, never commit)
+swing_state.json
+swing_state.bak
+swing_state.tmp
+KILL

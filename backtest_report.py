@@ -1,5 +1,5 @@
 """
-backtest_report.py  —  KingTrades Definitive Compounding Backtest
+backtest_report.py  —  SataVector Definitive Compounding Backtest
 ==================================================================
 
 METHODOLOGY: Calibrated directly from real strategy math
@@ -274,7 +274,7 @@ def run_backtest(
 
     print()
     print(SEP)
-    print("  KINGTRADES — DEFINITIVE COMPOUNDING BACKTEST REPORT")
+    print("  SATAVECTOR — DEFINITIVE COMPOUNDING BACKTEST REPORT")
     print(SEP)
     print(f"  Capital             : ${capital:,.2f}")
     print(f"  Period              : {months} months  ({n_days} trading days)")
@@ -487,7 +487,7 @@ def run_backtest(
 
 
 if __name__ == "__main__":
-    p = argparse.ArgumentParser(description="KingTrades Definitive Backtest")
+    p = argparse.ArgumentParser(description="SataVector Definitive Backtest")
     p.add_argument("--capital",       type=float, default=1_000,
                    help="Starting capital USD (default 1000)")
     p.add_argument("--months",        type=int,   default=6,

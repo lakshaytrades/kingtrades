@@ -172,10 +172,19 @@ class SystemHealthChecker:
     # ─────────────────────────────────────────────────────────────────────
 
     def _check_alpaca_api(self) -> bool:
-        """Verify Alpaca REST API is reachable and auth token is valid."""
+        """Verify Alpaca REST API is reachable and auth token is valid.
+        Fail-open when keys are not configured (paper-mode without keys still runs)."""
         try:
             from auth_alpaca import get_auth_manager
             auth = get_auth_manager()
+            if not auth.is_configured():
+                # No API keys = paper-only mode: allow trading, warn once
+                logger.warning(
+                    f"[{format_ist_timestamp()}] Alpaca API keys not set — running in "
+                    "paper-sim mode (no real orders). Set ALPACA_API_KEY + ALPACA_SECRET_KEY "
+                    "in .env to enable live/paper API."
+                )
+                return True  # fail-open: paper sim works without keys
             client = auth.get_trading_client()
             account = client.get_account()
             return account is not None
@@ -219,7 +228,8 @@ class SystemHealthChecker:
         try:
             from data_fetch_alpaca import get_data_fetcher
             fetcher = get_data_fetcher()
-            bal = fetcher.get_balance()
+            # Method is get_account_balance(), not get_balance()
+            bal = fetcher.get_account_balance()
             buying_power = float(bal.get("buying_power", min_threshold + 1))
             return buying_power >= min_threshold, buying_power
         except Exception as e:

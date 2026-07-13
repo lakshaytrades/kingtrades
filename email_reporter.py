@@ -186,7 +186,7 @@ def _send_via_brevo(to_addr: str, subject: str, html_body: str, text_body: str =
             "https://api.brevo.com/v3/smtp/email",
             headers={"api-key": api_key, "Content-Type": "application/json"},
             json={
-                "sender": {"name": "KingTrades Bot", "email": "noreply@kingtrades.bot"},
+                "sender": {"name": "SataVector Bot", "email": "noreply@kingtrades.bot"},
                 "to": [{"email": to_addr}],
                 "subject": subject,
                 "htmlContent": html_body,
@@ -243,7 +243,7 @@ def send_email_report(data: Dict) -> bool:
         date    = data.get("date", get_current_ist_time().strftime("%d %b %Y"))
         pnl     = data.get("total_pnl", 0.0)
         sign    = "+" if pnl >= 0 else ""
-        subject = f"[KingTrades] {sign}Rs.{pnl:,.0f} — {date}"
+        subject = f"[SataVector] {sign}Rs.{pnl:,.0f} — {date}"
         return _send_email(to_addr, subject, _build_html_report(data))
     except Exception as e:
         logger.error(f"[{format_ist_timestamp()}] Email report failed: {e}")
@@ -264,9 +264,9 @@ def send_alert(subject: str, body: str) -> None:
 <div style="max-width:500px;background:#fff;border-radius:10px;padding:20px;
      box-shadow:0 2px 8px rgba(0,0,0,.07)">
 <pre style="font-family:monospace;font-size:14px;white-space:pre-wrap;margin:0">{body}</pre>
-<div style="margin-top:16px;font-size:11px;color:#aaa">{format_ist_timestamp()} IST · KingTrades Bot</div>
+<div style="margin-top:16px;font-size:11px;color:#aaa">{format_ist_timestamp()} IST · SataVector Bot</div>
 </div></body></html>"""
-        _send_email(to_addr, f"[KingTrades] {subject}", html, body)
+        _send_email(to_addr, f"[SataVector] {subject}", html, body)
 
     except Exception as _e:
         logger.debug(f"[suppressed] {_e}")  # Never block trading for an alert failure
@@ -308,7 +308,7 @@ def send_discord_report(data: Dict) -> bool:
         trades_text = "\n".join(trade_lines) if trade_lines else "_No trades today — no signals met quality threshold_"
 
         embed = {
-            "title": f"{emoji} KingTrades Daily Report — {date}",
+            "title": f"{emoji} SataVector Daily Report — {date}",
             "color": color,
             "fields": [
                 {"name": "Net P&L",     "value": f"**{sign}₹{pnl:,.0f}** ({sign}{pnl_pct:.2f}%)", "inline": True},

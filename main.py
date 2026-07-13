@@ -114,6 +114,7 @@ class TradingBot:
         self.burst_detector = None      # Explosive momentum burst scanner
         self.options_scalper = None     # US options scalping engine (Alpaca only)
         self._last_trade_date = ""
+        self._last_executed_trade_ts: float = 0.0   # monotonic timestamp of last confirmed execution
         self._overnight_run_today = False
 
         # Automation state
@@ -130,6 +131,7 @@ class TradingBot:
         self._weekly_pnl_file.parent.mkdir(exist_ok=True)
         self._weekly_mode: str = "NORMAL"   # NORMAL / PROTECT / LOCKED
         self._day_bias_score: int = 0        # overnight bias -100 to +100 (set at market open)
+        self._day_size_factor: float = 1.0   # morning intelligence size multiplier (default 1.0 = no adjustment)
         self._mover_watchlist: List[str] = []    # dynamic top-movers added intraday
         self._last_mover_scan: float = 0.0       # timestamp of last top-movers refresh
         self._mover_scan_interval = 3600         # refresh top-movers every 60 min
@@ -137,6 +139,7 @@ class TradingBot:
         self._optimizer_reload_interval = 3600   # re-apply optimizer params every 60 min
         self._orb_done_today: bool = False       # ORB scan fired once per day at 9:31-9:45 AM ET
         self._last_state_write: float = 0.0      # timestamp of last terminal dashboard state write
+        self._intraday_adapter = None            # IntradayAdapter: 30-min live session adaptation
 
     # --------------------------------------------------------
     # STARTUP
@@ -189,6 +192,20 @@ class TradingBot:
             self.risk_manager,
             live_enabled=config.LIVE_TRADING_ENABLED,
         )
+
+        # Wire RL agent and ML ensemble learning callbacks into executor
+        # so close_position() triggers post-trade learning even when called directly.
+        if hasattr(self.executor, "set_learning_callbacks"):
+            try:
+                import ml_ensemble as _ml_mod
+                from rl_agent import get_rl_agent as _get_rl
+                self.executor.set_learning_callbacks(
+                    rl_agent=_get_rl(),
+                    ml_ensemble_mod=_ml_mod,
+                )
+                logger.info(f"[{format_ist_timestamp()}] Executor learning callbacks wired (RL + ML ensemble)")
+            except Exception as _lcb_e:
+                logger.warning(f"[{format_ist_timestamp()}] Learning callbacks wiring failed: {_lcb_e}")
 
         # Initialize news filter
         from news_filter import NewsFilter
@@ -359,9 +376,56 @@ class TradingBot:
         self.mtf_analyzer = MultiTimeframeAnalyzer()
         logger.info(f"[{format_ist_timestamp()}] MTF analyzer ready")
 
-        # NSE-only modules — all disabled (Alpaca US mode)
-        self.oc_analyzer = self.fii_tracker = self.block_deal_scanner = None
+        # NSE institutional intelligence modules
+        self.oc_analyzer = None
+        self.block_deal_scanner = None
         self.sector_rotation = self.pairs_engine = self.options_signals = None
+
+        # ── Pairs Trading Engine (cointegration stat-arb) ─────────────────────
+        try:
+            from pairs_engine import get_pairs_engine
+            self.pairs_engine = get_pairs_engine()
+            logger.info(f"[{format_ist_timestamp()}] Pairs Engine ready (stat-arb)")
+        except Exception as _pe_err:
+            self.pairs_engine = None
+            logger.debug(f"[Main] Pairs engine unavailable: {_pe_err}")
+
+        # ── Block Deal Scanner (NSE institutional bulk/block deals) ───────────
+        try:
+            from block_deal_scanner import get_block_deal_scanner
+            self.block_deal_scanner = get_block_deal_scanner()
+            logger.info(f"[{format_ist_timestamp()}] Block Deal Scanner ready (NSE institutional)")
+        except Exception as _bd_err:
+            self.block_deal_scanner = None
+            logger.debug(f"[Main] Block deal scanner unavailable: {_bd_err}")
+
+        # ── Portfolio Drawdown Monitor (real-time equity guardian) ────────────
+        try:
+            from portfolio_drawdown_monitor import get_drawdown_monitor
+            self._drawdown_monitor = get_drawdown_monitor()
+            self._drawdown_monitor.start(risk_manager=self.risk_manager)
+            logger.info(f"[{format_ist_timestamp()}] Drawdown Monitor started (real-time equity guardian)")
+        except Exception as _dm_err:
+            self._drawdown_monitor = None
+            logger.debug(f"[Main] Drawdown monitor unavailable: {_dm_err}")
+
+        # ── L99 Gate (ultra-high conviction final filter) ─────────────────────
+        try:
+            import l99_gate as _l99_mod
+            self._l99_gate = _l99_mod
+            logger.info(f"[{format_ist_timestamp()}] L99 Gate loaded (15-component conviction filter)")
+        except Exception as _l99_err:
+            self._l99_gate = None
+            logger.debug(f"[Main] L99 gate unavailable: {_l99_err}")
+
+        # NSE FII/DII tracker
+        try:
+            from fii_dii_tracker import FIIDIITracker
+            self.fii_tracker = FIIDIITracker()
+            logger.info("[Main] FII/DII tracker initialized")
+        except Exception as _fii_err:
+            self.fii_tracker = None
+            logger.debug(f"[Main] FII/DII tracker unavailable: {_fii_err}")
 
         # Options Scalping Engine — Alpaca US options
         self.options_scalper = None
@@ -467,21 +531,44 @@ class TradingBot:
 
         logger.info(f"[{format_ist_timestamp()}] ✅ Bot initialized successfully")
 
+        # Initialize structured event logger + A/B testing framework
+        from structured_logger import get_structured_logger
+        from ab_testing import get_ab
+        self.slog = get_structured_logger()
+        self.ab = get_ab()
+        self.slog.log("bot_start", {"version": "L99", "modules": "all"})
+
+        # Register initial A/B test on signal score threshold
+        import os
+        if os.getenv("AB_TESTING_ENABLED", "true").lower() == "true":
+            import config as _cfg
+            self.ab.register(
+                name="score_threshold_v1",
+                description="Test +3pt higher threshold improves win rate",
+                parameter="min_score",
+                control=float(_cfg.MIN_SIGNAL_SCORE),
+                treatment=float(_cfg.MIN_SIGNAL_SCORE) + 3.0,
+                min_samples=30,
+            )
+
         # Send startup message to Telegram with live balance
         try:
             bal = self.fetcher.get_account_balance() if self.fetcher else {}
             available = bal.get("available", 0)
             mode = "⚡ LIVE TRADING" if config.LIVE_TRADING_ENABLED else "🔒 DRY RUN"
             wl_count = len(config.WATCHLIST)
+            _now_ist = get_current_ist_time()
+            _daily_tgt = config.DAILY_PROFIT_TARGET or (available * 0.01)
             self.alerter.send_text(
-                f"🚀 <b>KingTrades Bot Started</b>\n"
+                f"🚀 <b>{config.BOT_DISPLAY_NAME} Bot Started</b>\n"
                 f"<code>{format_ist_timestamp()}</code>\n\n"
                 f"Mode: <b>{mode}</b>\n"
                 f"Balance: <b>${available:,.2f}</b>\n"
-                f"Daily Target: <b>${config.DAILY_PROFIT_TARGET:,.0f}</b>\n"
+                f"Daily Target: <b>${_daily_tgt:,.0f}</b> (1%)\n"
                 f"Watchlist: <b>{wl_count} stocks</b>\n\n"
                 f"Strategies: MTF + SmartMoney + ProfitMaximizer\n"
-                f"Market opens at 9:30 AM ET"
+                f"🇺🇸 US market: 9:30 AM ET = {_now_ist.strftime('%I:%M %p')} IST +9h30m\n"
+                f"🇮🇳 India market: 9:15 AM IST (run india/main_india.py)"
             )
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Startup Telegram message failed: {e}")
@@ -712,6 +799,36 @@ class TradingBot:
         # ── Step 5: Initialize risk manager for the day ──────────────────────
         self.risk_manager.initialize_day(available, spy_open)
 
+        # ── Step 5a: Apply nightly adaptive params (feedback loop) ───────────
+        # Must run AFTER risk_manager.initialize_day() so the new day's state
+        # is set before we overwrite max_risk_pct / min_score.
+        # Must run BEFORE the first trading scan so every signal today uses
+        # the walk-forward-optimised thresholds.
+        self._apply_adaptive_params()
+
+        # ── Step 5b: Start IntradayAdapter — 30-min live session adaptation ──
+        # Runs a background thread that re-evaluates regime + session P&L every
+        # 30 minutes and writes adapted params to data/intraday_params.json.
+        try:
+            from intraday_adapter import get_adapter as _get_intraday_adapter
+            self._intraday_adapter = _get_intraday_adapter()
+            self._intraday_adapter.start_background()
+            logger.info("[Main] IntradayAdapter started — 30-min live adaptation active")
+        except Exception as _ia_err:
+            logger.warning(f"[Main] IntradayAdapter init failed: {_ia_err}")
+            self._intraday_adapter = None
+
+        # All-Weather Strategy Engine
+        try:
+            from all_weather_strategy import get_all_weather_engine as _get_aw
+            _aw = _get_aw()
+            _aw.start_background()
+            self._aw_engine = _aw
+            logger.info("[Main] AllWeatherEngine started — any-condition strategy active")
+        except Exception as _aw_err:
+            logger.warning(f"[Main] AllWeatherEngine init failed: {_aw_err}")
+            self._aw_engine = None
+
         # ── Step 6: Initialize Profit Engine with plan's daily target ────────
         try:
             if self.profit_engine:
@@ -771,6 +888,15 @@ class TradingBot:
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] Gap analysis failed: {e}")
             self.gap_analyzer = None
+
+        # ── Pre-market gap scanner (v23.0) — classify overnight gaps ──
+        # Runs once at market open; results are cached all day for signal_generator.
+        try:
+            from premarket_gap_scanner import scan_gaps
+            _gaps = scan_gaps(watchlist)
+            logger.info(f"[{format_ist_timestamp()}] Gap scanner: {len(_gaps)} gaps identified")
+        except Exception as _gse:
+            logger.debug(f"Gap scanner init failed: {_gse}")
 
         # ── Sector rotation: score sectors and prioritize hot-sector stocks ──
         try:
@@ -936,6 +1062,26 @@ class TradingBot:
             except Exception as _e:
                 logger.debug(f"[suppressed] morning brief: {_e}")
 
+            # Market standing + OODA morning briefing
+            try:
+                import threading as _ms_thread
+                from market_standing import run_morning_briefing_and_send
+                _ms_thread.Thread(target=run_morning_briefing_and_send, daemon=True).start()
+            except Exception as _mse:
+                logger.debug(f"[suppressed] market_standing morning: {_mse}")
+
+            # India NSE open brief — comprehensive pre-market intelligence
+            try:
+                import threading as _india_thread
+                from setup_preview import send_india_open_brief as _india_brief
+                _india_thread.Thread(
+                    target=_india_brief,
+                    kwargs={"watchlist": list(watchlist), "fetcher": self.fetcher},
+                    daemon=True,
+                ).start()
+            except Exception as _ibe:
+                logger.debug(f"[suppressed] india_open_brief: {_ibe}")
+
             if not self.morning_intel:
                 self.alerter.send_morning_brief(
                     watchlist, available, spy_open,
@@ -997,6 +1143,31 @@ class TradingBot:
         self._day_initialized = True
         self.market_open_today = True
 
+        # ── Startup diagnostic — log every active gate so we can see blockers ──
+        try:
+            from auth_alpaca import get_auth_manager as _get_auth
+            _auth = _get_auth()
+            _keys_ok = _auth.is_configured()
+        except Exception:
+            _keys_ok = False
+        _rm = self.risk_manager
+        _sg = self.signal_gen
+        logger.info(
+            f"[{format_ist_timestamp()}] ═══ TRADING DAY GATES ═══\n"
+            f"  Alpaca keys:        {'✓ configured' if _keys_ok else '✗ NOT SET (paper-sim only)'}\n"
+            f"  Live trading:       {'ENABLED' if config.LIVE_TRADING_ENABLED else 'disabled (paper)'}\n"
+            f"  Capital:            ${_rm.state.daily_capital:,.0f}\n"
+            f"  Min signal score:   {getattr(_sg, 'min_score', config.MIN_SIGNAL_SCORE):.0f}\n"
+            f"  Max positions:      {_rm.max_positions}\n"
+            f"  Consec loss limit:  {_rm.consecutive_loss_limit} (pause {_rm.pause_minutes}min)\n"
+            f"  Daily loss limit:   {_rm.daily_loss_limit_pct}%\n"
+            f"  Watchlist size:     {len(watchlist)} symbols\n"
+            f"  HAFilter threshold: {getattr(getattr(_sg,'ha_filter',None),'min_score',0):.0f}\n"
+            f"  Circuit breaker:    {'ACTIVE' if _rm.state.circuit_breaker_active else 'clear'}\n"
+            f"  Trading paused:     {'YES — ' + _rm.state.pause_reason if _rm.state.trading_paused else 'no'}\n"
+            f"  ═══════════════════════════════"
+        )
+
     # --------------------------------------------------------
     # SIGNAL EXECUTION HELPER
     # --------------------------------------------------------
@@ -1024,7 +1195,64 @@ class TradingBot:
             )
             return
 
+        # ── Drawdown Monitor gate — blocks entries when equity is deteriorating ──
+        try:
+            _dm = getattr(self, "_drawdown_monitor", None)
+            if _dm:
+                _dm_status = _dm.get_status()
+                if not _dm_status.allow_new_entries:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] DRAWDOWN GATE: {signal.symbol} "
+                        f"BLOCKED — {_dm_status.message}"
+                    )
+                    return
+        except Exception as _dme:
+            logger.debug(f"[suppressed] drawdown gate: {_dme}")
+
+        # ── L99 Gate — ultra-high conviction check (15-component fusion) ──────
+        try:
+            _l99 = getattr(self, "_l99_gate", None)
+            if _l99 is not None:
+                _l99_result = _l99.evaluate_l99(
+                    signal       = signal,
+                    news_filter  = self.news_filter,
+                    risk_manager = self.risk_manager,
+                )
+                _l99_min = float(getattr(config, "L99_MIN_SCORE", 65))
+                if not _l99_result.allow_trade or _l99_result.score < _l99_min:
+                    logger.info(
+                        f"[{format_ist_timestamp()}] L99 GATE SKIP: {signal.symbol} "
+                        f"score={_l99_result.score:.1f} grade={_l99_result.grade} — "
+                        f"{_l99_result.reasoning}"
+                    )
+                    return
+                # Blend L99 size multiplier into signal
+                if hasattr(signal, "size_multiplier"):
+                    signal.size_multiplier = min(
+                        signal.size_multiplier,
+                        _l99_result.size_mult,
+                    )
+                logger.info(
+                    f"[{format_ist_timestamp()}] L99 {_l99_result.grade} "
+                    f"({_l99_result.score:.1f}) ✅ — {signal.symbol}"
+                )
+        except Exception as _l99e:
+            logger.debug(f"[suppressed] L99 gate: {_l99e}")
+
         logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+
+        # ── Pre-trade PLAN broadcast — fires for ALL trades (scalp/ORB/burst/etc) ──
+        # Broadcasts before every order — not just OODA main-loop trades.
+        try:
+            import threading as _bt
+            from trade_plan_broadcaster import broadcast_trade_plan as _btp
+            _bt.Thread(
+                target=_btp,
+                args=(signal, self.alerter),
+                daemon=True,
+            ).start()
+        except Exception as _bpe:
+            logger.debug(f"[suppressed] _execute_signal broadcast: {_bpe}")
 
         # RL agent pre-trade signal validation (learn from every trade)
         try:
@@ -1082,9 +1310,9 @@ class TradingBot:
             )
             # Store entry hour (ET) for ML outcome recording
             try:
-                from utils import get_current_ist_time as _gist
-                _et_now_entry = _gist()
-                position._entry_hour_et = (_et_now_entry.hour - 4) % 24
+                from datetime import datetime as _dt
+                from zoneinfo import ZoneInfo as _ZI
+                position._entry_hour_et = _dt.now(_ZI("America/New_York")).hour
                 position.signal_score   = getattr(signal, "signal_score", 0.0)
                 position.indicators     = getattr(signal, "indicators", None)
             except Exception:
@@ -1239,7 +1467,7 @@ class TradingBot:
             print_banner()
         except Exception:
             pass
-        logger.info(f"[{format_ist_timestamp()}] KING v15.0 — lakshaytrades | 26 gates | 8 frameworks | ML-scored")
+        logger.info(f"[{format_ist_timestamp()}] SATAVECTOR v15.0 — lakshaytrades | 26 gates | 8 frameworks | ML-scored")
 
         try:
             while self.running:
@@ -1368,6 +1596,22 @@ class TradingBot:
 
                     # Write terminal dashboard state every 30s (non-blocking)
                     self._write_terminal_state()
+
+                # ── Position reconciliation — every 5 minutes ────────────
+                if (not hasattr(self, '_last_reconcile') or
+                        time.time() - self._last_reconcile > 300):
+                    if self.executor and self.risk_manager:
+                        try:
+                            recon = self.executor.reconcile_positions_with_broker(self.risk_manager)
+                            if any(recon.values()) and self.alerter:
+                                self.alerter.send_alert(
+                                    f"⚠️ Reconcile: added={recon['added']} "
+                                    f"removed={recon['removed']} fixed={recon['qty_fixed']}",
+                                    priority="HIGH"
+                                )
+                        except Exception as _e:
+                            logger.warning(f"Reconcile error (non-fatal): {_e}")
+                    self._last_reconcile = time.time()
 
                 elif self.market_open_today and not self.eod_done:
                     # Market just closed
@@ -1576,6 +1820,21 @@ class TradingBot:
                 if hasattr(self.signal_gen, "ha_filter"):
                     self.signal_gen.ha_filter.min_score = self.signal_gen.min_score
 
+                # ── Update idle scalp mode state ─────────────────────────
+                try:
+                    if getattr(config, 'IDLE_SCALP_ENABLED', True):
+                        from idle_scalp_mode import update_state as _ism_update
+                        _rm_state = self.risk_manager.state
+                        _daily_cap = max(_rm_state.daily_capital, 1.0)
+                        _daily_pnl_pct = (_rm_state.daily_pnl / _daily_cap) * 100
+                        _ism_update(
+                            last_trade_ts    = self._last_executed_trade_ts,
+                            daily_pnl_pct    = _daily_pnl_pct,
+                            daily_target_pct = getattr(config, 'DAILY_PROFIT_TARGET_PCT', 1.0),
+                        )
+                except Exception as _ism_err:
+                    logger.debug(f"[suppressed] idle_scalp_update: {_ism_err}")
+
                 # ── Dynamic score relaxation: never sit idle all day ──────
                 # If no trades by key times, gently lower the bar.
                 # Floor = MIN_SIGNAL_SCORE (63) — don't raise above base when already at base
@@ -1707,6 +1966,59 @@ class TradingBot:
 
             # Expose current open positions to signal_gen for Gate 14 correlation check
             self.signal_gen._open_position_symbols = list(self.risk_manager.state.positions.keys())
+            # Expose full scan watchlist so CSM uses a statistically meaningful universe
+            self.signal_gen._scan_watchlist = list(combined_watchlist)
+
+            # Expose session equity/peak for Renaissance drawdown-aware sizing
+            _rm_state = self.risk_manager.state
+            self.signal_gen._session_equity = (
+                _rm_state.daily_capital + _rm_state.daily_pnl
+            )
+            self.signal_gen._session_peak_equity = (
+                _rm_state.daily_capital + max(_rm_state.peak_pnl, 0.0)
+            )
+
+            # Reconcile the two live adaptation systems (intraday_adapter +
+            # all_weather) into ONE param set before applying. Previously each
+            # called apply_adaptive_params separately and all_weather (applied
+            # last) always overwrote intraday's protective min_score raises.
+            # Rule: take the MORE CONSERVATIVE value — highest min_score (hardest
+            # bar) and lowest position-size multiplier — so neither system's risk
+            # protection can be silently discarded by the other.
+            try:
+                _merged_params: dict = {}
+                _ia_params = None
+                _aw_params = None
+                try:
+                    from intraday_adapter import IntradayAdapter as _IA
+                    _ia_params = _IA.load_params_from_file()
+                except Exception:
+                    pass
+                try:
+                    from all_weather_strategy import AllWeatherEngine as _AWE
+                    _aw_params = _AWE.load_config_from_file()
+                except Exception:
+                    pass
+
+                _sources = [p for p in (_ia_params, _aw_params) if isinstance(p, dict)]
+                if _sources:
+                    _min_scores = [float(p["min_score"]) for p in _sources if "min_score" in p]
+                    if _min_scores:
+                        _merged_params["min_score"] = max(_min_scores)   # hardest bar wins
+                    _size_keys = ("size_multiplier", "pos_mult", "position_multiplier")
+                    _sizes = [float(p[k]) for p in _sources for k in _size_keys if k in p]
+                    if _sizes:
+                        _merged_params["size_multiplier"] = min(_sizes)  # most defensive wins
+                    # Pass through any remaining keys (last non-conflicting writer).
+                    for p in _sources:
+                        for k, v in p.items():
+                            if k not in _merged_params and k not in _size_keys and k != "min_score":
+                                _merged_params[k] = v
+
+                if _merged_params and hasattr(self.signal_gen, "apply_adaptive_params"):
+                    self.signal_gen.apply_adaptive_params(_merged_params)
+            except Exception:
+                pass
 
             signals = self.signal_gen.scan_watchlist(
                 symbols=combined_watchlist,
@@ -2005,8 +2317,150 @@ class TradingBot:
                                     f"SL: ${bs.stop_loss:.2f} | "
                                     f"T1: ${bs.target_1:.2f}"
                                 )
+                            # Pre-trade plan broadcast for burst signals
+                            try:
+                                import threading as _bt2
+                                from trade_plan_broadcaster import broadcast_scalp_plan as _bsp2
+                                _bt2.Thread(
+                                    target=_bsp2,
+                                    args=(burst_ts, self.alerter, "MOMENTUM BURST"),
+                                    daemon=True,
+                                ).start()
+                            except Exception:
+                                pass
                 except Exception as e:
                     logger.debug(f"Burst scan failed: {e}")
+
+            # 4i. Fallback scan — micro-trades when ALL primary engines found nothing
+            if not signals:
+                try:
+                    _fb_sigs = self._run_fallback_scan(watchlist, max_results=2)
+                    if _fb_sigs:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] FALLBACK MODE: "
+                            f"{len(_fb_sigs)} micro-trade(s) queued (0.3x size)"
+                        )
+                        if self.alerter:
+                            _fb_lines = "\n".join(
+                                f"  {s.symbol} {s.direction} score={s.signal_score:.0f}"
+                                for s in _fb_sigs
+                            )
+                            self.alerter.send_html(
+                                f"⚡ <b>FALLBACK MODE</b> — No primary signals\n"
+                                f"Micro-trades at 0.3x size:\n{_fb_lines}"
+                            )
+                        signals.extend(_fb_sigs)
+                except Exception as _fbe:
+                    logger.debug(f"Fallback scan: {_fbe}")
+
+            # 4j. EXPERT SCALPER — idle scalp mode: when still no signals, run
+            # the OODA-regime-aware 4-mode scalper on the top liquid symbols.
+            # Generates smaller-profit, shorter-hold trades to keep capital working.
+            if not signals:
+                try:
+                    from idle_scalp_mode import is_active as _ism_active
+                    from expert_scalper import ExpertScalper as _ES
+                    if _ism_active():
+                        if not hasattr(self, "_expert_scalper"):
+                            self._expert_scalper = _ES()
+                        _scalp_watchlist = watchlist[:15]
+                        _scalp_signals_raw = []
+                        import numpy as _np
+                        for _scalp_sym in _scalp_watchlist:
+                            try:
+                                _df_s = self.fetcher.get_today_candles(_scalp_sym)
+                                if _df_s is None or len(_df_s) < 15:
+                                    continue
+                                _c_col = "close" if "close" in _df_s.columns else "Close"
+                                _h_col = "high"  if "high"  in _df_s.columns else "High"
+                                _l_col = "low"   if "low"   in _df_s.columns else "Low"
+                                _v_col = "volume"if "volume"in _df_s.columns else "Volume"
+                                _ss = self._expert_scalper.scan(
+                                    symbol   = _scalp_sym,
+                                    closes   = _df_s[_c_col].values,
+                                    highs    = _df_s[_h_col].values,
+                                    lows     = _df_s[_l_col].values,
+                                    volumes  = _df_s[_v_col].values,
+                                )
+                                if _ss:
+                                    _scalp_signals_raw.append(_ss)
+                            except Exception as _sse:
+                                logger.debug(f"ExpertScalper {_scalp_sym}: {_sse}")
+
+                        # Sort by score, take top 2 to avoid overtrading
+                        _scalp_signals_raw.sort(key=lambda x: x.score, reverse=True)
+                        for _ss in _scalp_signals_raw[:2]:
+                            try:
+                                # Convert ExpertScalpSignal → TradeSignal
+                                from signal_generator import TradeSignal as _TS
+                                _scalp_ts = _TS(
+                                    symbol          = _ss.symbol,
+                                    direction       = _ss.direction,
+                                    signal_score    = round(_ss.score, 1),
+                                    entry_price     = _ss.entry_price,
+                                    stop_loss       = _ss.stop_loss,
+                                    target_1        = _ss.target_1,
+                                    target_2        = _ss.target_2,
+                                    risk_reward     = round(
+                                        abs(_ss.target_1 - _ss.entry_price) /
+                                        max(abs(_ss.entry_price - _ss.stop_loss), 0.001), 2
+                                    ),
+                                    atr             = _ss.atr,
+                                    patterns        = [str(_ss.mode.value)],
+                                    quality_grade   = "B" if _ss.score >= 70 else "C",
+                                    size_multiplier = 0.40,   # 40% — scalp sizing
+                                    rationale       = f"EXPERT SCALP [{_ss.mode.value}]: {_ss.reason}",
+                                    is_high_confidence = _ss.score >= 80,
+                                    time_stop_minutes  = _ss.max_hold_minutes,
+                                )
+                                # Scalp-specific broadcast (compact format)
+                                import threading as _sct
+                                from trade_plan_broadcaster import broadcast_scalp_plan as _bsp
+                                _sct.Thread(
+                                    target=_bsp,
+                                    args=(_scalp_ts, self.alerter, "EXPERT SCALP"),
+                                    daemon=True,
+                                ).start()
+                                signals.append(_scalp_ts)
+                                self._expert_scalper.record_entry(_ss.symbol)
+                                logger.info(
+                                    f"[{format_ist_timestamp()}] EXPERT SCALP: "
+                                    f"{_ss.symbol} {_ss.direction} "
+                                    f"mode={_ss.mode.value} score={_ss.score:.0f}"
+                                )
+                            except Exception as _tse:
+                                logger.debug(f"ExpertScalper TradeSignal convert: {_tse}")
+
+                        if _scalp_signals_raw and self.alerter and not signals:
+                            self.alerter.send_html(
+                                f"⚡ <b>IDLE SCALP MODE</b> — No prime setups\n"
+                                f"Expert Scalper scanning {len(_scalp_watchlist)} symbols\n"
+                                f"Regime: {_scalp_signals_raw[0].mode.value if _scalp_signals_raw else 'scanning'}\n"
+                                f"Size: 0.4× (small, fast)"
+                            )
+                except Exception as _exp_se:
+                    logger.debug(f"[suppressed] expert_scalper idle: {_exp_se}")
+
+            # 4k. Setup preview — send periodic "what we're watching" Telegram message
+            # Fires every 30 min when idle (no trades taken in that window)
+            try:
+                from setup_preview import should_preview, send_setup_preview
+                if should_preview(
+                    last_trade_ts   = self._last_executed_trade_ts,
+                    no_trade_minutes= 30.0,
+                ):
+                    import threading as _spv
+                    _spv.Thread(
+                        target=send_setup_preview,
+                        kwargs={
+                            "watchlist":  list(combined_watchlist)[:20],
+                            "signal_gen": self.signal_gen,
+                            "fetcher":    self.fetcher,
+                        },
+                        daemon=True,
+                    ).start()
+            except Exception as _spve:
+                logger.debug(f"[suppressed] setup_preview: {_spve}")
 
             # 5. Execute signals
             for signal in signals:
@@ -2130,6 +2584,22 @@ class TradingBot:
                 except Exception as _he:
                     logger.debug(f"Portfolio heat check skipped: {_he}")
 
+                # 5c-bis. US portfolio intelligence gate (sector + correlation + heat)
+                if getattr(config, 'US_PORTFOLIO_INTEL_ENABLED', True):
+                    try:
+                        from us_portfolio_intelligence import check_position_allowed, get_dynamic_max_positions
+                        _cap = getattr(self.risk_manager.state, 'daily_capital', 5000)
+                        _open_pos = dict(getattr(self.risk_manager.state, 'positions', {}))
+                        _ok, _reason = check_position_allowed(
+                            signal.symbol, signal.direction, _open_pos,
+                            max_sector=2, max_corr=0.75, max_heat_pct=0.04, capital=_cap
+                        )
+                        if not _ok:
+                            logger.debug(f"{signal.symbol}: US portfolio gate — {_reason}")
+                            continue  # skip this signal
+                    except Exception:
+                        pass
+
                 # Risk gate: enforce daily-loss, max-positions, pause, and duplicate checks
                 # for BOTH paper and live (executor only runs can_take_trade in live mode)
                 _risk_check = self.risk_manager.can_take_trade(signal.symbol, signal.direction)
@@ -2145,6 +2615,22 @@ class TradingBot:
                     continue
 
                 logger.info(f"[{format_ist_timestamp()}] {signal.summary()}")
+
+                # Pre-trade PLAN broadcast — explain intent + OODA reasoning BEFORE
+                # committing capital. Fired on a daemon thread so the (synchronous,
+                # up-to-15s) Telegram POST can NEVER delay order entry on a momentum
+                # scalp where entry timing is the edge.
+                try:
+                    import threading as _threading
+                    from trade_plan_broadcaster import broadcast_trade_plan
+                    _threading.Thread(
+                        target=broadcast_trade_plan,
+                        args=(signal, self.alerter),
+                        daemon=True,
+                    ).start()
+                except Exception as _bp:
+                    logger.debug(f"trade plan broadcast skipped: {_bp}")
+
                 # Live trading: use bracket orders (entry+SL+TP in one atomic order)
                 # to avoid Alpaca's "potential wash trade" rejection on separate stop orders.
                 use_bracket = (
@@ -2168,15 +2654,46 @@ class TradingBot:
                         result = self.executor.place_entry_order(signal)  # fractional fallback
                         use_bracket = False
                     else:
-                        result = self.executor.place_bracket_order(signal, qty)
-                        if not result.success:
-                            # Bracket rejected (API error, wash-trade check, etc.) — fall back
-                            logger.warning(
-                                f"[{format_ist_timestamp()}] Bracket failed for "
-                                f"{signal.symbol} ({result.message}) — falling back to plain entry"
-                            )
-                            use_bracket = False
-                            result = self.executor.place_entry_order(signal)
+                        # v29.0: TWAP execution for large orders (>$2k notional)
+                        _used_twap = False
+                        if getattr(config, 'TWAP_ENABLED', True):
+                            try:
+                                from twap_engine import should_use_twap, create_twap_plan
+                                _sig_price = getattr(signal, 'entry_price', 0) or \
+                                             getattr(signal, 'ltp', 0) or 1.0
+                                if should_use_twap(qty, float(_sig_price)):
+                                    _twap_plan = create_twap_plan(
+                                        symbol=signal.symbol,
+                                        direction=signal.direction,
+                                        total_quantity=qty,
+                                        current_price=float(_sig_price),
+                                    )
+                                    if hasattr(self, '_twap_plans'):
+                                        self._twap_plans[signal.symbol] = _twap_plan
+                                    else:
+                                        self._twap_plans = {signal.symbol: _twap_plan}
+                                    # Place first slice immediately
+                                    from twap_engine import execute_next_slice
+                                    execute_next_slice(_twap_plan, float(_sig_price), self.executor)
+                                    _used_twap = True
+                                    result = self.executor.place_entry_order(signal)  # records position
+                                    logger.info(
+                                        f"[{format_ist_timestamp()}] TWAP started for {signal.symbol}: "
+                                        f"{qty} shares in {len(_twap_plan.slices)} slices"
+                                    )
+                            except Exception as _twap_e:
+                                logger.debug(f"[suppressed] twap: {_twap_e}")
+
+                        if not _used_twap:
+                            result = self.executor.place_bracket_order(signal, qty)
+                            if not result.success:
+                                # Bracket rejected (API error, wash-trade check, etc.) — fall back
+                                logger.warning(
+                                    f"[{format_ist_timestamp()}] Bracket failed for "
+                                    f"{signal.symbol} ({result.message}) — falling back to plain entry"
+                                )
+                                use_bracket = False
+                                result = self.executor.place_entry_order(signal)
                 else:
                     result = self.executor.place_entry_order(signal)
                 if not result.success:
@@ -2192,6 +2709,8 @@ class TradingBot:
                     except Exception:
                         pass
                 if result.success:
+                    import time as _trade_time
+                    self._last_executed_trade_ts = _trade_time.monotonic()
                     try:
                         from decision_log import log_trade_taken
                         log_trade_taken(signal)
@@ -2234,16 +2753,22 @@ class TradingBot:
                     # Place broker-side stop order only when NOT using bracket order
                     # (bracket orders already contain the stop loss and take profit)
                     if not use_bracket:
-                        try:
-                            sl_order_id = self.executor.place_stop_order(
-                                signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                        if result.quantity > 0 and result.fill_price > 0:
+                            try:
+                                sl_order_id = self.executor.place_stop_order(
+                                    signal.symbol, fill_qty, signal.stop_loss, signal.direction
+                                )
+                                if sl_order_id:
+                                    pos_ref = self.risk_manager.state.positions.get(signal.symbol)
+                                    if pos_ref:
+                                        pos_ref.sl_order_id = sl_order_id
+                            except Exception as _se:
+                                logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
+                        else:
+                            logger.warning(
+                                f"place_stop_order SKIPPED for {signal.symbol}: "
+                                f"fill not confirmed (qty={result.quantity}, price={result.fill_price})"
                             )
-                            if sl_order_id:
-                                pos_ref = self.risk_manager.state.positions.get(signal.symbol)
-                                if pos_ref:
-                                    pos_ref.sl_order_id = sl_order_id
-                        except Exception as _se:
-                            logger.warning(f"place_stop_order failed for {signal.symbol}: {_se}")
 
                     # Send Telegram alert with chart + trade fill notification
                     try:
@@ -2251,6 +2776,15 @@ class TradingBot:
                         self.alerter.send_entry_alert(signal, df_5m)
                     except Exception as e:
                         logger.warning(f"Alert failed: {e}")
+                    # Plain-English WHY explanation (daily_intelligence)
+                    try:
+                        from daily_intelligence import explain_trade
+                        _why_msg = explain_trade(signal)
+                        if _why_msg:
+                            from daily_intelligence import _send as _di_send
+                            _di_send(_why_msg)
+                    except Exception as _de:
+                        logger.debug(f"[suppressed] explain_trade: {_de}")
                     try:
                         self.alerter.send_trade_fill(
                             symbol       = signal.symbol,
@@ -2319,6 +2853,79 @@ class TradingBot:
                 f"[{format_ist_timestamp()}] Trading cycle error: {e}\n"
                 f"{traceback.format_exc()}"
             )
+
+    # --------------------------------------------------------
+    # FALLBACK SCAN — micro-trades when primary finds nothing
+    # --------------------------------------------------------
+
+    def _run_fallback_scan(self, watchlist: list, max_results: int = 2) -> list:
+        """
+        Run a lower-threshold scan when all primary engines found 0 signals.
+        Score threshold: 52+ (vs normal 65+). Size: 0.3x. Grade forced to A.
+        Ensures at least small profits on quiet/choppy days instead of 0 trades.
+        """
+        if not self.signal_gen:
+            return []
+        if not self.risk_manager:
+            return []
+
+        # Skip if already at max positions
+        open_count = len(self.risk_manager.state.positions)
+        max_pos = getattr(config, "MAX_POSITIONS", 5)
+        if open_count >= max_pos:
+            return []
+
+        # Track which symbols we're already in so we don't double-enter
+        active_syms = set(self.risk_manager.state.positions.keys())
+
+        _orig_score = self.signal_gen.min_score
+        _fallback_min = 52.0
+
+        try:
+            self.signal_gen.min_score = _fallback_min
+            # Relax Gate 15 (body check) and Gate 27 (VWAP extension) for fallback
+            self.signal_gen.ha_filter._fallback_mode = True
+
+            # Wire session equity for Renaissance drawdown-aware sizing
+            _rm_st = self.risk_manager.state
+            self.signal_gen._open_position_symbols = list(_rm_st.positions.keys())
+            self.signal_gen._session_equity = _rm_st.daily_capital + _rm_st.daily_pnl
+            self.signal_gen._session_peak_equity = (
+                _rm_st.daily_capital + max(_rm_st.peak_pnl, 0.0)
+            )
+
+            self.signal_gen._scan_watchlist = list(watchlist)
+
+            fallback_sigs = []
+            for sym in watchlist[:25]:
+                if len(fallback_sigs) >= max_results:
+                    break
+                if sym in active_syms:
+                    continue
+                try:
+                    sig = self.signal_gen.generate_signal(sym)
+                    if sig is None:
+                        continue
+                    # Force small size + promote grade so profit engine allows it
+                    sig.quality_grade = "A"
+                    sig.size_multiplier = 0.3
+                    sig.patterns = [
+                        ("FALLBACK_" + p) if not p.startswith("FALLBACK_") else p
+                        for p in (sig.patterns or ["MOMENTUM"])
+                    ]
+                    fallback_sigs.append(sig)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] FALLBACK: {sym} {sig.direction} "
+                        f"score={sig.signal_score:.0f} → 0.3x size micro-trade"
+                    )
+                except Exception as _fe:
+                    logger.debug(f"Fallback {sym}: {_fe}")
+
+            return fallback_sigs
+
+        finally:
+            self.signal_gen.min_score = _orig_score
+            self.signal_gen.ha_filter._fallback_mode = False
 
     # --------------------------------------------------------
     # POSITION MANAGEMENT
@@ -2417,6 +3024,13 @@ class TradingBot:
                         # Remove from risk state, update daily P&L / win-loss counters
                         self.risk_manager.close_position(pos.symbol, actual_exit, health["reason"])
                         self._save_capital_intraday()
+                        # Record trade outcome for intraday adaptation
+                        try:
+                            trade_pnl = pnl
+                            if hasattr(self, "_intraday_adapter") and self._intraday_adapter:
+                                self._intraday_adapter.record_trade(pnl=trade_pnl, win=trade_pnl > 0)
+                        except Exception:
+                            pass
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, health["reason"]
@@ -2543,6 +3157,14 @@ class TradingBot:
                             _record_tr(pos.symbol, _pnl_pct)
                         except Exception as _tr_e:
                             logger.debug(f"[suppressed] record_trade_result: {_tr_e}")
+                        # Renaissance IC Tracker: feed trade outcome → self-learning strategy weights
+                        try:
+                            from renaissance_mode import record_strategy_outcome as _ren_record
+                            _ren_sc      = float(getattr(pos, 'signal_score', 70.0) or 70.0)
+                            _ren_pnl_pct = pnl / max(float(pos.entry_price or 1) * max(float(pos.quantity or 1), 1), 1.0)
+                            _ren_record('momentum_composite', _ren_sc, _ren_pnl_pct)
+                        except Exception as _ren_rec_e:
+                            logger.debug(f"[suppressed] renaissance_mode.record: {_ren_rec_e}")
                         # RL brain: feed trade outcome so agent learns from this trade
                         try:
                             from rl_agent import LakshKingRL
@@ -2576,6 +3198,24 @@ class TradingBot:
                             )
                         except Exception as _ml_e:
                             logger.debug(f"[suppressed] ml_record_outcome: {_ml_e}")
+                        # Neural MLP: online fine-tuning from real trade outcomes
+                        try:
+                            from neural_predictor import record_outcome as _nn_rec
+                            _nn_ind = getattr(pos, "indicators", None)
+                            _nn_rec({
+                                "rsi_14":    getattr(_nn_ind,"rsi",50.0) if _nn_ind else 50.0,
+                                "macd_hist": getattr(_nn_ind,"macd_hist",0.0) if _nn_ind else 0.0,
+                                "vol_ratio": getattr(_nn_ind,"volume_ratio",1.0) if _nn_ind else 1.0,
+                                "adx_14":    getattr(_nn_ind,"adx",25.0) if _nn_ind else 25.0,
+                            }, was_win=int(pnl > 0))
+                        except Exception as _nne:
+                            logger.debug(f"[suppressed] neural_record: {_nne}")
+                        # Daily intelligence: record close for EOD report
+                        try:
+                            from daily_intelligence import record_trade_close
+                            record_trade_close(pos.symbol, pnl)
+                        except Exception as _dic:
+                            logger.debug(f"[suppressed] daily_intel_close: {_dic}")
 
                         # AdaptiveThreshold: record outcome for rolling WR-based score floor
                         try:
@@ -2591,6 +3231,27 @@ class TradingBot:
                             _ic_record(_pos_signals, pnl > 0)
                         except Exception as _ic_e:
                             logger.debug(f"[suppressed] signal_ic_tracker.record: {_ic_e}")
+
+                        # v27.0 — Adaptive IC tracker: feed signal scores → forward returns ─
+                        try:
+                            from ic_tracker import record_signal_outcome as _v27_ic_record
+                            _v27_pnl_pct = pnl / max(abs(pos.entry_price * pos.quantity), 1.0)
+                            _v27_score   = getattr(pos, "signal_score", 0.0)
+                            _v27_dir     = getattr(pos, "direction", "LONG")
+                            # Record composite score as "signal_value", actual return as forward_return
+                            _v27_ic_record("composite_score", _v27_score, _v27_pnl_pct)
+                            # Also record direction-adjusted score for asymmetric learning
+                            _v27_signed = _v27_score if _v27_dir == "LONG" else -_v27_score
+                            _v27_ic_record("directional_score", _v27_signed, _v27_pnl_pct)
+                        except Exception as _v27_ice:
+                            logger.debug(f"[suppressed] ic_tracker.record: {_v27_ice}")
+
+                        # v28.0 — HAR-RV: record realized variance for volatility model ──────
+                        try:
+                            from har_rv import record_daily_rv
+                            record_daily_rv(pos.symbol, pnl_pct=_v27_pnl_pct)
+                        except Exception as _hrv_e:
+                            logger.debug(f"[suppressed] har_rv.record: {_hrv_e}")
 
                         try:
                             from ml_ensemble import record_trade_outcome_ensemble
@@ -2636,6 +3297,13 @@ class TradingBot:
                                 logger.info(f"[{format_ist_timestamp()}] AdaptiveBrain: {adapt_msg}")
                             except Exception as e:
                                 logger.debug(f"AdaptiveBrain record error: {e}")
+                        # Record trade outcome for intraday adaptation
+                        try:
+                            trade_pnl = pnl
+                            if hasattr(self, "_intraday_adapter") and self._intraday_adapter:
+                                self._intraday_adapter.record_trade(pnl=trade_pnl, win=trade_pnl > 0)
+                        except Exception:
+                            pass
                         self.alerter.send_exit_alert(
                             pos.symbol, pos.direction, pos.entry_price,
                             actual_exit, pos.quantity, pnl, action["reason"]
@@ -3154,13 +3822,26 @@ class TradingBot:
                 avg = float(raw.get("avg_price", 0))
                 if qty == 0 or avg == 0:
                     continue
-                from risk_manager import Position
+                from risk_manager import Position, _load_persisted_sl
+                _direction = "LONG" if qty > 0 else "SHORT"
+                # Use persisted (trailed) SL if available — crash-restart safe
+                _persisted_sl = _load_persisted_sl(sym)
+                _fallback_sl  = avg * (0.98 if _direction == "LONG" else 1.02)
+                if _persisted_sl is not None:
+                    # Only use persisted SL if it's MORE protective than fallback
+                    if _direction == "LONG":
+                        _stop_loss = max(_persisted_sl, _fallback_sl)
+                    else:
+                        _stop_loss = min(_persisted_sl, _fallback_sl)
+                    logger.info(f"Reconcile {sym}: using persisted SL={_stop_loss:.4f} (vs fallback={_fallback_sl:.4f})")
+                else:
+                    _stop_loss = _fallback_sl
                 pos = Position(
                     symbol=sym,
-                    direction="LONG" if qty > 0 else "SHORT",
+                    direction=_direction,
                     quantity=abs(qty),
                     entry_price=avg,
-                    stop_loss=avg * 0.98,   # 2% fallback SL until ATR calc
+                    stop_loss=_stop_loss,
                     target_1=avg * 1.02,
                     target_2=avg * 1.04,
                     atr=avg * 0.02,
@@ -3170,7 +3851,7 @@ class TradingBot:
                 logger.warning(
                     f"[{format_ist_timestamp()}] Reconcile ADDED: {sym} "
                     f"({'LONG' if qty > 0 else 'SHORT'} {abs(qty)}@${avg:.2f}) — "
-                    f"found in Groww but not in bot tracker"
+                    f"found in Alpaca but not in bot tracker"
                 )
                 try:
                     self.alerter.send_text(
@@ -3226,6 +3907,49 @@ class TradingBot:
                     logger.info(f"[{format_ist_timestamp()}] Options positions closed (EOD)")
                 except Exception as e:
                     logger.warning(f"[{format_ist_timestamp()}] Options EOD close failed: {e}")
+
+            # ── EOD orphan position cleanup (v23.0) ───────────────────────────
+            # Close any broker positions NOT tracked in self.state.positions.
+            # These are orphans from crashes/restarts and would carry into next day.
+            # square_off_all() above already sent close_all_positions to Alpaca, but
+            # we verify and explicitly close any that remain to ensure clean slate.
+            try:
+                if self.executor and getattr(self.executor, '_auth', None):
+                    _trading_client = self.executor._auth.get_trading_client()
+                    _broker_positions = _trading_client.get_all_positions()
+                    _bot_symbols = set(self.risk_manager.state.positions.keys()) if self.risk_manager else set()
+                    _orphan_count = 0
+                    for _bp in _broker_positions:
+                        _bsym = str(_bp.symbol)
+                        if _bsym not in _bot_symbols:
+                            # Orphan: broker has it, bot doesn't track it
+                            try:
+                                self.executor.close_position(_bsym, "EOD_ORPHAN_CLEANUP")
+                                _orphan_count += 1
+                                logger.warning(
+                                    f"[{format_ist_timestamp()}] EOD orphan closed: {_bsym} "
+                                    f"({'long' if float(_bp.qty) > 0 else 'short'} "
+                                    f"{abs(float(_bp.qty))}@${float(_bp.avg_entry_price or 0):.2f})"
+                                )
+                            except Exception as _oc_e:
+                                logger.warning(f"EOD orphan close failed ({_bsym}): {_oc_e}")
+                    if _orphan_count:
+                        logger.warning(
+                            f"[{format_ist_timestamp()}] EOD orphan cleanup: {_orphan_count} orphan(s) closed"
+                        )
+                        if self.alerter:
+                            try:
+                                self.alerter.send_text(
+                                    f"⚠️ <b>EOD Orphan Cleanup</b>: {_orphan_count} broker position(s) "
+                                    f"not in bot tracker — closed at market."
+                                )
+                            except Exception:
+                                pass
+                    else:
+                        logger.info(f"[{format_ist_timestamp()}] EOD orphan check: no orphans found")
+            except Exception as _orphan_e:
+                logger.debug(f"[suppressed] EOD orphan cleanup: {_orphan_e}")
+
             self.eod_done = True
 
     def _do_eod_shutdown(self):
@@ -3314,6 +4038,8 @@ class TradingBot:
         self.market_open_today = False
         self.eod_done = True
         logger.info(f"[{format_ist_timestamp()}] Bot EOD complete. Shutting down.")
+        if hasattr(self, 'slog'):
+            self.slog.log("bot_stop", {"reason": "normal_shutdown"})
         self.running = False
 
     # --------------------------------------------------------
@@ -3599,7 +4325,7 @@ class TradingBot:
             dow_max  = config.DOW_MAX_TRADES.get(dow, config.MAX_TRADES_PER_DAY)
 
             lines = [
-                f"☀️ <b>KingTrades — Morning Scan Ready</b>",
+                f"☀️ <b>{config.BOT_DISPLAY_NAME} — Morning Scan Ready</b>",
                 f"📅 {now_ist.strftime('%d %b %Y')} | {dow_name}",
                 f"🔑 Alpaca auth: ✅ API keys",
                 f"📊 Watchlist: {len(watchlist)} stocks scanned",
@@ -3731,9 +4457,33 @@ class TradingBot:
                             elif cmd == "/fixdata":
                                 _reply(self._force_barcache_refresh())
                             elif cmd == "/start":
-                                _reply(f"✅ <b>KingTrades running</b>\nChat ID: <code>{chat_id}</code>")
+                                _reply(f"✅ <b>{config.BOT_DISPLAY_NAME} running</b>\nChat ID: <code>{chat_id}</code>")
+                            elif cmd in ("/ab", "/abtest"):
+                                report = self.ab.status_report() if hasattr(self, 'ab') else "A/B not initialized"
+                                try:
+                                    self.alerter.send_alert(report)
+                                except Exception:
+                                    _reply(report)
+                            elif cmd in ("/brain", "/quant", "/council"):
+                                try:
+                                    from quant_brain import QuantBrain
+                                    brain = QuantBrain({"alerter": self.alerter})
+                                    report = brain.generate_weekly_report()
+                                    self.alerter.send_text(report)
+                                except Exception as e:
+                                    self.alerter.send_text(f"Brain error: {e}")
+                            elif cmd == "/strategy":
+                                try:
+                                    from all_weather_strategy import AllWeatherEngine as _AWE
+                                    p = _AWE.load_config_from_file()
+                                    reply = (f"📊 Strategy: {p.get('strategy_type','?')} | Regime: {p.get('regime','?')}\n"
+                                             f"MinScore: {p.get('min_score','?')} | Size: {p.get('position_size_mult','?')}x\n"
+                                             f"Updated: {p.get('updated_at','?')}")
+                                except Exception:
+                                    reply = "Strategy config unavailable"
+                                _reply(reply)
                             else:
-                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /debug /fixdata")
+                                _reply(f"Unknown command: {cmd}\nTry: /status /balance /pause /resume /kill /brain /debug /fixdata /ab /strategy")
                         except Exception as _ce:
                             logger.warning(f"Telegram cmd {cmd} error: {_ce}")
                             _reply(f"Error: {_ce}")
@@ -3775,7 +4525,7 @@ class TradingBot:
             cfg_id  = str(config.TELEGRAM_CHAT_ID).strip()
             if cfg_id in ("", "YOUR_TELEGRAM_CHAT_ID_HERE", "0") or real_id != cfg_id:
                 await update.message.reply_text(
-                    f"👋 <b>KingTrades bot is running!</b>\n\n"
+                    f"👋 <b>{config.BOT_DISPLAY_NAME} bot is running!</b>\n\n"
                     f"Your Chat ID is: <code>{real_id}</code>\n\n"
                     f"Add this to your <code>.env</code> file:\n"
                     f"<pre>TELEGRAM_CHAT_ID={real_id}</pre>\n"
@@ -3784,7 +4534,7 @@ class TradingBot:
                 )
             else:
                 await update.message.reply_text(
-                    f"✅ <b>KingTrades bot ready</b>\n"
+                    f"✅ <b>{config.BOT_DISPLAY_NAME} bot ready</b>\n"
                     f"Chat ID verified: <code>{real_id}</code>\n"
                     f"Use /status, /balance, /kill, /pause, /resume",
                     parse_mode="HTML"
@@ -3823,6 +4573,107 @@ class TradingBot:
             except Exception as _e:
                 logger.warning(f"cmd_status balance fetch failed: {_e}")
                 self.alerter.send_status(self.risk_manager)
+            # India bot status from state file
+            try:
+                import json as _json
+                import time as _time_mod
+                from pathlib import Path as _Path
+                from utils import get_current_ist_time as _ist_now
+                _india_f = _Path("/tmp/india_state.json")
+                _india_lines = []
+                if not _india_f.exists():
+                    # File doesn't exist — India bot is not running
+                    _now_ist = _ist_now()
+                    _ist_t   = _now_ist.time()
+                    from datetime import time as _dt_time
+                    if _ist_t < _dt_time(9, 0):
+                        _eta_min = int((_dt_time(9, 15).hour * 60 + _dt_time(9, 15).minute) - (_ist_t.hour * 60 + _ist_t.minute))
+                        _india_lines = [
+                            f"\n🇮🇳 <b>SATAVECTOR INDIA</b>",
+                            f"⏳ PRE-MARKET — NSE opens in ~{_eta_min} min (9:15 AM IST)",
+                            f"⚠️ India bot not detected running",
+                            f"Start it: <code>cd /root/kingtrades/india && python3 main_india.py</code>",
+                        ]
+                    else:
+                        _india_lines = [
+                            f"\n🇮🇳 <b>SATAVECTOR INDIA</b>",
+                            f"⚠️ OFFLINE — state file not found",
+                            f"Ensure India bot is running on VPS",
+                        ]
+                else:
+                    _ind = _json.loads(_india_f.read_text())
+                    # Check if stale (> 10 min old)
+                    _file_age = _time_mod.time() - _india_f.stat().st_mtime
+                    _stale = _file_age > 600
+                    _ind_pnl     = _ind.get("daily_pnl", 0)
+                    _ind_pnl_pct = _ind.get("daily_pnl_pct", 0)
+                    _ind_trades  = _ind.get("trades", 0)
+                    _ind_wins    = _ind.get("wins", 0)
+                    _ind_losses  = _ind.get("losses", 0)
+                    _ind_cap     = _ind.get("capital", 0)
+                    _ind_pos     = _ind.get("positions", [])
+                    _ind_mode    = "LIVE ⚡" if _ind.get("live") else "PAPER 🔒"
+                    _ind_mkt     = _ind.get("market_state", "UNKNOWN")
+                    _ind_circuit = _ind.get("circuit_hit", False)
+                    _ind_guard   = _ind.get("loss_guard", False)
+                    _ind_ts      = _ind.get("ts", "?")[:16]
+                    _ind_wr      = _ind_wins / _ind_trades if _ind_trades else 0
+
+                    _mkt_icons = {
+                        "PRE_MARKET": "⏳ PRE-MARKET",
+                        "PRE_OPEN":   "🔔 PRE-OPEN (9:00-9:15)",
+                        "OPEN":       "✅ MARKET OPEN",
+                        "CLOSED":     "🔴 MARKET CLOSED",
+                        "UNKNOWN":    "❓",
+                    }
+                    _mkt_label = _mkt_icons.get(_ind_mkt, _ind_mkt)
+                    _stale_tag = " ⚠️ (stale)" if _stale else ""
+
+                    if _ind_circuit:
+                        _state_str = "⏸ CIRCUIT PAUSED"
+                    elif _ind_guard:
+                        _state_str = "🛡 LOSS GUARD ON"
+                    else:
+                        _state_str = "ACTIVE ✅"
+
+                    _india_lines = [
+                        f"\n🇮🇳 <b>SATAVECTOR INDIA</b> | {_ind_mode}",
+                        f"📅 {_ind_ts} IST{_stale_tag}",
+                        f"NSE: {_mkt_label}",
+                        "─" * 28,
+                        f"STATUS  {_state_str}",
+                        f"CAPITAL Rs.{_ind_cap:,.0f}",
+                        f"DAY P&L <b>Rs.{_ind_pnl:+,.0f} ({_ind_pnl_pct:+.2f}%)</b>",
+                        f"TRADES  {_ind_trades} today | {_ind_wins}W / {_ind_losses}L | WR: {_ind_wr:.0%}",
+                    ]
+                    if _ind_mkt in ("PRE_MARKET", "PRE_OPEN"):
+                        from datetime import time as _dt_time
+                        _now_ist = _ist_now()
+                        _ist_t   = _now_ist.time()
+                        _eta = int((_dt_time(9, 15).hour * 60 + _dt_time(9, 15).minute) - (_ist_t.hour * 60 + _ist_t.minute))
+                        _india_lines.append(f"⏳ Market opens in ~{max(0, _eta)} min — no trades yet (normal)")
+                    if _ind_pos:
+                        _india_lines.append(f"\n── OPEN POSITIONS ({len(_ind_pos)}) ──")
+                        for _p in _ind_pos:
+                            _arr = "↑" if _p.get("direction") == "LONG" else "↓"
+                            _ltp = _p.get("ltp", 0)
+                            _ep  = _p.get("entry_price", 0)
+                            _ppnl = _p.get("pnl", 0)
+                            _be  = " [BE]" if _p.get("breakeven_moved") else ""
+                            if _ltp > 0:
+                                _chg = (_ltp - _ep) / _ep * 100 if _ep else 0
+                                _india_lines.append(
+                                    f"{_arr} <b>{_p['symbol']}</b> {_ep:.2f}→{_ltp:.2f} "
+                                    f"({_chg:+.1f}%) P&L: Rs.{_ppnl:+,.0f}{_be}"
+                                )
+                            else:
+                                _india_lines.append(f"{_arr} <b>{_p['symbol']}</b> entry {_ep:.2f}")
+                    elif _ind_mkt == "OPEN":
+                        _india_lines.append("No open India positions")
+                if _india_lines:
+                    self.alerter.send_html("\n".join(_india_lines))
+            except Exception as _ie:
+                logger.debug(f"India state append failed: {_ie}")
             # Also send crypto engine status
             if self.crypto_engine:
                 try:
@@ -3864,6 +4715,13 @@ class TradingBot:
             if not _auth(update):
                 return
             self.alerter.send_eod_report(self.risk_manager)
+            # Also send market standing + positioning intelligence
+            try:
+                import threading as _rep_thread
+                from market_standing import run_standing_report_and_send
+                _rep_thread.Thread(target=run_standing_report_and_send, daemon=True).start()
+            except Exception as _rpe:
+                logger.debug(f"[suppressed] /report market_standing: {_rpe}")
 
         async def cmd_balance(update, context):
             if not _auth(update):
@@ -4072,7 +4930,7 @@ class TradingBot:
                         uptime_hrs = (_t.time() - getattr(self, '_start_time', _t.time())) / 3600
                         mem = psutil.virtual_memory()
                         msg = (
-                            f"🏥 <b>KING Health Report</b>\n"
+                            f"🏥 <b>SATAVECTOR Health Report</b>\n"
                             f"{'─'*30}\n"
                             f"Uptime: {uptime_hrs:.1f}h\n"
                             f"Memory: {mem.percent:.0f}% used\n"
@@ -4117,6 +4975,15 @@ class TradingBot:
                             parse_mode="HTML"
                         )
 
+                async def cmd_ab(update, context):
+                    if not _auth(update):
+                        return
+                    report = self.ab.status_report() if hasattr(self, 'ab') else "A/B not initialized"
+                    try:
+                        self.alerter.send_alert(report)
+                    except Exception:
+                        await update.message.reply_text(report, parse_mode="HTML")
+
                 app.add_handler(CommandHandler("start",      cmd_start))
                 app.add_handler(CommandHandler("kill",       cmd_kill))
                 app.add_handler(CommandHandler("status",     cmd_status))
@@ -4130,6 +4997,8 @@ class TradingBot:
                 app.add_handler(CommandHandler("health",     cmd_health))
                 app.add_handler(CommandHandler("debug",      cmd_debug))
                 app.add_handler(CommandHandler("fixdata",    cmd_fixdata))
+                app.add_handler(CommandHandler("ab",         cmd_ab))
+                app.add_handler(CommandHandler("abtest",     cmd_ab))
 
                 # Absorb 409 Conflict inside the PTB network loop — prevents crash on deploy
                 async def _tg_error_handler(update, context):
@@ -4185,6 +5054,83 @@ class TradingBot:
         )
 
     # --------------------------------------------------------
+    # ADAPTIVE FEEDBACK LOOP
+    # --------------------------------------------------------
+
+    def _apply_adaptive_params(self) -> None:
+        """
+        Load EOD self-trainer params (data/adaptive_params.json) and apply them
+        to live trading without requiring a restart.
+
+        Called every morning in initialize_market_day() right after risk_manager
+        .initialize_day() so nightly walk-forward optimisation takes effect each
+        session automatically.
+
+        Unlike _apply_eod_trained_params(), this method does NOT require the
+        `improved` flag to be set — it always applies whatever valid params exist,
+        so the feedback loop fires even when trainer found a lateral-improvement
+        solution.
+
+        Updates:
+          config.ATR_SL_MULTIPLIER     ← params["atr_sl"]
+          config.ATR_T1_MULTIPLIER     ← params["atr_t1"]
+          config.ATR_TP_MULTIPLIER     ← params["atr_t2"]
+          risk_manager.max_risk_pct    ← params["risk_pct"]
+          signal_gen.min_score         ← params["min_score"]  (clamped to floor+20)
+          signal_gen.ha_filter.min_score ← same clamped value (if attr exists)
+        """
+        try:
+            from trainer import EODSelfTrainer
+            params = EODSelfTrainer.load_params()
+            if not params:
+                logger.debug("[ADAPTIVE] No adaptive params found — using config defaults")
+                return
+
+            applied: dict = {}
+
+            if "atr_sl" in params:
+                config.ATR_SL_MULTIPLIER = float(params["atr_sl"])
+                applied["ATR_SL"] = config.ATR_SL_MULTIPLIER
+
+            if "atr_t1" in params:
+                config.ATR_T1_MULTIPLIER = float(params["atr_t1"])
+                applied["ATR_T1"] = config.ATR_T1_MULTIPLIER
+
+            if "atr_t2" in params:
+                config.ATR_TP_MULTIPLIER = float(params["atr_t2"])
+                applied["ATR_TP"] = config.ATR_TP_MULTIPLIER
+
+            if "risk_pct" in params and self.risk_manager is not None:
+                self.risk_manager.max_risk_pct = float(params["risk_pct"])
+                applied["risk"] = self.risk_manager.max_risk_pct
+
+            if "min_score" in params and self.signal_gen is not None:
+                trained_score = float(params["min_score"])
+                clamped_score = max(
+                    config.MIN_SIGNAL_SCORE,
+                    min(trained_score, config.MIN_SIGNAL_SCORE + 20.0),
+                )
+                self.signal_gen.min_score = clamped_score
+                applied["min_score"] = clamped_score
+                # Keep ha_filter in sync so it doesn't silently override signal_gen
+                if hasattr(self.signal_gen, "ha_filter") and self.signal_gen.ha_filter is not None:
+                    self.signal_gen.ha_filter.min_score = clamped_score
+
+            if applied:
+                logger.info(
+                    f"[ADAPTIVE] Applied params (date={params.get('date', '?')}): "
+                    f"ATR_SL={applied.get('ATR_SL', '—')} "
+                    f"ATR_T1={applied.get('ATR_T1', '—')} "
+                    f"ATR_TP={applied.get('ATR_TP', '—')} "
+                    f"min_score={applied.get('min_score', '—')} "
+                    f"risk={applied.get('risk', '—')}%"
+                )
+            else:
+                logger.debug("[ADAPTIVE] Params loaded but no known keys to apply")
+
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] _apply_adaptive_params failed (non-fatal): {e}")
+
     # EOD-TRAINED ADAPTIVE PARAMETERS
     # --------------------------------------------------------
 
@@ -4609,7 +5555,7 @@ class TradingBot:
             # Detailed diagnostics (score histogram, ML stats) as separate message
             if _filter_lines:
                 self.alerter.send_html(
-                    f"📡 <b>KING Diagnostics</b> — {format_ist_timestamp()}\n"
+                    f"📡 <b>SATAVECTOR Diagnostics</b> — {format_ist_timestamp()}\n"
                     f"Status: {status}\n"
                     f"Balance: {bal_line}"
                     f"{_filter_lines}"
@@ -4654,6 +5600,29 @@ class TradingBot:
     def _cleanup(self):
         """Graceful shutdown."""
         self.running = False
+
+        # Attempt to close open positions before full shutdown (prevents dangling broker positions)
+        try:
+            if self.executor and self.risk_manager:
+                open_syms = list(getattr(getattr(self.risk_manager, 'state', None), 'positions', {}).keys())
+                if open_syms:
+                    logger.warning(
+                        f"[{format_ist_timestamp()}] Cleanup: {len(open_syms)} open positions detected "
+                        f"— attempting squareoff before exit: {open_syms}"
+                    )
+                    # Use square_off_all which calls Alpaca's close_all_positions
+                    self.executor.square_off_all(reason="BOT_SHUTDOWN_CLEANUP")
+                    if self.alerter:
+                        try:
+                            self.alerter.send_text(
+                                f"⚠️ <b>Bot shutdown</b> — squaring off {len(open_syms)} position(s): "
+                                + ", ".join(open_syms)
+                            )
+                        except Exception:
+                            pass
+        except Exception as _sq_e:
+            logger.warning(f"[{format_ist_timestamp()}] Cleanup squareoff error (non-fatal): {_sq_e}")
+
         # Stop crypto engine gracefully
         if self.crypto_engine:
             try:
@@ -4698,13 +5667,14 @@ def main():
     import fcntl
     _pid_path = Path(config.LOG_DIR) / "kingtrades.pid"
     _pid_path.parent.mkdir(parents=True, exist_ok=True)
+    # Read existing PID BEFORE opening for write (open "w" truncates the file)
+    _existing_pid = _pid_path.read_text().strip() if _pid_path.exists() else "unknown"
     _pid_fh = open(_pid_path, "w")
     try:
         fcntl.flock(_pid_fh, fcntl.LOCK_EX | fcntl.LOCK_NB)
     except BlockingIOError:
-        existing = _pid_path.read_text().strip() if _pid_path.exists() else "unknown"
         print(
-            f"[KingTrades] Another instance is already running (PID {existing}). "
+            f"[SataVector] Another instance is already running (PID {_existing_pid}). "
             "Stop it first with: pkill -f main.py",
             flush=True,
         )
@@ -4736,7 +5706,7 @@ def main():
     logger.info("  ██║  ██╗██║██║ ╚████║╚██████╔╝   ██║   ██║  ██║██║  ██║██████╔╝███████╗███████║")
     logger.info("  ╚═╝  ╚═╝╚═╝╚═╝  ╚═══╝ ╚═════╝    ╚═╝   ╚═╝  ╚═╝╚═╝  ╚═╝╚═════╝ ╚══════╝╚══════╝")
     logger.info(_SEP)
-    logger.info("  [BLOOMBERG TERMINAL] KingTrades v3.0 — Institutional Momentum Engine")
+    logger.info("  [BLOOMBERG TERMINAL] SataVector v3.0 — Institutional Momentum Engine")
     logger.info(f"  [BROKER]   NYSE/NASDAQ via Alpaca  |  [MARKET] US Equities")
     logger.info(f"  [CLOCK]    {format_ist_timestamp()}")
     logger.info(f"  [MODE]     {'⚡ LIVE TRADING ENABLED — REAL MONEY' if config.LIVE_TRADING_ENABLED else '🔒 PAPER TRADING — safe mode'}")

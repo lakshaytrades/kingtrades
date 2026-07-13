@@ -226,7 +226,7 @@ def print_comparison(capital_start, results_2024, results_2025_real, results_202
 
 def main():
     print("\n" + "═"*90)
-    print("  KINGTRADES — REAL CONDITIONS BACKTEST (2024–2025)")
+    print("  SATAVECTOR — REAL CONDITIONS BACKTEST (2024–2025)")
     print("  Using actual S&P 500 monthly returns to classify real market regimes")
     print(f"  Starting capital: $1,000 | Risk/trade: 1.5% | Daily target: +2.0%")
     print("═"*90)

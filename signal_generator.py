@@ -24,6 +24,7 @@ Signal pipeline:
 import logging
 import config
 import numpy as np
+import pandas as pd
 from concurrent.futures import ThreadPoolExecutor, as_completed, TimeoutError as FuturesTimeout
 from dataclasses import dataclass, field
 from datetime import datetime
@@ -101,6 +102,27 @@ try:
     _ECON_CAL_AVAILABLE = True
 except ImportError:
     _ECON_CAL_AVAILABLE = False
+
+# OODA integration
+try:
+    from ooda_engine import get_engine as _get_ooda
+    _OODA_AVAILABLE = True
+except ImportError:
+    _OODA_AVAILABLE = False
+
+# Regime pattern weights
+try:
+    from regime_pattern_weights import get_weight as _get_regime_weight, REGIME_WEIGHTS as _REGIME_WEIGHTS
+    _REGIME_WEIGHTS_AVAILABLE = True
+except ImportError:
+    _REGIME_WEIGHTS_AVAILABLE = False
+
+# Ichimoku signals
+try:
+    from ichimoku_signals import get_analyzer as _get_ichimoku
+    _ICHIMOKU_AVAILABLE = True
+except ImportError:
+    _ICHIMOKU_AVAILABLE = False
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")   # server is UTC; all time checks use ET
@@ -261,6 +283,18 @@ class SignalGenerator:
         """Update Nifty % change vs previous close (called each scan cycle)."""
         self._nifty_change_pct = nifty_change_pct
 
+    def apply_adaptive_params(self, params: dict) -> None:
+        """Hot-reload params from nightly optimizer."""
+        try:
+            if "min_score" in params:
+                new_score = float(params["min_score"])
+                lo, hi = 55.0, 95.0  # never strangle or open floodgates
+                self.min_score = max(lo, min(new_score, hi))
+                self.ha_filter.min_score = self.min_score
+                logger.info(f"[ADAPTIVE] min_score updated → {self.min_score:.1f}")
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] SignalGenerator.apply_adaptive_params failed: {e}")
+
     def refresh_institutional_context(self) -> None:
         """
         Refresh FII/DII flow, global market context, and economic calendar
@@ -324,8 +358,24 @@ class SignalGenerator:
                 if _effective_min != self.min_score:
                     self.ha_filter.min_score = _effective_min
                     logger.debug(f"{symbol}: adaptive threshold {_thresh_label} → min={_effective_min:.0f}")
-            except Exception:
-                pass
+            except Exception as _at_e:
+                logger.debug(f"{symbol}: adaptive_threshold skipped: {_at_e}")
+
+            # Idle scalp mode — check if we should use lower thresholds
+            _idle_scalp_active = False
+            _idle_scalp_params: dict = {}
+            try:
+                if getattr(config, 'IDLE_SCALP_ENABLED', True):
+                    from idle_scalp_mode import is_active as _ism_active, get_params as _ism_params
+                    _idle_scalp_active = _ism_active()
+                    if _idle_scalp_active:
+                        _idle_scalp_params = _ism_params()
+                        # Lower the score threshold for this signal
+                        _scalp_score_min = _idle_scalp_params["score_min"]
+                        self.ha_filter.min_score = min(self.ha_filter.min_score, _scalp_score_min)
+                        logger.debug(f"{symbol}: IDLE_SCALP active — threshold lowered to {_scalp_score_min:.0f}")
+            except Exception as _ism_e:
+                logger.debug(f"[suppressed] idle_scalp_mode: {_ism_e}")
 
             # Skip symbols that have repeatedly returned no data this session
             if symbol in self._session_skip:
@@ -386,6 +436,17 @@ class SignalGenerator:
             except Exception:
                 pass
 
+            # 1d. Earnings calendar protection (v23.0) — skip within 2 days of earnings
+            # Complements the EARNINGS_PROXIMITY_GATE above but uses yfinance calendar
+            # as a second, independent data source for higher coverage.
+            try:
+                from earnings_calendar import is_near_earnings
+                if getattr(config, 'EARNINGS_PROTECTION_ENABLED', True) and is_near_earnings(symbol):
+                    logger.debug(f"{symbol}: SKIP — earnings within 2 days")
+                    return None
+            except Exception:
+                pass
+
             # 2. Pattern analysis on each timeframe
             # Set df.attrs["symbol"] so pattern_recognizer can fetch daily OHLC for pivot levels
             df_5m.attrs["symbol"] = symbol
@@ -435,6 +496,55 @@ class SignalGenerator:
                 logger.debug(f"{symbol}: MTF partial alignment {alignment['score']:.0f} dir_5m={dir_5m} — proceeding with penalty")
 
             direction = alignment["direction"] if alignment["aligned"] else (dir_5m if dir_5m != "NEUTRAL" else "LONG")
+
+            # 3b. SHORT signal override (v22.0) — check short conditions when enabled
+            # Activates in BEAR or CHOP regime when LONG alignment is weak or absent
+            if getattr(config, 'SHORT_SELLING_ENABLED', True) and direction == "LONG":
+                try:
+                    _regime_name_short = ""
+                    # Get current regime from inst_ctx if available (will be populated below)
+                    # Here we use a fast check on the 5m indicators directly
+                    _close_vals = df_5m["close"].values if "close" in df_5m.columns else (
+                        df_5m["Close"].values if "Close" in df_5m.columns else None
+                    )
+                    if _close_vals is not None and len(_close_vals) >= 20:
+                        import numpy as _np_s
+                        _ltp_s = float(_close_vals[-1])
+                        # Quick EMA9 check
+                        _ema9_s = float(pd.Series(_close_vals).ewm(span=9, adjust=False).mean().iloc[-1])
+                        # RSI quick check using score_5m
+                        _rsi_s = score_5m.get("rsi", 50.0) or 50.0
+                        # MACD histogram from score_5m
+                        _macd_hist_s = score_5m.get("macd_hist", 0.0) or 0.0
+                        # VWAP from analysis_5m indicators (will be set later; use a best-effort approach)
+                        _ind_s = analysis_5m.get("indicators", None)
+                        _vwap_s = getattr(_ind_s, "vwap", 0.0) if _ind_s else 0.0
+
+                        # Determine regime quickly from SPY change direction
+                        _regime_is_bear_or_chop = (
+                            self._nifty_change_pct < -1.0  # SPY down >1% = bearish session
+                            or (not alignment["aligned"] and dir_5m in ("SHORT", "NEUTRAL"))
+                        )
+
+                        # SHORT conditions: RSI overbought + price below EMA9 + MACD neg + below VWAP
+                        _short_rsi_ok    = float(_rsi_s) > 68
+                        _short_ema9_ok   = _ltp_s < _ema9_s
+                        _short_macd_ok   = float(_macd_hist_s) < 0
+                        _short_vwap_ok   = (_vwap_s > 0 and _ltp_s < _vwap_s) or _vwap_s == 0
+
+                        if (_regime_is_bear_or_chop
+                                and _short_rsi_ok
+                                and _short_ema9_ok
+                                and _short_macd_ok
+                                and _short_vwap_ok):
+                            direction = "SHORT"
+                            logger.info(
+                                f"[{format_ist_timestamp()}] {symbol}: SHORT override "
+                                f"(RSI={_rsi_s:.0f}>68, below EMA9=${_ema9_s:.2f}, "
+                                f"MACD<0, {'below VWAP' if _short_vwap_ok else 'no VWAP'})"
+                            )
+                except Exception as _short_det_e:
+                    logger.debug(f"[suppressed] short_detection: {_short_det_e}")
 
             # 4. News filter
             news_clear = True
@@ -608,6 +718,119 @@ class SignalGenerator:
                         + " | ".join(pm_score.reasons[:3])
                     )
 
+            # === OODA context adjustment ===
+            if _OODA_AVAILABLE:
+                try:
+                    ooda = _get_ooda()
+                    prices_arr = df_5m["close"].values if hasattr(df_5m, 'columns') else None
+                    vols_arr = df_5m["volume"].values if hasattr(df_5m, 'columns') else None
+                    ctx = ooda.get_context(symbol, prices_arr, vols_arr)
+
+                    # CRISIS regime: skip all new entries
+                    if ctx.regime == "CRISIS":
+                        logger.debug(f"[OODA] {symbol} CRISIS regime — signal suppressed")
+                        return None
+
+                    # Direction alignment penalty
+                    if ctx.direction_bias == "BEAR" and direction == "LONG":
+                        ai_score -= 8
+                    elif ctx.direction_bias == "BULL" and direction == "SHORT":
+                        ai_score -= 8
+
+                    # Wyckoff phase bonus
+                    if ctx.wyckoff_phase in ("MARKUP", "SPRING") and direction == "LONG":
+                        ai_score += 4
+                    elif ctx.wyckoff_phase in ("MARKDOWN", "UTAD") and direction == "SHORT":
+                        ai_score += 4
+                    elif ctx.wyckoff_phase in ("DISTRIBUTION",) and direction == "LONG":
+                        ai_score -= 3
+
+                    # Macro + sentiment blend
+                    macro_blend = (ctx.macro_score + ctx.sentiment_score + ctx.flow_score) / 3.0
+                    ai_score += macro_blend * 0.5
+
+                    # Secret alpha
+                    ai_score += ctx.gamma_score * 0.3
+                    ai_score += ctx.pead_score * 0.5
+                    ai_score += ctx.seasonal_score * 0.4
+                    ai_score += ctx.smart_money_score * 0.4
+
+                    # Conviction boost
+                    if ctx.conviction > 0.75:
+                        ai_score *= 1.15
+                    elif ctx.conviction < 0.35:
+                        ai_score *= 0.80
+
+                    logger.debug(f"[OODA] {symbol} macro={ctx.macro_score:.1f} sent={ctx.sentiment_score:.1f} "
+                                 f"regime={ctx.regime} conv={ctx.conviction:.2f} bias={ctx.direction_bias} "
+                                 f"score_after={ai_score:.1f}")
+                    # Clamp: OODA conviction (×1.15) + secret-alpha additions must
+                    # never push the score outside 0–100, or downstream grade/size
+                    # tiers (e.g. ≥95 → 2× size) fire on inflated arithmetic.
+                    ai_score = max(0.0, min(100.0, ai_score))
+                except Exception as _ooda_err:
+                    logger.debug(f"[OODA] {symbol} error: {_ooda_err}")
+
+            # === Ichimoku Cloud confirmation ===
+            if _ICHIMOKU_AVAILABLE and df_5m is not None:
+                try:
+                    ichimoku = _get_ichimoku()
+                    if hasattr(df_5m, 'columns'):
+                        _h = df_5m["high"].values if "high" in df_5m.columns else df_5m["close"].values
+                        _lo = df_5m["low"].values if "low" in df_5m.columns else df_5m["close"].values
+                        _c = df_5m["close"].values
+                    else:
+                        _h = _lo = _c = df_5m
+                    ichi_score = ichimoku.get_score_for_signal_generator(_h, _lo, _c)
+
+                    # Direction alignment: Ichimoku score aligns with trade direction
+                    if direction == "LONG" and ichi_score > 0:
+                        ai_score += ichi_score * 0.5
+                    elif direction == "SHORT" and ichi_score < 0:
+                        ai_score += abs(ichi_score) * 0.5
+                    elif direction == "LONG" and ichi_score < -5:
+                        ai_score -= 4  # Strong Ichimoku bear signal against LONG
+                    elif direction == "SHORT" and ichi_score > 5:
+                        ai_score -= 4  # Strong Ichimoku bull signal against SHORT
+
+                    logger.debug(f"[Ichimoku] {symbol} ichi_score={ichi_score:.1f} after={ai_score:.1f}")
+                except Exception as _ichi_err:
+                    logger.debug(f"[Ichimoku] {symbol}: {_ichi_err}")
+
+            # === Regime-weighted pattern score ===
+            if _REGIME_WEIGHTS_AVAILABLE:
+                try:
+                    # Get current regime from OODA if available, else from features
+                    _current_regime = "UNKNOWN"
+                    if _OODA_AVAILABLE:
+                        try:
+                            _ooda_ctx_for_regime = _get_ooda().get_context(symbol)
+                            _current_regime = _ooda_ctx_for_regime.regime
+                        except Exception:
+                            pass
+
+                    if _current_regime and _current_regime != "UNKNOWN":
+                        # Key the regime weight on the dominant detected pattern.
+                        # (Previous code referenced a non-existent `signal` local via
+                        #  `"signal" in dir()`, which was always False → dead feature.)
+                        _pat_objs = analysis_5m.get("patterns", []) if isinstance(analysis_5m, dict) else []
+                        _pattern_name = getattr(_pat_objs[0], "name", "") if _pat_objs else ""
+                        if not _pattern_name:
+                            _pattern_name = direction  # fallback
+                        _regime_mult = _get_regime_weight(_pattern_name, _current_regime)
+
+                        # Apply weight as score adjustment (not multiply — preserve base scoring)
+                        # Transform: score * weight → score + (weight-1) * 10
+                        _regime_bonus = (_regime_mult - 1.0) * 10
+                        ai_score += _regime_bonus
+                        ai_score = max(0.0, min(100.0, ai_score))
+                        if abs(_regime_bonus) > 1.0:
+                            logger.debug(f"[RegimeWeight] {symbol} pattern={_pattern_name} "
+                                         f"regime={_current_regime} mult={_regime_mult:.2f} "
+                                         f"bonus={_regime_bonus:+.1f}")
+                except Exception as _rw_err:
+                    logger.debug(f"[RegimeWeight] {symbol}: {_rw_err}")
+
             # 6d. Earnings Catalyst boost (up to +25 pts when EPS beat + RVOL surge)
             try:
                 from catalyst_scanner import get_catalyst_scanner
@@ -622,7 +845,7 @@ class SignalGenerator:
             except Exception as _cat_err:
                 logger.debug(f"Catalyst boost error for {symbol}: {_cat_err}")
 
-            # 6e. Gap direction alignment boost (top-3% edge: gap + direction = very high win rate)
+            # 6e. Gap direction alignment + statistical fill probability model
             try:
                 gap_pct = self._get_gap_pct(symbol)
                 if direction == "LONG" and gap_pct >= 0.5:
@@ -633,6 +856,27 @@ class SignalGenerator:
                     gap_boost = min(abs(gap_pct) * 2.0, config.GAP_DIRECTION_BOOST)
                     ai_score = min(100.0, ai_score + gap_boost)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: gap boost +{gap_boost:.1f} (gap={gap_pct:+.1f}%)")
+            except Exception:
+                pass
+
+            # 6e2. Gap fill probability model — adjusts score based on statistical fill odds
+            try:
+                from gap_fill_model import get_gap_fill_model
+                _gfm = get_gap_fill_model()
+                _gap_pct  = self._get_gap_pct(symbol)
+                _open_p   = analysis_5m.get("open_price", current_price) if isinstance(analysis_5m, dict) else current_price
+                _prev_cls = _open_p / (1 + _gap_pct / 100.0) if _gap_pct != 0 else _open_p
+                _vix = getattr(self, "_vix", 18.0)
+                _regime_str = "UNKNOWN"
+                try:
+                    from ooda_engine import get_engine as _oe
+                    _regime_str = _oe().get_context(symbol).regime
+                except Exception:
+                    pass
+                _gf_adj = _gfm.get_score_adj(symbol, direction, float(_open_p), float(_prev_cls), _vix, _regime_str)
+                if _gf_adj != 0:
+                    ai_score = max(0.0, min(100.0, ai_score + _gf_adj))
+                    logger.debug(f"{symbol}: gap_fill_model adj {_gf_adj:+.0f}")
             except Exception:
                 pass
 
@@ -648,8 +892,8 @@ class SignalGenerator:
                 elif direction == "SHORT" and len(ict_bear & pat_names_all) >= 2:
                     ai_score = min(100.0, ai_score + config.ICT_CONFLUENCE_BOOST)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: ICT confluence +{config.ICT_CONFLUENCE_BOOST:.0f} ({ict_bear & pat_names_all})")
-            except Exception:
-                pass
+            except Exception as _ict_e:
+                logger.debug(f"ICT confluence skipped for {symbol}: {_ict_e}")
 
             # 6g. Sector ETF leading indicator boost (top-1%: trade with sector flow)
             try:
@@ -657,8 +901,8 @@ class SignalGenerator:
                 if sector_boost > 0:
                     ai_score = min(100.0, ai_score + sector_boost)
                     logger.info(f"[{format_ist_timestamp()}] {symbol}: sector ETF boost +{sector_boost:.1f}")
-            except Exception:
-                pass
+            except Exception as _setf_e:
+                logger.debug(f"Sector ETF boost skipped for {symbol}: {_setf_e}")
 
             # 6h. RVOL mega-boost — >5x volume = explosive move, size conviction up
             try:
@@ -670,8 +914,37 @@ class SignalGenerator:
                         f"[{format_ist_timestamp()}] {symbol}: RVOL mega-boost "
                         f"+{rvol_bonus_pts:.0f} (RVOL={ind.volume_ratio:.1f}x)"
                     )
-            except Exception:
-                pass
+            except Exception as _rvol_e:
+                logger.debug(f"RVOL mega-boost skipped for {symbol}: {_rvol_e}")
+
+            # === Expert Scalper (OODA-regime-aware 4-mode) ===
+            try:
+                from expert_scalper import get_expert_scalper as _get_es
+                _es = _get_es()
+                _use_ist = True  # default NSE
+                _closes_es = df_5m["close"].values if hasattr(df_5m, "columns") and "close" in df_5m.columns else (
+                    df_5m["Close"].values if hasattr(df_5m, "columns") and "Close" in df_5m.columns else np.array([])
+                )
+                _h_es = df_5m["high"].values if hasattr(df_5m, "columns") and "high" in df_5m.columns else (
+                    df_5m["High"].values if hasattr(df_5m, "columns") and "High" in df_5m.columns else _closes_es
+                )
+                _lo_es = df_5m["low"].values if hasattr(df_5m, "columns") and "low" in df_5m.columns else (
+                    df_5m["Low"].values if hasattr(df_5m, "columns") and "Low" in df_5m.columns else _closes_es
+                )
+                _v_es = df_5m["volume"].values if hasattr(df_5m, "columns") and "volume" in df_5m.columns else (
+                    df_5m["Volume"].values if hasattr(df_5m, "columns") and "Volume" in df_5m.columns else np.ones_like(_closes_es)
+                )
+                if len(_closes_es) > 0:
+                    _es_sig = _es.scan(symbol, _closes_es, _h_es, _lo_es, _v_es, use_ist=_use_ist)
+                    if _es_sig and _es_sig.direction == direction:
+                        ai_score += _es_sig.score * 0.15
+                        logger.debug(f"[ExpertScalp] {symbol} {_es_sig.mode.value} conf={_es_sig.confidence:.2f} +"
+                                     f"{_es_sig.score * 0.15:.1f} → {ai_score:.1f}")
+                    elif _es_sig and _es_sig.direction != direction:
+                        ai_score -= 5
+                        logger.debug(f"[ExpertScalp] {symbol} {_es_sig.mode.value} opposes {direction} → -5 score")
+            except Exception as _es_err:
+                logger.debug(f"[ExpertScalp] {symbol}: {_es_err}")
 
             # Per-symbol adaptive score floor: proven symbols get -5 pts relief,
             # serial losers get +5 pts harder bar. Falls back to self.min_score.
@@ -750,12 +1023,15 @@ class SignalGenerator:
                 learner          = self._learner,
                 # ── Gates 6-10 parameters ─────────────────────────────
                 symbol           = symbol,
-                # Gate 6: daily_volume — use real daily volume fields; fall back to 0
-                # so Gate 6 only passes when data is actually available, not silently.
-                # The watchlist's liquid stocks (NVDA, SPY, etc.) always have daily_volume.
-                daily_volume     = float(stock_quote.get("daily_volume", 0) or
-                                         stock_quote.get("traded_volume", 0) or
-                                         stock_quote.get("volume", 0) or 0),
+                # Gate 6: Use PREVIOUS day's full volume from daily bar cache.
+                # The live quote volume is tiny at market open (only minutes of data)
+                # which would falsely filter NVDA/AAPL/TSLA as "low volume".
+                daily_volume     = self._get_prev_day_volume(
+                                       symbol,
+                                       stock_quote.get("daily_volume", 0) or
+                                       stock_quote.get("traded_volume", 0) or
+                                       stock_quote.get("volume", 0) or 0,
+                                   ),
                 ltp              = ltp_now,
                 prev_close       = float(stock_quote.get("prev_close", 0) or
                                          stock_quote.get("previous_close", 0) or
@@ -909,6 +1185,12 @@ class SignalGenerator:
                 # VIX 14-25 = optimal momentum zone → full size
             except Exception as _vix:
                 logger.debug(f"[suppressed] vix_sizing: {_vix}")
+
+            # ── Booster cap: track base score so total booster delta cannot exceed +25 ──
+            # 40+ booster modules can stack uncapped, pushing weak signals to false conviction.
+            # Hard cap: booster contribution (delta from base) is limited to +25 points.
+            _booster_base_score = filter_result.final_score
+            _BOOSTER_MAX_DELTA  = 25.0
 
             # ── Gemini news sentiment adjustment (runs FIRST — adjusts score before LLM sees it) ─
             try:
@@ -1098,17 +1380,29 @@ class SignalGenerator:
                     get_tod_rvol_score,
                     get_sortino_size_multiplier,
                 )
-                _watchlist = list(getattr(self, '_open_position_symbols', None) or [])
+                # CSM requires the full scan watchlist for meaningful percentile ranking.
+                # Using only open-position symbols (typically 0-8) gives statistically
+                # meaningless ranks; we need the full 75-symbol universe.
+                _full_wl = getattr(self, '_scan_watchlist', None) or []
+                _open_syms_csm = list(getattr(self, '_open_position_symbols', None) or [])
+                # Merge: full watchlist first (broadest universe), open positions included
+                _csm_peers = list(dict.fromkeys(_full_wl + _open_syms_csm))
+                _watchlist = _open_syms_csm  # keep for non-CSM strategies (need open positions only)
 
                 # 1. Cross-sectional momentum rank (AQR/Renaissance)
                 if getattr(config, 'CSM_ENABLED', True):
-                    _csm_delta, _csm_reason = get_cross_sectional_rank(symbol, _watchlist or [symbol])
+                    _csm_delta, _csm_reason = get_cross_sectional_rank(symbol, _csm_peers or [symbol])
                     if _csm_delta:
                         filter_result.final_score = min(100.0, filter_result.final_score + _csm_delta)
                         logger.debug(f"{symbol}: CSM {_csm_delta:+.0f} {_csm_reason}")
 
                 # 2. VWAP reclaim (prop desk / CME market makers)
-                if getattr(config, 'VWAP_RECLAIM_ENABLED', True) and ind.vwap > 0:
+                # Skip if HAF Bonus 10 already scored this pattern — prevents +24 double-count.
+                _haf_vwap_scored = any(
+                    "VWAP_RECLAIM" in b or "VWAP_BREAKDOWN" in b
+                    for b in getattr(filter_result, 'bonuses', [])
+                )
+                if getattr(config, 'VWAP_RECLAIM_ENABLED', True) and ind.vwap > 0 and not _haf_vwap_scored:
                     _vr_delta, _vr_reason = get_vwap_reclaim_score(df_5m, ltp_now, direction, ind.vwap)
                     if _vr_delta:
                         filter_result.final_score = min(100.0, filter_result.final_score + _vr_delta)
@@ -1147,6 +1441,127 @@ class SignalGenerator:
 
             except Exception as _inst_e:
                 logger.debug(f"[suppressed] institutional_strategies: {_inst_e}")
+
+            # ── TIER 1/2 ELITE STRATEGIES ─────────────────────────────────
+            try:
+                from tier1_elite import get_elite_score_boost
+                if getattr(config, 'TIER1_ELITE_ENABLED', True):
+                    _elite_delta, _elite_reasons = get_elite_score_boost(
+                        symbol, direction, ltp_now,
+                        getattr(self, '_open_position_symbols', []) or []
+                    )
+                    if _elite_delta != 0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _elite_delta)
+                        for _er in _elite_reasons:
+                            logger.debug(f"{symbol}: ELITE {_er}")
+            except Exception as _elite_e:
+                logger.debug(f"[suppressed] tier1_elite: {_elite_e}")
+
+            # ── Cross-asset risk filter (v22.0) — VIX + bonds + dollar macro overlay ──
+            if getattr(config, 'CROSS_ASSET_ENABLED', True):
+                try:
+                    from cross_asset_signals import get_market_risk_score
+                    _ca_delta, _ca_reason = get_market_risk_score()
+                    if _ca_delta != 0.0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ca_delta)
+                        logger.debug(f"{symbol}: CROSS_ASSET {_ca_delta:+.0f} {_ca_reason}")
+                except Exception as _ca_e:
+                    logger.debug(f"[suppressed] cross_asset: {_ca_e}")
+
+            # ── News sentiment (v22.0) — NewsAPI keyword scoring per symbol ────────
+            if getattr(config, 'NEWS_SENTIMENT_ENABLED', True):
+                try:
+                    from news_sentiment import get_news_sentiment
+                    _ns_delta, _ns_reason = get_news_sentiment(symbol)
+                    if _ns_delta != 0.0:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ns_delta)
+                        logger.debug(f"{symbol}: NEWS_SENTIMENT {_ns_delta:+.0f} {_ns_reason}")
+                except Exception as _ns_e:
+                    logger.debug(f"[suppressed] news_sentiment: {_ns_e}")
+
+            # ── PEAD SIGNAL (v23.0) — earnings_calendar.py Post-Earnings Drift ──
+            if getattr(config, 'PEAD_SIGNAL_ENABLED', True):
+                try:
+                    from earnings_calendar import get_pead_score
+                    _pead_delta, _pead_reason = get_pead_score(symbol, direction)
+                    if _pead_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pead_delta)
+                        logger.debug(f"{symbol}: PEAD {_pead_delta:+.0f} {_pead_reason}")
+                except Exception as _pe:
+                    logger.debug(f"[suppressed] pead: {_pe}")
+
+            # ── OPTIONS INTENSITY (v23.0) — unusual options volume signal ─────
+            if getattr(config, 'OPTIONS_INTENSITY_ENABLED', True):
+                try:
+                    from options_intensity import get_options_intensity_score
+                    _oi_delta, _oi_reason = get_options_intensity_score(symbol, direction)
+                    if _oi_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _oi_delta)
+                        logger.debug(f"{symbol}: OPTIONS_INTENSITY {_oi_delta:+.0f} {_oi_reason}")
+                except Exception as _oi_e:
+                    logger.debug(f"[suppressed] options_intensity: {_oi_e}")
+
+            # ── GAP SCANNER (v23.0) — pre-market gap classification ───────────
+            if getattr(config, 'GAP_SCANNER_ENABLED', True):
+                try:
+                    from premarket_gap_scanner import get_gap_score
+                    _gap_delta, _gap_reason = get_gap_score(symbol, direction)
+                    if _gap_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gap_delta)
+                        logger.debug(f"{symbol}: GAP {_gap_delta:+.0f} {_gap_reason}")
+                except Exception as _gp_e:
+                    logger.debug(f"[suppressed] gap_scanner: {_gp_e}")
+
+            # ── ALTERNATIVE DATA INTELLIGENCE (v24.0) ─────────────────────────
+            # SEC insider trades
+            if getattr(config, 'INSIDER_INTELLIGENCE_ENABLED', True):
+                try:
+                    from insider_intelligence import get_insider_signal
+                    _ins_delta, _ins_reason = get_insider_signal(symbol, direction)
+                    if _ins_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ins_delta)
+                        logger.debug(f"{symbol}: INSIDER {_ins_delta:+.0f} {_ins_reason}")
+                except Exception as _ie: logger.debug(f"[suppressed] insider: {_ie}")
+
+            # Gamma Exposure
+            if getattr(config, 'GEX_ENABLED', True):
+                try:
+                    from gex_calculator import get_gex_signal
+                    _gex_delta, _gex_reason = get_gex_signal(symbol, float(ltp_now), direction)
+                    if _gex_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gex_delta)
+                        logger.debug(f"{symbol}: GEX {_gex_delta:+.0f} {_gex_reason}")
+                except Exception as _ge: logger.debug(f"[suppressed] gex: {_ge}")
+
+            # Crowd sentiment
+            if getattr(config, 'CROWD_SENTIMENT_ENABLED', True):
+                try:
+                    from crowd_sentiment import get_crowd_sentiment
+                    _cs_delta, _cs_reason = get_crowd_sentiment(symbol, direction)
+                    if _cs_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cs_delta)
+                        logger.debug(f"{symbol}: CROWD {_cs_delta:+.0f} {_cs_reason}")
+                except Exception as _cse: logger.debug(f"[suppressed] crowd: {_cse}")
+
+            # Fama-French factors
+            if getattr(config, 'FF_FACTORS_ENABLED', True):
+                try:
+                    from ff_factors import get_factor_signal
+                    _ff_delta, _ff_reason = get_factor_signal(symbol, direction)
+                    if _ff_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ff_delta)
+                        logger.debug(f"{symbol}: FF_FACTOR {_ff_delta:+.0f} {_ff_reason}")
+                except Exception as _ffe: logger.debug(f"[suppressed] ff: {_ffe}")
+
+            # Congressional trading
+            if getattr(config, 'CONGRESSIONAL_ALPHA_ENABLED', True):
+                try:
+                    from congressional_alpha import get_congressional_signal
+                    _cong_delta, _cong_reason = get_congressional_signal(symbol, direction)
+                    if _cong_delta:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cong_delta)
+                        logger.debug(f"{symbol}: CONGRESS {_cong_delta:+.0f} {_cong_reason}")
+                except Exception as _conge: logger.debug(f"[suppressed] congress: {_conge}")
 
             # ── PREMIUM SCANNER (v11.0) — Free equivalents of paid tools ───────
             try:
@@ -1260,6 +1675,131 @@ class SignalGenerator:
 
             except Exception as _quantum_e:
                 logger.debug(f"[suppressed] quantum_strategies: {_quantum_e}")
+
+            # ── GOD MODE ELITE STRATEGIES (v26.0) — CVD+TICK+DOW+MultiDay+TrueRS+Exhaust ─
+            if getattr(config, 'GOD_MODE_ENABLED', True):
+                try:
+                    from elite_strategies import get_elite_god_mode_boost
+                    _gm_block, _gm_delta, _gm_reason = get_elite_god_mode_boost(
+                        symbol, direction, df_5m
+                    )
+                    if _gm_block:
+                        logger.debug(f"{symbol}: GOD_MODE BLOCK — {_gm_reason}")
+                        return None
+                    if _gm_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gm_delta))
+                        logger.debug(f"{symbol}: GOD_MODE {_gm_delta:+.1f} | {_gm_reason}")
+                except Exception as _gm_e:
+                    logger.debug(f"[suppressed] elite_strategies: {_gm_e}")
+
+            # ── GENIUS STRATEGIES (v27.0) — Hurst + Kalman + OB Pressure + Kelly sizing ─
+            if getattr(config, 'GENIUS_MODE_ENABLED', True):
+                try:
+                    from genius_strategies import get_genius_score_boost, get_genius_size_multiplier
+                    _gen_block, _gen_delta, _gen_reason = get_genius_score_boost(
+                        df_5m, direction, filter_result.final_score,
+                        float(getattr(ind, 'atr', 0) or 0), float(ltp_now or 0)
+                    )
+                    if _gen_block:
+                        logger.debug(f"{symbol}: GENIUS BLOCK — {_gen_reason}")
+                        return None
+                    if _gen_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _gen_delta))
+                        logger.debug(f"{symbol}: GENIUS {_gen_delta:+.1f} | {_gen_reason}")
+                    _genius_mult = get_genius_size_multiplier(filter_result.final_score)
+                    if _genius_mult != 1.0:
+                        combined_size = round(combined_size * _genius_mult, 3)
+                        logger.debug(f"{symbol}: GENIUS_KELLY size {_genius_mult:.2f}x")
+                except Exception as _gen_e:
+                    logger.debug(f"[suppressed] genius_strategies: {_gen_e}")
+
+            # ── PHD STRATEGIES (v28.0) — 6 Nobel-grade academic finance signals ──────
+            if getattr(config, 'PHD_MODE_ENABLED', True):
+                try:
+                    from phd_strategies import get_phd_score_boost
+                    _df_daily_phd = self._daily_candles_cache.get(symbol) if hasattr(self, '_daily_candles_cache') else None
+                    _phd_delta, _phd_reason = get_phd_score_boost(
+                        df_5m, df_1h, _df_daily_phd, direction, float(ltp_now or 0)
+                    )
+                    if _phd_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _phd_delta))
+                        logger.debug(f"{symbol}: PHD {_phd_delta:+.1f} | {_phd_reason}")
+                except Exception as _phd_e:
+                    logger.debug(f"[suppressed] phd_strategies: {_phd_e}")
+
+            # ── RENAISSANCE META-LAYER (v29.0) — IC + Bayes + Regime + Decay + Sizing ──
+            if getattr(config, 'RENAISSANCE_MODE_ENABLED', True):
+                try:
+                    from renaissance_mode import get_renaissance_adjustment
+                    _open_syms = list(getattr(self, '_open_position_symbols', []))
+                    _hurst_h   = getattr(self, '_last_hurst', {}).get(symbol, 0.5)
+                    _atr_ratio = float(getattr(ind, 'atr', 0) or 0) / max(float(ltp_now or 1), 1)
+                    _n_conf    = sum([
+                        1 for _v in [
+                            getattr(ind, 'rsi',          0) or 0,
+                            getattr(ind, 'macd_hist',    0) or 0,
+                            getattr(ind, 'volume_ratio', 0) or 0,
+                        ] if _v != 0
+                    ])
+                    _eq_now  = float(getattr(self, '_session_equity',      0) or 0)
+                    _eq_peak = float(getattr(self, '_session_peak_equity', 0) or 0)
+                    _r_score, _r_size, _r_reason = get_renaissance_adjustment(
+                        symbol, direction, filter_result.final_score,
+                        _n_conf, _hurst_h, _atr_ratio,
+                        _open_syms, _eq_now, _eq_peak,
+                    )
+                    if abs(_r_score - filter_result.final_score) > 0.5:
+                        filter_result.final_score = max(0.0, min(100.0, _r_score))
+                        logger.debug(f"{symbol}: RENAISSANCE score→{_r_score:.1f} | {_r_reason}")
+                    if _r_size != 1.0:
+                        combined_size = round(combined_size * _r_size, 3)
+                        logger.debug(f"{symbol}: RENAISSANCE size {_r_size:.2f}x | {_r_reason}")
+                except Exception as _ren_e:
+                    logger.debug(f"[suppressed] renaissance_mode: {_ren_e}")
+
+            # ── CITADEL MODE (v30.0) — YZ Vol + Entropy + Volume Profile + AC + VRP + Risk Parity ──
+            if getattr(config, 'CITADEL_MODE_ENABLED', True):
+                try:
+                    from citadel_mode import get_citadel_boost
+                    _cit_delta, _cit_size, _cit_reason = get_citadel_boost(
+                        df_5m, direction,
+                        float(getattr(ind, 'atr', 0) or 0),
+                        float(ltp_now or 0),
+                    )
+                    if _cit_delta != 0.0:
+                        filter_result.final_score = max(0.0, min(100.0, filter_result.final_score + _cit_delta))
+                        logger.debug(f"{symbol}: CITADEL {_cit_delta:+.1f} | {_cit_reason}")
+                    if _cit_size != 1.0:
+                        combined_size = round(combined_size * _cit_size, 3)
+                        logger.debug(f"{symbol}: CITADEL_RPARITY size {_cit_size:.2f}x")
+                except Exception as _cit_e:
+                    logger.debug(f"[suppressed] citadel_mode: {_cit_e}")
+
+            # ── ETF Fund Flow Alpha (God Mode v31.0) ─────────────────────────
+            if getattr(config, 'ETF_FLOW_ENABLED', True):
+                try:
+                    from etf_flow_alpha import get_etf_flow_score
+                    _etf_d, _etf_r = get_etf_flow_score(symbol, direction)
+                    if _etf_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _etf_d)
+                        logger.debug(f"{symbol}: ETF_FLOW {_etf_d:+.0f} {_etf_r}")
+                except Exception:
+                    pass
+
+            # ── US News NLP Alpha (God Mode v31.0) ───────────────────────────
+            if getattr(config, 'US_NEWS_ALPHA_ENABLED', True):
+                try:
+                    from us_news_alpha import get_news_score, get_wsb_mention_score
+                    _news_d, _news_r = get_news_score(symbol, direction)
+                    if _news_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _news_d)
+                        logger.debug(f"{symbol}: US_NEWS {_news_d:+.0f} {_news_r}")
+                    _wsb_d, _wsb_r = get_wsb_mention_score(symbol, direction)
+                    if _wsb_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _wsb_d)
+                        logger.debug(f"{symbol}: WSB_MENTION {_wsb_d:+.0f} {_wsb_r}")
+                except Exception:
+                    pass
 
             # ── HARMONIC PATTERNS (world-class) — Gartley/Butterfly/Bat/Crab ──
             try:
@@ -1383,7 +1923,7 @@ class SignalGenerator:
             except Exception as _tod_e:
                 logger.debug(f"[suppressed] optimal_entry_timing: {_tod_e}")
 
-            # ── KING KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
+            # ── SATAVECTOR KNOWLEDGE BASE (v15.0) — 8 Legendary Trading Frameworks ──────────
             # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
             # Each framework validates the setup independently. Consensus = conviction.
             try:
@@ -1404,7 +1944,7 @@ class SignalGenerator:
                             logger.debug(f"{symbol}: KB {_kb_delta:+.1f} — {_r}")
                         if abs(_kb_delta) >= 8.0:
                             logger.info(
-                                f"[{format_ist_timestamp()}] KING KB {symbol}: "
+                                f"[{format_ist_timestamp()}] SATAVECTOR KB {symbol}: "
                                 f"{_kb_delta:+.1f}pts | {' | '.join(_kb_reasons[:3])}"
                             )
             except Exception as _kb_e:
@@ -1512,10 +2052,444 @@ class SignalGenerator:
                 except Exception as e:
                     logger.debug(f"LLM gate error: {e}")
 
-            # ── Final execution gate: after ALL boosters, require ≥70 ────────────
-            # Pre-filter lets 63+ through so boosters (CSM, VWAP, OFI, etc.) can
-            # add 8–20 pts. If no booster fired, the signal is too weak to trade.
+            # ── MICROSTRUCTURE SIGNALS (v25.0) ── 8 additional institutional signals ─
+            try:
+                from microstructure_signals import (
+                    get_orb_quality_score, get_52w_proximity_score,
+                    get_float_momentum_score, get_tick_divergence_score,
+                    get_zscore_mean_reversion, get_candle_streak_score,
+                    get_premarket_vol_score, get_correlation_filter_score,
+                )
+
+                if getattr(config, 'ORB_QUALITY_ENABLED', True) and df_5m is not None:
+                    _oq, _oqr = get_orb_quality_score(symbol, df_5m, direction, ltp_now)
+                    if _oq:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _oq)
+                        logger.debug(f"{symbol}: ORB_QUALITY {_oq:+.0f} {_oqr}")
+
+                if getattr(config, 'W52_PROXIMITY_ENABLED', True):
+                    _w52, _w52r = get_52w_proximity_score(symbol, direction)
+                    if _w52:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _w52)
+                        logger.debug(f"{symbol}: 52W_PROX {_w52:+.0f} {_w52r}")
+
+                if getattr(config, 'FLOAT_MOMENTUM_ENABLED', True):
+                    _fm, _fmr = get_float_momentum_score(symbol, direction)
+                    if _fm:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _fm)
+                        logger.debug(f"{symbol}: FLOAT_MOM {_fm:+.0f} {_fmr}")
+
+                if getattr(config, 'TICK_DIVERGENCE_ENABLED', True) and df_5m is not None:
+                    _td, _tdr = get_tick_divergence_score(df_5m, direction)
+                    if _td:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _td)
+                        logger.debug(f"{symbol}: TICK_DIV {_td:+.0f} {_tdr}")
+
+                if getattr(config, 'ZSCORE_MR_ENABLED', True) and df_5m is not None:
+                    _zs, _zsr = get_zscore_mean_reversion(df_5m, direction)
+                    if _zs:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _zs)
+                        logger.debug(f"{symbol}: ZSCORE_MR {_zs:+.0f} {_zsr}")
+
+                if getattr(config, 'CANDLE_STREAK_ENABLED', True) and df_5m is not None:
+                    _cs, _csr = get_candle_streak_score(df_5m, direction)
+                    if _cs:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cs)
+                        logger.debug(f"{symbol}: CANDLE_STREAK {_cs:+.0f} {_csr}")
+
+                if getattr(config, 'PREMARKET_VOL_ENABLED', True):
+                    _pmv, _pmvr = get_premarket_vol_score(symbol, direction)
+                    if _pmv:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pmv)
+                        logger.debug(f"{symbol}: PM_VOL {_pmv:+.0f} {_pmvr}")
+
+                if getattr(config, 'CORRELATION_FILTER_ENABLED', True):
+                    _cf, _cfr = get_correlation_filter_score(symbol, direction)
+                    if _cf:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cf)
+                        logger.debug(f"{symbol}: CORR_FILTER {_cf:+.0f} {_cfr}")
+
+            except Exception as _micro_e:
+                logger.debug(f"[suppressed] microstructure_signals: {_micro_e}")
+
+            # ── SEASONALITY + MULTI-MOMENTUM + LIQUIDITY (v26.0) ─────────────────
+            try:
+                from seasonality_signals import (
+                    get_opex_score, get_month_end_score, get_quarter_end_score,
+                    get_monday_fade_score, get_opex_pin_score,
+                )
+                if getattr(config, 'SEASONALITY_ENABLED', True):
+                    _seas_pairs = [
+                        (get_opex_score(direction), 'OPEX'),
+                        (get_month_end_score(direction), 'MONTH_END'),
+                        (get_quarter_end_score(direction), 'QTR_END'),
+                        (get_monday_fade_score(direction, ltp_now, ltp_now), 'MON_FADE'),
+                        (get_opex_pin_score(symbol, ltp_now), 'OPEX_PIN'),
+                    ]
+                    for (_d, _r), _tag in _seas_pairs:
+                        if _d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _d)
+                            logger.debug(f"{symbol}: {_tag} {_d:+.0f} {_r}")
+            except Exception as _seas_e:
+                logger.debug(f"[suppressed] seasonality: {_seas_e}")
+
+            try:
+                from momentum_multi import get_multi_momentum_score
+                if getattr(config, 'MULTI_MOMENTUM_ENABLED', True):
+                    _mm, _mmr = get_multi_momentum_score(symbol, direction)
+                    if _mm:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mm)
+                        logger.debug(f"{symbol}: MULTI_MOM {_mm:+.0f} {_mmr}")
+            except Exception as _mme:
+                logger.debug(f"[suppressed] multi_momentum: {_mme}")
+
+            try:
+                from liquidity_signals import (
+                    get_amihud_score, get_spread_score,
+                    get_kyle_lambda_score, get_volume_clock_score,
+                )
+                if getattr(config, 'LIQUIDITY_SIGNALS_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _liq_data = [
+                        (get_amihud_score(symbol, df_5m, direction), 'AMIHUD'),
+                        (get_spread_score(df_5m, ltp_now), 'SPREAD'),
+                        (get_kyle_lambda_score(df_5m, direction), 'KYLE_L'),
+                        (get_volume_clock_score(df_5m, direction), 'VOL_CLK'),
+                    ]
+                    for (_d, _r), _tag in _liq_data:
+                        if _d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _d)
+                            logger.debug(f"{symbol}: {_tag} {_d:+.0f} {_r}")
+            except Exception as _liqe:
+                logger.debug(f"[suppressed] liquidity: {_liqe}")
+
+            # ── RENAISSANCE MEDALLION STRATEGIES (v27.0) ─────────────────────────
+            # IC tracker adaptive weighting, PCA alpha, event alpha (analyst/
+            # dividend/split), STL trend decomposition, execution timing,
+            # and market impact check. All fail-open.
+            try:
+                from ic_tracker import get_signal_weight
+                from pca_alpha import get_pca_alpha_score
+                from event_alpha import get_analyst_signal, get_dividend_capture_score, get_split_signal
+                from stl_signals import get_stl_trend_score
+                from market_impact import get_market_impact_score, get_execution_timing_score
+
+                _watchlist_v27 = getattr(self, '_open_position_symbols', []) or []
+
+                # 1. PCA alpha: trade idiosyncratic moves, not market noise
+                if getattr(config, 'PCA_ALPHA_ENABLED', True):
+                    _pca_d, _pca_r = get_pca_alpha_score(symbol, direction, _watchlist_v27 or [symbol])
+                    _pca_w = get_signal_weight("pca_alpha", 1.0)
+                    _pca_d = round(_pca_d * _pca_w, 2)
+                    if _pca_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pca_d)
+                        logger.debug(f"{symbol}: PCA_ALPHA {_pca_d:+.1f} {_pca_r} (IC_w={_pca_w:.2f})")
+
+                # 2. Event alpha: analyst upgrades, dividend capture, splits
+                if getattr(config, 'EVENT_ALPHA_ENABLED', True):
+                    _an_d, _an_r = get_analyst_signal(symbol, direction)
+                    _an_w = get_signal_weight("analyst_signal", 1.0)
+                    _an_d = round(_an_d * _an_w, 2)
+                    if _an_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _an_d)
+                        logger.debug(f"{symbol}: EVENT_ANALYST {_an_d:+.1f} {_an_r}")
+
+                    _div_d, _div_r = get_dividend_capture_score(symbol, direction)
+                    _div_w = get_signal_weight("dividend_capture", 1.0)
+                    _div_d = round(_div_d * _div_w, 2)
+                    if _div_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _div_d)
+                        logger.debug(f"{symbol}: EVENT_DIV {_div_d:+.1f} {_div_r}")
+
+                    _spl_d, _spl_r = get_split_signal(symbol, direction)
+                    _spl_w = get_signal_weight("split_signal", 1.0)
+                    _spl_d = round(_spl_d * _spl_w, 2)
+                    if _spl_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _spl_d)
+                        logger.debug(f"{symbol}: EVENT_SPLIT {_spl_d:+.1f} {_spl_r}")
+
+                # 3. STL trend decomposition: trade the trend, not the noise
+                if getattr(config, 'STL_ENABLED', True) and df_5m is not None and not df_5m.empty:
+                    _stl_d, _stl_r = get_stl_trend_score(df_5m, direction)
+                    _stl_w = get_signal_weight("stl_trend", 1.0)
+                    _stl_d = round(_stl_d * _stl_w, 2)
+                    if _stl_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _stl_d)
+                        logger.debug(f"{symbol}: STL_TREND {_stl_d:+.1f} {_stl_r}")
+
+                # 4. Execution timing: avoid open chaos and close MOC flow
+                if getattr(config, 'EXECUTION_TIMING_ENABLED', True):
+                    _et_d, _et_r = get_execution_timing_score(direction)
+                    if _et_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _et_d)
+                        logger.debug(f"{symbol}: EXEC_TIMING {_et_d:+.1f} {_et_r}")
+
+                # 5. Market impact check (Almgren-Chriss): penalize oversized orders
+                if getattr(config, 'MARKET_IMPACT_ENABLED', True) and combined_size > 0:
+                    _notional = combined_size * ltp_now * 10  # approx shares (10 = unit)
+                    _mi_d, _mi_r = get_market_impact_score(symbol, int(_notional / max(ltp_now, 0.01)), ltp_now, direction)
+                    if _mi_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _mi_d)
+                        logger.debug(f"{symbol}: MKT_IMPACT {_mi_d:+.1f} {_mi_r}")
+
+            except Exception as _rene:
+                logger.debug(f"[suppressed] renaissance_v27: {_rene}")
+
+            # ── TOP 0.1% SIGNALS (v28.0) ─────────────────────────────────────────
+            # HAR-RV volatility sizing, tape OFI, synthetic L2, dark pool,
+            # alt data (Google Trends/Wikipedia/Reddit), EDGAR NLP,
+            # CBOE P/C + VIX term structure, beta-neutral sizing, portfolio covariance
+            try:
+                # 1. HAR-RV volatility size adjustment (replaces/enhances GARCH)
+                if getattr(config, 'HAR_RV_ENABLED', True) and df_5m is not None:
+                    from har_rv import get_har_rv_forecast, get_har_size_multiplier
+                    _rv_sigma, _rv_regime = get_har_rv_forecast(symbol, df_5m)
+                    _rv_mult = get_har_size_multiplier(_rv_sigma)
+                    if _rv_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _rv_mult, 2)))
+                        logger.debug(f"{symbol}: HAR_RV {_rv_regime}(σ={_rv_sigma:.1f}%) → {_rv_mult:.2f}x size")
+
+                # 2. Real-time tape OFI (Lee-Ready order flow imbalance)
+                if getattr(config, 'TAPE_OFI_ENABLED', True):
+                    from tape_classifier import get_tape_classifier
+                    _tape_d, _tape_r = get_tape_classifier().get_ofi_score(symbol, direction)
+                    if _tape_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _tape_d)
+                        logger.debug(f"{symbol}: TAPE_OFI {_tape_d:+.0f} {_tape_r}")
+
+                # 3. Synthetic Level-2 depth score
+                if getattr(config, 'SYNTHETIC_L2_ENABLED', True) and df_5m is not None:
+                    from synthetic_l2 import get_synthetic_depth_score
+                    _l2_d, _l2_r = get_synthetic_depth_score(symbol, ltp_now, direction, df_5m)
+                    if _l2_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _l2_d)
+                        logger.debug(f"{symbol}: SYN_L2 {_l2_d:+.0f} {_l2_r}")
+
+                # 4. Dark pool activity proxy
+                if getattr(config, 'DARK_POOL_ENABLED', True) and df_5m is not None:
+                    from dark_pool_proxy import get_dark_pool_score
+                    _dp_d, _dp_r = get_dark_pool_score(symbol, df_5m, direction)
+                    if _dp_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _dp_d)
+                        logger.debug(f"{symbol}: DARK_POOL {_dp_d:+.0f} {_dp_r}")
+
+                # 5. Alternative data: Google Trends + Wikipedia + Reddit
+                if getattr(config, 'ALT_DATA_ENABLED', True):
+                    from alt_data_engine import get_google_trends_score, get_wikipedia_score, get_reddit_score
+                    _gt_d, _gt_r = get_google_trends_score(symbol, symbol, direction)
+                    if _gt_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _gt_d)
+                        logger.debug(f"{symbol}: GTRENDS {_gt_d:+.0f} {_gt_r}")
+                    _wiki_d, _wiki_r = get_wikipedia_score(symbol, direction)
+                    if _wiki_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _wiki_d)
+                        logger.debug(f"{symbol}: WIKI {_wiki_d:+.0f} {_wiki_r}")
+                    _red_d, _red_r = get_reddit_score(symbol, direction)
+                    if _red_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _red_d)
+                        logger.debug(f"{symbol}: REDDIT {_red_d:+.0f} {_red_r}")
+
+                # 6. EDGAR 8-K sentiment (NLP on recent SEC filings)
+                if getattr(config, 'EDGAR_SENTIMENT_ENABLED', True):
+                    from edgar_sentiment import get_edgar_sentiment_score
+                    _edg_d, _edg_r = get_edgar_sentiment_score(symbol, direction)
+                    if _edg_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _edg_d)
+                        logger.debug(f"{symbol}: EDGAR {_edg_d:+.0f} {_edg_r}")
+
+                # 7. CBOE put/call ratio + VIX term structure + SKEW index
+                if getattr(config, 'CBOE_DATA_ENABLED', True):
+                    from cboe_data import get_pc_ratio_score, get_vix_term_structure_score, get_skew_score
+                    _pc_d, _pc_r = get_pc_ratio_score(direction)
+                    if _pc_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pc_d)
+                        logger.debug(f"{symbol}: CBOE_PC {_pc_d:+.0f} {_pc_r}")
+                    _vts_d, _vts_r = get_vix_term_structure_score(direction)
+                    if _vts_d and abs(_vts_d) >= 2:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _vts_d)
+                        logger.debug(f"{symbol}: VIX_TERM {_vts_d:+.0f} {_vts_r}")
+                    _skew_d, _skew_r = get_skew_score(direction)
+                    if _skew_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _skew_d)
+                        logger.debug(f"{symbol}: CBOE_SKEW {_skew_d:+.0f} {_skew_r}")
+
+                # 8. Beta-neutral sizing
+                if getattr(config, 'BETA_NEUTRAL_ENABLED', True):
+                    from beta_manager import get_beta_size_multiplier, get_portfolio_beta
+                    _open_pos_list = list(getattr(self, '_open_position_symbols', []))
+                    _port_beta = get_portfolio_beta(_open_pos_list)
+                    _beta_mult = get_beta_size_multiplier(symbol, df_5m, _port_beta)
+                    if _beta_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _beta_mult, 2)))
+                        logger.debug(f"{symbol}: BETA_NEUTRAL {_beta_mult:.2f}x (port_β={_port_beta:.1f})")
+
+                # 9. Portfolio covariance optimizer (Ledoit-Wolf)
+                if getattr(config, 'COV_OPTIMIZER_ENABLED', True):
+                    from covariance_optimizer import get_portfolio_size_multiplier
+                    _open_syms = list(getattr(self, '_open_position_symbols', []))
+                    if _open_syms:
+                        _cov_mult = get_portfolio_size_multiplier(symbol, direction, _open_syms)
+                        if _cov_mult != 1.0:
+                            combined_size = max(0.25, min(3.0, round(combined_size * _cov_mult, 2)))
+                            logger.debug(f"{symbol}: COV_OPT {_cov_mult:.2f}x (corr to {len(_open_syms)} positions)")
+
+            except Exception as _top01_e:
+                logger.debug(f"[suppressed] top01_v28: {_top01_e}")
+
+            # ── TOP 1% SIGNALS (v29.0) ───────────────────────────────────────────
+            # PEAD drift, regime-adaptive weights, VaR sizing, correlation crisis,
+            # TWAP flag for large orders. All fail-open.
+            try:
+                # 1. PEAD: Post-Earnings Announcement Drift (Ball & Brown 1968 anomaly)
+                if getattr(config, 'PEAD_ENGINE_ENABLED', True):
+                    from pead_engine import get_pead_score
+                    _pead_d, _pead_r = get_pead_score(symbol, direction)
+                    if _pead_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _pead_d)
+                        logger.debug(f"{symbol}: PEAD {_pead_d:+.0f} {_pead_r}")
+
+                # 2. Regime-adaptive signal routing: re-weight based on market regime
+                if getattr(config, 'REGIME_ROUTER_ENABLED', True):
+                    from regime_signal_router import detect_regime, get_regime_size_multiplier
+                    _cur_regime = detect_regime()
+                    _regime_size = get_regime_size_multiplier(_cur_regime)
+                    if _regime_size != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _regime_size, 2)))
+                        logger.debug(f"{symbol}: REGIME_ROUTER {_cur_regime} → {_regime_size:.2f}x size")
+
+                # 3. VaR-based position sizing (Historical Simulation)
+                if getattr(config, 'INTRADAY_VAR_ENABLED', True) and df_5m is not None:
+                    from intraday_var import get_var_size_multiplier
+                    _open_ct = len(getattr(self, '_open_position_symbols', []))
+                    _day_cap = getattr(config, 'MAX_DAILY_CAPITAL', 50000.0)
+                    _loss_pct = getattr(config, 'DAILY_LOSS_LIMIT_PCT', 2.0)
+                    _var_mult, _var_r = get_var_size_multiplier(
+                        symbol, df_5m, float(_day_cap), float(_loss_pct), _open_ct
+                    )
+                    if _var_mult != 1.0:
+                        combined_size = max(0.25, min(3.0, round(combined_size * _var_mult, 2)))
+                        logger.debug(f"{symbol}: VAR_SIZE {_var_r}")
+
+                # 4. Correlation crisis circuit breaker
+                if getattr(config, 'CORRELATION_CRISIS_ENABLED', True):
+                    from correlation_crisis import get_crisis_size_multiplier
+                    _watchlist_for_corr = getattr(self, '_current_watchlist', []) or []
+                    _crisis_mult, _crisis_r = get_crisis_size_multiplier(
+                        _watchlist_for_corr[:20], self.fetcher
+                    )
+                    if _crisis_mult < 1.0:
+                        combined_size = max(0.25, round(combined_size * _crisis_mult, 2))
+                        logger.debug(f"{symbol}: CORR_CRISIS {_crisis_r}")
+
+            except Exception as _top1_e:
+                logger.debug(f"[suppressed] top1_v29: {_top1_e}")
+
+            # ── Enforce booster cap: clamp total booster contribution to +50 ────
+            # Raised to +50 for v28.0 Top 0.1% modules (11 new signal sources)
+            _BOOSTER_MAX_DELTA = 50.0
+            _booster_delta = filter_result.final_score - _booster_base_score
+            if _booster_delta > _BOOSTER_MAX_DELTA:
+                filter_result.final_score = min(100.0, _booster_base_score + _BOOSTER_MAX_DELTA)
+                logger.debug(
+                    f"{symbol}: booster cap applied — delta was {_booster_delta:+.1f}, "
+                    f"clamped to +{_BOOSTER_MAX_DELTA:.0f} → score {filter_result.final_score:.1f}"
+                )
+
+            # ── TIER 2.5: Volatility Targeting (Bridgewater/AQR approach) ────────
+            if getattr(config, 'VOL_TARGET_ENABLED', True):
+                try:
+                    from volatility_targeting import get_vol_target_size_multiplier
+                    _vt_mult, _vt_reason = get_vol_target_size_multiplier(symbol, df_5m)
+                    if _vt_mult != 1.0:
+                        combined_size = max(0.1, round(combined_size * _vt_mult, 3))
+                        logger.debug(f"{symbol}: {_vt_reason}")
+                except Exception as _vt_e:
+                    logger.debug(f"[suppressed] vol_target: {_vt_e}")
+
+            # ── GARCH/EWMA Volatility Sizing (RiskMetrics — λ=0.94) ──────────────
+            if getattr(config, 'GARCH_SIZING_ENABLED', True):
+                try:
+                    from garch_sizing import get_size_multiplier as _garch_size_mult
+                    if df_5m is not None and len(df_5m) >= 10:
+                        _cl_col = 'close' if 'close' in df_5m.columns else 'Close'
+                        _cl_arr = df_5m[_cl_col].values
+                        _rets   = list(np.diff(_cl_arr) / np.maximum(_cl_arr[:-1], 1e-9))
+                        _garch_sz = _garch_size_mult(symbol, _rets)
+                        if _garch_sz != 1.0:
+                            combined_size = max(0.1, round(combined_size * _garch_sz, 3))
+                            logger.debug(f"{symbol}: GARCH_SIZE {_garch_sz:.2f}x (ewma-vol)")
+                except Exception as _garch_e:
+                    logger.debug(f"[suppressed] garch_sizing: {_garch_e}")
+
+            # ── TIER 1.5: Neural Network MLP Predictor ────────────────────────────
+            if getattr(config, 'NEURAL_PREDICTOR_ENABLED', True):
+                try:
+                    from neural_predictor import get_neural_score_delta
+                    _ind_dict = {
+                        "rsi_14":        float(getattr(ind, 'rsi',          50.0) or 50.0),
+                        "rsi_5":         float(getattr(ind, 'rsi',          50.0) or 50.0),
+                        "macd_hist":     float(getattr(ind, 'macd_hist',     0.0) or 0.0),
+                        "ema9_21_ratio": float((getattr(ind,'ema9',ltp_now) or ltp_now) /
+                                               max(getattr(ind,'ema21',ltp_now) or ltp_now, 1e-9)),
+                        "bb_position":   float(getattr(ind, 'bb_pct',        0.5) or 0.5),
+                        "atr_pct":       float((getattr(ind,'atr',0.0) or 0.0) / max(ltp_now,1)),
+                        "hvol_20":       0.30,
+                        "vol_ratio":     float(getattr(ind, 'volume_ratio',  1.0) or 1.0),
+                        "mom_5":         0.0,
+                        "mom_10":        0.0,
+                        "mom_20":        0.0,
+                        "rs_spy":        0.0,
+                        "stoch_k":       float(getattr(ind, 'stoch_k',      50.0) or 50.0),
+                        "adx_14":        float(getattr(ind, 'adx',          25.0) or 25.0),
+                        "gap_pct":       0.0,
+                        "price_vs_52h":  0.9,
+                        "vix_level":     0.7,
+                        "tlt_5d":        0.0,
+                        "uup_5d":        0.0,
+                        "spy_rs":        0.0,
+                    }
+                    # Enrich from df_5m if available
+                    if df_5m is not None and len(df_5m) >= 21:
+                        _cl = df_5m['close'].values if 'close' in df_5m.columns else df_5m['Close'].values
+                        if len(_cl) >= 6:  _ind_dict["mom_5"]  = float(_cl[-1]/_cl[-6]-1)
+                        if len(_cl) >= 11: _ind_dict["mom_10"] = float(_cl[-1]/_cl[-11]-1)
+                        if len(_cl) >= 21: _ind_dict["mom_20"] = float(_cl[-1]/_cl[-21]-1)
+                    _nn_delta, _nn_reason = get_neural_score_delta(symbol, _ind_dict, direction)
+                    if _nn_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _nn_delta))
+                        logger.debug(f"{symbol}: {_nn_reason}")
+                except Exception as _nn_e:
+                    logger.debug(f"[suppressed] neural_predictor: {_nn_e}")
+
+            # ── TIER 1.5: Statistical Arbitrage (Engle-Granger Cointegration) ─────
+            if getattr(config, 'COINT_ARBIT_ENABLED', True):
+                try:
+                    from stat_arb_cointegration import get_cointegration_signal
+                    _ca_delta, _ca_reason = get_cointegration_signal(symbol, direction)
+                    if _ca_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _ca_delta))
+                        logger.debug(f"{symbol}: {_ca_reason}")
+                except Exception as _ca2_e:
+                    logger.debug(f"[suppressed] coint_arb: {_ca2_e}")
+
+            # ── TIER 1.5: Opening Gap Fade (documented 62%+ win-rate anomaly) ─────
+            if getattr(config, 'GAP_FADE_ENABLED', True):
+                try:
+                    from gap_fade_strategy import get_gap_fade_score
+                    _gf_delta, _gf_reason = get_gap_fade_score(symbol, direction)
+                    if _gf_delta:
+                        filter_result.final_score = min(100.0, max(0.0,
+                            filter_result.final_score + _gf_delta))
+                        logger.debug(f"{symbol}: {_gf_reason}")
+                except Exception as _gf_e:
+                    logger.debug(f"[suppressed] gap_fade: {_gf_e}")
+
+            # ── Final execution gate: after ALL boosters ───────────────────────
             _FINAL_EXEC_MIN = getattr(config, "FINAL_EXEC_MIN_SCORE", 70.0)
+            if _idle_scalp_active and _idle_scalp_params:
+                # Scalp mode: accept lower scores since we're taking smaller positions
+                _FINAL_EXEC_MIN = min(_FINAL_EXEC_MIN, _idle_scalp_params.get("score_min", 55.0))
             if filter_result.final_score < _FINAL_EXEC_MIN:
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: Final score "
@@ -1523,6 +2497,27 @@ class SignalGenerator:
                     f"boosters — no conviction signal, skipping"
                 )
                 return None
+
+            # ── Pre-entry transaction cost filter (v28.0) ────────────────────────
+            # Skip if expected alpha < bid-ask spread + slippage (unprofitable after cost)
+            if getattr(config, 'COST_FILTER_ENABLED', True):
+                try:
+                    from transaction_cost_model import get_cost_filter
+                    _cost_ok, _cost_reason = get_cost_filter(
+                        symbol,
+                        filter_result.final_score,
+                        int(combined_size * 100),
+                        ltp_now,
+                        direction,
+                    )
+                    if not _cost_ok:
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {symbol}: COST_FILTER blocked — {_cost_reason}"
+                        )
+                        return None
+                    logger.debug(f"{symbol}: COST_OK — {_cost_reason}")
+                except Exception as _ce:
+                    logger.debug(f"[suppressed] cost_filter: {_ce}")
 
             # ── ELITE FILTER (v11.0) — VIX adaptive + R/R enforcer ────────────
             try:
@@ -2056,6 +3051,30 @@ class SignalGenerator:
             except Exception as _vp_e:
                 logger.debug(f"[suppressed] vpin: {_vp_e}")
 
+            # ── MARKET INTELLIGENCE HUB v32.0 — 25 modules, all free data, parallel ──
+            try:
+                if getattr(config, 'INTELLIGENCE_HUB_ENABLED', True):
+                    from market_intelligence_hub import get_intelligence_hub_boost
+                    _wl = getattr(self, '_open_position_symbols', []) or [symbol]
+                    _hub_delta, _hub_sz, _hub_reason = get_intelligence_hub_boost(
+                        symbol    = symbol,
+                        df_5m     = df_5m,
+                        df_1h     = df_1h if 'df_1h' in locals() else None,
+                        direction = direction,
+                        ltp       = ltp_now,
+                        atr       = atr if 'atr' in locals() else float(getattr(ind, 'atr', 0.0) or 0.0),
+                        watchlist = _wl,
+                    )
+                    if _hub_delta != 0.0:
+                        filter_result.final_score = float(np.clip(
+                            filter_result.final_score + _hub_delta, 0.0, 100.0))
+                        logger.debug(f"{symbol}: HUB {_hub_delta:+.0f} {_hub_reason}")
+                    if _hub_sz != 1.0:
+                        combined_size = round(combined_size * _hub_sz, 3)
+                        logger.debug(f"{symbol}: HUB_SIZE {_hub_sz:.2f}x")
+            except Exception as _hub_e:
+                logger.debug(f"[suppressed] intelligence_hub: {_hub_e}")
+
             try:
                 # 5. IC-Weighted Bayesian boost — weight signals by rolling Spearman IC
                 if getattr(config, 'IC_TRACKER_ENABLED', True) and _v20_signal_deltas:
@@ -2073,6 +3092,47 @@ class SignalGenerator:
                         register_signal_prediction(_sn, direction, conf)
             except Exception as _ic_e:
                 logger.debug(f"[suppressed] signal_ic_tracker: {_ic_e}")
+
+            # ── US GOD MODE SIGNALS (v36.0) — Congressional + Insider + Earnings/FOMC ──
+            _skip_earnings = False
+            try:
+                # Congressional trades alpha — policy-maker informed buying/selling
+                if getattr(config, 'CONGRESSIONAL_TRADES_ALPHA_ENABLED', True):
+                    from congressional_trades_alpha import get_congressional_score
+                    _cong_d, _cong_r = get_congressional_score(symbol, direction)
+                    if _cong_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _cong_d)
+                        logger.debug(f"{symbol}: CONGRESSIONAL {_cong_d:+.0f} {_cong_r}")
+
+                # SEC Form 4 insider buying — cluster buy = management conviction
+                if getattr(config, 'INSIDER_ALPHA_ENABLED', True):
+                    from insider_buying_alpha import get_insider_score
+                    _ins_d, _ins_r = get_insider_score(symbol, direction)
+                    if _ins_d:
+                        filter_result.final_score = min(100.0, filter_result.final_score + _ins_d)
+                        logger.debug(f"{symbol}: INSIDER {_ins_d:+.0f} {_ins_r}")
+
+                # Earnings & FOMC calendar gate — block before earnings, halve size on FOMC
+                if getattr(config, 'EARNINGS_CALENDAR_ENABLED', True):
+                    from us_earnings_calendar import should_avoid_earnings, get_earnings_drift_score, is_fomc_day
+                    if is_fomc_day():
+                        combined_size = round(combined_size * 0.50, 2)  # half size on FOMC day
+                        logger.debug(f"{symbol}: FOMC_DAY half-size")
+                    _avoid_earn, _earn_r = should_avoid_earnings(symbol)
+                    if _avoid_earn:
+                        _skip_earnings = True
+                        logger.debug(f"{symbol}: earnings gate — {_earn_r} — skipping")
+                    else:
+                        _ed_d, _ed_r = get_earnings_drift_score(symbol, direction)
+                        if _ed_d:
+                            filter_result.final_score = min(100.0, filter_result.final_score + _ed_d)
+                            logger.debug(f"{symbol}: EARNINGS_DRIFT {_ed_d:+.0f} {_ed_r}")
+
+            except Exception as _us_god_e:
+                logger.debug(f"[suppressed] us_god_mode: {_us_god_e}")
+
+            if _skip_earnings:
+                return None
 
             # ── MASTER CONFLUENCE GATE (v14.0) — require 2+ agreeing signals ──
             try:
@@ -2187,8 +3247,37 @@ class SignalGenerator:
                 pm_score=pm_score,
             )
 
-            # Hard R:R gate — top-3% rule: never trade below 2:1 reward-to-risk
-            min_rr = getattr(config, "MIN_RISK_REWARD", 2.0)
+            # Idle scalp post-processing: override T1/T2/size/time-stop for scalp trades
+            if _idle_scalp_active and _idle_scalp_params:
+                try:
+                    sl_dist = abs(signal.entry_price - signal.stop_loss)
+                    if sl_dist > 0:
+                        _t1_rr = _idle_scalp_params.get("t1_rr", 0.8)
+                        _t2_rr = _idle_scalp_params.get("t2_rr", 1.5)
+                        if direction == "LONG":
+                            signal.target_1 = round(signal.entry_price + _t1_rr * sl_dist, 4)
+                            signal.target_2 = round(signal.entry_price + _t2_rr * sl_dist, 4)
+                        else:
+                            signal.target_1 = round(signal.entry_price - _t1_rr * sl_dist, 4)
+                            signal.target_2 = round(signal.entry_price - _t2_rr * sl_dist, 4)
+                        signal.risk_reward = round(_t2_rr, 2)
+                        signal.size_multiplier = round(
+                            signal.size_multiplier * _idle_scalp_params.get("size_mult", 0.40), 3)
+                        signal.time_stop_minutes = _idle_scalp_params.get("time_stop_min", 10)
+                        # Never grade up scalps — keep B so size doesn't multiply further
+                        if signal.quality_grade == "A+":
+                            signal.quality_grade = "A"
+                        logger.info(
+                            f"[{format_ist_timestamp()}] {symbol}: SCALP_MODE — "
+                            f"T2={signal.target_2:.2f} ({_t2_rr}R) size={signal.size_multiplier:.2f}x "
+                            f"time_stop={signal.time_stop_minutes}min"
+                        )
+                except Exception as _scalp_patch_e:
+                    logger.debug(f"[suppressed] scalp_patch: {_scalp_patch_e}")
+
+            # Hard R:R gate — never trade below required minimum
+            _scalp_min_rr = _idle_scalp_params.get("min_rr", 2.0) if _idle_scalp_active else None
+            min_rr = _scalp_min_rr if (_idle_scalp_active and _scalp_min_rr) else getattr(config, "MIN_RISK_REWARD", 2.0)
             if signal.risk_reward < min_rr:
                 logger.info(
                     f"[{format_ist_timestamp()}] {symbol}: R:R {signal.risk_reward:.1f}:1 < "
@@ -2234,6 +3323,9 @@ class SignalGenerator:
         # Refresh FII/DII + OC + FII futures once per cycle (not per symbol)
         self.refresh_institutional_context()
 
+        # Store watchlist reference for correlation crisis + cross-sectional ranking
+        self._current_watchlist = list(symbols)
+
         # Clear daily candles cache at start of each scan cycle (30-min staleness tolerance)
         self._daily_candles_cache = {}
 
@@ -2261,6 +3353,63 @@ class SignalGenerator:
                 )
         except Exception as _e:
             logger.debug(f"[suppressed] {_e}")
+
+        # Cross-sectional ranking (v27.0): pre-rank all symbols, keep top 40%
+        # This ensures we only enter the strongest setups when the watchlist is large
+        if getattr(config, 'CROSS_SECTIONAL_RANKING_ENABLED', True) and len(symbols) > 15:
+            try:
+                from cross_sectional_ranker import rank_symbols
+                symbols = rank_symbols(symbols, self.fetcher, top_pct=0.40)
+                logger.info(
+                    f"[{format_ist_timestamp()}] Cross-sectional pre-rank: "
+                    f"{len(symbols)} symbols selected"
+                )
+            except Exception as _csr_e:
+                logger.debug(f"[suppressed] cross_sectional_ranker: {_csr_e}")
+
+        # Pre-warm BarCache before concurrent scan so threads serve from memory (not blocking Alpaca).
+        # On startup (empty cache) this blocks once; on subsequent calls it's a no-op (data is fresh).
+        try:
+            from data_fetch_alpaca import get_bar_cache as _get_bc
+            _bc = _get_bc()
+            _warmup_specs = [("5minute", 5), ("15minute", 10), ("1hour", 30)]
+            for _iv, _ld in _warmup_specs:
+                import time as _tw
+                _last = _bc._last_refresh.get(_iv, 0.0)
+                if (_tw.monotonic() - _last) > _bc.REFRESH_INTERVAL:
+                    # Force blocking refresh so the cache is warm before threads start
+                    with _bc._refresh_lock:
+                        if (_tw.monotonic() - _bc._last_refresh.get(_iv, 0.0)) > _bc.REFRESH_INTERVAL:
+                            _bc._last_refresh[_iv] = _tw.monotonic()
+                            try:
+                                _bc._refresh_interval(_iv, _ld)
+                            except Exception as _wue:
+                                _bc._last_refresh[_iv] = 0.0
+                                logger.warning(f"BarCache pre-warm {_iv}: {_wue}")
+            # Fetch any scan symbols not in the standard watchlist (top movers, dynamic additions).
+            # BarCache._refresh_interval() only fetches config.WATCHLIST; extra symbols miss the
+            # cache and fall back to slow per-symbol Alpaca calls → "insufficient 5m data".
+            try:
+                _cached_syms = set(k[0] for k in _bc._cache.keys() if k[1] == "5minute")
+                _extra_syms  = [s for s in symbols if s not in _cached_syms]
+                if _extra_syms:
+                    logger.info(
+                        f"[BarCache] Fetching {len(_extra_syms)} extra scan symbols: "
+                        f"{', '.join(_extra_syms[:8])}{'...' if len(_extra_syms) > 8 else ''}"
+                    )
+                    for _iv2, _ld2 in [("5minute", 5), ("15minute", 10), ("1hour", 30)]:
+                        _nd: dict = {}
+                        try:
+                            _bc._fetch_alpaca_bars(_iv2, _ld2, _extra_syms, _nd)
+                        except Exception:
+                            pass
+                        if _nd:
+                            with _bc._lock:
+                                _bc._cache.update(_nd)
+            except Exception as _ese:
+                logger.debug(f"[suppressed] extra-symbol BarCache fetch: {_ese}")
+        except Exception as _pwe:
+            logger.debug(f"[suppressed] BarCache pre-warm: {_pwe}")
 
         signals: List[TradeSignal] = []
         errors  = 0
@@ -2305,7 +3454,7 @@ class SignalGenerator:
         try:
             return self.generate_signal(symbol)
         except Exception as e:
-            logger.debug(f"_scan_one({symbol}): {e}")
+            logger.warning(f"[SCAN] {symbol}: generate_signal raised unhandled exception — {e}")
             return None
 
     # --------------------------------------------------------
@@ -2702,6 +3851,32 @@ class SignalGenerator:
         except Exception:
             pass
         return 0.0
+
+    def _get_prev_day_volume(self, symbol: str, quote_volume: float) -> float:
+        """Return previous completed day's volume from daily bar cache.
+
+        The live quote volume is near-zero at market open (only minutes of data),
+        which falsely flags liquid stocks like NVDA/AAPL as low-volume.
+        We use the most recent COMPLETE daily bar instead.
+        Falls back to quote_volume if cache is unavailable.
+        """
+        try:
+            df = self._daily_candles_cache.get(symbol)
+            if df is not None and not df.empty and "volume" in df.columns:
+                today = __import__("utils").get_current_ist_time().date()
+                # Use the most recent bar that is NOT today's partial bar
+                for i in range(len(df) - 1, -1, -1):
+                    bar_date = df.index[i]
+                    if hasattr(bar_date, "date"):
+                        bar_date = bar_date.date()
+                    if bar_date < today:
+                        vol = float(df["volume"].iloc[i])
+                        if vol > 0:
+                            return vol
+                        break
+        except Exception:
+            pass
+        return float(quote_volume or 0)
 
     def _get_gap_pct(self, symbol: str) -> float:
         """Get today's opening gap % for symbol (0.0 if not available)."""

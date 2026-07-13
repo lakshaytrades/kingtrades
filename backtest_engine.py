@@ -22,7 +22,7 @@ For each strategy:
 
 Output format (Telegram + file):
 -----------------------------------------------------------
-KINGTRADES BACKTEST REPORT -- 90 Days
+SATAVECTOR BACKTEST REPORT -- 90 Days
    Jun 2025 -> Sep 2025  |  30 Symbols  |  $5,000 Capital
 -----------------------------------------------------------
 """
@@ -799,7 +799,7 @@ def format_backtest_report(results: Dict) -> str:
         lines = [
             "",
             "=" * 55,
-            "  KINGTRADES BACKTEST REPORT -- {} Days".format(days),
+            "  SATAVECTOR BACKTEST REPORT -- {} Days".format(days),
             "  {}  |  {} Symbols  |  ${:,.0f} Capital".format(gen_at[:10], n_syms, capital),
             "=" * 55,
             "STRATEGY RANKINGS (by Risk-Adjusted Return / Sharpe)",
@@ -919,7 +919,7 @@ if __name__ == "__main__":
         level=logging.INFO,
         format="%(asctime)s [%(levelname)s] %(message)s",
     )
-    print("Running KingTrades backtest -- downloading 90 days of data...")
+    print("Running SataVector backtest -- downloading 90 days of data...")
     results = run_full_backtest(capital=5000.0, days=90)
     report  = format_backtest_report(results)
     print(report)

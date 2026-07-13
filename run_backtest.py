@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-run_backtest.py — KingTrades Strategy Backtester
+run_backtest.py — SataVector Strategy Backtester
 Run this on your LOCAL machine (needs internet for yfinance).
 
 Usage:
@@ -697,7 +697,7 @@ def analyze(cfg: BacktestConfig, sim: Dict) -> None:
     shorts = [t for t in trades if t["direction"] == "SHORT"]
 
     print("\n" + "=" * 65)
-    print("  KINGTRADES BACKTEST RESULTS")
+    print("  SATAVECTOR BACKTEST RESULTS")
     print("=" * 65)
     print(f"  Symbols      : {len(cfg.symbols)} stocks | "
           f"{cfg.lookback_days}d lookback")
@@ -824,7 +824,7 @@ def analyze(cfg: BacktestConfig, sim: Dict) -> None:
 # ─────────────────────────────────────────────────────────────────────────────
 
 def main():
-    parser = argparse.ArgumentParser(description="KingTrades Backtest Runner")
+    parser = argparse.ArgumentParser(description="SataVector Backtest Runner")
     parser.add_argument("--full",    action="store_true", help="Full 30-stock backtest")
     parser.add_argument("--symbol",  type=str,   default="", help="Single symbol (e.g. NVDA)")
     parser.add_argument("--capital", type=float, default=1000.0, help="Starting capital in $")
@@ -848,7 +848,7 @@ def main():
         min_score       = args.score,
     )
 
-    print(f"\n🔍 KingTrades Backtest — {len(symbols)} symbols × {cfg.lookback_days}d")
+    print(f"\n🔍 SataVector Backtest — {len(symbols)} symbols × {cfg.lookback_days}d")
     print(f"   Capital ${cfg.initial_capital:,.0f} | Risk {cfg.risk_pct}%/trade | Min score {cfg.min_score}")
     print(f"   Fetching data (needs internet)...\n")
 

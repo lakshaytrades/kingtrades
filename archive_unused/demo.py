@@ -1,5 +1,5 @@
 """
-demo.py — Live demonstration of what KingTrades bot does every day.
+demo.py — Live demonstration of what SataVector bot does every day.
 Shows signal scanning, risk checks, and sends a sample email report.
 Does NOT place any real orders.
 """
@@ -19,7 +19,7 @@ except ImportError:
 
 print()
 print("=" * 60)
-print("  KINGTRADES BOT — LIVE DEMO")
+print("  SATAVECTOR BOT — LIVE DEMO")
 print("=" * 60)
 print()
 
@@ -137,7 +137,7 @@ print("[ 6 ] SAMPLE EOD EMAIL REPORT (3:45 PM)")
 print("-" * 40)
 print("""
   ╔══════════════════════════════════════╗
-  ║  KingTrades — Daily P&L Report       ║
+  ║  SataVector — Daily P&L Report       ║
   ║  Thursday, 8 May 2026                ║
   ╠══════════════════════════════════════╣
   ║  Total P&L:    +Rs.1,247             ║
@@ -160,8 +160,8 @@ print("-" * 40)
 try:
     from email_reporter import send_alert
     send_alert(
-        "KingTrades Bot — Demo Complete, Bot is Live!",
-        """Your KingTrades bot is set up and ready.
+        "SataVector Bot — Demo Complete, Bot is Live!",
+        """Your SataVector bot is set up and ready.
 
 WHAT HAPPENS TOMORROW (market day):
 • 8:45 AM IST — Bot logs into Groww automatically
@@ -181,7 +181,7 @@ RISK CONTROLS:
 Bot is running 24/7 on Hostinger Mumbai VPS.
 You just wake up and read what it did.
 
-— KingTrades"""
+— SataVector"""
     )
     print("  ✅ Test email sent to l60116246@gmail.com")
     print("     Check your inbox now!")

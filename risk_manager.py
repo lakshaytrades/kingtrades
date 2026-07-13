@@ -27,6 +27,7 @@ import numpy as np
 
 import config as _config
 from utils import format_ist_timestamp, get_current_ist_time, get_current_et_time, format_currency
+import garch_sizing as _garch_sizing
 
 logger = logging.getLogger(__name__)
 ET = ZoneInfo("America/New_York")
@@ -513,6 +514,37 @@ class RiskManager:
     # POSITION SIZING
     # --------------------------------------------------------
 
+    @staticmethod
+    def conviction_to_size_mult(conviction: float) -> float:
+        """Map OODA conviction [0,1] to size multiplier [0.5, 1.5].
+
+        Used to scale position size based on signal conviction score.
+        High conviction setups get larger size; low conviction get smaller.
+        """
+        if conviction < 0.35:
+            return 0.50   # Very low conviction → half size
+        elif conviction < 0.50:
+            return 0.75
+        elif conviction < 0.65:
+            return 1.00   # Baseline
+        elif conviction < 0.80:
+            return 1.20
+        else:
+            return 1.50   # High conviction → 1.5x size
+
+    def get_size_summary(
+        self,
+        base_shares: int,
+        final_shares: int,
+        combined_mult: float,
+        mults: dict,
+    ) -> str:
+        """Human-readable size calculation summary for Telegram alerts."""
+        return (
+            f"Size: {base_shares}→{final_shares} ({combined_mult:.2f}x) | "
+            f"Mults: {' × '.join(f'{k}={v:.2f}' for k, v in mults.items() if v != 1.0)}"
+        )
+
     def calculate_position_size(
         self,
         symbol: str,
@@ -596,27 +628,21 @@ class RiskManager:
                 "— protecting elite setup sizing"
             )
             sess_mult = 0.8
-        quantity = max(1, int(quantity * sess_mult))
 
         # 4a. Day-of-week multiplier (4-day profit optimizer)
         now_ist    = get_current_ist_time()
         dow        = now_ist.weekday()   # 0=Mon … 4=Fri
         dow_mults  = getattr(_cfg, "DOW_SIZE_MULTIPLIERS", {})
         dow_mult   = dow_mults.get(dow, 1.0)
-        quantity   = max(1, int(quantity * dow_mult))
 
         # 4b. Institutional multiplier (FII/DII + Option Chain)
         inst_mult = getattr(self, "_inst_mult", 1.0)
-        quantity  = max(1, int(quantity * inst_mult))
 
         # 4c. Signal grade / profit engine size multiplier (A+=1.25, A=1.1, etc.)
-        if size_multiplier != 1.0:
-            quantity = max(1, int(quantity * size_multiplier))
+        # (already passed in as size_multiplier parameter)
 
         # 4d. Morning intelligence day-level size multiplier (DEFENSIVE=0.5, AGGRESSIVE=1.5)
         mi_mult = getattr(self, "size_multiplier", 1.0)
-        if mi_mult != 1.0:
-            quantity = max(1, int(quantity * mi_mult))
 
         # 4e. Anti-martingale: scale DOWN after consecutive losses, recover after wins.
         # This is the single most effective drawdown reducer — halves loss damage in streaks.
@@ -629,23 +655,110 @@ class RiskManager:
             _anti_mult = 0.75      # 1 loss: 75% size — slightly cautious
         else:
             _anti_mult = 1.0       # no losses today: full size
+
+        # 4f. GARCH-style EWMA volatility sizing — scale by recent realized vol
+        # Fail-open: returns 1.0 on any error; skips silently if BarCache unavailable
+        _garch_mult = 1.0
+        try:
+            from market_data_store import BarCache
+            _bc = BarCache.instance() if hasattr(BarCache, 'instance') else None
+            _recent_returns: list = []
+            if _bc is not None:
+                _bars = getattr(_bc, 'get_daily_bars', None)
+                if callable(_bars):
+                    _daily = _bars(symbol, limit=22)
+                    if _daily and len(_daily) >= 2:
+                        _closes = [float(b.get("close", b.get("c", 0))) for b in _daily if b.get("close", b.get("c", 0)) > 0]
+                        _recent_returns = [
+                            (_closes[i] - _closes[i - 1]) / _closes[i - 1]
+                            for i in range(1, len(_closes))
+                        ]
+            _garch_mult = _garch_sizing.get_size_multiplier(symbol, _recent_returns)
+        except Exception as _ge:
+            logger.debug(f"[suppressed] garch_sizing: {_ge}")
+
+        # ── COMBINED MULTIPLIER GUARD (floor=0.20, cap at 3 most restrictive) ──────
+        # Collect all independent multipliers that were previously applied sequentially.
+        # Stacking 7+ multipliers multiplicatively can reduce size to <5% of intent
+        # (e.g. 0.5 × 0.35 × 0.5 × 0.8 × 0.6 = 0.042 — effectively not trading).
+        # Fix: use at most the 3 most restrictive below-1.0 multipliers and 2 above-1.0,
+        # then enforce a hard floor of 0.20 (20% of base) and ceiling of 2.0.
+        _all_mults = {
+            "sess":      sess_mult,
+            "dow":       dow_mult,
+            "inst":      inst_mult,
+            "signal":    size_multiplier,
+            "morning":   mi_mult,
+            "anti_mart": _anti_mult,
+            "garch":     _garch_mult,
+        }
+        # Anti-martingale (loss-streak shrink) is the PRIMARY drawdown brake — it
+        # must ALWAYS apply and must never be truncated away by the keep-worst-3
+        # logic below. Everything else competes for ≤3 reducer + ≤2 amplifier slots.
+        _optional_vals = [v for k, v in _all_mults.items() if k != "anti_mart"]
+        _below_one = sorted(
+            [m for m in _optional_vals if m < 1.0]
+        )[:3]   # at most 3 most restrictive optional reductions
+        _above_one = sorted(
+            [m for m in _optional_vals if m > 1.0],
+            reverse=True,
+        )[:2]   # at most 2 amplifiers
+        combined_mult = 1.0
         if _anti_mult < 1.0:
-            quantity = max(1, int(quantity * _anti_mult))
+            combined_mult *= _anti_mult   # mandatory — never dropped
+        for _m in _below_one + _above_one:
+            combined_mult *= _m
+        # Hard floor/ceiling: never above 2× base. Floor kept low (0.10) so a
+        # genuine loss-streak/defensive shrink is preserved, not clamped back up.
+        combined_mult = max(0.10, min(2.0, combined_mult))
+
+        _active_mults = {k: v for k, v in _all_mults.items() if v != 1.0}
+        if _active_mults:
             logger.debug(
-                f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size"
+                f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x "
+                f"(floor=0.10 applied)" if combined_mult == 0.10 else
+                f"{symbol}: size mults {_active_mults} → combined={combined_mult:.2f}x"
+            )
+        if _streak > 0:
+            logger.debug(
+                f"Anti-martingale: {_streak} consecutive loss(es) → {_anti_mult:.0%} size "
+                f"(absorbed into combined_mult={combined_mult:.2f}x)"
             )
 
+        quantity = max(1, int(quantity * combined_mult))
+
         # ── HARD MULTIPLIER CAP: prevent stacked multipliers from exceeding 2× base ──
-        # Base quantity is what risk-based sizing alone gives (before session/DOW/inst multipliers).
-        # With 5 stacked multipliers, position can theoretically reach 5.4× — cap at 2×.
+        # Base quantity is what risk-based sizing alone gives (before all multipliers).
         _base_risk_qty = int(risk_amount / sl_distance) if sl_distance > 0 else 1
         if _base_risk_qty > 0 and quantity > _base_risk_qty * 2:
             quantity = _base_risk_qty * 2
             logger.debug(f"Multiplier cap: clamped qty to 2× base ({_base_risk_qty * 2})")
 
+        if _garch_mult != 1.0:
+            logger.debug(f"{symbol}: GARCH vol sizing ×{_garch_mult:.2f} (absorbed into combined_mult)")
+
         # 5. Portfolio heat cap
         max_portfolio_heat = getattr(_cfg, "MAX_PORTFOLIO_HEAT_PCT", 3.0)
         current_heat       = self.state.portfolio_heat
+
+        # Dynamic heat-based position scaling (runs BEFORE the hard gate)
+        # portfolio_heat is % of capital at risk via SL across all open positions.
+        # Scale down proportionally once heat exceeds 60% of the configured max,
+        # so partial positions are still taken rather than binary nothing-or-full.
+        _heat_pct = current_heat
+        _heat_scale_start = max_portfolio_heat * 0.60  # scale begins at 60% of max
+        _heat_scale_end   = max_portfolio_heat          # hard gate at 100% of max
+        if _heat_pct >= _heat_scale_start:
+            _heat_range = _heat_scale_end - _heat_scale_start   # width of scaling band
+            _heat_scale = max(0.2, 1.0 - ((_heat_pct - _heat_scale_start) / max(_heat_range, 1e-9)) * 0.8)
+            # At 60% of max heat → 1.0x scale; at 80% of max heat → 0.6x; at 100% of max heat → 0.2x
+            quantity = max(1, int(quantity * _heat_scale))
+            risk_amount = quantity * sl_distance  # recalculate after scaling
+            logger.debug(
+                f"[RISK] Heat={_heat_pct:.2f}% ({_heat_pct / max_portfolio_heat * 100:.0f}% of max) "
+                f"→ size scaled to {_heat_scale:.1%} ({quantity} shares)"
+            )
+
         if current_heat >= max_portfolio_heat:
             return {
                 "quantity": 0,
@@ -731,6 +844,8 @@ class RiskManager:
             "dow_mult":       round(dow_mult, 2),
             "inst_mult":      round(inst_mult, 2),
             "heat_pct":       round(self.state.portfolio_heat, 2),
+            "combined_mult":  round(combined_mult, 3),
+            "size_mults":     {k: round(v, 3) for k, v in _active_mults.items()},
         }
 
     # --------------------------------------------------------
@@ -816,6 +931,19 @@ class RiskManager:
                         f"(peak ${self.state.peak_pnl:+.2f} → now ${self.state.daily_pnl:+.2f}). "
                         "No new entries until next day."
                     ),
+                }
+
+        # ── Short position count gate (v22.0) ─────────────────────────────────
+        if direction == "SHORT":
+            import config as _cfg_short
+            if not getattr(_cfg_short, 'SHORT_SELLING_ENABLED', True):
+                return {"allowed": False, "reason": "SHORT_SELLING_ENABLED=false — short trades disabled"}
+            _max_shorts = int(getattr(_cfg_short, 'MAX_SHORT_POSITIONS', 3))
+            _short_count = sum(1 for p in self.state.positions.values() if p.direction == "SHORT")
+            if _short_count >= _max_shorts:
+                return {
+                    "allowed": False,
+                    "reason": f"Short position limit: {_short_count}/{_max_shorts} short positions open"
                 }
 
         # ── Portfolio direction concentration ──────────────────────────────
@@ -1077,6 +1205,7 @@ class RiskManager:
                     and position.stop_loss > position.entry_price):
                 position.stop_loss = position.entry_price
                 position.breakeven_done = True
+                _persist_sl(position.symbol, position.entry_price)
                 logger.info(
                     f"[TRAILING STOP] {position.symbol} SHORT: "
                     f"🛡 Breakeven — price reached entry-{be_atr_mult}×ATR (${be_price_short:.2f}), "
@@ -1096,6 +1225,7 @@ class RiskManager:
                 locked_sl = position.entry_price - t1_lock_mult * atr
                 locked_sl = min(position.stop_loss, locked_sl)
                 position.stop_loss = locked_sl
+                _persist_sl(position.symbol, locked_sl)
                 logger.info(
                     f"[TRAILING STOP] {position.symbol} SHORT: "
                     f"T1 hit ${position.target_1:.2f} — SL locked to entry-{t1_lock_mult}×ATR=${locked_sl:.2f}"
@@ -1141,6 +1271,7 @@ class RiskManager:
                 new_trail = position.min_price + runner_trail_dist
                 if new_trail < position.trailing_stop:
                     position.trailing_stop = new_trail
+                    _persist_sl(position.symbol, new_trail)
                     # Check if price already hit the newly-lowered stop on this same bar
                     if current_price >= new_trail:
                         return {
@@ -1568,6 +1699,17 @@ class RiskManager:
         """Kill switch — called by /kill Telegram command."""
         self._trigger_circuit_breaker("MANUAL KILL SWITCH")
         logger.critical(f"[{format_ist_timestamp()}] 🛑 EMERGENCY STOP ACTIVATED")
+
+    def apply_adaptive_params(self, params: dict) -> None:
+        """Hot-reload params from nightly optimizer. Called at morning init."""
+        try:
+            if "risk_pct" in params:
+                new_risk = float(params["risk_pct"])
+                lo, hi = 0.3, 1.5  # safe bounds
+                self.max_risk_pct = max(lo, min(new_risk, hi))
+                logger.info(f"[ADAPTIVE] max_risk_pct updated → {self.max_risk_pct:.2f}%")
+        except Exception as e:
+            logger.warning(f"[ADAPTIVE] apply_adaptive_params failed: {e}")
 
     # --------------------------------------------------------
     # STATUS

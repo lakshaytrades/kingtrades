@@ -25,7 +25,7 @@ _cik_cache_ts:  float = 0.0    # when _cik_cache was last populated
 
 _INS_TTL    = 86400.0   # 24 hours
 _CIK_TTL    = 86400.0   # refresh CIK map once per day
-_HEADERS    = {"User-Agent": "KingTrades/1.0 contact@kingtrades.io"}
+_HEADERS    = {"User-Agent": "SataVector/1.0 contact@kingtrades.io"}
 _MAX_FORMS  = 5          # max Form 4 XML fetches per symbol per day
 
 

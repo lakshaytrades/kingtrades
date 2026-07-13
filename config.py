@@ -38,8 +38,9 @@ ALPACA_BASE_URL   = os.getenv("ALPACA_BASE_URL", "https://paper-api.alpaca.marke
 # ============================================================
 # TELEGRAM
 # ============================================================
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
-TELEGRAM_CHAT_ID   = os.getenv("TELEGRAM_CHAT_ID", "")
+TELEGRAM_BOT_TOKEN   = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID     = os.getenv("TELEGRAM_CHAT_ID", "")
+BOT_DISPLAY_NAME     = os.getenv("BOT_DISPLAY_NAME", "SATAVECTOR")
 
 # ============================================================
 # NEWS / SENTIMENT
@@ -61,17 +62,17 @@ MAX_DAILY_CAPITAL: float = float(os.getenv("MAX_DAILY_CAPITAL", "0"))
 # via the risk_manager so a $90k account can never accidentally use $90k as capital.
 # Set MAX_DAILY_CAPITAL explicitly in .env to override, e.g. MAX_DAILY_CAPITAL=5000
 
-MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "0.8"))
-MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 2.0)   # raised cap: A+ signals need room to size
+MAX_RISK_PER_TRADE_PCT: float = float(os.getenv("MAX_RISK_PER_TRADE_PCT", "1.0"))
+MAX_RISK_PER_TRADE_PCT = min(MAX_RISK_PER_TRADE_PCT, 2.0)   # live-trading safe cap
 
 # Grade-based risk unlocking — institutional practice: size your best setups bigger
 # A+ Grand Slam (7+ confluence): 1.5× base risk — these are 70%+ win rate setups
 # A  grade       (5+ confluence): 1.0× base risk — standard full size
 # B  grade       (borderline)   : 0.6× base risk — conservative
-HIGH_CONFIDENCE_RISK_MULTIPLIER: float = float(os.getenv("HIGH_CONFIDENCE_RISK_MULTIPLIER", "1.5"))
+HIGH_CONFIDENCE_RISK_MULTIPLIER: float = float(os.getenv("HIGH_CONFIDENCE_RISK_MULTIPLIER", "2.0"))
 
-DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.0"))
-DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop the day early
+DAILY_LOSS_LIMIT_PCT: float = float(os.getenv("DAILY_LOSS_LIMIT_PCT", "2.5"))
+DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 3.0)   # live-trading safe cap
 
 # Intraday leverage multiplier.
 # ⚠️  PDT RULE: Alpaca margin accounts under $25,000 → max 3 day trades/week.
@@ -80,11 +81,11 @@ DAILY_LOSS_LIMIT_PCT = min(DAILY_LOSS_LIMIT_PCT, 2.0)   # hard cap 2% — stop t
 # FULL POWER ($25K+):   Margin account → 4x intraday, no PDT restriction.
 # Default 1.0 = cash account safe mode. Set to 4.0 only when account ≥ $25,000.
 ALPACA_LEVERAGE: float = float(os.getenv("ALPACA_LEVERAGE", "1.0"))
-ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # hard cap at 4x
+ALPACA_LEVERAGE = max(1.0, min(ALPACA_LEVERAGE, 4.0))  # 1x cash — safe for live trading
 
-MAX_POSITIONS: int = 5       # was 20 — too many concurrent losers compound the damage
+MAX_POSITIONS: int = 8       # allow more concurrent positions for more opportunities
 MIN_POSITIONS: int = 1
-MAX_CAPITAL_PER_TRADE_PCT: float = 10.0   # was 30% — 30% of $90k = $27k per trade, catastrophic
+MAX_CAPITAL_PER_TRADE_PCT: float = 15.0   # 15% per trade — sized for profit, not reckless
 
 # Fractional shares: Alpaca supports fractional/notional orders on most symbols.
 # When enabled, stocks too expensive for 1 whole share use a notional ($ amount) order.
@@ -108,18 +109,18 @@ MACD_SLOW: int = 26
 MACD_SIGNAL: int = 9
 
 ATR_PERIOD: int = 14
-ATR_SL_MULTIPLIER: float = 1.0          # 1× ATR stop — wide enough to survive intraday noise
-ATR_T1_MULTIPLIER: float = 1.5          # T1 quick-book at 1.5:1 — lock partial profit fast
-ATR_TP_MULTIPLIER: float = 3.5          # T2 at 3.5:1 — was 2.5, wider target = bigger wins
-ATR_TP_RUNNER: float = 6.0             # T3 runner extended from 5.0 — catches full trend moves
-ATR_TRAIL_MULTIPLIER: float = 0.80      # wider trail after T2 (was 0.50) — runners breathe more
-BREAKEVEN_TRIGGER_PCT: float = 0.15     # move stop to breakeven after only 0.15% gain — convert near-losses to free trades
-PARTIAL_EXIT_T1_PCT: float = 40.0       # 40% at T1 (up from 30%) — lock more profit early, less at risk
+ATR_SL_MULTIPLIER: float = 0.75         # 0.75× ATR stop — tighter = smaller loss if wrong
+ATR_T1_MULTIPLIER: float = 1.0          # T1 at 1:1 — fast partial exit, converts to free trade quickly
+ATR_TP_MULTIPLIER: float = 2.0          # T2 at 2:1 R:R — realistic daily target
+ATR_TP_RUNNER: float = 8.0             # T3 runner at 8:1 — catch full trend moves
+ATR_TRAIL_MULTIPLIER: float = 1.0       # trail at 1× ATR — runners breathe, don't get stopped early
+BREAKEVEN_TRIGGER_PCT: float = 0.10     # move to breakeven after 0.10% gain — converts losing to free fast
+PARTIAL_EXIT_T1_PCT: float = 50.0       # 50% at T1 — lock half the position in profit immediately
 PARTIAL_EXIT_T2_PCT: float = 20.0       # 20% at T2 — keep runner alive
-RUNNER_PCT: float = 40.0                # 40% runner (down from 50%) — slightly more locked in
+RUNNER_PCT: float = 30.0                # 30% runner — lean, focused on the best part of the move
 
 # ── Top-1% trader hard gates ──────────────────────────────────────────────
-MIN_RISK_REWARD: float = 2.0       # Minimum R:R measured at T2 target (2.5x SL) — previously
+MIN_RISK_REWARD: float = 2.0       # Only enter if 2.0:1 R:R minimum — skip low-quality setups
                                     # measured at T1 (1.5x) which was always exactly the minimum
 GAP_DIRECTION_BOOST: float = 10.0  # Score boost when gap aligns with trade direction
 ICT_CONFLUENCE_BOOST: float = 15.0 # Bonus when OB + FVG + BOS all fire together
@@ -155,16 +156,17 @@ CONFIRMATION_TIMEFRAME: str = "15Min"
 TREND_TIMEFRAME: str = "1Hour"
 
 MIN_SIGNAL_SCORE: float = float(os.getenv("MIN_SIGNAL_SCORE", "60.0"))
+L99_MIN_SCORE: float    = float(os.getenv("L99_MIN_SCORE", "65.0"))    # L99 gate minimum (65=B, 76=A, 85=A+)
                                        # v20.1: lowered 63→60. Pre-filter feeds the 28-gate HAF system.
                                        # Boosters (CSM, VWAP, OFI, etc.) add pts after gates. Kept low so
                                        # gate system — not the pre-filter — is the quality barrier.
 HIGH_CONFIDENCE_SCORE: float = 82.0   # A+ after bonuses
-GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "90.0"))  # Grand Slam requires 90+ (2× size)
+GRAND_SLAM_MIN_SCORE: float = float(os.getenv("GRAND_SLAM_MIN_SCORE", "82.0"))  # Grand Slam requires 82+ (2× size)
 PREMIUM_SCORE: float = 80.0           # A grade entry
 FINAL_EXEC_MIN_SCORE: float = float(os.getenv("FINAL_EXEC_MIN_SCORE", "60.0"))  # Post-booster gate — matches pre-filter (no dead zone)
 
 # ── WR-targeting thresholds (v16.0) ───────────────────────────────────────
-ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "18.0"))  # lowered 22→18 for IEX data
+ADX_MIN_TREND:         float = float(os.getenv("ADX_MIN_TREND",    "12.0"))  # lowered 18→12: 12-18 still has directional bias
 VWAP_EXTENSION_MAX_ATR: float = float(os.getenv("VWAP_EXTENSION_MAX_ATR", "2.0"))  # gate 27 — no chasing
 BAR_QUALITY_GATE:       bool  = os.getenv("BAR_QUALITY_GATE",   "True").lower() in ("true","1","yes")  # gate 28 — entry bar body quality
 SECTOR_FILTER_ENABLED:  bool  = os.getenv("SECTOR_FILTER_ENABLED", "True").lower() in ("true","1","yes")  # gate 14b — sector ETF alignment
@@ -197,7 +199,7 @@ INDICATOR_FLOOR_GATE: bool = os.getenv("INDICATOR_FLOOR_GATE", "True").lower() i
 INDICATOR_FLOOR_MIN:  int  = int(os.getenv("INDICATOR_FLOOR_MIN", "2"))  # minimum indicators that must align
 # Gate 20: Bid/Ask Volume Imbalance — buyers/sellers must be aggressive side
 BA_IMBALANCE_GATE:      bool  = os.getenv("BA_IMBALANCE_GATE", "True").lower() in ("true","1","yes")
-BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.52"))
+BA_IMBALANCE_MIN_RATIO: float = float(os.getenv("BA_IMBALANCE_MIN_RATIO", "0.48"))
 # Gate 21: Order Flow Imbalance — cumulative delta must not strongly oppose direction
 OFI_GATE_ENABLED:       bool  = os.getenv("OFI_GATE_ENABLED", "True").lower() in ("true","1","yes")
 # Gate 24: Momentum bar confirmation — require ≥3 of last 5 bars closing in signal direction
@@ -222,17 +224,17 @@ MIN_VOLUME_RATIO: float = 1.0         # minimum to enter pipeline — bonuses re
 REQUIRE_MTF_ALIGNMENT: bool = False   # MTF gates as bonuses (+8 pts each TF agreed) not hard blocks
 REQUIRE_POWER_HOUR: bool = False
 HEIKIN_ASHI_CONFIRM: bool = False
-MAX_TRADES_PER_DAY: int = 15          # enough capacity to scan 100 symbols for 2-3 real setups
-MAX_TRADES_PER_STOCK: int = 3         # allow re-entry on strong trends
+MAX_TRADES_PER_DAY: int = 50          # paper trading: no trade count limit
+MAX_TRADES_PER_STOCK: int = 5         # allow more re-entries on strong trends
 
 # ============================================================
 # CIRCUIT BREAKERS
 # ============================================================
 NIFTY_CIRCUIT_PCT: float = 2.0        # Reused as SPY circuit threshold
-CONSECUTIVE_LOSS_LIMIT: int = 2        # pause after 2 consecutive losses — catches losing streaks fast
-PAUSE_AFTER_LOSSES_MINUTES: int = 25   # 25 min pause — enough time for market conditions to shift
-LARGE_LOSS_PAUSE_PCT: float = 1.5      # pause if single trade loses ≥1.5% of daily capital (was 3%)
-LARGE_LOSS_PAUSE_MINUTES: int = 25     # pause duration after large single loss
+CONSECUTIVE_LOSS_LIMIT: int = 4        # pause after 4 consecutive losses
+PAUSE_AFTER_LOSSES_MINUTES: int = 15   # 15 min pause to reassess
+LARGE_LOSS_PAUSE_PCT: float = 2.0      # pause if single trade loses ≥2% of daily capital
+LARGE_LOSS_PAUSE_MINUTES: int = 15     # pause duration after large single loss
 NO_ENTRY_AFTER_ET_HOUR: int = 15       # no new entries at or after 3:00 PM ET (last 30 min = noisy reversals)
 NO_ENTRY_AFTER_ET_MINUTE: int = 0
 SKIP_VOLATILE_LONGS: bool = True       # in HIGH_VOLATILITY regime, skip LONG entries (only shorts)
@@ -241,7 +243,14 @@ DD_RECOVERY_HARD_PCT: float = float(os.getenv("DD_RECOVERY_HARD_PCT", "10.0"))  
 DD_RECOVERY_SOFT_PCT: float = float(os.getenv("DD_RECOVERY_SOFT_PCT", "5.0"))   # halve size at 5% session DD from peak
 
 # ── Short selling ──────────────────────────────────────────────────────────
-SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "True").lower() in ("true","1","yes")
+SHORT_SELLING_ENABLED: bool = os.getenv("SHORT_SELLING_ENABLED", "true").lower() == "true"
+MAX_SHORT_POSITIONS: int = int(os.getenv("MAX_SHORT_POSITIONS", "3"))
+
+# ── Cross-asset intelligence (VIX + bonds + dollar macro overlay) ───────────
+CROSS_ASSET_ENABLED: bool = os.getenv("CROSS_ASSET_ENABLED", "true").lower() == "true"
+
+# ── News sentiment (NewsAPI keyword scoring) ─────────────────────────────────
+NEWS_SENTIMENT_ENABLED: bool = os.getenv("NEWS_SENTIMENT_ENABLED", "true").lower() == "true"
 
 # ── VWAP mean-reversion strategy (best in choppy markets) ──────────────────
 VWAP_REVERSION_ENABLED: bool = True
@@ -250,6 +259,11 @@ VWAP_REVERSION_MIN_DEVIATION_ATR: float = 1.5   # price must be 1.5+ ATR from VW
 # ── AI News sentiment filter ────────────────────────────────────────────────
 GEMINI_NEWS_FILTER_ENABLED: bool = True          # use Gemini/Claude to score news sentiment
 GEMINI_NEWS_SCORE_MAX_DELTA: float = 15.0        # max pts added/removed from signal score
+
+# ── God Mode v31.0 — ETF flow + portfolio intelligence + news NLP ────────────
+ETF_FLOW_ENABLED             = bool(int(os.getenv("ETF_FLOW_ENABLED", "1")))
+US_NEWS_ALPHA_ENABLED        = bool(int(os.getenv("US_NEWS_ALPHA_ENABLED", "1")))
+US_PORTFOLIO_INTEL_ENABLED   = bool(int(os.getenv("US_PORTFOLIO_INTEL_ENABLED", "1")))
 
 # ── Aggressive sizing on elite setups — defined earlier from env var, not duplicated here ──
 
@@ -260,36 +274,35 @@ ORB_MIN_RANGE_PCT: float = 0.3       # range must be at least 0.3% of price
 ORB_RISK_MULTIPLIER: float = 1.2     # slightly larger size on ORB plays
 
 # ============================================================
-# WATCHLIST — US liquid momentum stocks
+# WATCHLIST — US liquid momentum stocks (v21.0: 75 symbols)
 # ============================================================
 DEFAULT_WATCHLIST = [
-    # ── Mega-cap tech & AI (deepest liquidity, daily 3–8% moves) ──────────
-    "AAPL", "MSFT", "NVDA", "AMZN", "GOOGL", "GOOG", "META", "TSLA",
-    # ── Semiconductors — highest beta, follow NVDA ─────────────────────────
-    "AMD", "MU", "QCOM", "ARM", "SMCI", "AVGO", "INTC", "MRVL", "ON",
-    "LRCX", "KLAC", "AMAT", "ASML", "TSM", "TXN", "MCHP",
-    # ── AI / Cloud / SaaS high-momentum ────────────────────────────────────
-    "NFLX", "COIN", "PLTR", "MSTR", "CRWD", "PANW", "ZS", "DDOG", "NET",
-    "NOW", "SNOW", "TEAM", "HUBS", "OKTA", "MDB", "GTLB", "U",
-    "AI", "SOUN", "BBAI",
-    # ── Consumer & social momentum ──────────────────────────────────────────
-    "UBER", "SHOP", "ABNB", "MELI", "RBLX", "LYFT", "DASH", "YELP",
-    # ── Crypto / blockchain high-beta ─────────────────────────────────────
-    "MARA", "RIOT", "HUT", "CLSK", "BTBT", "CIFR",
-    # ── Leveraged ETFs — 2-3x index (strongest momentum signals) ──────────
-    "SPY", "QQQ", "IWM", "TQQQ", "SPXL", "SOXL", "TECL", "FNGU",
-    # ── Fintech / high-growth finance ──────────────────────────────────────
-    "SOFI", "HOOD", "AFRM", "PYPL", "V", "MA",
-    # ── Big finance & energy ────────────────────────────────────────────────
-    "JPM", "GS", "MS", "BAC", "XOM", "CVX", "OXY", "SLB", "MPC",
-    # ── Biotech / healthcare momentum ──────────────────────────────────────
-    "MRNA", "HIMS", "LLY", "NVO", "VKTX", "RXRX",
-    # ── EV & clean energy ──────────────────────────────────────────────────
-    "RIVN", "LCID", "NIO", "PLUG", "FSLR", "ENPH",
-    # ── Defense & industrials ──────────────────────────────────────────────
-    "LMT", "RTX", "NOC", "GE", "CAT",
+    # ── Mega-cap tech (10) ─────────────────────────────────────────────────
+    "AAPL", "MSFT", "NVDA", "META", "GOOGL", "AMZN", "TSLA", "AMD", "AVGO", "ORCL",
+    # ── High-beta tech / disruptive (10) ───────────────────────────────────
+    "SMCI", "PLTR", "MSTR", "COIN", "HOOD", "SOFI", "UPST", "AI", "SOUN", "IONQ",
+    # ── Semiconductors (10) ────────────────────────────────────────────────
+    "INTC", "QCOM", "MU", "TSM", "AMAT", "LRCX", "KLAC", "ON", "MRVL", "TXN",
+    # ── Financials (10) ────────────────────────────────────────────────────
+    "JPM", "GS", "BAC", "MS", "WFC", "C", "AXP", "V", "MA", "PYPL",
+    # ── Energy (5) ─────────────────────────────────────────────────────────
+    "XOM", "CVX", "OXY", "SLB", "HAL",
+    # ── Biotech / Healthcare (6) ───────────────────────────────────────────
+    "MRNA", "BNTX", "REGN", "BIIB", "GILD", "LLY",
+    # ── Crypto-adjacent miners (5) ─────────────────────────────────────────
+    "MARA", "RIOT", "CLSK", "CIFR", "HUT",
+    # ── ETFs for regime context (7) ────────────────────────────────────────
+    "SPY", "QQQ", "IWM", "XLF", "XLE", "XLK", "ARKK",
+    # ── Consumer / Retail (5) ──────────────────────────────────────────────
+    "WMT", "TGT", "COST", "HD", "SBUX",
+    # ── EV / Clean energy (4) ──────────────────────────────────────────────
+    "RIVN", "LCID", "NIO", "PLUG",
+    # ── Additional energy (3) ──────────────────────────────────────────────
+    "MPC", "VLO", "PSX",
 ]
-# 100 symbols — all liquid US stocks with min $1M daily dollar volume.
+# 75 symbols — high-liquidity momentum stocks across 10 sectors.
+# Covers mega-cap tech, semis, financials, energy, biotech, crypto-adjacent,
+# ETF regime indicators, consumer, EV/clean energy.
 # More watchlist = more breakout setups scanned per day = more executable signals.
 
 DAILY_PROFIT_TARGET: float = float(os.getenv("DAILY_PROFIT_TARGET", "0"))
@@ -300,7 +313,7 @@ DAILY_PROFIT_TARGET_PCT: float = float(os.getenv("DAILY_PROFIT_TARGET_PCT", "1.0
 # 1.0%/day — realistic achievable target: one clean A+ trade hits it
 # At 1%: switch to PROTECTION (A-grade only), at 1.5%: LOCK (A+ only, 60% size), at 2%: STOP
 
-MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "20.0"))
+MONTHLY_TARGET_PCT: float = float(os.getenv("MONTHLY_TARGET_PCT", "10.0"))
 # 1.0%/day × 22 trading days = ~22% monthly (realistic top-decile retail)
 
 # ============================================================
@@ -425,7 +438,7 @@ SENSITIVITY_ROBUSTNESS_MIN: float = 0.70
 # ============================================================
 # POSITION SIZING / GAP / LIQUIDITY
 # ============================================================
-MIN_DAILY_VOLUME: int = 1_000_000    # 1M shares/day minimum for US stocks
+MIN_DAILY_VOLUME: int = 150_000     # 150k shares/day — allows more quality stocks without slippage risk
 MAX_GAP_PCT: float = 2.0
 LARGE_GAP_PCT: float = 3.5
 EXTREME_GAP_PCT: float = 5.0
@@ -445,11 +458,11 @@ DOW_SIZE_MULTIPLIERS: dict = {
 }
 
 DOW_MIN_SCORE: dict = {
-    0: 63.0,   # Monday
-    1: 63.0,   # Tuesday — best trend day
-    2: 63.0,   # Wednesday — trend continuation
-    3: 63.0,   # Thursday
-    4: 63.0,   # Friday — size already reduced to 0.8x
+    0: 55.0,   # Monday
+    1: 55.0,   # Tuesday — best trend day
+    2: 55.0,   # Wednesday — trend continuation
+    3: 55.0,   # Thursday
+    4: 55.0,   # Friday
 }
 
 # Time-of-day minimum score (ET, 24h format) — institutional trading windows
@@ -462,13 +475,12 @@ DOW_MIN_SCORE: dict = {
 TOD_MIN_SCORES: dict = {
     # (start_min_from_midnight, end_min): min_score
     # 9:30 ET = 570 min, 10:00 = 600, 11:30 = 690, 13:30 = 810, 15:00 = 900, 15:25 = 925
-    # v17.0: pre-filter thresholds — boosters add 8-20 pts; final execution scores = these + 10
-    (570, 600): 66.0,   # 9:30–10:00: open drive (boosted final ~74-80)
-    (600, 690): 63.0,   # 10:00–11:30: morning prime window (boosted final ~71-80)
-    (690, 810): 68.0,   # 11:30–13:30: midday chop — tighter pre-filter (boosted final ~76-83)
-    (810, 900): 63.0,   # 13:30–15:00: afternoon (boosted final ~71-80)
-    (900, 925): 66.0,   # 15:00–15:25: power hour (boosted final ~74-80)
-    (925, 960): 75.0,   # 15:25–16:00: near close — high bar even pre-filter
+    (570, 600): 58.0,   # 9:30–10:00: open drive
+    (600, 690): 55.0,   # 10:00–11:30: morning prime window
+    (690, 810): 60.0,   # 11:30–13:30: midday chop
+    (810, 900): 55.0,   # 13:30–15:00: afternoon
+    (900, 925): 58.0,   # 15:00–15:25: power hour
+    (925, 960): 68.0,   # 15:25–16:00: near close — keep higher bar
 }
 TOD_THRESHOLD_ENABLED: bool = os.getenv("TOD_THRESHOLD_ENABLED", "True").lower() in ("true","1","yes")
 
@@ -481,8 +493,8 @@ DOW_MAX_TRADES: dict = {
 }
 
 WEEKLY_PROFIT_TARGET_PCT: float = 8.0    # 30%/mo ÷ 4.33 weeks = 6.9%/wk — use 8% as target
-WEEKLY_PROFIT_LOCK_PCT: float = 15.0    # don't throttle size until 15% weekly gain secured
-WEEKLY_LOSS_STOP_PCT: float = 5.0       # weekly stop-out at -5% — slightly more runway
+WEEKLY_PROFIT_LOCK_PCT: float = 20.0    # don't throttle size until 20% weekly gain secured
+WEEKLY_LOSS_STOP_PCT: float = 8.0       # weekly stop-out at -8% — more runway than default
 WEEKLY_DATA_FILE: str = "data/weekly_pnl.json"
 
 # NSE-specific fields kept as stubs so any remaining references don't crash
@@ -571,6 +583,15 @@ POWER_HOUR_ENABLED:     bool = os.getenv("POWER_HOUR_ENABLED",      "True").lowe
 PAIRS_SIGNAL_ENABLED:   bool = os.getenv("PAIRS_SIGNAL_ENABLED",    "True").lower() in ("true","1","yes")
 TOD_RVOL_ENABLED:       bool = os.getenv("TOD_RVOL_ENABLED",        "True").lower() in ("true","1","yes")
 SORTINO_SIZING_ENABLED: bool = os.getenv("SORTINO_SIZING_ENABLED",  "True").lower() in ("true","1","yes")
+TIER1_ELITE_ENABLED:    bool = os.getenv("TIER1_ELITE_ENABLED",     "True").lower() in ("true","1","yes")
+
+# ── TIER 2.5 UPGRADE (v11.0) ─────────────────────────────────────────────────
+VOL_TARGET_ENABLED:       bool = os.getenv("VOL_TARGET_ENABLED",       "True").lower() in ("true","1","yes")
+
+# ── TIER 1.5 UPGRADE (v12.0) — highest possible with free data ───────────────
+NEURAL_PREDICTOR_ENABLED: bool = os.getenv("NEURAL_PREDICTOR_ENABLED", "True").lower() in ("true","1","yes")
+COINT_ARBIT_ENABLED:      bool = os.getenv("COINT_ARBIT_ENABLED",      "True").lower() in ("true","1","yes")
+GAP_FADE_ENABLED:         bool = os.getenv("GAP_FADE_ENABLED",         "True").lower() in ("true","1","yes")
 
 # ── PREMIUM SCANNER (v11.0) — free equivalents of paid trading tools ─────────
 SHORT_SQUEEZE_SCANNER_ENABLED: bool = os.getenv("SHORT_SQUEEZE_SCANNER_ENABLED", "True").lower() in ("true","1","yes")
@@ -579,6 +600,17 @@ SECTOR_ROTATION_ENABLED:       bool = os.getenv("SECTOR_ROTATION_ENABLED",      
 FLOAT_SQUEEZE_ENABLED:         bool = os.getenv("FLOAT_SQUEEZE_ENABLED",         "True").lower() in ("true","1","yes")
 EARNINGS_EDGE_ENABLED:         bool = os.getenv("EARNINGS_EDGE_ENABLED",         "True").lower() in ("true","1","yes")
 DARK_POOL_SCANNER_ENABLED:     bool = os.getenv("DARK_POOL_SCANNER_ENABLED",     "True").lower() in ("true","1","yes")
+
+# ── God Mode v26.0 — CVD + TICK + DOW + Multi-Day + Experience + True RS + Trend Exhaustion
+GOD_MODE_ENABLED:    bool = os.getenv("GOD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
+# ── Genius Mode v27.0 — Hurst exponent + Kalman filter + OB pressure + Kelly sizing + Vol regime gate
+GENIUS_MODE_ENABLED: bool = os.getenv("GENIUS_MODE_ENABLED", "True").lower() in ("true","1","yes")
+# ── PhD Mode v28.0 — 52W Proximity + Amihud + CMF + ER + VWMS + Noise Ratio
+PHD_MODE_ENABLED:    bool = os.getenv("PHD_MODE_ENABLED",    "True").lower() in ("true","1","yes")
+# ── Renaissance Mode v29.0 — IC tracking + Bayes + Regime + Decay + Sector limits + DD sizing
+RENAISSANCE_MODE_ENABLED: bool = os.getenv("RENAISSANCE_MODE_ENABLED", "True").lower() in ("true","1","yes")
+# ── Citadel Mode v30.0 — YZ volatility + entropy + volume profile + autocorrelation + VRP + risk parity
+CITADEL_MODE_ENABLED:    bool = os.getenv("CITADEL_MODE_ENABLED",    "True").lower() in ("true","1","yes")
 
 # ── Execution Quality v11.0 ─────────────────────────────────────────────────
 SLIPPAGE_PREDICTION_ENABLED: bool  = os.getenv("SLIPPAGE_PREDICTION_ENABLED", "True").lower() in ("true","1","yes")
@@ -602,7 +634,7 @@ ML_WIN_PROB_THRESHOLD:    float = float(os.getenv("ML_WIN_PROB_THRESHOLD", "0.60
 # Raise to 0.70 for ultra-selective mode (fewer trades, higher WR)
 # Lower to 0.50 to effectively disable the gate (returns neutral prob)
 
-# KING Knowledge Base v15.0 — 8 legendary trading frameworks
+# SATAVECTOR Knowledge Base v15.0 — 8 legendary trading frameworks
 # Livermore · Minervini · O'Neil · Darvas · Wyckoff · Weinstein · Turtle · Soros
 KNOWLEDGE_BASE_ENABLED:   bool  = os.getenv("KNOWLEDGE_BASE_ENABLED", "True").lower() in ("true","1","yes")
 
@@ -645,7 +677,7 @@ PREMIUM_PROXIES_ENABLED: bool = os.getenv("PREMIUM_PROXIES_ENABLED", "True").low
 L2_PROXY_ENABLED:        bool = os.getenv("L2_PROXY_ENABLED",        "True").lower() not in ("false", "0", "no")
 DARK_POOL_PROXY_ENABLED: bool = os.getenv("DARK_POOL_PROXY_ENABLED", "True").lower() not in ("false", "0", "no")
 OPTIONS_PROXY_ENABLED:   bool = os.getenv("OPTIONS_PROXY_ENABLED",   "True").lower() not in ("false", "0", "no")
-TICK_PROXY_ENABLED:      bool = os.getenv("TICK_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
+# TICK_PROXY_ENABLED: duplicate removed — first definition at line ~559 uses correct in-true-set semantics
 EARNINGS_PROXY_ENABLED:  bool = os.getenv("EARNINGS_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
 ALT_DATA_PROXY_ENABLED:  bool = os.getenv("ALT_DATA_PROXY_ENABLED",  "True").lower() not in ("false", "0", "no")
 NEWS_PROXY_ENABLED:      bool = os.getenv("NEWS_PROXY_ENABLED",      "True").lower() not in ("false", "0", "no")
@@ -686,6 +718,143 @@ HMM_REGIME_ENABLED:           bool = os.getenv("HMM_REGIME_ENABLED",           "
 FACTOR_ALPHA_ENABLED:         bool = os.getenv("FACTOR_ALPHA_ENABLED",         "True").lower() not in ("false", "0", "no")
 VPIN_ENABLED:                 bool = os.getenv("VPIN_ENABLED",                 "True").lower() not in ("false", "0", "no")
 IC_TRACKER_ENABLED:           bool = os.getenv("IC_TRACKER_ENABLED",           "True").lower() not in ("false", "0", "no")
+
+# ── v23.0 Renaissance-grade alpha modules ──────────────────────────────────────
+# Earnings calendar protection: skip entries within 2 days of earnings report
+EARNINGS_PROTECTION_ENABLED:  bool = os.getenv("EARNINGS_PROTECTION_ENABLED",  "true").lower() == "true"
+# Post-Earnings Announcement Drift: boost/penalize based on earnings beat/miss 1-5 days ago
+PEAD_SIGNAL_ENABLED:          bool = os.getenv("PEAD_SIGNAL_ENABLED",          "true").lower() == "true"
+# Options intensity: unusual call/put volume as institutional positioning signal
+OPTIONS_INTENSITY_ENABLED:    bool = os.getenv("OPTIONS_INTENSITY_ENABLED",    "true").lower() == "true"
+# Pre-market gap scanner: classify overnight gaps as momentum/earnings/weak
+GAP_SCANNER_ENABLED:          bool = os.getenv("GAP_SCANNER_ENABLED",          "true").lower() == "true"
+
+# ── v24.0 Alternative Data Intelligence ────────────────────────────────────────
+# SEC Form 4 insider trading signal — CEO/CFO open-market buys = strongest signal in finance
+INSIDER_INTELLIGENCE_ENABLED: bool = os.getenv("INSIDER_INTELLIGENCE_ENABLED", "true").lower() == "true"
+# Gamma Exposure (GEX) — options market maker hedging flows; negative GEX = moves amplify
+GEX_ENABLED:                  bool = os.getenv("GEX_ENABLED",                  "true").lower() == "true"
+# Reddit WSB + StockTwits crowd sentiment — retail FOMO creates momentum
+CROWD_SENTIMENT_ENABLED:      bool = os.getenv("CROWD_SENTIMENT_ENABLED",      "true").lower() == "true"
+# Fama-French 5-Factor model alignment — Nobel Prize factors (Mkt, SMB, HML, RMW, CMA)
+FF_FACTORS_ENABLED:           bool = os.getenv("FF_FACTORS_ENABLED",           "true").lower() == "true"
+# Congressional trading signal — politicians beat market 6-12% annually
+CONGRESSIONAL_ALPHA_ENABLED:  bool = os.getenv("CONGRESSIONAL_ALPHA_ENABLED",  "true").lower() == "true"
+
+# ── v36.0 US God Mode Signals ────────────────────────────────────────────────
+# Congressional trades alpha (god mode) — dedicated module with disk cache + Senate eFD fallback
+CONGRESSIONAL_TRADES_ALPHA_ENABLED: bool = bool(int(os.getenv("CONGRESSIONAL_ALPHA_ENABLED", "1")))
+# SEC Form 4 insider buying — cluster buy +10, large single buy +6, seller -5
+INSIDER_ALPHA_ENABLED:              bool = bool(int(os.getenv("INSIDER_ALPHA_ENABLED", "1")))
+# Earnings & FOMC calendar gate — blocks entries before earnings, halves size on FOMC day
+EARNINGS_CALENDAR_ENABLED:          bool = bool(int(os.getenv("EARNINGS_CALENDAR_ENABLED", "1")))
+
+# ── v25.0 Market Microstructure Signals ────────────────────────────────────────
+# ORB quality check — institutional commitment at open
+ORB_QUALITY_ENABLED:          bool = os.getenv("ORB_QUALITY_ENABLED",          "true").lower() == "true"
+# 52-week proximity bias — momentum persistence near highs
+W52_PROXIMITY_ENABLED:        bool = os.getenv("W52_PROXIMITY_ENABLED",        "true").lower() == "true"
+# Float-adjusted momentum — low float + high SI = squeeze candidate
+FLOAT_MOMENTUM_ENABLED:       bool = os.getenv("FLOAT_MOMENTUM_ENABLED",       "true").lower() == "true"
+# Tick divergence — smart money micro-accumulation detection
+TICK_DIVERGENCE_ENABLED:      bool = os.getenv("TICK_DIVERGENCE_ENABLED",      "true").lower() == "true"
+# Z-score mean reversion — Ornstein-Uhlenbeck statistical reversion signal
+ZSCORE_MR_ENABLED:            bool = os.getenv("ZSCORE_MR_ENABLED",            "true").lower() == "true"
+# Consecutive candle streak — institutional iceberg order detection
+CANDLE_STREAK_ENABLED:        bool = os.getenv("CANDLE_STREAK_ENABLED",        "true").lower() == "true"
+# Pre-market volume surge — institutional news reaction follow-through
+PREMARKET_VOL_ENABLED:        bool = os.getenv("PREMARKET_VOL_ENABLED",        "true").lower() == "true"
+# SPY correlation filter — independent alpha vs market-driven momentum
+CORRELATION_FILTER_ENABLED:   bool = os.getenv("CORRELATION_FILTER_ENABLED",   "true").lower() == "true"
+
+# ── v26.0 Seasonality + Multi-Momentum + Liquidity ─────────────────────────────
+SEASONALITY_ENABLED:          bool = os.getenv("SEASONALITY_ENABLED",          "true").lower() == "true"
+OPEX_EFFECT_ENABLED:          bool = os.getenv("OPEX_EFFECT_ENABLED",          "true").lower() == "true"
+MONTH_END_ENABLED:            bool = os.getenv("MONTH_END_ENABLED",            "true").lower() == "true"
+QUARTER_END_ENABLED:          bool = os.getenv("QUARTER_END_ENABLED",          "true").lower() == "true"
+MONDAY_FADE_ENABLED:          bool = os.getenv("MONDAY_FADE_ENABLED",          "true").lower() == "true"
+OPEX_PIN_ENABLED:             bool = os.getenv("OPEX_PIN_ENABLED",             "true").lower() == "true"
+MULTI_MOMENTUM_ENABLED:       bool = os.getenv("MULTI_MOMENTUM_ENABLED",       "true").lower() == "true"
+LIQUIDITY_SIGNALS_ENABLED:    bool = os.getenv("LIQUIDITY_SIGNALS_ENABLED",    "true").lower() == "true"
+AMIHUD_ENABLED:               bool = os.getenv("AMIHUD_ENABLED",               "true").lower() == "true"
+ROLL_SPREAD_ENABLED:          bool = os.getenv("ROLL_SPREAD_ENABLED",          "true").lower() == "true"
+KYLE_LAMBDA_ENABLED:          bool = os.getenv("KYLE_LAMBDA_ENABLED",          "true").lower() == "true"
+VOL_CLOCK_ENABLED:            bool = os.getenv("VOL_CLOCK_ENABLED",            "true").lower() == "true"
+
+# ── v29.0 Top 1% Modules ────────────────────────────────────────────────────────
+# PEAD: Post-Earnings Announcement Drift (Ball & Brown 1968) — systematic drift after earnings
+PEAD_ENGINE_ENABLED:          bool = os.getenv("PEAD_ENGINE_ENABLED",          "true").lower() == "true"
+# Regime signal router: BULL→momentum 1.5x, BEAR→mean-revert 1.3x, CHOPPY→reduce 0.7x
+REGIME_ROUTER_ENABLED:        bool = os.getenv("REGIME_ROUTER_ENABLED",        "true").lower() == "true"
+# Intraday VaR: historical simulation VaR-based position sizing (1% budget constraint)
+INTRADAY_VAR_ENABLED:         bool = os.getenv("INTRADAY_VAR_ENABLED",         "true").lower() == "true"
+# Correlation crisis: cut sizes 50-70% when market pairwise correlation spikes (crash detector)
+CORRELATION_CRISIS_ENABLED:   bool = os.getenv("CORRELATION_CRISIS_ENABLED",   "true").lower() == "true"
+# TWAP engine: split orders >$2k into 5 child orders over 5 minutes (reduces slippage 30-40%)
+TWAP_ENABLED:                 bool = os.getenv("TWAP_ENABLED",                 "true").lower() == "true"
+
+# ── v28.0 Top 0.1% Modules ──────────────────────────────────────────────────────
+# HAR-RV: Heterogeneous AutoRegressive Realized Variance (Corsi 2009) — replaces GARCH
+HAR_RV_ENABLED:               bool = os.getenv("HAR_RV_ENABLED",               "true").lower() == "true"
+# Tape OFI: Lee-Ready buy/sell classification → true order flow imbalance
+TAPE_OFI_ENABLED:             bool = os.getenv("TAPE_OFI_ENABLED",             "true").lower() == "true"
+# Synthetic L2: reconstruct pseudo-Level-2 from OHLCV (free proxy for paid L2 data)
+SYNTHETIC_L2_ENABLED:         bool = os.getenv("SYNTHETIC_L2_ENABLED",         "true").lower() == "true"
+# Dark pool proxy: detect institutional accumulation from volume/price patterns
+DARK_POOL_ENABLED:            bool = os.getenv("DARK_POOL_ENABLED",             "true").lower() == "true"
+# Alt data: Google Trends + Wikipedia edit velocity + Reddit WSB (all free)
+ALT_DATA_ENABLED:             bool = os.getenv("ALT_DATA_ENABLED",             "true").lower() == "true"
+# EDGAR NLP: SEC 8-K filing sentiment via Loughran-McDonald word lists (free EDGAR API)
+EDGAR_SENTIMENT_ENABLED:      bool = os.getenv("EDGAR_SENTIMENT_ENABLED",      "true").lower() == "true"
+# CBOE data: put/call ratio + VIX term structure (free public CBOE data)
+CBOE_DATA_ENABLED:            bool = os.getenv("CBOE_DATA_ENABLED",            "true").lower() == "true"
+# Beta-neutral sizing: dynamic beta vs SPY, beta-inverse position sizing
+BETA_NEUTRAL_ENABLED:         bool = os.getenv("BETA_NEUTRAL_ENABLED",         "true").lower() == "true"
+# Covariance optimizer: Ledoit-Wolf shrinkage + correlation-aware portfolio sizing
+COV_OPTIMIZER_ENABLED:        bool = os.getenv("COV_OPTIMIZER_ENABLED",        "true").lower() == "true"
+# Cost filter: pre-entry Corwin-Schultz spread + impact check — skip unprofitable trades
+COST_FILTER_ENABLED:          bool = os.getenv("COST_FILTER_ENABLED",          "true").lower() == "true"
+
+# ── v27.0 Renaissance Medallion Strategies ──────────────────────────────────────
+# PCA factor decomposition: isolate idiosyncratic alpha from market/sector noise
+PCA_ALPHA_ENABLED:            bool = os.getenv("PCA_ALPHA_ENABLED",            "true").lower() == "true"
+# Event alpha: analyst upgrades/downgrades, dividend capture, stock splits
+EVENT_ALPHA_ENABLED:          bool = os.getenv("EVENT_ALPHA_ENABLED",          "true").lower() == "true"
+# STL trend decomposition via Loess: score trend component, not raw price noise
+STL_ENABLED:                  bool = os.getenv("STL_ENABLED",                  "true").lower() == "true"
+# Execution timing intelligence: avoid open chaos, last 10min MOC, boost power hour
+EXECUTION_TIMING_ENABLED:     bool = os.getenv("EXECUTION_TIMING_ENABLED",     "true").lower() == "true"
+# Market impact check (Almgren-Chriss): penalize orders > 1% ADV
+MARKET_IMPACT_ENABLED:        bool = os.getenv("MARKET_IMPACT_ENABLED",        "true").lower() == "true"
+# Cross-sectional pre-ranking: only scan top 40% of watchlist by momentum rank
+CROSS_SECTIONAL_RANKING_ENABLED: bool = os.getenv("CROSS_SECTIONAL_RANKING_ENABLED", "true").lower() == "true"
+
+# ── v32.0 Market Intelligence Hub — 25 modules in parallel ───────────────────
+# Single flag to enable/disable all hub modules at once (each fails open)
+INTELLIGENCE_HUB_ENABLED:    bool = os.getenv("INTELLIGENCE_HUB_ENABLED",    "true").lower() == "true"
+
+# ── v32.1 L99 — Free tier 2 + paid data proxies ──────────────────────────────
+FINRA_DARKPOOL_ENABLED:   bool = os.getenv("FINRA_DARKPOOL_ENABLED",   "true").lower() == "true"
+FEDWATCH_ENABLED:         bool = os.getenv("FEDWATCH_ENABLED",         "true").lower() == "true"
+CRYPTO_CROSS_ENABLED:     bool = os.getenv("CRYPTO_CROSS_ENABLED",     "true").lower() == "true"
+AV_NEWS_ENABLED:          bool = os.getenv("AV_NEWS_ENABLED",          "true").lower() == "true"
+OPTIONS_SWEEP_ENABLED:    bool = os.getenv("OPTIONS_SWEEP_ENABLED",    "true").lower() == "true"
+BLOOMBERG_PROXY_ENABLED:  bool = os.getenv("BLOOMBERG_PROXY_ENABLED",  "true").lower() == "true"
+FACTSET_PROXY_ENABLED:    bool = os.getenv("FACTSET_PROXY_ENABLED",    "true").lower() == "true"
+SATELLITE_PROXY_ENABLED:  bool = os.getenv("SATELLITE_PROXY_ENABLED",  "true").lower() == "true"
+ENIGMA_PROXY_ENABLED:     bool = os.getenv("ENIGMA_PROXY_ENABLED",     "true").lower() == "true"
+ITCH_L3_PROXY_ENABLED:    bool = os.getenv("ITCH_L3_PROXY_ENABLED",    "true").lower() == "true"
+LIVEVOL_PROXY_ENABLED:    bool = os.getenv("LIVEVOL_PROXY_ENABLED",    "true").lower() == "true"
+GARCH_SIZING_ENABLED:     bool = os.getenv("GARCH_SIZING_ENABLED",     "true").lower() == "true"
+ANALYST_CONSENSUS_ENABLED: bool = os.getenv("ANALYST_CONSENSUS_ENABLED","true").lower() == "true"
+
+# ── v33.1 Idle Scalp Mode — take small trades when idle > 30 min ─────────────
+IDLE_SCALP_ENABLED:           bool  = os.getenv("IDLE_SCALP_ENABLED",  "true").lower() == "true"
+IDLE_SCALP_THRESHOLD_MIN:     int   = int(os.getenv("IDLE_SCALP_THRESHOLD_MIN", "30"))  # minutes idle before activating
+IDLE_SCALP_MIN_SCORE:         float = float(os.getenv("IDLE_SCALP_MIN_SCORE", "55.0"))
+IDLE_SCALP_MIN_RR:            float = float(os.getenv("IDLE_SCALP_MIN_RR",    "1.5"))
+IDLE_SCALP_SIZE_MULT:         float = float(os.getenv("IDLE_SCALP_SIZE_MULT", "0.40"))
+IDLE_SCALP_TIME_STOP_MIN:     int   = int(os.getenv("IDLE_SCALP_TIME_STOP_MIN", "10"))
 
 # ============================================================
 # VALIDATION

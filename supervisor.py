@@ -1,5 +1,5 @@
 """
-supervisor.py — KingTrades Autonomous Supervisor Agent
+supervisor.py — SataVector Autonomous Supervisor Agent
 
 Runs alongside the trading bot as a separate process. Responsibilities:
   1. Process watchdog   — restart bot if it crashes (circuit breaker: 5 restarts/hr)
@@ -178,6 +178,17 @@ class ProcessWatcher:
                     self.proc.kill()
                 except Exception:
                     pass
+
+            # Verify the process is actually dead before starting a new one.
+            # If kill() was swallowed (e.g. PermissionError on an adopted process),
+            # starting a new instance causes duplicate live orders.
+            if self.proc.poll() is None:
+                logger.error(
+                    "Cannot kill existing bot process — NOT starting a new instance "
+                    "to prevent duplicate live orders. Manual intervention required."
+                )
+                tg("❌ Bot restart ABORTED — old process still alive. Manual kill required.", "🚨")
+                return False
 
         logger.info(f"Restarting bot in {RESTART_COOLDOWN_S}s — reason: {reason}")
         tg(
@@ -432,7 +443,7 @@ class BotSupervisor:
 
     def run(self) -> None:
         logger.info("=" * 60)
-        logger.info("KingTrades Autonomous Supervisor started")
+        logger.info("SataVector Autonomous Supervisor started")
         logger.info(f"Monitoring: {BOT_SCRIPT}")
         logger.info(f"Circuit breaker: max {MAX_RESTARTS_PER_HOUR} restarts/hr")
         logger.info("=" * 60)

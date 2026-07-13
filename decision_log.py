@@ -1,5 +1,5 @@
 """
-decision_log.py — KingTrades Trade Decision Logger
+decision_log.py — SataVector Trade Decision Logger
 
 Records every signal scanned (taken OR rejected) with the exact reason.
 Writes to SQLite so we can query: "Why aren't more trades being placed?"

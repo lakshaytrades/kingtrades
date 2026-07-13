@@ -152,6 +152,168 @@ class AlpacaExecutor:
         self._auth        = get_auth_manager()
         self._day_trade_count = 0
         self._day_trade_date  = ""   # "YYYY-MM-DD" — resets each trading day
+        self._rl_agent        = None  # set via set_learning_callbacks()
+        self._ml_ensemble_mod = None  # module ref for record_trade_outcome_ensemble
+        self._last_known_account = None   # cache for get_account_safe() failover
+        self._last_account_fetch: float = 0.0  # monotonic timestamp of last successful fetch
+
+    def set_learning_callbacks(self, rl_agent=None, ml_ensemble_mod=None):
+        """Wire RL agent and ML ensemble for post-trade learning."""
+        self._rl_agent        = rl_agent
+        self._ml_ensemble_mod = ml_ensemble_mod
+
+    # ─────────────────────────────────────────────────────────────────────
+    # BROKER ACCOUNT — RESILIENT FETCH WITH EXPONENTIAL BACKOFF
+    # ─────────────────────────────────────────────────────────────────────
+
+    def get_account_safe(self) -> dict:
+        """
+        Fetch Alpaca account info with 4-retry exponential backoff (2s, 4s, 8s, 16s).
+        On all retries failing, returns cached _last_known_account if available,
+        otherwise returns a zero-balance sentinel with CRITICAL log.
+        Caches every successful fetch for failover.
+        """
+        delays = [2, 4, 8, 16]
+        last_err = None
+        for attempt, delay in enumerate(delays):
+            try:
+                trading_client = self._auth.get_trading_client()
+                account = trading_client.get_account()
+                result = {
+                    "portfolio_value": str(getattr(account, "portfolio_value", "0") or "0"),
+                    "buying_power":    str(getattr(account, "buying_power",    "0") or "0"),
+                    "cash":            str(getattr(account, "cash",            "0") or "0"),
+                }
+                self._last_known_account = result
+                self._last_account_fetch = _time.monotonic()
+                return result
+            except Exception as e:
+                last_err = e
+                if attempt < len(delays) - 1:
+                    logger.warning(
+                        f"[get_account_safe] Attempt {attempt + 1}/{len(delays)} failed: {e} "
+                        f"— retrying in {delay}s"
+                    )
+                    _time.sleep(delay)
+
+        # All retries exhausted
+        if self._last_known_account is not None:
+            logger.warning(
+                f"[get_account_safe] All retries failed ({last_err}) "
+                f"— returning cached account (age={_time.monotonic() - self._last_account_fetch:.0f}s)"
+            )
+            return self._last_known_account
+
+        logger.critical(
+            f"[get_account_safe] All retries failed AND no cached account available: {last_err} "
+            "— returning zero-balance sentinel. Check Alpaca connectivity immediately!"
+        )
+        return {"portfolio_value": "0", "buying_power": "0", "cash": "0"}
+
+    # ─────────────────────────────────────────────────────────────────────
+    # POSITION RECONCILIATION
+    # ─────────────────────────────────────────────────────────────────────
+
+    def reconcile_positions_with_broker(self, risk_manager) -> dict:
+        """
+        Compare Alpaca's live positions vs bot's in-memory positions.
+        Fixes mismatches to prevent ghost positions and missed fills.
+        Called every 5 minutes from main loop.
+        """
+        result = {"added": [], "removed": [], "qty_fixed": []}
+        try:
+            trading_client = self._auth.get_trading_client()
+            broker_positions = {str(p.symbol): p for p in trading_client.get_all_positions()}
+        except Exception as e:
+            logger.warning(f"[RECONCILE] Alpaca get_all_positions() failed: {e}")
+            return result
+
+        bot_symbols = set(risk_manager.positions.keys()) if hasattr(risk_manager, 'positions') else set()
+        broker_symbols = set(broker_positions.keys())
+
+        # In Alpaca but NOT in bot memory → add ghost position
+        for sym in broker_symbols - bot_symbols:
+            try:
+                pos = broker_positions[sym]
+                qty = int(float(pos.qty))
+                price = float(pos.avg_entry_price)
+                logger.warning(
+                    f"[RECONCILE] {sym}: in Alpaca (qty={qty}, entry=${price:.2f}) "
+                    "but NOT in bot — re-adding"
+                )
+                from risk_manager import Position
+                import uuid
+                ghost = Position(
+                    symbol=sym,
+                    direction="LONG" if qty > 0 else "SHORT",
+                    entry_price=price,
+                    quantity=abs(qty),
+                    stop_loss=price * (0.97 if qty > 0 else 1.03),  # 3% default stop
+                    target_1=price * (1.03 if qty > 0 else 0.97),
+                    target_2=price * (1.06 if qty > 0 else 0.94),
+                    order_id=str(uuid.uuid4()),
+                    quality_grade="B",
+                )
+                risk_manager.positions[sym] = ghost
+                result["added"].append(sym)
+            except Exception as e:
+                logger.warning(f"[RECONCILE] Failed to re-add {sym}: {e}")
+
+        # In bot memory but NOT at Alpaca → remove ghost
+        for sym in bot_symbols - broker_symbols:
+            logger.warning(
+                f"[RECONCILE] {sym}: in bot memory but NOT at Alpaca — removing ghost"
+            )
+            risk_manager.positions.pop(sym, None)
+            result["removed"].append(sym)
+
+        # Qty mismatch check
+        for sym in broker_symbols & bot_symbols:
+            try:
+                broker_qty = abs(int(float(broker_positions[sym].qty)))
+                bot_qty = getattr(risk_manager.positions[sym], 'quantity', 0)
+                if broker_qty > 0 and abs(broker_qty - bot_qty) / max(broker_qty, 1) > 0.1:
+                    logger.warning(
+                        f"[RECONCILE] {sym}: qty mismatch Alpaca={broker_qty} bot={bot_qty} "
+                        "— syncing"
+                    )
+                    risk_manager.positions[sym].quantity = broker_qty
+                    result["qty_fixed"].append(sym)
+            except Exception as e:
+                logger.debug(f"[RECONCILE] qty check failed for {sym}: {e}")
+
+        if any(result.values()):
+            logger.info(
+                f"[RECONCILE] Done: added={result['added']} "
+                f"removed={result['removed']} fixed={result['qty_fixed']}"
+            )
+        return result
+
+    def _fire_learning_callbacks(self, symbol: str, pnl: float, exit_reason: str,
+                                  entry_price: float = 0.0, exit_price: float = 0.0):
+        """Call RL and ML learning callbacks after a trade closes. Fail-open."""
+        try:
+            if self._rl_agent is not None:
+                self._rl_agent.on_trade_closed(
+                    symbol=symbol,
+                    pnl=pnl,
+                    exit_reason=exit_reason,
+                    next_market_data={"price": exit_price, "pnl": pnl}
+                )
+        except Exception as _e:
+            logger.debug(f"[RL] callback error for {symbol}: {_e}")
+        try:
+            if self._ml_ensemble_mod is not None:
+                record_fn = getattr(self._ml_ensemble_mod, "record_trade_outcome_ensemble", None)
+                if record_fn:
+                    was_win = pnl > 0
+                    features = {
+                        "pnl_pct": (exit_price - entry_price) / max(entry_price, 0.01),
+                        "exit_reason": exit_reason,
+                    }
+                    record_fn(features, was_win)
+        except Exception as _e:
+            logger.debug(f"[ML] callback error for {symbol}: {_e}")
 
     # ─────────────────────────────────────────────────────────────────────
     # ENTRY
@@ -198,6 +360,12 @@ class AlpacaExecutor:
                 f"qty={qty} @ ${signal.entry_price:.2f}"
             )
             return OrderResult(True, fill_price=signal.entry_price, quantity=qty, message="Paper fill")
+
+        # ── SHORT selling gate (v22.0) ────────────────────────────────────────
+        if direction == "SHORT":
+            import config as _cfg_short
+            if not getattr(_cfg_short, 'SHORT_SELLING_ENABLED', True):
+                return OrderResult(False, message="SHORT_SELLING_ENABLED=false — short trades disabled")
 
         if not self._auth.is_configured():
             return OrderResult(False, message="Alpaca API keys not configured")
@@ -362,8 +530,24 @@ class AlpacaExecutor:
                     result.order_type = "LIMIT"
                     break
                 else:
-                    # Cancel unfilled limit, retry with wider or MARKET
+                    # Cancel timed-out limit; check for partial fill before retrying
                     self.cancel_order(result.order_id)
+                    # Re-fetch order status to get any partial fill that happened before cancel
+                    _canceled_status = get_data_fetcher().get_order_status(result.order_id)
+                    _already_filled = int(float(_canceled_status.get("filled_qty", 0) or 0))
+                    if _already_filled > 0:
+                        # Partial fill occurred — use it; retry only for remaining qty
+                        _partial_price = float(_canceled_status.get("filled_avg_price", 0) or 0)
+                        if _partial_price > 0:
+                            result.fill_price = _partial_price
+                            result.quantity   = _already_filled
+                            result.order_type = "LIMIT"
+                            logger.info(
+                                f"[{format_ist_timestamp()}] Partial fill on canceled LIMIT: "
+                                f"{symbol} filled_qty={_already_filled} @ ${_partial_price:.2f}; "
+                                f"skipping retry for remaining {quantity - _already_filled} shares"
+                            )
+                            break   # treat partial fill as the result; do not double the position
                     logger.info(
                         f"[{format_ist_timestamp()}] Limit not filled in {self.LIMIT_WAIT_SECONDS}s "
                         f"— attempt {attempt+2}"
@@ -481,6 +665,7 @@ class AlpacaExecutor:
             result = OrderResult(True, message="Bracket order filled")
             result.order_id   = order_id
             result.fill_price = fill_p
+            result.quantity   = float(quantity)  # must be set; stays 0.0 otherwise → 1-share fallback
             result.order_type = "BRACKET"
             return result
 
@@ -581,9 +766,31 @@ class AlpacaExecutor:
             return OrderResult(True, message=f"Paper close {symbol}")
         try:
             trading_client = self._auth.get_trading_client()
+            # Capture position details before closing for learning callbacks
+            _entry_price = 0.0
+            _exit_price  = 0.0
+            _pnl         = 0.0
+            try:
+                _all_positions = trading_client.get_all_positions()
+                for _p in _all_positions:
+                    if _p.symbol == symbol:
+                        _entry_price = float(_p.avg_entry_price or 0)
+                        _exit_price  = float(_p.current_price or 0)
+                        _unrealized  = float(_p.unrealized_pl or 0)
+                        _pnl         = _unrealized
+                        break
+            except Exception as _pre:
+                logger.debug(f"close_position: pre-close position lookup failed for {symbol}: {_pre}")
             # Alpaca close_position endpoint: atomically closes the entire position
             trading_client.close_position(symbol)
             logger.info(f"[{format_ist_timestamp()}] CLOSED POSITION: {symbol} ({reason})")
+            self._fire_learning_callbacks(
+                symbol=symbol,
+                pnl=_pnl,
+                exit_reason=reason,
+                entry_price=_entry_price,
+                exit_price=_exit_price,
+            )
             return OrderResult(True, message=f"Position {symbol} closed")
         except Exception as e:
             logger.warning(f"[{format_ist_timestamp()}] close_position({symbol}) failed: {e}")
@@ -819,10 +1026,19 @@ class AlpacaExecutor:
 
         except Exception as e:
             msg = str(e)
-            logger.error(
-                f"[{format_ist_timestamp()}] ORDER FAILED: {symbol} {direction} "
-                f"{order_type} qty={qty} | Error: {msg}"
-            )
+            # Graceful handling for short-sell failures (HTB, not enabled on account, etc.)
+            if direction == "SHORT" and any(kw in msg.lower() for kw in (
+                "short", "borrow", "locate", "not available", "prohibited", "not supported"
+            )):
+                logger.warning(
+                    f"[{format_ist_timestamp()}] SHORT SELL REJECTED: {symbol} — {msg} "
+                    "(stock may not be available to borrow or account shorting not enabled)"
+                )
+            else:
+                logger.error(
+                    f"[{format_ist_timestamp()}] ORDER FAILED: {symbol} {direction} "
+                    f"{order_type} qty={qty} | Error: {msg}"
+                )
             return OrderResult(False, message=msg)
 
     def _wait_for_fill(self, order_id: str, wait: int = 12) -> tuple:
@@ -836,20 +1052,23 @@ class AlpacaExecutor:
         while _time.monotonic() < deadline:
             status = fetcher.get_order_status(order_id)
             _status_str = str(status.get("status", "")).lower()
-            if _status_str in ("filled", "partially_filled"):
+            if _status_str == "filled":
+                price   = float(status.get("filled_avg_price", 0.0) or 0.0)
+                qty_raw = status.get("filled_qty") or status.get("qty") or 0
+                qty     = int(float(qty_raw or 0))
+                return (price, qty) if price > 0 else (price, 0)
+            if _status_str == "partially_filled":
+                # Keep polling until fully filled or timeout — returning early leaves
+                # remaining shares without a broker-side stop order.
                 price   = float(status.get("filled_avg_price", 0.0) or 0.0)
                 qty_raw = status.get("filled_qty") or status.get("qty") or 0
                 qty     = int(float(qty_raw or 0))
                 if price > 0 and qty > 0:
-                    if _status_str == "partially_filled":
-                        logger.info(
-                            f"[{format_ist_timestamp()}] Partial fill {order_id}: "
-                            f"qty={qty} @ ${price:.2f}"
-                        )
-                    return (price, qty)
-                if price > 0 and _status_str == "filled":
-                    # filled but qty field missing — treat qty as 0 (caller handles)
-                    return (price, 0)
+                    logger.info(
+                        f"[{format_ist_timestamp()}] Partial fill {order_id}: "
+                        f"qty={qty} @ ${price:.2f} — polling for full fill"
+                    )
+                # fall through: sleep and poll again
             if status.get("status") in ("canceled", "expired", "rejected"):
                 return (0.0, 0)
             _time.sleep(self.POLL_INTERVAL)

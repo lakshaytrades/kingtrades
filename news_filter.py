@@ -84,15 +84,29 @@ class NewsFilter:
             self._refresh_events()
 
         # Check macro event blackout
+        # Only block if event is IMMINENT (future within blackout window, or just released in past 10 min)
+        # Skip "preview" articles about events due on future days
+        _future_day_keywords = [
+            "due friday", "due saturday", "due monday", "due tuesday",
+            "due wednesday", "due thursday", "due tomorrow", "due next",
+            "upcoming", "scheduled for", "expected next", "will be released",
+            "preview:", "preview —", "ahead of", "looking ahead",
+        ]
         for event in self._event_cache:
             event_time = event.get("time")
             if not event_time:
                 continue
-            time_diff = abs((now - event_time).total_seconds() / 60)
-            if time_diff <= self.blackout_minutes:
+            # Skip articles about future-scheduled events (preview/outlook pieces)
+            _title_lower = event.get("title", "").lower()
+            if any(fk in _title_lower for fk in _future_day_keywords):
+                continue
+            # Directional: only block if event is upcoming (0→blackout_min ahead)
+            # or just happened (within past 10 min). Prevents old articles from blocking.
+            minutes_to_event = (event_time - now).total_seconds() / 60
+            if -10 <= minutes_to_event <= self.blackout_minutes:
                 logger.warning(
                     f"[{format_ist_timestamp()}] NEWS BLACKOUT: "
-                    f"'{event['title'][:60]}' within {time_diff:.0f} min window"
+                    f"'{event['title'][:60]}' within {abs(minutes_to_event):.0f} min window"
                 )
                 return False
 

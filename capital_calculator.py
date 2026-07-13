@@ -241,7 +241,7 @@ def generate_full_report(starting_capital: float = 500.0) -> str:
 
     lines = [
         "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━",
-        f"💰 KingTrades — Capital Projection",
+        f"💰 SataVector — Capital Projection",
         f"   Starting Capital: ${starting_capital:,.0f}",
         f"   Buying power: ${starting_capital:,.0f} (no margin leverage)",
         f"   Risk per trade: 1% = ${starting_capital * 0.01:.2f}",

@@ -1,7 +1,7 @@
 """
 signal_attribution.py — Per-Strategy Alpha Attribution Backtester
 
-Runs synthetic attribution analysis for all 11 signal strategies in KingTrades.
+Runs synthetic attribution analysis for all 11 signal strategies in SataVector.
 For each strategy, simulates 500 trades and measures:
   - Win rate contribution
   - Avg score impact when active
@@ -139,7 +139,7 @@ def print_attribution_report(results: List[AttributionResult]) -> None:
     """Print formatted attribution table to stdout."""
     SEP = "─" * 90
     print(f"\n{'═'*90}")
-    print("  KING SIGNAL ATTRIBUTION REPORT — Per-Strategy Alpha Analysis")
+    print("  SATAVECTOR SIGNAL ATTRIBUTION REPORT — Per-Strategy Alpha Analysis")
     print(f"{'═'*90}")
     print(f"  {'Strategy':<18} {'Fire%':>6} {'WR Active':>10} {'WR Inact':>9} {'Alpha(pp)':>10} {'AvgBoost':>9} {'Conf':>5}")
     print(SEP)

@@ -254,7 +254,7 @@ def send_morning_brief() -> bool:
 
         msg = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            "🌅 <b>KINGTRADES MORNING BRIEF</b>\n"
+            "🌅 <b>SATAVECTOR MORNING BRIEF</b>\n"
             f"   {date_str}  |  {time_str}\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "📊 <b>MARKET CONTEXT</b>\n"
@@ -547,7 +547,7 @@ def send_eod_performance_report(daily_stats: dict) -> bool:
 
         msg = (
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
-            f"📊 <b>KINGTRADES EOD REPORT</b>  |  {date_str}\n"
+            f"📊 <b>SATAVECTOR EOD REPORT</b>  |  {date_str}\n"
             "━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n"
             "💰 <b>P&amp;L SUMMARY</b>\n"
             f"  Net P&amp;L:    {'+' if net_pnl >= 0 else ''}${net_pnl:,.2f}  ({pnl_pct:+.1f}%) {pnl_emoji}\n"

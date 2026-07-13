@@ -1,5 +1,5 @@
 """
-live_expectations.py — KingTrades Forward-Looking Performance Projections
+live_expectations.py — SataVector Forward-Looking Performance Projections
 
 Calculates realistic daily/weekly/monthly expectations based on:
   - Historical win rates and average R from logs (if available)
@@ -188,7 +188,7 @@ def build_report(capital: float = 5000.0) -> str:
         pass
 
     lines = [
-        "📊 <b>KINGTRADES LIVE EXPECTATIONS REPORT</b>",
+        "📊 <b>SATAVECTOR LIVE EXPECTATIONS REPORT</b>",
         f"Capital: ${capital:,.0f}  |  Risk/trade: {risk_pct:.1f}%",
         f"Active strategies: {len(STRATEGY_EDGES)} modules",
         "",
@@ -328,7 +328,7 @@ if __name__ == "__main__":
     import argparse
     logging.basicConfig(level=logging.WARNING)
 
-    parser = argparse.ArgumentParser(description="KingTrades Live Expectations Report")
+    parser = argparse.ArgumentParser(description="SataVector Live Expectations Report")
     parser.add_argument("--capital", type=float, default=5000.0, help="Starting capital")
     parser.add_argument("--no-telegram", action="store_true", help="Print only, don't send Telegram")
     args = parser.parse_args()

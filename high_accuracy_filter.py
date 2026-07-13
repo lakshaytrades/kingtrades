@@ -24,6 +24,8 @@ THE 14 CONFLUENCE GATES:
   Gate 12: ADX TRENDING          — ADX > 20 (no choppy directionless market)
   Gate 13: SPY ALIGNMENT         — SPY green for LONGs, SPY red for SHORTs
   Gate 14: CORRELATION GATE      — No new position if ≥75% correlated open pos exists
+  Gate 14c: OODA CONVICTION GATE  — OODA regime must not be CRISIS; strong directional conflict blocks trade
+  Gate 14d: INDIA INTEL GATE      — India VIX < 28; PCR/breadth/SGX composite adjusts score
 
 BONUS GATES (increase score further):
   + Heikin Ashi confirmation  (trend candle in signal direction)
@@ -196,6 +198,9 @@ class HighAccuracyFilter:
         self._current_symbol: str = ""
         # Score histogram: buckets of 5 (40–45, 45–50, ... 95–100)
         self._score_histogram: Dict[str, int] = {}
+        # Fallback mode: relax Gate 15 body check and Gate 27 VWAP extension threshold
+        # Set by _run_fallback_scan() in main.py; restored in finally block.
+        self._fallback_mode: bool = False
 
     # ─────────────────────────────────────────────────────────
     # MAIN FILTER — call this before every trade
@@ -283,15 +288,23 @@ class HighAccuracyFilter:
         # ── GATE 3: MULTI-TIMEFRAME ALIGNMENT ────────────
         mtf_ok, mtf_score = self._check_mtf(mtf_alignment, direction)
         if not mtf_ok:
-            result.gates_failed.append("MTF_ALIGNMENT")
-            result.rejection_reason = (
-                f"MTF conflict: {mtf_alignment.get('description','no alignment')}. "
-                "Need ≥2 timeframes aligned."
-            )
-            self._log_rejection(result, signal_score, direction)
-            return result
-
-        result.gates_passed.append(f"MTF(score={mtf_score})")
+            try:
+                import config as _cfg_mtf
+                _require_mtf = getattr(_cfg_mtf, 'REQUIRE_MTF_ALIGNMENT', True)
+            except Exception:
+                _require_mtf = True
+            if _require_mtf:
+                result.gates_failed.append("MTF_ALIGNMENT")
+                result.rejection_reason = (
+                    f"MTF conflict: {mtf_alignment.get('description','no alignment')}. "
+                    "Need ≥2 timeframes aligned."
+                )
+                self._log_rejection(result, signal_score, direction)
+                return result
+            # REQUIRE_MTF_ALIGNMENT = False: soft gate — continue but no bonus
+            result.gates_passed.append("MTF_SOFT(no alignment — continuing)")
+        else:
+            result.gates_passed.append(f"MTF(score={mtf_score})")
 
         # ── GATE 4: VOLUME SURGE ─────────────────────────
         vol_ok, vol_bonus = self._check_volume(volume_ratio)
@@ -434,6 +447,86 @@ class HighAccuracyFilter:
             result.gates_passed.append(_sec_reason)
         except Exception:
             result.gates_passed.append('SECTOR_SKIP')
+
+        # ── GATE 14c: OODA CONVICTION GATE ────────────────────────────────────
+        # OODA system must not be in CRISIS regime and conviction must be sufficient
+        try:
+            from ooda_engine import get_engine as _get_ooda_engine
+            _ooda_engine = _get_ooda_engine()
+            _ooda_ctx = _ooda_engine.get_context(symbol)
+
+            if _ooda_ctx.regime == "CRISIS":
+                result.gates_failed.append("OODA_CRISIS")
+                result.rejection_reason = "GATE14c_OODA: Market in CRISIS regime — no new entries"
+                self._log_rejection(result, signal_score, direction)
+                return result
+
+            if _ooda_ctx.direction_bias == "BEAR" and direction in ("BUY", "LONG"):
+                if _ooda_ctx.conviction > 0.70:  # strong bear signal
+                    result.gates_failed.append("OODA_DIR_CONFLICT")
+                    result.rejection_reason = (
+                        f"GATE14c_OODA: BEAR bias (conv={_ooda_ctx.conviction:.2f}) "
+                        f"conflicts with {direction}"
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+            elif _ooda_ctx.direction_bias == "BULL" and direction in ("SELL", "SHORT"):
+                if _ooda_ctx.conviction > 0.70:
+                    result.gates_failed.append("OODA_DIR_CONFLICT")
+                    result.rejection_reason = (
+                        f"GATE14c_OODA: BULL bias (conv={_ooda_ctx.conviction:.2f}) "
+                        f"conflicts with {direction}"
+                    )
+                    self._log_rejection(result, signal_score, direction)
+                    return result
+
+            result.gates_passed.append("OODA_OK")
+            # NOTE: OODA conviction is already rewarded upstream in signal_generator
+            # (ai_score ×1.15 when conviction > 0.75). Adding score here too would
+            # DOUBLE-COUNT the same signal, inflating it past grade/size thresholds.
+            # We record conviction for transparency but do NOT re-add to the score.
+            if _ooda_ctx.conviction > 0.75:
+                result.bonuses.append(f"OODA_HIGH_CONVICTION:{_ooda_ctx.conviction:.2f}(noted)")
+            elif _ooda_ctx.conviction > 0.65:
+                result.bonuses.append(f"OODA_CONVICTION:{_ooda_ctx.conviction:.2f}(noted)")
+        except ImportError:
+            result.gates_passed.append("OODA_SKIP")
+        except Exception as _ooda_ex:
+            logger.debug(f"[HAF] OODA gate error: {_ooda_ex}")
+            result.gates_passed.append("OODA_ERR")
+
+        # ── GATE 14d: INDIA INTELLIGENCE GATE (NSE only) ──────────────────────
+        # For NSE stocks: India VIX must be < 28 and conditions must not be CRISIS
+        try:
+            from india_intel import get_india_intel as _get_india_intel
+            _india = _get_india_intel()
+
+            if not _india.is_safe_to_trade():
+                result.gates_failed.append("INDIA_CRISIS")
+                result.rejection_reason = "GATE14d_INDIA: India VIX > 28 — CRISIS conditions"
+                self._log_rejection(result, signal_score, direction)
+                return result
+
+            if direction in ("BUY", "LONG") and not _india.long_bias_ok():
+                # Soft gate: raise the score requirement by 8 points instead of hard block
+                signal_score -= 8
+                result.bonuses.append("INDIA_ADVERSE_LONG(-8)")
+
+            _composite = _india.get_composite_score()
+            india_score = _composite.get("composite_score", 0.0)
+            if india_score > 3:
+                signal_score += 4
+                result.bonuses.append(f"INDIA_BULL({india_score:.1f})(+4)")
+            elif india_score < -3:
+                signal_score -= 4
+                result.bonuses.append(f"INDIA_BEAR({india_score:.1f})(-4)")
+
+            result.gates_passed.append("INDIA_OK")
+        except ImportError:
+            result.gates_passed.append("INDIA_SKIP")
+        except Exception as _india_ex:
+            logger.debug(f"[HAF] India gate error: {_india_ex}")
+            result.gates_passed.append("INDIA_ERR")
 
         # ── GATE 15: FALSE BREAKOUT DETECTOR ─────────────
         # Eliminates ~30% of losses by rejecting wick-rejections and volume fades.
@@ -610,11 +703,11 @@ class HighAccuracyFilter:
                     1 for o, c in zip(_opens, _closes)
                     if (c > o if direction in ('LONG','BUY') else c < o)
                 )
-                if _aligned < 3:
+                if _aligned < 2:
                     result.gates_failed.append(f'MOMENTUM_BARS({_aligned}/5)')
                     result.rejection_reason = (
                         f'[GATE-24 MOMENTUM] {symbol} — only {_aligned}/5 bars confirm {direction} '
-                        f'(need ≥3: institutional momentum not established)'
+                        f'(need ≥2: institutional momentum not established)'
                     )
                     self._log_rejection(result, signal_score, direction)
                     return result
@@ -638,10 +731,12 @@ class HighAccuracyFilter:
                 _slope  = _np25.sum((_x25 - _xm) * (_cl25 - _ym)) / (_np25.sum((_x25 - _xm) ** 2) + 1e-9)
                 _y_pred = _ym + _slope * (_x25 - _xm)
                 _ss_res = _np25.sum((_cl25 - _y_pred) ** 2)
-                _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 0 else 0.0
+                _r2     = 1.0 - (_ss_res / (_ss_tot + 1e-9)) if _ss_tot > 1e-6 else 0.5
+                # When _ss_tot≈0 (perfect consolidation), price is flat — treat as neutral R²=0.5
+                # This prevents flat consolidation (pre-breakout base) from blocking legitimate setups
                 # Direction check: slope must agree with signal direction
                 _slope_ok = (_slope > 0) if direction in ('LONG','BUY') else (_slope < 0)
-                if _r2 < 0.20 or (_r2 < 0.35 and not _slope_ok):
+                if _r2 < 0.10 or (_r2 < 0.25 and not _slope_ok):
                     result.gates_failed.append(f'TREND_QUALITY(R²={_r2:.2f})')
                     result.rejection_reason = (
                         f'[GATE-25 R²] {symbol} — trend R²={_r2:.2f} too choppy for {direction} '
@@ -753,6 +848,8 @@ class HighAccuracyFilter:
         try:
             import config as _cfg27
             _vwap_max_atr = float(getattr(_cfg27, 'VWAP_EXTENSION_MAX_ATR', 2.0))
+            if self._fallback_mode:
+                _vwap_max_atr *= 3.0  # crash days: stocks are 10-25 ATR from VWAP — allow up to 6 ATR
             if df_5m is not None and not df_5m.empty and atr and atr > 0:
                 _tp27  = (df_5m['high'] + df_5m['low'] + df_5m['close']) / 3.0
                 _cv27  = df_5m['volume'].cumsum()
@@ -763,13 +860,16 @@ class HighAccuracyFilter:
                     # Penalty proportional to overextension (harder penalty the further we are)
                     _penalty = min(20.0, round((_dist_atr - _vwap_max_atr) * 8.0, 1))
                     signal_score = max(0.0, signal_score - _penalty)
+                    # Apply the same penalty to result.final_score so it stays consistent
+                    result.final_score = max(0.0, result.final_score - _penalty)
                     result.gates_passed.append(f'VWAP_EXT({_dist_atr:.1f}ATR,-{_penalty:.0f})')
-                    if signal_score < self.min_score:
+                    # Use result.final_score (authoritative) — signal_score may be stale after Gate 11 penalty
+                    if result.final_score < self.min_score:
                         result.passed = False
                         result.gates_failed.append(f'VWAP_CHASE({_dist_atr:.1f}ATR)')
                         result.rejection_reason = (
                             f'[GATE-27 VWAP_EXT] {symbol} — price {_dist_atr:.1f}×ATR from VWAP '
-                            f'(max {_vwap_max_atr}×). Score penalized -{_penalty:.0f} → {signal_score:.0f} '
+                            f'(max {_vwap_max_atr}×). Score penalized -{_penalty:.0f} → {result.final_score:.0f} '
                             f'< {self.min_score:.0f} min. Chasing exhaustion move.'
                         )
                         self._log_rejection(result, signal_score, direction)
@@ -1289,7 +1389,7 @@ class HighAccuracyFilter:
 
         if entry_dir == "SKIP":
             return False, 0
-        if alignment_score < 35:   # require at least 1/3 TF agreement (IEX data, weaker markets)
+        if alignment_score < 20:   # only block if near-zero alignment (1 TF minimum)
             return False, alignment_score
         signal_dir = "LONG" if direction == "BUY" else "SHORT"
         if entry_dir != signal_dir:
@@ -1634,10 +1734,10 @@ class HighAccuracyFilter:
                     return False, f"[FALSE BREAKOUT] wick rejection {u_wick/c_range:.0%} > 60% — shooting star"
                 vol_now  = float(last.get("volume", 1) or 1)
                 vol_prev = float(prev.get("volume", 1) or 1)
-                if vol_now < vol_prev * 0.5:
-                    return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.5:.0f} — momentum dying"
-                if body < 0.15 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.15×ATR={0.15*atr:.2f} — no conviction"
+                if vol_now < vol_prev * 0.35:
+                    return False, f"[FALSE BREAKOUT] volume fade {vol_now:.0f} < {vol_prev * 0.35:.0f} — momentum dying"
+                if body < 0.05 * atr and not self._fallback_mode:
+                    return False, f"[FALSE BREAKOUT] tiny body {body:.2f} < 0.05×ATR={0.05*atr:.2f} — noise candle"
             else:  # SELL / SHORT
                 body  = float(last["open"]) - float(last["close"])
                 l_wick = min(float(last["close"]), float(last["open"])) - float(last["low"])
@@ -1645,10 +1745,10 @@ class HighAccuracyFilter:
                     return False, f"[FALSE BREAKOUT] lower wick {l_wick/c_range:.0%} > 60% — hammer rejection"
                 vol_now  = float(last.get("volume", 1) or 1)
                 vol_prev = float(prev.get("volume", 1) or 1)
-                if vol_now < vol_prev * 0.5:
+                if vol_now < vol_prev * 0.35:
                     return False, f"[FALSE BREAKOUT] volume fade on short signal — no conviction"
-                if body < 0.15 * atr:
-                    return False, f"[FALSE BREAKOUT] tiny body < 0.15×ATR — noise candle"
+                if body < 0.05 * atr and not self._fallback_mode:
+                    return False, f"[FALSE BREAKOUT] tiny body < 0.05×ATR — noise candle"
             return True, ""
         except Exception:
             return True, ""   # fail open
@@ -1740,16 +1840,16 @@ class HighAccuracyFilter:
             count = 0
             reasons = []
             if direction in ("BUY", "LONG"):
-                if 25 < _rsi < 72:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if 20 < _rsi < 78:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
                 if _mh > 0:            count += 1; reasons.append("MACD+")
                 if _e9 > _e21 > 0:     count += 1; reasons.append("EMA9>21")
-                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+                if _vr > 1.1:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
             else:  # SELL / SHORT
-                if 28 < _rsi < 75:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
+                if 15 < _rsi < 80:     count += 1; reasons.append(f"RSI={_rsi:.0f}")
                 if _mh < 0:            count += 1; reasons.append("MACD-")
                 if 0 < _e9 < _e21:     count += 1; reasons.append("EMA9<21")
-                if _vr > 1.3:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
-            if count < min_count:
+                if _vr > 1.1:          count += 1; reasons.append(f"VOL={_vr:.1f}x")
+            if count < 1:  # need at least 1 indicator aligned (was min_count=2)
                 return False, f"only {count}/{min_count} indicators aligned ({','.join(reasons) or 'none'})"
             return True, f"{count}/4 ({','.join(reasons)})"
         except Exception:

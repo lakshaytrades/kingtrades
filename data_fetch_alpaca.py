@@ -94,16 +94,36 @@ class BarCache:
         last = self._last_refresh.get(interval, 0.0)
 
         if (now - last) > self.REFRESH_INTERVAL:
-            with self._refresh_lock:
-                # Re-check inside lock — another thread may have just refreshed
-                if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
-                    self._last_refresh[interval] = _time.monotonic()  # claim slot immediately
+            # Determine if cache has any data for this interval (empty = must block on first startup)
+            with self._lock:
+                cache_empty = not any(k[1] == interval for k in self._cache)
+
+            if cache_empty:
+                # First startup: must block until cache is populated
+                with self._refresh_lock:
+                    if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
+                        self._last_refresh[interval] = _time.monotonic()
+                        try:
+                            self._refresh_interval(interval, lookback_days)
+                        except Exception as _re:
+                            self._last_refresh[interval] = 0.0
+                            logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+            else:
+                # Cache has data: non-blocking try — if another thread is refreshing,
+                # serve the existing (slightly stale) data immediately rather than blocking
+                acquired = self._refresh_lock.acquire(blocking=False)
+                if acquired:
                     try:
-                        self._refresh_interval(interval, lookback_days)
-                    except Exception as _re:
-                        # Reset so next call retries instead of using a stale slot
-                        self._last_refresh[interval] = 0.0
-                        logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+                        if (_time.monotonic() - self._last_refresh.get(interval, 0.0)) > self.REFRESH_INTERVAL:
+                            self._last_refresh[interval] = _time.monotonic()
+                            try:
+                                self._refresh_interval(interval, lookback_days)
+                            except Exception as _re:
+                                self._last_refresh[interval] = 0.0
+                                logger.warning(f"BarCache refresh failed ({interval}): {_re}")
+                    finally:
+                        self._refresh_lock.release()
+                # else: refresh already in progress — serve stale data, don't block
 
         with self._lock:
             df = self._cache.get(cache_key, pd.DataFrame())
@@ -194,7 +214,8 @@ class BarCache:
                                     if len(df) > 1 and yf_interval in ("1m", "5m", "15m", "60m"):
                                         _bar_mins = {"1m": 1, "5m": 5, "15m": 15, "60m": 60}.get(yf_interval, 5)
                                         _now_et = datetime.now(ET)
-                                        if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                                        _eod_keep = _now_et.hour > 15 or (_now_et.hour == 15 and _now_et.minute >= 50)
+                                        if not _eod_keep and (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
                                             df = df.iloc[:-1]
                                     if df.empty:
                                         continue
@@ -279,11 +300,13 @@ class BarCache:
                         df.index = df.index.tz_convert("America/New_York")
                         df.index.name = "timestamp"
                         df.sort_index(inplace=True)
-                        # Drop incomplete last bar
+                        # Drop incomplete last bar — but keep it after 15:50 ET so EOD
+                        # exits have current price data for the last 5 minutes of trading.
                         if len(df) > 1:
                             _bar_mins = _BAR_MINS.get(interval, 5)
                             _now_et = datetime.now(ET)
-                            if (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
+                            _eod_keep = _now_et.hour > 15 or (_now_et.hour == 15 and _now_et.minute >= 50)
+                            if not _eod_keep and (_now_et - df.index[-1]).total_seconds() < _bar_mins * 60:
                                 df = df.iloc[:-1]
                         if not df.empty:
                             new_data[(sym, interval)] = df
@@ -564,10 +587,10 @@ class AlpacaDataFetcher:
             tf = tf_map.get(interval, TimeFrame(5, TimeFrameUnit.Minute))
 
             now_et  = datetime.now(ET)
-            # Data delay: free SIP plan needs 15-min delay; paid Unlimited plan can use 1 min.
-            # Set ALPACA_DATA_DELAY_MINUTES=16 for free plan, 1 for Unlimited plan.
-            # Default 1: free-plan calls get 0 bars and fall through to BarCache (yfinance).
-            _delay  = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "1"))
+            # Data delay: free SIP plan requires 15-min delay; paid Unlimited plan can use 1 min.
+            # Default 16 matches _fetch_alpaca_bars() so per-symbol calls work on the free plan.
+            # Override with ALPACA_DATA_DELAY_MINUTES=1 for paid Unlimited plan.
+            _delay  = int(os.getenv("ALPACA_DATA_DELAY_MINUTES", "16"))
             end_et  = now_et - timedelta(minutes=max(1, _delay))
             start   = now_et - timedelta(days=lookback_days + 2)  # +2 for weekends
 
@@ -614,13 +637,21 @@ class AlpacaDataFetcher:
     def get_multi_timeframe_data(self, symbol: str) -> Dict[str, Optional[pd.DataFrame]]:
         """
         Fetch 5m / 15m / 1h OHLCV for signal_generator multi-timeframe analysis.
-        Returns same structure as GrowwDataFetcher.get_multi_timeframe_data().
+        BarCache-first: serves from in-memory cache when warm, avoiding per-symbol Alpaca
+        calls during concurrent scans (which cause the 180s scan timeout on VPS).
         Keys: "5m", "15m", "1h"
         """
         specs = [("5m", "5minute", 5), ("15m", "15minute", 10), ("1h", "1hour", 30)]
         data: Dict[str, Optional[pd.DataFrame]] = {}
+        bc = get_bar_cache()
         for key, interval, days in specs:
             try:
+                # BarCache-first: in-memory hit is sub-millisecond and avoids Alpaca rate limits
+                df = bc.get(symbol, interval, days)
+                if not df.empty:
+                    data[key] = df
+                    continue
+                # Cache miss — fall back to direct Alpaca call
                 df = self.get_ohlcv(symbol, interval=interval, lookback_days=days)
                 data[key] = df if not df.empty else None
             except Exception as e:

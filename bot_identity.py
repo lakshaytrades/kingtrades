@@ -1,16 +1,16 @@
 """
-bot_identity.py — KING: KingTrades Intelligence & Navigation Generator
+bot_identity.py — SATAVECTOR: SataVector Intelligence & Navigation Generator
 
-This file defines the identity, philosophy, and operational charter of the KING system.
-Every trade KING makes is built on 8 legendary trading frameworks used by the greatest
+This file defines the identity, philosophy, and operational charter of the SATAVECTOR system.
+Every trade SATAVECTOR makes is built on 8 legendary trading frameworks used by the greatest
 traders of all time, filtered through 26 institutional-grade gates, scored by ML, and
 executed with institutional-grade risk management.
 
 Target: 70–80% win rate | 1% avg daily return | <6% max drawdown | Sharpe > 4.0
 """
 
-BOT_NAME        = "KING"
-BOT_FULL_NAME   = "KING — KingTrades Intelligence & Navigation Generator"
+BOT_NAME        = "SATAVECTOR"
+BOT_FULL_NAME   = "SATAVECTOR — SataVector Intelligence & Navigation Generator"
 BOT_VERSION     = "v14.0"
 BOT_AUTHOR      = "lakshaytrades"
 BOT_TAGLINE     = "26 gates. 8 legendary frameworks. ML-scored. Top-1% precision."
@@ -21,13 +21,13 @@ BOT_MAX_DD      = "< 6%"
 
 TRADING_PHILOSOPHY = """
 ╔══════════════════════════════════════════════════════════════════════════╗
-║            K · I · N · G  —  lakshaytrades Trading System              ║
-║        KingTrades Intelligence & Navigation Generator  v14.0            ║
+║            S A T A V E C T O R  —  lakshaytrades System              ║
+║        SataVector Intelligence & Navigation Generator  v14.0            ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║  Target: 70-80% WR  |  1% avg/day  |  Sharpe >4  |  DD <6%            ║
 ╠══════════════════════════════════════════════════════════════════════════╣
 ║                                                                          ║
-║  KING operates on one rule: only trade when ALL evidence agrees.        ║
+║  SATAVECTOR operates on one rule: only trade when ALL evidence agrees.        ║
 ║  Not one signal. Not two. Every major framework must confirm.           ║
 ║                                                                          ║
 ║  BUILT ON 8 LEGENDARY TRADING FRAMEWORKS:                               ║
@@ -50,7 +50,7 @@ TRADING_PHILOSOPHY = """
 
 STARTUP_BANNER = f"""
 ╔══════════════════════════════════════════════════════════════╗
-║   K I N G  —  lakshaytrades  |  {BOT_VERSION:<27}  ║
+║   S A T A V E C T O R —  lakshaytrades  |  {BOT_VERSION:<27}  ║
 ║   {BOT_TAGLINE:<60}  ║
 ║   WR Target: {BOT_TARGET_WR:<8}  Daily: {BOT_TARGET_RET:<12}  Sharpe: {BOT_SHARPE_TGT:<7}  ║
 ╚══════════════════════════════════════════════════════════════╝
@@ -68,13 +68,18 @@ FRAMEWORK_CREDITS = {
 }
 
 def print_banner() -> None:
-    """Print KING startup banner to console."""
+    """Print SATAVECTOR startup banner to console."""
     print(STARTUP_BANNER)
     print(TRADING_PHILOSOPHY)
 
 def get_telegram_header() -> str:
     """One-line header for Telegram alerts."""
-    return f"👑 <b>KING</b> ({BOT_VERSION}) — lakshaytrades"
+    try:
+        import config as _cfg
+        display = _cfg.BOT_DISPLAY_NAME
+    except Exception:
+        display = "SATAVECTOR"
+    return f"👑 <b>{display}</b> ({BOT_VERSION})"
 
 def get_framework_tagline(framework: str) -> str:
     return FRAMEWORK_CREDITS.get(framework, "")

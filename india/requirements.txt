@@ -1,0 +1,65 @@
+# ============================================================
+# NSE Momentum Groww AI Bot — India dependencies
+# Install: pip install -r india/requirements.txt --break-system-packages
+# ============================================================
+
+# ---- Broker SDKs ----
+upstox-python-sdk>=2.0.0        # Upstox API — historical candles + live quotes
+growwapi>=0.1.0                  # Groww API — live order placement
+
+# ---- Data & Analysis ----
+pandas>=2.0.0
+numpy>=1.24.0
+scipy>=1.10.0
+ta>=0.11.0                       # Technical analysis indicators
+
+# ---- Machine Learning ----
+scikit-learn>=1.3.0
+xgboost>=1.7.0
+optuna>=3.4.0
+joblib>=1.3.0
+
+# ---- Visualization ----
+matplotlib>=3.7.0
+mplfinance>=0.12.10b0
+Pillow>=10.0.0
+rich>=13.0.0                     # Bloomberg-style terminal UI
+
+# ---- Telegram ----
+python-telegram-bot>=20.0
+
+# ---- HTTP & Requests ----
+requests>=2.31.0
+httpx>=0.25.0
+aiohttp>=3.9.0
+websockets>=12.0
+tenacity>=8.2.0
+
+# ---- News & Sentiment ----
+newsapi-python>=0.2.7
+feedparser>=6.0.10
+beautifulsoup4>=4.12.0
+lxml>=4.9.0
+
+# ---- Async & Scheduling ----
+schedule>=1.2.0
+apscheduler>=3.10.0
+
+# ---- Environment & Config ----
+python-dotenv>=1.0.0
+pyotp>=2.8.0
+pydantic>=2.0.0
+
+# ---- Logging & Database ----
+loguru>=0.7.0
+sqlalchemy>=2.0.0
+
+# ---- Global Market Data ----
+yfinance>=0.2.40
+
+# ---- Security ----
+cryptography>=41.0.0
+
+# daily token auto-login (auto_login_totp.py)
+curl_cffi>=0.13
+pyotp>=2.9

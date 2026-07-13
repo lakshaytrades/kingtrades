@@ -1,5 +1,5 @@
 """
-strategy_knowledge_base.py — KING Framework Library
+strategy_knowledge_base.py — SATAVECTOR Framework Library
 
 8 legendary trading systems encoded as quantitative scoring functions.
 Each framework scores the current setup independently. The master scorer

@@ -782,7 +782,7 @@ class AltDataProxy(metaclass=_SingletonMeta):
                     f"https://wikimedia.org/api/rest_v1/metrics/pageviews/per-article"
                     f"/en.wikipedia/all-access/all-agents/{article}/daily/{start_str}/{end_str}"
                 )
-                resp = _requests.get(url, timeout=8, headers={"User-Agent": "KingTrades/15.0"})
+                resp = _requests.get(url, timeout=8, headers={"User-Agent": "SataVector/15.0"})
                 if resp.status_code == 200:
                     data = resp.json()
                     items = data.get("items", [])
@@ -904,7 +904,7 @@ class NewsWireProxy(metaclass=_SingletonMeta):
                 resp = _requests.get(
                     url,
                     timeout=8,
-                    headers={"User-Agent": "KingTrades/15.0 contact@kingtrades.ai"},
+                    headers={"User-Agent": "SataVector/15.0 contact@kingtrades.ai"},
                 )
                 if resp.status_code == 200:
                     xml_text = resp.text

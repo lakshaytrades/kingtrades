@@ -1,5 +1,5 @@
 """
-alerts_telegram.py — KingTrades Bloomberg Terminal Alert Engine
+alerts_telegram.py — SataVector Bloomberg Terminal Alert Engine
 Professional-grade Telegram alerts modelled on Bloomberg / institutional trading desk output.
 
 Features:
@@ -251,7 +251,7 @@ def _build_equity_curve(trades: List[Dict], capital: float) -> Optional[io.Bytes
         ax1.fill_between(x, cumulative, alpha=0.15, color=color)
         ax1.axhline(0, color="#555555", linestyle="--", lw=1)
         ax1.set_facecolor("#0D1117")
-        ax1.set_title("KingTrades — Equity Curve", color="white", fontsize=11)
+        ax1.set_title("SataVector — Equity Curve", color="white", fontsize=11)
         ax1.set_ylabel(f"Cumulative P&L ({_CUR})", color="#CCCCCC", fontsize=9)
         ax1.tick_params(colors="#AAAAAA")
         ax1.grid(True, color="#333333", linestyle=":", alpha=0.5)
@@ -488,30 +488,30 @@ class TelegramAlerter:
         except Exception:
             pass
 
-        grade_line = f"  GRADE  `{quality_grade}`" if quality_grade else ""
-        score_line = f"  SCORE  `{signal_score:.0f}/100`  `{_score_bar(signal_score)}`" if signal_score > 0 else ""
-        sl_line    = f"  SL  →  `{_CUR}{stop_loss:.2f}`   hard stop" if stop_loss > 0 else ""
-        t1_line    = f"  T1  →  `{_CUR}{target_1:.2f}`   [40% exit]" if target_1 > 0 else ""
-        t2_line    = f"  T2  →  `{_CUR}{target_2:.2f}`   [20% exit]" if target_2 > 0 else ""
+        grade_line = f"  GRADE  <code>{quality_grade}</code>" if quality_grade else ""
+        score_line = f"  SCORE  <code>{signal_score:.0f}/100</code>  <code>{_score_bar(signal_score)}</code>" if signal_score > 0 else ""
+        sl_line    = f"  SL  →  <code>{_CUR}{stop_loss:.2f}</code>   hard stop" if stop_loss > 0 else ""
+        t1_line    = f"  T1  →  <code>{_CUR}{target_1:.2f}</code>   [40% exit]" if target_1 > 0 else ""
+        t2_line    = f"  T2  →  <code>{_CUR}{target_2:.2f}</code>   [20% exit]" if target_2 > 0 else ""
         levels     = "\n".join(x for x in [sl_line, t1_line, t2_line] if x)
         stats      = self._live_stats_line()
 
         text = (
-            f"👑 *KING* — lakshaytrades\n"
-            f"{emoji} *ORDER EXECUTED — {dir_word}*\n"
+            f"👑 <b>SATAVECTOR</b> — lakshaytrades\n"
+            f"{emoji} <b>ORDER EXECUTED — {dir_word}</b>\n"
             f"{_sep()}\n"
-            f"  *{symbol}*  |  `{direction}`\n"
+            f"  <b>{symbol}</b>  |  <code>{direction}</code>\n"
             f"{_sep()}\n"
-            f"  ENTRY    `{_CUR}{price:.2f}`     {format_ist_timestamp()}\n"
-            f"  SIZE     `{qty} shrs`    `{_CUR}{notional:,.0f}` notional\n"
-            + (f"  RISK     `{_CUR}{risk_amt:,.0f}`     `{risk_pct:.2f}%` capital\n" if risk_amt > 0 else "")
+            f"  ENTRY    <code>{_CUR}{price:.2f}</code>     {format_ist_timestamp()}\n"
+            f"  SIZE     <code>{qty} shrs</code>    <code>{_CUR}{notional:,.0f}</code> notional\n"
+            + (f"  RISK     <code>{_CUR}{risk_amt:,.0f}</code>     <code>{risk_pct:.2f}%</code> capital\n" if risk_amt > 0 else "")
             + (f"{_sep()}\n{grade_line}\n{score_line}\n" if (grade_line or score_line) else "")
             + (f"{_sep()}\n{levels}\n" if levels else "")
             + (f"{_sep()}\n{stats}\n" if stats else "")
             + f"{_sep()}\n"
-            f"  {E['clock']} `{format_ist_timestamp()}`"
+            f"  {E['clock']} <code>{format_ist_timestamp()}</code>"
         )
-        return self._send(text)
+        return self._send(text, parse_mode="HTML")
 
     # --------------------------------------------------------
     # EXIT ALERT  (Bloomberg POSITION CLOSED)
@@ -535,29 +535,29 @@ class TelegramAlerter:
         except Exception:
             pass
 
-        target_line = f"\n  {E['target']} *DAILY {target_pct:.1f}% TARGET: ACHIEVED* ✅" if target_hit else ""
+        target_line = f"\n  {E['target']} <b>DAILY {target_pct:.1f}% TARGET: ACHIEVED</b> ✅" if target_hit else ""
         reason_clean = reason.replace("_", " ").upper()
 
         text = (
-            f"👑 *KING* — lakshaytrades\n"
-            f"{pnl_emoji} *POSITION CLOSED — {reason_clean}*\n"
+            f"👑 <b>SATAVECTOR</b> — lakshaytrades\n"
+            f"{pnl_emoji} <b>POSITION CLOSED — {reason_clean}</b>\n"
             f"{_sep()}\n"
-            f"  *{symbol}*  |  `{direction}`  |  `{reason_clean}`\n"
+            f"  <b>{symbol}</b>  |  <code>{direction}</code>  |  <code>{reason_clean}</code>\n"
             f"{_sep()}\n"
-            f"  ENTRY    `{_CUR}{entry:.2f}`\n"
-            f"  EXIT     `{_CUR}{exit_price:.2f}`   `{pct:+.2f}%`\n"
-            f"  QTY      `{qty} shrs`\n"
+            f"  ENTRY    <code>{_CUR}{entry:.2f}</code>\n"
+            f"  EXIT     <code>{_CUR}{exit_price:.2f}</code>   <code>{pct:+.2f}%</code>\n"
+            f"  QTY      <code>{qty} shrs</code>\n"
             f"{_sep()}\n"
-            f"  NET P&L  *{_pnl_str(pnl)}*\n"
+            f"  NET P&L  <b>{_pnl_str(pnl)}</b>\n"
             f"{_sep()}\n"
-            f"  DAY P&L  `{day_pnl_str}`\n"
-            f"  TRADES   `{n}` today   `{wins}W / {losses}L`\n"
-            f"  WIN RATE `{wr:.1f}%`"
+            f"  DAY P&L  <code>{day_pnl_str}</code>\n"
+            f"  TRADES   <code>{n}</code> today   <code>{wins}W / {losses}L</code>\n"
+            f"  WIN RATE <code>{wr:.1f}%</code>"
             f"{target_line}\n"
             f"{_sep()}\n"
-            f"  {E['clock']} `{format_ist_timestamp()}`"
+            f"  {E['clock']} <code>{format_ist_timestamp()}</code>"
         )
-        return self._send(text)
+        return self._send(text, parse_mode="HTML")
 
     # --------------------------------------------------------
     # STOP-LOSS HIT  (Bloomberg STOP TRIGGERED)
@@ -815,7 +815,7 @@ class TelegramAlerter:
                 )
 
         text = (
-            f"⏱ *KING HOURLY UPDATE*\n"
+            f"⏱ *SATAVECTOR HOURLY UPDATE*\n"
             f"{_sep()}\n"
             f"  {format_ist_timestamp()}\n"
             f"{_sep()}\n"
@@ -965,7 +965,7 @@ class TelegramAlerter:
             text += f"{_sep()}\n  {E['brain']} _{thesis}_\n"
         text += (
             f"{_sep()}\n"
-            f"  🤖 KingTrades v3.0 — ARMED & READY\n"
+            f"  🤖 {__import__('config').BOT_DISPLAY_NAME} — ARMED & READY\n"
             f"  {E['clock']} `{now_str}`"
         )
         if oc_summary:
@@ -1071,7 +1071,7 @@ class TelegramAlerter:
             f"  EV/TRADE    `{'+' if ev_trade>=0 else ''}{_CUR}{ev_trade:,.0f}`\n"
             f"  DAILY TGT   `{'✅ ACHIEVED' if target_hit else f'❌ MISSED ({_daily_tgt_pct:.1f}%)'}`\n"
             f"{_sep()}\n"
-            f"  🤖 KingTrades v3.0  |  Next session: 09:30 ET\n"
+            f"  🤖 {__import__('config').BOT_DISPLAY_NAME}  |  Next session: 09:30 ET\n"
             f"  {E['clock']} `{format_ist_timestamp()}`"
         )
 

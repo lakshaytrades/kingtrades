@@ -224,7 +224,7 @@ If they match — TOTP is set up correctly.
 1. Open Telegram on your phone
 2. Search: `@BotFather`
 3. Send: `/newbot`
-4. Name it: `KingTrades Alert Bot`
+4. Name it: `SataVector Alert Bot`
 5. Username: `kingtrades_youname_bot` (must end in `bot`)
 6. BotFather sends you a token like: `1234567890:ABCdef...`
 7. Copy this → paste as `TELEGRAM_BOT_TOKEN=` in `.env`
@@ -247,7 +247,7 @@ load_dotenv()
 token = os.getenv('TELEGRAM_BOT_TOKEN')
 chat_id = os.getenv('TELEGRAM_CHAT_ID')
 url = f'https://api.telegram.org/bot{token}/sendMessage'
-r = requests.post(url, json={'chat_id': chat_id, 'text': 'KingTrades bot is connected!'})
+r = requests.post(url, json={'chat_id': chat_id, 'text': 'SataVector bot is connected!'})
 print('Telegram test:', r.status_code)
 "
 ```
@@ -270,7 +270,7 @@ python main.py
 
 You will see output like:
 ```
-[IST 2026-04-03 08:45:00] KingTrades Bot starting...
+[IST 2026-04-03 08:45:00] SataVector Bot starting...
 [IST 2026-04-03 08:45:02] TOTP login successful
 [IST 2026-04-03 09:00:00] Overnight analysis: BULLISH bias (+35)
 [IST 2026-04-03 09:15:00] Market OPEN — scanning watchlist...
@@ -466,7 +466,7 @@ tail -f logs/trading_$(date +%Y-%m-%d).log
 
 ---
 
-*KingTrades NSE Momentum Bot | Local PC Deployment | Updated 2026-04-03*
+*SataVector NSE Momentum Bot | Local PC Deployment | Updated 2026-04-03*
 
 ---
 

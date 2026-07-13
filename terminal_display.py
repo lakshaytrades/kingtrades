@@ -1,5 +1,5 @@
 """
-terminal_display.py — KingTrades Bloomberg Terminal Dashboard
+terminal_display.py — SataVector Bloomberg Terminal Dashboard
 
 Bloomberg-style rich terminal UI that reads live bot state from
 /tmp/kingtrades_state.json (written by main.py every 30 seconds).
@@ -103,7 +103,7 @@ def _header_panel(state: Dict) -> Panel:
                 C_RED   if "BEAR" in regime.upper() else C_YELLOW)
 
     t = Text()
-    t.append(f"  KingTrades v{bot_ver}", style="bold cyan")
+    t.append(f"  SataVector v{bot_ver}", style="bold cyan")
     t.append(f"  ║  ", style=C_DIM)
     t.append(f"SPY ${spy:.2f} {spy_arrow}{spy_chg:+.2f}%", style=C_GREEN if spy_chg >= 0 else C_RED)
     t.append(f"  ║  ", style=C_DIM)
@@ -339,7 +339,7 @@ def _plain_display(state: Dict) -> None:
     os.system("clear")
     SEP = "=" * 70
     print(SEP)
-    print(f"  KingTrades v{VERSION}  —  Bloomberg Terminal  —  {_now_et()}")
+    print(f"  SataVector v{VERSION}  —  Bloomberg Terminal  —  {_now_et()}")
     print(SEP)
 
     capital    = state.get("capital", 0.0)
@@ -403,7 +403,7 @@ def run_dashboard() -> None:
         )
 
     console.print(
-        f"[bold cyan]KingTrades Bloomberg Terminal v{VERSION}[/bold cyan]  "
+        f"[bold cyan]SataVector Bloomberg Terminal v{VERSION}[/bold cyan]  "
         f"[dim]Reading {STATE_FILE}  •  Refreshing every {REFRESH_HZ}s  •  Ctrl+C to exit[/dim]"
     )
     time.sleep(1)

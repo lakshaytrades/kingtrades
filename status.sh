@@ -6,7 +6,7 @@ SESSION="kingtrades"
 LOG_FILE="$BOT_DIR/logs/bot_output.log"
 
 echo "================================"
-echo "   KingTrades Bot Status"
+echo "   SataVector Bot Status"
 echo "================================"
 
 if screen -list | grep -q "$SESSION"; then
